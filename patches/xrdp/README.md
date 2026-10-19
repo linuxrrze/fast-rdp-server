@@ -63,3 +63,7 @@ h264_vaapi` on a GPU host, then `tests/gpu/session_report.py` in a session.
 - This patch targets the 0.10 release line and adds VA-API (Intel/AMD). A VA-API
   backend for `accel_assist` (EGL → dma-buf → VA surface, no CPU copy) would be
   the natural upstream contribution.
+
+The draft pull request text, with the to-do list for upstream submission (rebase onto
+devel, xrdp test-suite fixtures, real GPU results), is in
+[docs/upstream.md §4](../../docs/upstream.md#4-xrdp-ffmpeg-h264-encoder-va-api-nvenc-qsv).
