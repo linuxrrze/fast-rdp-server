@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Fake token socket: accepts token 'fastrdp1:good' for alice (returns a password)
 and 'fastrdp1:nopw' for alice (no password); everything else is rejected."""
 import json, os, socket, sys

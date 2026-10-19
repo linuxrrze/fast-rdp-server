@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 from .base import Backend, BackendError, LoginRequest, Target
 from .gnome import GnomeBackend
 from .plasma import PlasmaBackend

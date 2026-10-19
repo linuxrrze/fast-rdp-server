@@ -1,4 +1,6 @@
 # shellcheck shell=bash disable=SC2034  # PROXY/INC/LNK are used by the sourcing script
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Sourced by the e2e scripts after SYSROOT and LIBDIR are set. Chooses which FreeRDP the
 # tests build against and run:
 #   default          the system / SYSROOT freerdp3 (distribution packages)

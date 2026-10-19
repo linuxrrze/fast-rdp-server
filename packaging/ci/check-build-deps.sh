@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Every build dependency a third_party build script needs (--deps) must be in the
 # Build-Depends of its package; otherwise clean package builds break late.
 set -euo pipefail

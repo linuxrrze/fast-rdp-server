@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Functional test of pam_fastrdp_token. Usage: run_test.sh path/to/pam_fastrdp_token.so path/to/harness
 set -eu
 MOD=$(readlink -f "$1"); HARNESS=$(readlink -f "$2")

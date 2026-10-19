@@ -1,4 +1,6 @@
 #!/usr/bin/make -f
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # fastrdp-freerdp3: FreeRDP from third_party/sources.yml + patches/freerdp/series,
 # built by third_party/build-freerdp.sh (prefix /opt/fastrdp, RPATH $ORIGIN/../lib).
 # The build tree is assembled by packaging/ci/prepare-vendored.sh:

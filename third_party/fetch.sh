@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # fetch.sh NAME DESTDIR
 #   Download NAME from third_party/sources.yml (or take it from $FASTRDP_SOURCES_CACHE),
 #   verify its sha256, unpack it to DESTDIR/NAME-VERSION and apply patches/NAME/series.

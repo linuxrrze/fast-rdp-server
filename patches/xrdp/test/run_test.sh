@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Build the patched xrdp tree first (./configure --enable-ffmpeg && make), then:
 #   run_test.sh /path/to/xrdp-source [encoder] [ok|null]
 # FALLBACK (default libx264) is written to [ffmpeg] fallback; "" disables it.

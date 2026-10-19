@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Is this host's MIT krb5 affected by the SPNEGO mechListMIC regression (krb5 #9183)?
 #   throwaway MIT KDC -> WinPR (FreeRDP) SPNEGO initiator -> MIT gss_accept_sec_context
 # Runs the exchange twice: FreeRDP defaults (Kerberos U2U offered first, MIC exchange

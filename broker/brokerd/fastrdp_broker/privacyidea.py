@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Small privacyIDEA REST client (blocking; call via asyncio.to_thread)."""
 
 from __future__ import annotations

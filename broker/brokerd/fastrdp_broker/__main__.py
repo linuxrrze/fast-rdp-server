@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Entry points: `fastrdp-brokerd` (daemon) and `fastrdpctl` (admin CLI)."""
 
 from __future__ import annotations

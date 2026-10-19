@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /*
  * Functional test for xrdp_encoder_ffmpeg.c (fastrdp xrdp patch).
  *

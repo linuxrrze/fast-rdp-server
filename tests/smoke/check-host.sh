@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Smoke checks on a deployed fastrdp host (run as root). Prints ok/FAIL per check.
 #   sudo tests/smoke/check-host.sh [test-user]
 # With a test user, also checks NSS/group resolution and asks the broker for status.

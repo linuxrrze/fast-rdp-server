@@ -3,18 +3,88 @@ Upstream-Name: xrdp, xorgxrdp
 Upstream-Contact: https://github.com/neutrinolabs
 Source: https://github.com/neutrinolabs/xrdp/releases
  https://github.com/neutrinolabs/xorgxrdp/releases
-Comment: The exact releases, their sha256 and the applied patch series are listed
- in third_party/sources.yml and patches/xrdp/ of the fast-rdp-server sources.
+Comment: Built from the releases, sha256 values and patch series listed in
+ third_party/sources.yml and patches/xrdp/ of the fast-rdp-server sources.
+ .
+ Combined work: xrdp in this package links libx264 (GPL-2+) and FFmpeg's
+ libavcodec/libavutil, which Debian and Ubuntu build with --enable-gpl
+ (GPL-2+). The Apache-2.0 licensed xrdp code is compatible with GPL-3 but not
+ with GPL-2 alone, so the binaries as distributed here are a combined work
+ under the GNU General Public License, version 3 or later (on Debian systems:
+ /usr/share/common-licenses/GPL-3). xrdp-genkeymap and xrdp-sesadmin are
+ GPL-2+ themselves. The sources stay under the licenses listed below.
+ .
+ Corresponding source (patched xrdp and xorgxrdp source, packaging, build
+ scripts, pristine upstream releases and patches) for every published version:
+ https://linuxrrze.github.io/fast-rdp-server/sources/
+ and attached to the GitHub releases of fast-rdp-server. Details:
+ docs/licensing.md in the fast-rdp-server sources.
 
 Files: *
 Copyright: xrdp contributors (see the copyright notices in the source)
 License: Apache-2.0
 
-Files: src/xorgxrdp/*
-Copyright: xorgxrdp contributors (see the copyright notices in the source)
-License: Expat
+Files: src/xrdp/genkeymap/*
+ src/xrdp/sesman/tools/sesadmin.c
+Copyright: 2008 Ádám Wallner <wallner@bitbaro.hu>
+ 2014 Michał Górny <mgorny@gentoo.org>
+ 2008 Simone Fedele
+License: GPL-2+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in "/usr/share/common-licenses/GPL-2".
 
-Files: debian/*
+Files: src/xrdp/third_party/tomlc99/*
+Copyright: CK Tan (https://github.com/cktan/tomlc99)
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+Files: src/xorgxrdp/*
+Copyright: 2005-2017 Jay Sorg <jay.sorg@gmail.com>
+ xorgxrdp contributors (see the copyright notices in the source)
+License: X11
+ Permission to use, copy, modify, distribute, and sell this software and its
+ documentation for any purpose is hereby granted without fee, provided that
+ the above copyright notice appear in all copies and that both that
+ copyright notice and this permission notice appear in supporting
+ documentation.
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+ OPEN GROUP BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Files: debian/* third_party/*
 Copyright: 2026 Marcel Ritter <marcel@linux-ng.de>
 License: Apache-2.0
 
@@ -33,22 +103,3 @@ License: Apache-2.0
  .
  On Debian systems, the complete text of the Apache License, Version 2.0
  can be found in "/usr/share/common-licenses/Apache-2.0".
-
-License: Expat
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
- .
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
- .
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE.

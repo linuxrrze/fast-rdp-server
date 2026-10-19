@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Which GPU paths does this remote session really use?
 
 Run inside a fastrdp session (any back-end) as the session user:

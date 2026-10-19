@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Smartcard (PKINIT) NLA logon through freerdp-proxy + fastrdp module.
 #   SoftHSM2 token (stands in for a PIV card / YubiKey) -> FreeRDP smartcard logon
 #   -> MIT KDC with PKINIT -> Kerberos NLA at the proxy -> broker request.

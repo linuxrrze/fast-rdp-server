@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /* WinPR Negotiate (SPNEGO) initiator against an MIT GSSAPI acceptor, in one process.
  *   spnego_mic user password realm target [package-list]
  * The acceptor uses the default keytab (KRB5_KTNAME). package-list is what FreeRDP's

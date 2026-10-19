@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Records broker requests; accepts password 'good' and routes to 127.0.0.1:<port>."""
 import json
 import os

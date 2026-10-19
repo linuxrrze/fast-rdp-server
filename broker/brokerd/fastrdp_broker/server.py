@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """fastrdp-brokerd: authorises proxy logins and starts/reuses per-user sessions."""
 
 from __future__ import annotations

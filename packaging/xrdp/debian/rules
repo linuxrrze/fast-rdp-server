@@ -1,4 +1,6 @@
 #!/usr/bin/make -f
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # fastrdp-xrdp: xrdp + xorgxrdp from third_party/sources.yml + patches/xrdp/series,
 # built by third_party/build-xrdp.sh (prefix /usr, sysconfdir /etc, --enable-ffmpeg).
 # The build tree is assembled by packaging/ci/prepare-vendored.sh:

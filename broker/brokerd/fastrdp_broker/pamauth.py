@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Minimal libpam binding (ctypes) for password checks and account management.
 
 Blocking: call through asyncio.to_thread().

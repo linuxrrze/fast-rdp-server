@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Print the upstream version for a CI build.
 #   tag v1.2.3            -> 1.2.3                                       (stable)
 #   anything else (main)  -> <changelog version>+git<UTC commit time>.<sha7>  (testing)

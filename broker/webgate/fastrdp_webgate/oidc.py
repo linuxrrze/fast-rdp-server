@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Minimal OIDC relying party: authorization code flow with PKCE, confidential client.
 
 The ID token is taken from the token endpoint response over TLS (server certificate

@@ -80,7 +80,8 @@ jobs:
             vendored-${{ matrix.codename }}-${{ matrix.pkg }}-${{ steps.key.outputs.sums }}-${{
             hashFiles(format('patches/{0}/**', matrix.pkg), format('packaging/{0}/**', matrix.pkg),
             format('third_party/build-{0}.sh', matrix.pkg), 'third_party/fetch.sh',
-            'packaging/ci/prepare-vendored.sh', 'packaging/ci/set-version.sh') }}
+            'packaging/ci/prepare-vendored.sh', 'packaging/ci/set-version.sh',
+            'packaging/ci/make-source-archive.sh') }}
       - name: Build
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -90,6 +91,8 @@ jobs:
           cd "$dir"
           "$GITHUB_WORKSPACE/packaging/ci/set-version.sh" "$(dpkg-parsechangelog -S Version)" \
             ${{ matrix.codename }} ${{ matrix.suffix }}
+          # Corresponding source (GPL-3.0 §6, docs/licensing.md), taken before the build.
+          "$GITHUB_WORKSPACE/packaging/ci/make-source-archive.sh" . "$GITHUB_WORKSPACE/vendored-out/source"
           dpkg-buildpackage -us -uc -b
           mkdir -p "$GITHUB_WORKSPACE/vendored-out"
           mv ../*.deb ../*.changes ../*.buildinfo "$GITHUB_WORKSPACE/vendored-out/"
@@ -204,6 +207,8 @@ jobs:
           for cn in resolute trixie; do
             mkdir -p "debs/$cn"
             cp artifacts/debs-$cn/*.deb artifacts/vendored-$cn-*/*.deb "debs/$cn/"
+            mkdir -p "debs/$cn/source"
+            cp -a artifacts/vendored-$cn-*/source/. "debs/$cn/source/"
           done
           ls -R debs
       - name: Channel
@@ -245,5 +250,7 @@ jobs:
         if: steps.channel.outputs.name == 'stable'
         uses: softprops/action-gh-release@v2
         with:
+          # .source.tar.xz: corresponding source of the vendored packages (docs/licensing.md)
           files: |
             debs/*/*.deb
+            debs/*/source/*/*.source.tar.xz

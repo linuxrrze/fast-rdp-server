@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Install the tools to build and check packages, then the build dependencies of a
 # source tree. Run as root in a ubuntu:26.04 or debian:trixie container.
 #

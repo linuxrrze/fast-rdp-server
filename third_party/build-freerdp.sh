@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # build-freerdp.sh SRCDIR [DESTDIR]
 #   Build the patched FreeRDP (third_party/fetch.sh freerdp ...) into the private prefix
 #   /opt/fastrdp, so it coexists with the distribution's freerdp3 (gnome-remote-desktop

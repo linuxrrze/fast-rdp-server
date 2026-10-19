@@ -2,10 +2,30 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: fast-rdp-server
 Upstream-Contact: Marcel Ritter <marcel@linux-ng.de>
 Source: https://github.com/linuxrrze/fast-rdp-server
+Comment: fastrdp-proxy-module links fastrdp's FreeRDP build (fastrdp-freerdp3),
+ which links the distribution's GPL-2+ FFmpeg. The module itself is
+ Apache-2.0; loaded into freerdp-proxy it forms part of a combined work
+ distributed under GPL-3.0-or-later terms (see docs/licensing.md and the
+ copyright file of fastrdp-freerdp3). The other packages only use
+ Apache-2.0-compatible libraries (libpam, cJSON, Python, python3-cryptography).
 
 Files: *
 Copyright: 2026 Marcel Ritter <marcel@linux-ng.de>
 License: Apache-2.0
+
+Files: patches/krb5/*
+Copyright: 2025 Dmitry Ovsyannikov (Dell Technologies), Greg Hudson (MIT)
+ MIT Kerberos contributors
+License: MIT-krb5
+Comment: Upstream MIT Kerberos commit 942c5036, kept for reference only (not
+ built into any package).
+
+License: MIT-krb5
+ This patch is part of MIT Kerberos 5 and is distributed under the MIT Kerberos
+ license that applies to the files it modifies (src/lib/gssapi/spnego/ and
+ src/tests/gssapi/). The full license text is in the NOTICE file of the MIT
+ Kerberos distribution and at
+ https://web.mit.edu/kerberos/krb5-latest/doc/mitK5license.html
 
 License: Apache-2.0
  Licensed under the Apache License, Version 2.0 (the "License");

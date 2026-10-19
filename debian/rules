@@ -1,4 +1,6 @@
 #!/usr/bin/make -f
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # fast-rdp-server: one source package, five binary packages.
 #   proxy module   -> CMake (broker/proxy-module)
 #   PAM module     -> plain Makefile (broker/pam_fastrdp_token)

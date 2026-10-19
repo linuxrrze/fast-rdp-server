@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # xrdp session start script (sesman.ini: UserWindowManager/DefaultWindowManager).
 # The broker writes the chosen X11 desktop to /run/fastrdp/desktop/<user>
 # (an xsession name, i.e. /usr/share/xsessions/<name>.desktop).

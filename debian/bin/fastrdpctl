@@ -1,3 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # fastrdpctl: admin command for fastrdp-brokerd (same wrapper the Ansible role installs).
 PYTHONPATH=/usr/lib/fastrdp/python exec /usr/bin/python3 -c 'import sys; from fastrdp_broker.__main__ import ctl_main; sys.exit(ctl_main())' "$@"

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /* Drives pam_fastrdp_token through libpam with a private config dir (no root needed).
  * usage: harness CONFDIR USER SECRET  -> prints "rc=<n> authtok=<value|(null)>" */
 #define _GNU_SOURCE

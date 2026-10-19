@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Run a wlroots compositor (sway, labwc, wayfire) as the "desktop" of an xrdp X11
 # session: the compositor uses wlroots' X11 backend and draws into one fullscreen
 # window of the xorgxrdp display. xrdp keeps doing what it does best (H.264, GFX,

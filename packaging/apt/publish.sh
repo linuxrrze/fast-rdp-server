@@ -1,11 +1,15 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Build the signed APT repository tree (reprepro) for GitHub Pages.
 #
 #   packaging/apt/publish.sh <channel> <debs-dir> <old-site> <new-site>
 #
 #   channel   stable | testing: the channel being updated
 #   debs-dir  fresh packages, one directory per distro codename:
-#             <debs-dir>/resolute/*.deb, <debs-dir>/trixie/*.deb
+#             <debs-dir>/resolute/*.deb, <debs-dir>/trixie/*.deb, and the corresponding
+#             source of the vendored packages in <debs-dir>/<distro>/source/<pkg>_<ver>/
+#             (packaging/ci/make-source-archive.sh)
 #   old-site  previously published tree (gh-pages checkout; may be empty or missing).
 #             The other channel is carried over from it unchanged.
 #   new-site  output directory (recreated)
@@ -69,6 +73,27 @@ for cn in $codenames; do
 done
 rr export
 
+# Corresponding source of the vendored packages (GPL-3.0 §6(d), docs/licensing.md):
+# offered next to the binaries in sources/<pkg>_<version>/, for exactly the versions
+# in the pool. New builds first, then whatever the old tree still provides.
+mkdir -p "$out/sources"
+for d in "$debs"/*/source/*/ "$old"/sources/*/; do
+    [ -d "$d" ] || continue
+    n=$(basename "$d")
+    [ -e "$out/sources/$n" ] || cp -a "$d" "$out/sources/$n"
+done
+for d in "$out"/sources/*/; do
+    [ -d "$d" ] || continue
+    n=$(basename "$d")
+    find "$out/pool" -name "${n}_*.deb" | grep -q . || { rm -rf "$d"; echo "sources: dropped $n"; }
+done
+# Every vendored binary in the pool must have its source here.
+find "$out/pool" \( -name 'fastrdp-freerdp3_*.deb' -o -name 'fastrdp-xrdp_*.deb' \) | while read -r deb; do
+    n=$(basename "$deb" .deb)
+    n=${n%_*}
+    [ -d "$out/sources/$n" ] || { echo "no corresponding source for $n (make-source-archive.sh)" >&2; exit 1; }
+done
+
 # Sign: InRelease (inline) and Release.gpg (detached) for every suite.
 set -- --batch --yes --local-user "$APT_SIGNING_KEY_ID" --digest-algo SHA512
 if [ -n "${APT_SIGNING_KEY_PASSPHRASE:-}" ]; then
@@ -115,6 +140,9 @@ EOF
     done
     cat <<EOF
 </ul>
+<p>Corresponding source of the vendored FreeRDP and xrdp packages (patched upstream
+source, packaging, build scripts, pristine upstream releases, patches):
+<a href="sources/">sources/</a>. Licensing: docs/licensing.md in the source repository.</p>
 <p>Signing key: <a href="fast-rdp-server-archive-keyring.asc">fast-rdp-server-archive-keyring.asc</a>
 (fingerprint <code>$(gpg --with-colons --fingerprint "$APT_SIGNING_KEY_ID" | awk -F: '/^fpr:/ {print $10; exit}')</code>)</p>
 </body></html>

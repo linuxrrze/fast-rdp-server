@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # build-key.sh freerdp|xrdp
 #   Short hash over everything that determines a vendored build: sources.yml, fetch.sh,
 #   the build script and the patch series it applies. Same key = same build inputs.

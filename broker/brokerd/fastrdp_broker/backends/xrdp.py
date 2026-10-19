@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """X11 desktops through xrdp + xorgxrdp.
 
 xrdp listens on loopback only and its PAM stack (xrdp-sesman) accepts nothing

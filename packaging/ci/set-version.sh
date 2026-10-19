@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Prepend a debian/changelog entry for a CI build.
 #
 #   packaging/ci/set-version.sh <upstream-version> <distribution> <suffix>

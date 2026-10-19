@@ -81,6 +81,15 @@ The policy itself is in [vendoring.md](vendoring.md); for packaging it means:
   patch: bump the Debian revision (`-2`). `prepare-vendored.sh` refuses to build
   if the changelog and `sources.yml` disagree.
 
+**Corresponding source.** The vendored binaries link the distributions' GPL FFmpeg
+and x264, so they are distributed under GPL-3.0-or-later terms
+([licensing.md](licensing.md)). CI archives each vendored build tree before building
+it (`packaging/ci/make-source-archive.sh`: patched source, `debian/`, build scripts,
+pristine upstream tarballs, patches, `SHA256SUMS`). `publish.sh` publishes the archives
+under `sources/<package>_<version>/` next to the repository, for exactly the versions
+in the pool, and refuses to publish a vendored package without them. Stable releases
+also attach the `.source.tar.xz` files.
+
 **Why separate source packages** for the vendored builds (instead of more binary
 packages in `debian/`): they have their own upstream sources, licenses, version
 numbers and release cycle, and a FreeRDP build takes far longer than the rest of

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /* Minimal headless RDP client for the e2e tests.
  * usage: client HOST PORT USER PASSWORD SHELL
  * Default: TLS security, credentials in the Client Info PDU.

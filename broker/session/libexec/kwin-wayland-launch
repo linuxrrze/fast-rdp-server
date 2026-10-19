@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # ExecStart for plasma-kwin_wayland.service (user drop-in). Normal logins get the
 # stock command; fastrdp headless sessions get KWin's virtual backend.
 if [ "${FASTRDP_HEADLESS:-0}" = 1 ]; then

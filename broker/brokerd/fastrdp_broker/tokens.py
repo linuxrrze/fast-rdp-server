@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """One-time login tokens handed to xrdp in place of the user's password.
 
 pam_fastrdp_token redeems them via token.sock. A token is bound to one user,

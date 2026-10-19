@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Wire protocol: one JSON object per line over a Unix stream socket.
 
 Proxy module -> broker.sock:

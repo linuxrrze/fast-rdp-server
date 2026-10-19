@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """HTTP front of fastrdp-webgate (behind a TLS reverse proxy).
 
   GET  <prefix>/           not logged in -> redirect to the IdP; logged in -> desktop chooser

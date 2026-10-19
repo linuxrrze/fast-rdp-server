@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Proxy overhead without a full deployment: FreeRDP's shadow server on Xvfb is the
 # back-end, perfload generates screen changes, rdpbench measures direct vs. through
 # freerdp-proxy + fastrdp module (with the test broker from tests/proxy-e2e).

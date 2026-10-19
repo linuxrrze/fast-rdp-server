@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Kerberos NLA end-to-end test: throwaway MIT KDC + freerdp-proxy + fastrdp module.
 # Checks that the module reports the Kerberos-authenticated principal to the broker
 # and that failed Kerberos logins never reach the broker.

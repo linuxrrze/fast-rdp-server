@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Plasma 6 (Wayland) via a headless kwin_wayland --virtual session + KRdp.
 
 The system unit fastrdp-plasma@<user>.service (shipped in broker/session/)

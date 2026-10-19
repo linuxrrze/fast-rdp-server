@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """GNOME 50+ (Wayland only) via GDM headless sessions + gnome-remote-desktop.
 
 Per user:

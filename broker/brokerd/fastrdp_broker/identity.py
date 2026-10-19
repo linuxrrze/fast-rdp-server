@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Mapping RDP identities to local accounts, groups and desktop choice."""
 
 from __future__ import annotations

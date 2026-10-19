@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # wlroots desktops in xrdp sessions: runs broker/session/libexec/wlroots-in-x for each
 # compositor on an Xvfb display (stand-in for the xorgxrdp display) and checks:
 #   - the compositor starts on the X11 backend and its socket is found,

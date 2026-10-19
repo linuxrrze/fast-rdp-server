@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /* Test-only build of the plugin: freerdp-proxy loads "static" modules by looking up
  * <name>_proxy_module_entry_point in the process, so LD_PRELOAD works without
  * installing into the system plugin directory. */

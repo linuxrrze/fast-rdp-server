@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Who owns a listening TCP port? Parsed from /proc/net/tcp{,6}.
 
 Back-end ports live on loopback and any local user could race to bind a port

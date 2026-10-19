@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Encrypted connection data for Guacamole's JSON auth extension (guacamole-auth-json).
 
 Format (identical to guacamole-client doc/encrypt-json.sh):

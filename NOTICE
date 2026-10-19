@@ -1,0 +1,17 @@
+fast-rdp-server (fastrdp)
+Copyright 2026 Marcel Ritter <marcel@linux-ng.de>
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository also contains patches for third-party software. They are
+licensed like the code they modify:
+- patches/freerdp/  FreeRDP (Apache-2.0)
+- patches/xrdp/     xrdp (Apache-2.0)
+- patches/krb5/     MIT Kerberos (MIT krb5 license, see the patch header and
+                    https://web.mit.edu/kerberos/krb5-latest/doc/mitK5license.html);
+                    reference only, not built
+
+Binary packages built by this project (fastrdp-freerdp3, fastrdp-xrdp) are
+combined works with the distributions' GPL-licensed FFmpeg and x264 and are
+distributed under GPL-3.0-or-later terms. Their corresponding source is
+published with every release. See docs/licensing.md.

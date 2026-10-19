@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /*
  * perfload - deterministic X11 screen load for RDP benchmarks (run inside a session).
  *

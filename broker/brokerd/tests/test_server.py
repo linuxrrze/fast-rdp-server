@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """End-to-end tests of the broker socket protocol with mocked PAM/back-ends."""
 
 import asyncio

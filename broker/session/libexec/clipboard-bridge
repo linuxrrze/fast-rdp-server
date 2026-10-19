@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Text clipboard bridge between an X display ($DISPLAY) and a Wayland compositor
 ($WAYLAND_DISPLAY), used by wlroots-in-x. xrdp's clipboard channel talks to X; apps in
 the nested Wayland desktop use the Wayland clipboard. Polls both sides (0.5 s) and

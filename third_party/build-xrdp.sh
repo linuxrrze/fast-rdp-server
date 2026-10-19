@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # build-xrdp.sh XRDP_SRC XORGXRDP_SRC [DESTDIR]
 #   Build the patched xrdp (FFmpeg hardware H.264 encoder) and xorgxrdp from
 #   third_party/fetch.sh trees. One system-wide instance: packages conflict with the

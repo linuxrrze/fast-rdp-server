@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # On a deployed fastrdp host (as root): benchmark one user's running Wayland session
 # directly on its loopback back-end and through the proxy, to isolate proxy cost.
 #   sudo tests/perf/compare-host.sh USER 'PASSWORD' [seconds]

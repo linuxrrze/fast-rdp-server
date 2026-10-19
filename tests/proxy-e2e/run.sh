@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # End-to-end test of the fastrdp proxy module inside the real freerdp-proxy:
 #
 #   client --TLS--> proxy A (+fastrdp) --broker A--> proxy B (+fastrdp) --broker B--> (nowhere)

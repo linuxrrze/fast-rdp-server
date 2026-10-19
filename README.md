@@ -88,3 +88,10 @@ make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 | xrdp PR #3868 (NLA) | assessed: Kerberos OK only with FreeRDP U2U disabled; no smartcards; proxy stays the NLA point |
 | wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
 | xrdp hardware H.264 (FFmpeg: VA-API, NVENC, QSV) | patch for xrdp 0.10.6.1 (`patches/xrdp/`), applied by the role; tested via libx264 through the same code path and the no-GPU fallback; real GPUs to validate |
+
+## License
+
+Apache License 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The vendored FreeRDP and
+xrdp packages link the distributions' GPL-licensed FFmpeg/x264 and are therefore
+distributed under GPL-3.0-or-later terms, with their corresponding source published
+next to the APT repository. Details: [docs/licensing.md](docs/licensing.md).

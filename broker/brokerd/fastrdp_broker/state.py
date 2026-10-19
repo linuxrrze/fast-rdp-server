@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Persistent record of per-user back-end sessions (root-only JSON file)."""
 
 from __future__ import annotations
