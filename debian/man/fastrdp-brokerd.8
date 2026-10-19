@@ -1,0 +1,46 @@
+.TH FASTRDP-BROKERD 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-brokerd \- session broker of the fastrdp RDP terminal server
+.SH SYNOPSIS
+.B fastrdp-brokerd
+.RB [ \-c
+.IR config ]
+.RB [ \-v ]
+.RB [ \-\-check ]
+.SH DESCRIPTION
+.B fastrdp-brokerd
+authenticates users for the fastrdp proxy module (password, account and MFA
+checks), chooses each user's desktop back end (xrdp, GNOME Remote Desktop,
+Plasma/KRdp), starts the back-end session and issues the one-time tokens that
+the back ends accept.
+It normally runs as
+.BR fastrdp-brokerd.service ,
+which is installed disabled: write
+.I /etc/fastrdp/broker.toml
+first (see the example in
+.IR /usr/share/doc/fastrdp-broker/examples/ ),
+then run
+.BR "systemctl enable \-\-now fastrdp-brokerd" .
+.SH OPTIONS
+.TP
+.BI \-c " config\fR, " \-\-config " config"
+Configuration file (default
+.IR /etc/fastrdp/broker.toml ).
+.TP
+.BR \-v ", " \-\-verbose
+Debug logging.
+.TP
+.B \-\-check
+Validate the configuration and exit.
+.SH FILES
+.TP
+.I /etc/fastrdp/broker.toml
+Configuration (mode 0600, root).
+.TP
+.I /etc/pam.d/fastrdp
+PAM service for password and account checks.
+.TP
+.I /run/fastrdp
+Sockets, desktop choices and session environment files.
+.SH SEE ALSO
+.BR fastrdpctl (8)

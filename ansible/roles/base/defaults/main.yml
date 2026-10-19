@@ -1,0 +1,18 @@
+---
+# How the fastrdp components get onto the host (all roles):
+#   build = copy them from this checkout and compile on the host (default)
+#   apt   = install the fastrdp-* packages from the APT repository (docs/packaging.md),
+#           including fastrdp's own FreeRDP (fastrdp-freerdp3) and xrdp (fastrdp-xrdp)
+fastrdp_install_method: build
+
+# APT repository (fastrdp_install_method: apt)
+fastrdp_apt_repo_url: https://linuxrrze.github.io/fast-rdp-server
+# stable = release tags, testing = main branch
+fastrdp_apt_channel: stable
+# One suite per distro release (binaries are built per release): resolute-stable, trixie-testing, ...
+fastrdp_apt_suite: "{{ ansible_distribution_release }}-{{ fastrdp_apt_channel }}"
+fastrdp_apt_key_url: "{{ fastrdp_apt_repo_url }}/fast-rdp-server-archive-keyring.asc"
+# Pin the key file, e.g. "sha256:<hex>" (recommended; "" = trust the HTTPS download)
+fastrdp_apt_key_checksum: ""
+# present | latest (latest also upgrades the fastrdp packages on every run)
+fastrdp_apt_package_state: present

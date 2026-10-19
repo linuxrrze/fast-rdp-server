@@ -1,0 +1,2 @@
+# Unprivileged xrdp daemon (runtime_user/runtime_group in xrdp.ini), as created by the Ansible role.
+u xrdp - "xrdp daemon" /nonexistent /usr/sbin/nologin

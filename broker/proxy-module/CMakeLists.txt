@@ -7,8 +7,14 @@ pkg_check_modules(FREERDP REQUIRED IMPORTED_TARGET
   freerdp3>=3.27 winpr3 freerdp-server-proxy3 libcjson)
 
 # freerdp-proxy3 loads <plugindir>/libproxy-<name>-plugin.so for "Modules = <name>"
-pkg_get_variable(FREERDP_LIBDIR freerdp3 libdir)
-set(FASTRDP_PROXY_PLUGINDIR "${FREERDP_LIBDIR}/freerdp3/proxy"
+# (fastrdp's own FreeRDP in /opt/fastrdp has relocatable .pc files: prefix=${pcfiledir}/../..)
+pkg_get_variable(FREERDP_PROXY_PLUGINDIR_PC freerdp3 proxy_plugindir)
+if(NOT FREERDP_PROXY_PLUGINDIR_PC)
+  pkg_get_variable(FREERDP_LIBDIR freerdp3 libdir)
+  set(FREERDP_PROXY_PLUGINDIR_PC "${FREERDP_LIBDIR}/freerdp3/proxy")
+endif()
+get_filename_component(FREERDP_PROXY_PLUGINDIR_PC "${FREERDP_PROXY_PLUGINDIR_PC}" ABSOLUTE)
+set(FASTRDP_PROXY_PLUGINDIR "${FREERDP_PROXY_PLUGINDIR_PC}"
     CACHE PATH "freerdp-proxy plugin directory")
 
 add_library(proxy-fastrdp-plugin MODULE fastrdp_plugin.c)

@@ -1,0 +1,2 @@
+opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
+broker/session/systemd/fastrdp-proxy.service usr/lib/systemd/system/

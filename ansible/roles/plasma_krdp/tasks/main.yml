@@ -5,48 +5,69 @@
     state: present
     install_recommends: false
 
-- name: Directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  loop: [/usr/libexec/fastrdp, /etc/systemd/user/plasma-kwin_wayland.service.d]
+- name: Install from this checkout
+  when: fastrdp_install_method == 'build'
+  block:
+    - name: Directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/usr/libexec/fastrdp, /etc/systemd/user/plasma-kwin_wayland.service.d]
 
-- name: Session helpers
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/session/libexec/{{ item }}"
-    dest: "/usr/libexec/fastrdp/{{ item }}"
-    owner: root
-    group: root
-    mode: "0755"
-  loop: [session-plasma, kwin-wayland-launch]
+    - name: Session helpers
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/libexec/{{ item }}"
+        dest: "/usr/libexec/fastrdp/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [session-plasma, kwin-wayland-launch]
 
-- name: KWin on the virtual backend inside fastrdp sessions (user drop-in)
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/session/user-dropins/plasma-kwin_wayland-fastrdp.conf"
-    dest: /etc/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
-    owner: root
-    group: root
-    mode: "0644"
+    - name: KWin on the virtual backend inside fastrdp sessions (user drop-in)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/user-dropins/plasma-kwin_wayland-fastrdp.conf"
+        dest: /etc/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: Session PAM stack
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/session/pam/fastrdp-session"
-    dest: /etc/pam.d/fastrdp-session
-    owner: root
-    group: root
-    mode: "0644"
+    - name: Session PAM stack
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/pam/fastrdp-session"
+        dest: /etc/pam.d/fastrdp-session
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: Session unit template
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-plasma@.service"
-    dest: /etc/systemd/system/fastrdp-plasma@.service
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Reload systemd
+    - name: Session unit template
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-plasma@.service"
+        dest: /etc/systemd/system/fastrdp-plasma@.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+- name: Install from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Session package (helpers, KWin drop-in, PAM stack, unit template)
+      ansible.builtin.apt:
+        name: fastrdp-session
+        state: "{{ fastrdp_apt_package_state }}"
+      notify: Reload systemd
+
+    - name: No copies from build installs shadowing the packaged unit and drop-in
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/fastrdp-plasma@.service
+        - /etc/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
+      notify: Reload systemd
 
 - name: Plasma defaults for remote sessions (no lock screen, no compositing animations)
   ansible.builtin.copy:

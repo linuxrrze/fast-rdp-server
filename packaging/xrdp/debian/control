@@ -1,0 +1,77 @@
+Source: fastrdp-xrdp
+Section: net
+Priority: optional
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Rules-Requires-Root: no
+# = `third_party/build-xrdp.sh --deps` (checked by packaging/ci/check-build-deps.sh):
+# x264, FFmpeg encoder, fuse, pixman, opus, mp3lame, jpeg, glamor.
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-installsysusers,
+ pkgconf,
+ curl,
+ ca-certificates,
+ systemd-dev,
+ autoconf,
+ automake,
+ libavcodec-dev,
+ libavutil-dev,
+ libdrm-dev,
+ libegl-dev,
+ libepoxy-dev,
+ libfreetype-dev,
+ libfuse3-dev,
+ libgbm-dev,
+ libimlib2-dev,
+ libjpeg-dev,
+ libmp3lame-dev,
+ libopus-dev,
+ libpam0g-dev,
+ libpixman-1-dev,
+ libssl-dev,
+ libtool,
+ libx11-dev,
+ libx264-dev,
+ libxfixes-dev,
+ libxkbfile-dev,
+ libxrandr-dev,
+ nasm,
+ patch,
+ xserver-xorg-core,
+ xserver-xorg-dev,
+Standards-Version: 4.7.2
+Homepage: https://www.xrdp.org/
+Vcs-Browser: https://github.com/linuxrrze/fast-rdp-server/tree/main/packaging/xrdp
+
+Package: fastrdp-xrdp
+Architecture: any
+Depends:
+ openssl,
+ xauth,
+ ${fastrdp:XorgVideoABI},
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ dbus-x11,
+ fuse3,
+ libpam-fastrdp-token,
+Conflicts:
+ xorgxrdp,
+ xrdp,
+Replaces:
+ xorgxrdp,
+ xrdp,
+Provides:
+ xorgxrdp (= ${fastrdp:XorgxrdpVersion}),
+ xrdp (= ${fastrdp:XrdpVersion}),
+Description: xrdp and xorgxrdp as used by fastrdp (FFmpeg H.264 encoder)
+ xrdp is an RDP server for X11 sessions; xorgxrdp is its Xorg driver.
+ .
+ This build replaces the distribution's xrdp and xorgxrdp packages. It
+ carries the fastrdp patches (patches/xrdp in the fast-rdp-server sources:
+ FFmpeg hardware H.264 encoder for VA-API, NVENC and QSV, falling back to
+ x264) and is configured for fastrdp, where xrdp only listens on loopback
+ behind the fastrdp proxy.
+ .
+ The services are installed disabled: configure /etc/xrdp (the fastrdp
+ deployment roles do), then enable xrdp.service and xrdp-sesman.service.

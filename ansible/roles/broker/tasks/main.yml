@@ -1,59 +1,78 @@
 ---
-- name: Build dependencies for the PAM token module
-  ansible.builtin.apt:
-    name: [build-essential, pkgconf, libpam0g-dev, libcjson-dev, python3]
-    state: present
+- name: Install from this checkout (build on the host)
+  when: fastrdp_install_method == 'build'
+  block:
+    - name: Build dependencies for the PAM token module
+      ansible.builtin.apt:
+        name: [build-essential, pkgconf, libpam0g-dev, libcjson-dev, python3]
+        state: present
 
-- name: Directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  loop: [/usr/lib/fastrdp/python, /usr/libexec/fastrdp, /usr/local/src/fastrdp/pam_fastrdp_token]
+    - name: Directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/usr/lib/fastrdp/python, /usr/libexec/fastrdp, /usr/local/src/fastrdp/pam_fastrdp_token]
 
-- name: Broker package
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/brokerd/fastrdp_broker"
-    dest: /usr/lib/fastrdp/python/
-    owner: root
-    group: root
-    mode: u=rwX,g=rX,o=rX
-  notify: Restart fastrdp-brokerd
+    - name: Broker package
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/brokerd/fastrdp_broker"
+        dest: /usr/lib/fastrdp/python/
+        owner: root
+        group: root
+        mode: u=rwX,g=rX,o=rX
+      notify: Restart fastrdp-brokerd
 
-- name: Admin command fastrdpctl
-  ansible.builtin.copy:
-    dest: /usr/local/sbin/fastrdpctl
-    content: |
-      #!/bin/sh
-      PYTHONPATH=/usr/lib/fastrdp/python exec /usr/bin/python3 -c 'import sys; from fastrdp_broker.__main__ import ctl_main; sys.exit(ctl_main())' "$@"
-    owner: root
-    group: root
-    mode: "0755"
+    - name: Admin command fastrdpctl
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/fastrdpctl
+        content: |
+          #!/bin/sh
+          PYTHONPATH=/usr/lib/fastrdp/python exec /usr/bin/python3 -c 'import sys; from fastrdp_broker.__main__ import ctl_main; sys.exit(ctl_main())' "$@"
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: PAM token module sources
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/pam_fastrdp_token/{{ item }}"
-    dest: "/usr/local/src/fastrdp/pam_fastrdp_token/{{ item }}"
-    mode: "0644"
-  loop: [pam_fastrdp_token.c, Makefile]
-  register: fastrdp_pam_src
+    - name: PAM token module sources
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/pam_fastrdp_token/{{ item }}"
+        dest: "/usr/local/src/fastrdp/pam_fastrdp_token/{{ item }}"
+        mode: "0644"
+      loop: [pam_fastrdp_token.c, Makefile]
+      register: fastrdp_pam_src
 
-- name: Build and install pam_fastrdp_token  # noqa: no-handler - must exist before xrdp logins, not at play end
-  ansible.builtin.command:
-    cmd: make install
-    chdir: /usr/local/src/fastrdp/pam_fastrdp_token
-  when: fastrdp_pam_src is changed
-  changed_when: true
+    - name: Build and install pam_fastrdp_token  # noqa: no-handler - must exist before xrdp logins, not at play end
+      ansible.builtin.command:
+        cmd: make install
+        chdir: /usr/local/src/fastrdp/pam_fastrdp_token
+      when: fastrdp_pam_src is changed
+      changed_when: true
 
-- name: Broker PAM service (password + account checks)
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/session/pam/fastrdp"
-    dest: /etc/pam.d/fastrdp
-    owner: root
-    group: root
-    mode: "0644"
+    - name: Broker PAM service (password + account checks)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/pam/fastrdp"
+        dest: /etc/pam.d/fastrdp
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Install from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Broker and PAM token module packages
+      ansible.builtin.apt:
+        name: [fastrdp-broker, libpam-fastrdp-token]
+        state: "{{ fastrdp_apt_package_state }}"
+      notify: Restart fastrdp-brokerd
+
+    - name: No copies from build installs shadowing the packaged unit and command
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: [/etc/systemd/system/fastrdp-brokerd.service, /usr/local/sbin/fastrdpctl]
+      notify: Restart fastrdp-brokerd
 
 - name: Broker configuration
   ansible.builtin.template:
@@ -71,6 +90,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: fastrdp_install_method == 'build'
   notify: Restart fastrdp-brokerd
 
 - name: Validate broker configuration

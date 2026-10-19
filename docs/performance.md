@@ -18,7 +18,9 @@ tools below.
 | `tests/perf/proxy-overhead.sh` | any Linux box | Direct vs. through freerdp-proxy + fastrdp module, using Xvfb + FreeRDP shadow server as the back-end |
 | `tests/perf/compare-host.sh` | deployed host (root) | Same comparison against a user's real GNOME/Plasma back-end |
 
-Build: `make -C tests/perf/rdpbench` (needs `freerdp3-dev libwinpr3-dev libx11-dev`).
+Build: `make -C tests/perf/rdpbench FREERDP_PREFIX=/opt/fastrdp` against fastrdp's own FreeRDP
+(H.264 decoding included), or plain `make -C tests/perf/rdpbench` against the distribution's
+`freerdp3-dev libwinpr3-dev libx11-dev` (no H.264 on Ubuntu 26.04).
 
 ## Measured: proxy overhead
 

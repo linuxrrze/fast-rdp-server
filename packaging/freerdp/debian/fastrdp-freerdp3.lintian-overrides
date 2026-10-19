@@ -1,0 +1,5 @@
+# Deliberately installed under /opt/fastrdp: fastrdp's own FreeRDP build
+# (with patches that are not upstream yet) must coexist with the distribution's
+# freerdp3, which gnome-remote-desktop and KRdp keep using, without sharing
+# sonames, plugin directories or pkg-config names. See docs/packaging.md.
+dir-or-file-in-opt

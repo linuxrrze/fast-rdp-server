@@ -1,6 +1,14 @@
 ---
-fastrdp_proxy_packages: [freerdp-proxy]
-fastrdp_proxy_build_packages: [build-essential, cmake, pkgconf, freerdp3-dev, libwinpr3-dev, libcjson-dev]
+# fastrdp builds its own patched FreeRDP (third_party/sources.yml + patches/freerdp/)
+# into a private prefix; the distribution's freerdp3 stays for gnome-remote-desktop/KRdp.
+fastrdp_freerdp_prefix: /opt/fastrdp
+fastrdp_vendor_src_dir: /usr/local/src/fastrdp/vendor
+fastrdp_freerdp_build_packages: >-
+  {{ lookup('ansible.builtin.pipe', playbook_dir ~ '/../third_party/build-freerdp.sh --deps').split()
+     + ['curl', 'patch', 'ca-certificates'] }}
+# Rebuild when the source entry, the patches or the build scripts change.
+fastrdp_freerdp_build_key: "{{ lookup('ansible.builtin.pipe', playbook_dir ~ '/../third_party/build-key.sh freerdp') }}"
+fastrdp_proxy_build_packages: [build-essential, cmake, pkgconf, libcjson-dev]
 # Minimum FreeRDP version: 3.32 adds [Target] CertificatePolicy used below.
 fastrdp_proxy_min_version: "3.32.0"
 # Seconds the proxy waits for the broker (must exceed the MFA push timeout).

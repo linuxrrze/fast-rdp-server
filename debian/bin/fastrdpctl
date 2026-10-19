@@ -1,0 +1,3 @@
+#!/bin/sh
+# fastrdpctl: admin command for fastrdp-brokerd (same wrapper the Ansible role installs).
+PYTHONPATH=/usr/lib/fastrdp/python exec /usr/bin/python3 -c 'import sys; from fastrdp_broker.__main__ import ctl_main; sys.exit(ctl_main())' "$@"

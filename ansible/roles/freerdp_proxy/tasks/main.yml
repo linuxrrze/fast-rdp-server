@@ -1,37 +1,92 @@
 ---
-- name: Install freerdp-proxy and build dependencies
-  ansible.builtin.apt:
-    name: "{{ fastrdp_proxy_packages + fastrdp_proxy_build_packages }}"
-    state: present
+- name: Install from this checkout (build on the host)
+  when: fastrdp_install_method == 'build'
+  block:
+    - name: Build dependencies (fastrdp's FreeRDP, the module)
+      ansible.builtin.apt:
+        name: "{{ fastrdp_freerdp_build_packages + fastrdp_proxy_build_packages }}"
+        state: present
 
-- name: FreeRDP version
-  ansible.builtin.command: pkg-config --modversion freerdp3
-  register: fastrdp_freerdp_version
-  changed_when: false
+    - name: Build inputs (sources.yml, patches, build scripts)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../{{ item }}"
+        dest: "{{ fastrdp_vendor_src_dir }}/{{ item }}"
+        mode: u=rwX,g=rX,o=rX
+      loop: [third_party/, patches/freerdp/]
 
-- name: FreeRDP new enough
-  ansible.builtin.assert:
-    that: fastrdp_freerdp_version.stdout is version(fastrdp_proxy_min_version, '>=')
-    fail_msg: "FreeRDP {{ fastrdp_freerdp_version.stdout }} < {{ fastrdp_proxy_min_version }}"
+    - name: Already built this FreeRDP?
+      ansible.builtin.stat:
+        path: "{{ fastrdp_freerdp_prefix }}/.fastrdp-build-{{ fastrdp_freerdp_build_key }}"
+      register: fastrdp_freerdp_stamp
 
-- name: Plugin sources
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../broker/proxy-module/"
-    dest: /usr/local/src/fastrdp/proxy-module/
-    mode: u=rwX,g=rX,o=rX
-  register: fastrdp_plugin_src
+    - name: Build patched FreeRDP and swap it into {{ fastrdp_freerdp_prefix }}
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          rm -rf build stage
+          src=$(third_party/fetch.sh freerdp build)
+          FASTRDP_PREFIX={{ fastrdp_freerdp_prefix }} BUILD_DIR=build/cmake \
+            third_party/build-freerdp.sh "$src" "$PWD/stage"
+          touch "stage{{ fastrdp_freerdp_prefix }}/.fastrdp-build-{{ fastrdp_freerdp_build_key }}"
+          rm -rf "{{ fastrdp_freerdp_prefix }}.old"
+          if [ -e "{{ fastrdp_freerdp_prefix }}" ]; then mv "{{ fastrdp_freerdp_prefix }}" "{{ fastrdp_freerdp_prefix }}.old"; fi
+          mv "stage{{ fastrdp_freerdp_prefix }}" "{{ fastrdp_freerdp_prefix }}"
+          rm -rf "{{ fastrdp_freerdp_prefix }}.old" build stage
+        chdir: "{{ fastrdp_vendor_src_dir }}"
+        executable: /bin/bash
+      when: not fastrdp_freerdp_stamp.stat.exists
+      register: fastrdp_freerdp_built
+      changed_when: true
+      notify: Restart fastrdp-proxy
 
-- name: Build and install the fastrdp proxy module  # noqa: no-handler - the proxy refuses to start without it
-  ansible.builtin.shell:
-    cmd: |
-      set -e
-      cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      cmake --build build -j"$(nproc)"
-      cmake --install build
-    chdir: /usr/local/src/fastrdp/proxy-module
-  when: fastrdp_plugin_src is changed
-  changed_when: true
-  notify: Restart fastrdp-proxy
+    - name: FreeRDP version
+      ansible.builtin.command: pkg-config --modversion freerdp3
+      environment:
+        PKG_CONFIG_PATH: "{{ fastrdp_freerdp_prefix }}/lib/pkgconfig"
+      register: fastrdp_freerdp_version
+      changed_when: false
+
+    - name: FreeRDP new enough
+      ansible.builtin.assert:
+        that: fastrdp_freerdp_version.stdout is version(fastrdp_proxy_min_version, '>=')
+        fail_msg: "FreeRDP {{ fastrdp_freerdp_version.stdout }} < {{ fastrdp_proxy_min_version }}"
+
+    - name: Plugin sources
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/proxy-module/"
+        dest: /usr/local/src/fastrdp/proxy-module/
+        mode: u=rwX,g=rX,o=rX
+      register: fastrdp_plugin_src
+
+    - name: Build and install the fastrdp proxy module against {{ fastrdp_freerdp_prefix }}  # noqa: no-handler - the proxy refuses to start without it
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          rm -rf build
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j"$(nproc)"
+          cmake --install build
+        chdir: /usr/local/src/fastrdp/proxy-module
+      environment:
+        PKG_CONFIG_PATH: "{{ fastrdp_freerdp_prefix }}/lib/pkgconfig"
+      when: fastrdp_plugin_src is changed or fastrdp_freerdp_built is changed
+      changed_when: true
+      notify: Restart fastrdp-proxy
+
+- name: Install from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Install fastrdp's FreeRDP (/opt/fastrdp) and the fastrdp module
+      ansible.builtin.apt:
+        name: [fastrdp-freerdp3, fastrdp-proxy-module]
+        state: "{{ fastrdp_apt_package_state }}"
+      notify: Restart fastrdp-proxy
+
+    - name: No unit copy from build installs shadowing the packaged unit
+      ansible.builtin.file:
+        path: /etc/systemd/system/fastrdp-proxy.service
+        state: absent
+      notify: Restart fastrdp-proxy
 
 - name: Proxy configuration
   ansible.builtin.template:
@@ -49,6 +104,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: fastrdp_install_method == 'build'
   notify: Restart fastrdp-proxy
 
 - name: Front-end port open

@@ -50,27 +50,12 @@ Other users keep their privacyIDEA push even when they use a card.
 
 ## 2. FreeRDP bug: PKCS#11 slot ID truncated to 16 bits
 
-`libfreerdp/core/smartcardlogon.c`, `build_pkinit_args()`:
-
-```c
-"PKCS11:module_name=%s:slotid=%" PRIu16 ..., (UINT16)scCert->slotId
-```
-
-PKCS#11 slot IDs are `CK_SLOT_ID` (unsigned long). SoftHSM, for example, uses
-`0x47c3da5d`, which becomes `slotid=55901`. MIT PKINIT then finds "no matching
-tokens" and falls back to encrypted timestamp, so the logon fails. Cards behind
-OpenSC have small slot IDs and work. Workaround for affected modules: use
-`p11-kit-proxy.so` as the PKCS#11 module, which renumbers slots.
-
-Draft upstream issue:
-
-> **Smartcard logon: PKCS#11 slot id truncated to UINT16 in build_pkinit_args**
-> `build_pkinit_args()` formats `slotid` with `PRIu16` and casts `scCert->slotId` to
-> `UINT16`. CK_SLOT_ID is an unsigned long; modules such as SoftHSM2 use 32-bit
-> slot ids (e.g. 0x47c3da5d → "slotid=55901"), so MIT PKINIT reports "PKCS#11 module
-> has no matching tokens" and smartcard logon fails. Reproducer: SoftHSM2 token with
-> cert+key, `/smartcard-logon /p11-module:libsofthsm2.so`, KRB5_TRACE on the client.
-> Fix: keep the full slot id (`%lu` / `CK_SLOT_ID`).
+`build_pkinit_args()` prints the slot id as `UINT16`. Modules with 32-bit slot ids
+(SoftHSM2) therefore fail PKINIT; cards behind OpenSC have small slot ids and work.
+Workaround for affected modules: use `p11-kit-proxy.so` as the PKCS#11 module, which
+renumbers slots. A fix is in `patches/freerdp/`; details and the reproducer
+(`SC_MODULE=softhsm tests/proxy-e2e/run_smartcard.sh`) are in
+[upstream.md](upstream.md#1-freerdp-pkcs11-slot-id-truncated-to-16-bits).
 
 ## 3. xrdp PR #3868 (NLA): builds, but default FreeRDP clients fail
 
@@ -81,34 +66,20 @@ Draft upstream issue:
 | Same client with `/auth-pkg-list:'kerberos,!u2u,!ntlm'` | **works**: `NLA authentication completed for bob`, then autologon with the delegated user |
 | Smartcard (PKINIT) logon | fails as documented in the PR: `unsupported or malformed TSCredentials` |
 
-What happens in the failing case:
-1. WinPR's SPNEGO offers *Kerberos user-to-user* first, with an optimistic token,
-   then Kerberos.
-2. MIT selects Kerberos, which requires a mechListMIC.
-3. The Kerberos exchange completes: MIT decrypts the AP-REQ and sends the AP-REP.
-4. MIT then rejects the client's final `negTokenResp` (state *accept-completed* +
-   mechListMIC) with `GSS_S_DEFECTIVE_TOKEN`.
-
-freerdp-proxy (WinPR on both sides) accepts the same exchange. Which side computes or
-checks the MIC wrongly needs investigation.
-
-Draft comment for PR #3868 (and possibly a FreeRDP issue):
-
-> Tested 0f9be1d with FreeRDP 3.32.1 (Ubuntu 26.04) against MIT krb5 1.22.1.
-> Kerberos NLA fails with default client settings ("Invalid token was supplied"
-> after the AP-REP round). FreeRDP's SPNEGO proposes Kerberos U2U first; MIT
-> selects Kerberos and requests a mechListMIC; the client's final negTokenResp
-> with mechListMIC is rejected. With `/auth-pkg-list:'kerberos,!u2u,!ntlm'` the
-> same login succeeds. freerdp-proxy (WinPR acceptor) accepts the default
-> exchange. Smartcard TSCredentials are rejected as documented.
+**Root cause:** an MIT krb5 regression, not xrdp or FreeRDP. MIT 1.21.0–1.22.1 looks for
+the client's SPNEGO mechListMIC under the wrong ASN.1 tag. The MIC is only needed
+because FreeRDP offers Kerberos U2U first and MIT selects plain Kerberos. MIT fixed it
+in 1.22.2 (ticket 9183). Debian 13 and Ubuntu 26.04 ship affected versions. Details,
+reproducer (`tests/krb5-spnego/run.sh`) and report texts:
+[upstream.md](upstream.md#2-mit-krb5-1210-1221-spnego-acceptor-ignores-the-initiators-mechlistmic).
 
 ## Consequences for fastrdp
 
 - **Smartcard / YubiKey PIV logon is supported through the proxy** (needs validation
   with real cards, AD PKI and mstsc). The auth matrix is updated.
 - **Keep NLA at the proxy.** Even after #3868 is merged, xrdp's NLA would only cover
-  X11 sessions. It would currently break FreeRDP Kerberos clients unless they
-  disable U2U, and it has no smartcard support. The proxy covers all back-ends and
-  smartcards today.
-- Report both upstream issues above. Track #3868 for direct-xrdp deployments without
-  fastrdp.
+  X11 sessions. On distributions with MIT krb5 < 1.22.2 it breaks FreeRDP Kerberos
+  clients unless they disable U2U, and it has no smartcard support. The proxy covers
+  all back-ends and smartcards today.
+- Upstream reports: see [upstream.md](upstream.md). Track #3868 for direct-xrdp
+  deployments without fastrdp.

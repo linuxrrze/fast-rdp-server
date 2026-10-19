@@ -1,0 +1,130 @@
+Source: fast-rdp-server
+Section: admin
+Priority: optional
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Rules-Requires-Root: no
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-installsysusers,
+ dh-sequence-python3,
+ cmake,
+ pkgconf,
+ python3:any (>= 3.11),
+ fastrdp-freerdp3 (>= 3.32~),
+ libcjson-dev,
+ libpam0g-dev,
+ libpam-modules <!nocheck>,
+ python3-cryptography <!nocheck>,
+Standards-Version: 4.7.2
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Vcs-Browser: https://github.com/linuxrrze/fast-rdp-server
+Vcs-Git: https://github.com/linuxrrze/fast-rdp-server.git
+
+Package: fastrdp-broker
+Architecture: all
+Depends:
+ libpam-modules,
+ libpam-runtime,
+ libpam0g,
+ openssl,
+ python3 (>= 3.11),
+ systemd,
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ libpam-fastrdp-token,
+ libpam-sss,
+Suggests:
+ fastrdp-proxy-module,
+ fastrdp-session,
+ fastrdp-webgate,
+Description: session broker for the fastrdp multi-user RDP terminal server
+ fastrdp turns a Linux host into a multi-user RDP terminal server:
+ freerdp-proxy3 is the single front end, a session broker decides which
+ back end (xrdp, GNOME Remote Desktop, KRdp) a user gets, and one-time
+ tokens let the back ends accept only broker-approved logins.
+ .
+ This package contains fastrdp-brokerd (Python, standard library only),
+ the fastrdpctl admin command, the systemd unit, the PAM service used for
+ password and account checks, and an example configuration.
+ .
+ The service is installed disabled; configure /etc/fastrdp/broker.toml,
+ then enable fastrdp-brokerd.service.
+
+Package: fastrdp-proxy-module
+Architecture: any
+Depends:
+ fastrdp-broker (= ${source:Version}),
+ ${fastrdp:FreeRDP},
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: freerdp-proxy3 module that asks the fastrdp broker
+ fastrdp turns a Linux host into a multi-user RDP terminal server with
+ freerdp-proxy3 as the single front end.
+ .
+ This package contains the proxy module (loaded with "Modules = fastrdp"),
+ which asks fastrdp-brokerd before letting a client in and routes it to its
+ back-end session, plus the fastrdp-proxy.service unit that runs
+ /opt/fastrdp/bin/freerdp-proxy as the unprivileged _fastrdp-proxy user.
+ .
+ The module is built against fastrdp's own FreeRDP build (fastrdp-freerdp3,
+ /opt/fastrdp) and requires exactly that FreeRDP release.
+
+Package: libpam-fastrdp-token
+Architecture: any
+Multi-Arch: same
+Section: admin
+Depends:
+ libpam-runtime,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: PAM module that accepts one-time fastrdp broker tokens
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ pam_fastrdp_token.so lets a back end such as xrdp-sesman accept only
+ one-time tokens issued by fastrdp-brokerd. When the broker knows the
+ user's password it hands it on to the next module (for example pam_sss),
+ so the session still gets a Kerberos ticket.
+
+Package: fastrdp-session
+Architecture: all
+Depends:
+ python3,
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ fastrdp-broker,
+Description: session launchers and units for fastrdp back ends
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ This package contains the session side:
+  - startwm.sh for xrdp (starts the desktop chosen by the broker),
+  - the headless Plasma (Wayland) launcher, its unit template and PAM stack,
+  - the KWin virtual-backend drop-in for plasma-kwin_wayland.service,
+  - the wlroots-in-x launcher, clipboard bridge and X session entries for
+    Sway, labwc and Wayfire,
+  - the xrdp-sesman PAM stack that accepts only broker tokens (installed
+    as a template under /usr/share/fastrdp-session; copy it to
+    /etc/pam.d/xrdp-sesman, the deployment roles do this).
+
+Package: fastrdp-webgate
+Architecture: all
+Depends:
+ fastrdp-broker (= ${source:Version}),
+ python3 (>= 3.11),
+ python3-cryptography,
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ nginx,
+Suggests:
+ podman,
+Description: browser access gateway for fastrdp (OIDC login to Guacamole)
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ fastrdp-webgate logs users in with an OpenID Connect provider (for example
+ Keycloak), asks fastrdp-brokerd for a one-time token and hands an encrypted
+ connection to Apache Guacamole, which connects through the fastrdp proxy.
+ .
+ The service is installed disabled; configure /etc/fastrdp/webgate.toml,
+ then enable fastrdp-webgate.service.

@@ -1,0 +1,22 @@
+# Upstream sources fastrdp builds itself, with local patches (patches/<name>/series).
+# Single source of truth for third_party/fetch.sh, the Ansible build path, the Debian
+# packages and CI. Policy: docs/vendoring.md.
+#
+# Keep the format flat ("name:" then two-space "key: value" lines): fetch.sh parses it
+# without a YAML library. Bump version, url and sha256 together, then run
+# `third_party/fetch.sh <name> <dir>` to check that the series still applies.
+freerdp:
+  version: 3.32.2
+  url: https://github.com/FreeRDP/FreeRDP/releases/download/3.32.2/freerdp-3.32.2.tar.gz
+  sha256: e95a505c0057e4d06a3b120477c421028769deba4db9c639ef3465d050f0955c
+  patches: patches/freerdp/series
+xrdp:
+  version: 0.10.6.1
+  url: https://github.com/neutrinolabs/xrdp/releases/download/v0.10.6.1/xrdp-0.10.6.1.tar.gz
+  sha256: 2f7beb5a3b2529c8d72dc0df9b8cdca31ab0e0c14d1e3421210f5e6ec0ab3b75
+  patches: patches/xrdp/series
+xorgxrdp:
+  version: 0.10.5
+  url: https://github.com/neutrinolabs/xorgxrdp/releases/download/v0.10.5/xorgxrdp-0.10.5.tar.gz
+  sha256: a5d03435f0ef48bf3d5010e63d9264f2334e7063cba3ecd8d4c0a15616a4f712
+  patches: ""

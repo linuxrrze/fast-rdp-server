@@ -1,0 +1,2 @@
+# Runs freerdp-proxy (fastrdp-proxy.service); may read the TLS key and TERMSRV keytab.
+u _fastrdp-proxy - "fastrdp RDP front-end" /nonexistent /usr/sbin/nologin

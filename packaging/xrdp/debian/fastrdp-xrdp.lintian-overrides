@@ -1,0 +1,8 @@
+# xrdp keeps its private libraries (libcommon, libxrdp, the session modules) in
+# /usr/lib/xrdp, the path upstream and the Ansible source build use; its
+# binaries find them through RUNPATH /usr/lib/xrdp set by libtool.
+custom-library-search-path RUNPATH /usr/lib/xrdp *
+# xorgxrdp with glamor links libglamoregl.so, which lives in the Xorg module directory
+# (xserver-xorg-core), not on the default library path. Upstream's module/Makefile.am
+# adds -R$(XORG_SERVER_MODULES) for exactly this.
+custom-library-search-path RUNPATH /usr/lib/xorg/modules [usr/lib/xorg/modules/libxorgxrdp.so]

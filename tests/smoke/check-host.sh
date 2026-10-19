@@ -19,9 +19,12 @@ chk "token socket root-only"          bash -c "[ \"\$(stat -c %a /run/fastrdp/to
 chk "nftables fastrdp table loaded"   nft list table inet fastrdp
 chk "TERMSRV keys in proxy keytab"    bash -c "klist -k /etc/fastrdp/termsrv.keytab | grep -q TERMSRV/"
 chk "proxy can read its keytab"       runuser -u _fastrdp-proxy -- test -r /etc/fastrdp/termsrv.keytab
-chk "fastrdp proxy module installed"  bash -c "ls /usr/lib/*/freerdp3/proxy/libproxy-fastrdp-plugin.so"
+chk "fastrdp proxy module installed"  test -f /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
+chk "proxy uses fastrdp's FreeRDP"     bash -c "ldd /opt/fastrdp/bin/freerdp-proxy | grep -q '/opt/fastrdp/.*libfreerdp3.so' && ! ldd /opt/fastrdp/bin/freerdp-proxy | grep -q 'not found'"
 chk "pam_fastrdp_token installed"     bash -c "ls /usr/lib/*/security/pam_fastrdp_token.so"
-chk "xrdp built with x264"            bash -c "/usr/local/sbin/xrdp -v | grep -q -- --enable-x264"
+# build install method: /usr/local; apt (fastrdp-xrdp package): /usr
+XRDP_BIN=$(command -v /usr/local/sbin/xrdp /usr/sbin/xrdp | head -1)
+chk "xrdp built with x264"            bash -c "${XRDP_BIN:-xrdp} -v | grep -q -- --enable-x264"
 chk "broker config valid"             env PYTHONPATH=/usr/lib/fastrdp/python python3 -m fastrdp_broker --check
 chk "time in sync (Kerberos)"         bash -c "chronyc tracking | grep -q 'Leap status *: Normal'"
 
@@ -42,5 +45,5 @@ from fastrdp_broker import pamauth
 pamauth.account_ok('fastrdp', '$USER_TO_TEST')
 PY"
 fi
-echo "--- broker status"; /usr/local/sbin/fastrdpctl status 2>/dev/null | head -40 || true
+echo "--- broker status"; "$(command -v /usr/local/sbin/fastrdpctl /usr/sbin/fastrdpctl | head -1)" status 2>/dev/null | head -40 || true
 exit $fail

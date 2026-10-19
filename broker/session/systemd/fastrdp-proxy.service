@@ -11,7 +11,8 @@ SupplementaryGroups=_fastrdp-broker
 # Kerberos NLA: the acceptor reads TERMSRV/<fqdn> keys from this keytab.
 Environment=KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab
 Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
-ExecStart=/usr/bin/freerdp-proxy /etc/fastrdp/proxy.ini
+# fastrdp's own FreeRDP build (fastrdp-freerdp3 / third_party/build-freerdp.sh)
+ExecStart=/opt/fastrdp/bin/freerdp-proxy /etc/fastrdp/proxy.ini
 Restart=on-failure
 RestartSec=2
 CacheDirectory=fastrdp-proxy

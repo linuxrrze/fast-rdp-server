@@ -1,0 +1,57 @@
+Source: fastrdp-freerdp3
+Section: net
+Priority: optional
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Rules-Requires-Root: no
+# = `third_party/build-freerdp.sh --deps` (checked by packaging/ci/check-build-deps.sh):
+# server + proxy, X11 client, H.264 through FFmpeg, Kerberos, smartcards (PC/SC, PKCS#11).
+Build-Depends:
+ debhelper-compat (= 13),
+ pkgconf,
+ curl,
+ patch,
+ ca-certificates,
+ cmake,
+ libavcodec-dev,
+ libavutil-dev,
+ libcjson-dev,
+ libicu-dev,
+ libkrb5-dev,
+ libpcsclite-dev,
+ libssl-dev,
+ libswresample-dev,
+ libswscale-dev,
+ libsystemd-dev,
+ libx11-dev,
+ libxcursor-dev,
+ libxdamage-dev,
+ libxext-dev,
+ libxfixes-dev,
+ libxi-dev,
+ libxinerama-dev,
+ libxkbfile-dev,
+ libxrandr-dev,
+ libxrender-dev,
+ libxv-dev,
+ ninja-build,
+ zlib1g-dev,
+Standards-Version: 4.7.2
+Homepage: https://www.freerdp.com/
+Vcs-Browser: https://github.com/linuxrrze/fast-rdp-server/tree/main/packaging/freerdp
+
+Package: fastrdp-freerdp3
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: FreeRDP 3 build used by fastrdp (private, in /opt/fastrdp)
+ FreeRDP is a free implementation of the Remote Desktop Protocol.
+ .
+ This is the FreeRDP release that fastrdp is built and tested against, with
+ the fastrdp patches (patches/freerdp in the fast-rdp-server sources) that
+ are not yet in an upstream release. Everything lives under /opt/fastrdp:
+ libraries, freerdp-proxy, the xfreerdp client (H.264 via FFmpeg), headers
+ and pkg-config files (for building the fastrdp proxy module).
+ .
+ It coexists with the distribution's freerdp3 packages, which
+ gnome-remote-desktop and KRdp keep using.

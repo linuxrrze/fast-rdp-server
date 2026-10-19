@@ -3,11 +3,13 @@
   ansible.builtin.apt:
     name: [xrdp, xorgxrdp]
     state: absent
+  when: fastrdp_install_method == 'build'
 
 - name: Build and runtime dependencies
   ansible.builtin.apt:
     name: "{{ fastrdp_xrdp_build_packages + fastrdp_xrdp_runtime_packages }}"
     state: present
+  when: fastrdp_install_method == 'build'
 
 - name: Runtime user for the unprivileged xrdp daemon
   ansible.builtin.user:
@@ -19,11 +21,27 @@
 
 - name: Build xrdp and xorgxrdp
   ansible.builtin.include_tasks: build.yml
+  when: fastrdp_install_method == 'build'
   vars:
     fastrdp_build_stamp: >-
-      {{ fastrdp_xrdp_src_dir }}/.installed-{{ fastrdp_xrdp_version }}-{{ fastrdp_xorgxrdp_version
-      }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}-ffmpeg{{ fastrdp_xrdp_h264_encoder_effective != 'x264' }}-p{{
-      fastrdp_xrdp_patches | length }}
+      {{ fastrdp_xrdp_src_dir }}/.installed-xrdp-{{ fastrdp_xrdp_build_key
+      }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}-ffmpeg{{ fastrdp_xrdp_h264_encoder_effective != 'x264' }}
+
+- name: Install from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Patched xrdp + xorgxrdp (replaces the distribution packages)
+      ansible.builtin.apt:
+        name: fastrdp-xrdp
+        state: "{{ fastrdp_apt_package_state }}"
+      notify: Restart xrdp
+
+    - name: No units from build installs shadowing the packaged ones
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop: [xrdp.service, xrdp-sesman.service]
+      notify: Restart xrdp
 
 - name: Loopback back-end certificate for xrdp
   ansible.builtin.command:
@@ -63,6 +81,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: fastrdp_install_method == 'build'
 
 - name: PAM - xrdp only accepts broker tokens
   ansible.builtin.copy:
@@ -71,6 +90,27 @@
     owner: root
     group: root
     mode: "0644"
+  when: fastrdp_install_method == 'build'
+
+- name: Session files from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Session package (start script, PAM stack template)
+      ansible.builtin.apt:
+        name: fastrdp-session
+        state: "{{ fastrdp_apt_package_state }}"
+
+    - name: Session start script and token-only PAM stack from the package
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: /usr/libexec/fastrdp/startwm.sh, dest: /etc/xrdp/startwm.sh, mode: "0755"}
+        - {src: /usr/share/fastrdp-session/pam.d/xrdp-sesman, dest: /etc/pam.d/xrdp-sesman, mode: "0644"}
 
 - name: Enable xrdp services
   ansible.builtin.systemd_service:

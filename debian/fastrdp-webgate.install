@@ -1,0 +1,2 @@
+broker/webgate/fastrdp_webgate usr/lib/fastrdp/python/
+broker/session/systemd/fastrdp-webgate.service usr/lib/systemd/system/

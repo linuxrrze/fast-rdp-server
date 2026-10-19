@@ -21,7 +21,7 @@ Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/archit
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
 [docs/desktop-matrix.md](docs/desktop-matrix.md) · Performance: [docs/performance.md](docs/performance.md) ·
 Clients: [docs/client-guide.md](docs/client-guide.md) · Web: [docs/web-access.md](docs/web-access.md) ·
-Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md)
+Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md) · Upstream reports: [docs/upstream.md](docs/upstream.md) · Packages/APT repository: [docs/packaging.md](docs/packaging.md) · Vendored dependencies: [docs/vendoring.md](docs/vendoring.md)
 
 ## Layout
 
@@ -32,6 +32,8 @@ broker/
   pam_fastrdp_token/  PAM module: xrdp accepts only one-time broker tokens (C) + functional test
   webgate/            fastrdp-webgate: Keycloak OIDC login -> one-time token -> Guacamole (Python)
   session/            systemd units, PAM stacks, session launchers (startwm.sh, session-plasma)
+debian/               Debian/Ubuntu packaging of fastrdp itself (docs/packaging.md)
+packaging/            vendored FreeRDP/xrdp packaging, CI helper scripts, APT repository (reprepro)
 ansible/              roles: base identity gpu desktops xrdp gnome_rd plasma_krdp mfa_privacyidea broker freerdp_proxy
 tests/
   proxy-e2e/          real freerdp-proxy + module end-to-end tests (TLS, Kerberos NLA, smartcard/PKINIT)
@@ -39,7 +41,12 @@ tests/
   perf/               rdpbench (headless benchmark client), perfload, proxy-overhead/compare scripts
   gpu/                session_report.py: which renderer/H.264 encoder a session really uses
   wlroots/            wlroots-in-x launcher tests (Sway, labwc, Wayfire on Xvfb)
+  krb5-spnego/        is MIT krb5 affected by the SPNEGO mechListMIC regression? (WinPR -> MIT)
+third_party/          vendored dependencies: sources.yml (versions, sha256), fetch.sh, build scripts
+                      (docs/vendoring.md); FreeRDP -> /opt/fastrdp, xrdp + xorgxrdp
 patches/xrdp/         FFmpeg hardware H.264 encoder for xrdp 0.10.6.1 (+ functional test)
+patches/freerdp/      PKCS#11 slot id fix for smartcard logon
+patches/krb5/         MIT SPNEGO mechListMIC fix (reference only, krb5 is not vendored)
 ```
 
 ## Deploy (lab)
@@ -61,7 +68,7 @@ Then connect: `xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /se
 
 ```sh
 make test          # broker unit + protocol tests, PAM module test, ansible-lint, shellcheck
-make test-e2e      # needs freerdp-proxy + freerdp3-dev + libcjson-dev
+make test-e2e      # needs freerdp-proxy + freerdp3-dev + libcjson-dev, or FREERDP_PREFIX=/opt/fastrdp
 make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 ```
 

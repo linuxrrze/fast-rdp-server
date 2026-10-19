@@ -1,0 +1,2 @@
+# Runs fastrdp-webgate.service.
+u _fastrdp-web - "fastrdp web gateway" /nonexistent /usr/sbin/nologin

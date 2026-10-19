@@ -11,6 +11,13 @@ fastrdp_join_password: "{{ vault_fastrdp_join_password | default('') }}"
 # Groups allowed to log in at all (empty = everyone valid in the directory).
 fastrdp_allow_groups: [rdp-users]
 
+# ---------------------------------------------------------------- installation
+# build = copy from this checkout and compile on the host (default)
+# apt   = install the fastrdp-* packages from the APT repository (docs/packaging.md)
+fastrdp_install_method: build
+# fastrdp_apt_channel: stable             # stable (release tags) | testing (main branch)
+# fastrdp_apt_key_checksum: "sha256:..."  # pin the repository key
+
 # ---------------------------------------------------------------- front-end
 fastrdp_listen_port: 3389
 # PEM files on the controller; when empty a self-signed cert is generated (lab only).

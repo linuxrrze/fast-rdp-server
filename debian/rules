@@ -1,0 +1,78 @@
+#!/usr/bin/make -f
+# fast-rdp-server: one source package, five binary packages.
+#   proxy module   -> CMake (broker/proxy-module)
+#   PAM module     -> plain Makefile (broker/pam_fastrdp_token)
+#   Python parts   -> copied to the private dir /usr/lib/fastrdp/python
+#                     (stdlib-only daemons started with PYTHONPATH, like the
+#                     Ansible roles do), byte-compiled by dh_python3.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export PYTHONDONTWRITEBYTECODE = 1
+
+include /usr/share/dpkg/architecture.mk
+include /usr/share/dpkg/buildflags.mk
+
+PAMSRC := broker/pam_fastrdp_token
+# The proxy module is built against fastrdp's own FreeRDP (fastrdp-freerdp3,
+# prefix /opt/fastrdp), not the distro freerdp3-dev; see docs/packaging.md.
+FASTRDP_PREFIX := /opt/fastrdp
+export PKG_CONFIG_PATH := $(FASTRDP_PREFIX)/lib/pkgconfig
+FREERDP_VERSION := $(shell pkg-config --modversion freerdp3)
+# freerdp3.pc is relocatable (prefix=${pcfiledir}/../..): normalise the "..".
+PROXY_PLUGINDIR := $(abspath $(shell pkg-config --variable=proxy_plugindir freerdp3))
+# Same directory the Ansible role ends up with (pkg-config libdir of pam).
+PAMDIR := /usr/lib/$(DEB_HOST_MULTIARCH)/security
+
+%:
+	dh $@ --buildsystem=cmake --sourcedirectory=broker/proxy-module
+
+override_dh_auto_configure:
+	case "$(PROXY_PLUGINDIR)" in $(FASTRDP_PREFIX)/*) ;; \
+		*) echo "freerdp3.pc is not fastrdp-freerdp3 ($(PROXY_PLUGINDIR))" >&2; exit 1 ;; esac
+	dh_auto_configure -- -DFASTRDP_PROXY_PLUGINDIR=$(PROXY_PLUGINDIR)
+
+# The PAM Makefile does not use CPPFLAGS (where Debian puts _FORTIFY_SOURCE).
+override_dh_auto_build:
+	dh_auto_build
+	CFLAGS="$(CPPFLAGS) $(CFLAGS)" \
+		dh_auto_build --buildsystem=makefile --sourcedirectory=$(PAMSRC) -- pam_fastrdp_token.so
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	CFLAGS="$(CPPFLAGS) $(CFLAGS)" \
+		dh_auto_build --buildsystem=makefile --sourcedirectory=$(PAMSRC) -- check
+	cd broker/brokerd && python3 -m unittest discover -s tests
+	cd broker/webgate && python3 -m unittest discover -s tests
+endif
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+	dh_auto_install --buildsystem=makefile --sourcedirectory=$(PAMSRC) --destdir=debian/tmp -- PAMDIR=$(PAMDIR)
+
+override_dh_auto_clean:
+	dh_auto_clean
+	dh_auto_clean --buildsystem=makefile --sourcedirectory=$(PAMSRC)
+
+# User-unit drop-in (the Ansible role puts the same file under /etc/systemd/user).
+execute_after_dh_install:
+	install -D -m 0644 broker/session/user-dropins/plasma-kwin_wayland-fastrdp.conf \
+		debian/fastrdp-session/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
+
+# The daemons need a configuration first (/etc/fastrdp/*.toml, proxy.ini);
+# install them disabled and let the admin (or the Ansible roles) enable them.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
+# libfreerdp*.so live in /opt/fastrdp/lib (fastrdp-freerdp3, no shlibs file for
+# private libraries): the dependency on exactly that FreeRDP release is explicit.
+override_dh_shlibdeps:
+	dh_shlibdeps -- --ignore-missing-info -l$(FASTRDP_PREFIX)/lib
+
+override_dh_gencontrol:
+	dh_gencontrol -- \
+		"-Vfastrdp:FreeRDP=fastrdp-freerdp3 (>= $(FREERDP_VERSION)~), fastrdp-freerdp3 (<< $(FREERDP_VERSION)+~)"
+
+override_dh_python3:
+	dh_python3
+	dh_python3 /usr/lib/fastrdp/python
+	dh_python3 -p fastrdp-session /usr/libexec/fastrdp

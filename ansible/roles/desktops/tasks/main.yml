@@ -25,7 +25,9 @@
     owner: root
     group: root
     mode: "0755"
-  when: fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+  when:
+    - fastrdp_install_method == 'build'
+    - fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
 
 - name: Launcher and clipboard bridge for wlroots desktops
   ansible.builtin.copy:
@@ -35,7 +37,9 @@
     group: root
     mode: "0755"
   loop: [wlroots-in-x, clipboard-bridge]
-  when: fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+  when:
+    - fastrdp_install_method == 'build'
+    - fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
 
 - name: X session entries for wlroots desktops
   ansible.builtin.copy:
@@ -45,6 +49,15 @@
     group: root
     mode: "0644"
   loop: "{{ fastrdp_desktops | intersect(fastrdp_wlroots_desktops) }}"
+  when: fastrdp_install_method == 'build'
+
+- name: Launcher, clipboard bridge and X session entries for wlroots desktops (APT repository)
+  ansible.builtin.apt:
+    name: fastrdp-session
+    state: "{{ fastrdp_apt_package_state }}"
+  when:
+    - fastrdp_install_method == 'apt'
+    - fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
 
 - name: X session files exist
   ansible.builtin.stat:

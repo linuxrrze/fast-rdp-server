@@ -1,0 +1,249 @@
+# Tests, Debian/Ubuntu packages and the signed APT repository on GitHub Pages.
+# See docs/packaging.md.
+#
+#   pull requests         tests + package builds (+ lintian)
+#   push to main          ... + publish suites <codename>-testing
+#   push of tag vX.Y[.Z]  ... + publish suites <codename>-stable + GitHub release
+name: packages
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests:
+    name: tests (unit, PAM, ansible-lint, shellcheck)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git make gcc libc6-dev pkgconf libpam0g-dev libpam-modules \
+            libcjson-dev python3 python3-venv python3-cryptography
+      - uses: actions/checkout@v5
+      - name: ansible-lint, shellcheck (same versions as the documented dev setup)
+        run: |
+          python3 -m venv /opt/lint
+          /opt/lint/bin/pip install --quiet ansible-core==2.21.5 ansible-lint==26.10.1 shellcheck-py==0.11.0.1
+          echo /opt/lint/bin >> "$GITHUB_PATH"
+      - name: make test-broker test-webgate test-pam test-gpu lint
+        run: make test-broker test-webgate test-pam test-gpu lint
+
+  # fastrdp's own builds of FreeRDP (/opt/fastrdp) and xrdp + xorgxrdp, from
+  # third_party/sources.yml + patches/<name>/. Rebuilt only when the upstream
+  # tarball (sha256), the patches or the packaging change.
+  vendored:
+    name: vendored ${{ matrix.pkg }} (${{ matrix.codename }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:26.04", codename: resolute, suffix: ubuntu26.04, pkg: freerdp}
+          - {image: "ubuntu:26.04", codename: resolute, suffix: ubuntu26.04, pkg: xrdp}
+          - {image: "debian:trixie", codename: trixie, suffix: deb13, pkg: freerdp}
+          - {image: "debian:trixie", codename: trixie, suffix: deb13, pkg: xrdp}
+    steps:
+      - name: Tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git patch dpkg-dev
+      - uses: actions/checkout@v5
+      - name: Cache key (upstream sha256 + patches + packaging)
+        id: key
+        run: |
+          case ${{ matrix.pkg }} in
+            freerdp) sums=$(third_party/fetch.sh freerdp --print sha256) ;;
+            xrdp) sums="$(third_party/fetch.sh xrdp --print sha256)-$(third_party/fetch.sh xorgxrdp --print sha256)" ;;
+          esac
+          echo "sums=$(printf '%s' "$sums" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Restore build
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: vendored-out
+          key: >-
+            vendored-${{ matrix.codename }}-${{ matrix.pkg }}-${{ steps.key.outputs.sums }}-${{
+            hashFiles(format('patches/{0}/**', matrix.pkg), format('packaging/{0}/**', matrix.pkg),
+            format('third_party/build-{0}.sh', matrix.pkg), 'third_party/fetch.sh',
+            'packaging/ci/prepare-vendored.sh', 'packaging/ci/set-version.sh') }}
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          dir=$(packaging/ci/prepare-vendored.sh ${{ matrix.pkg }} "$RUNNER_TEMP/vendored")
+          packaging/ci/install-build-deps.sh "$dir"
+          cd "$dir"
+          "$GITHUB_WORKSPACE/packaging/ci/set-version.sh" "$(dpkg-parsechangelog -S Version)" \
+            ${{ matrix.codename }} ${{ matrix.suffix }}
+          dpkg-buildpackage -us -uc -b
+          mkdir -p "$GITHUB_WORKSPACE/vendored-out"
+          mv ../*.deb ../*.changes ../*.buildinfo "$GITHUB_WORKSPACE/vendored-out/"
+          mv ../*.ddeb "$GITHUB_WORKSPACE/vendored-out/" 2>/dev/null || true
+      - name: lintian
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: lintian --fail-on error --display-info --tag-display-limit 0 vendored-out/*.changes
+      - name: Save build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vendored-out
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: vendored-${{ matrix.codename }}-${{ matrix.pkg }}
+          path: vendored-out/
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.codename }})
+    needs: vendored
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:26.04", codename: resolute, suffix: ubuntu26.04}
+          - {image: "debian:trixie", codename: trixie, suffix: deb13}
+    steps:
+      - name: Tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: vendored-${{ matrix.codename }}-*
+          path: vendored
+          merge-multiple: true
+      - name: Build dependencies (fastrdp-freerdp3 from the vendored build)
+        run: packaging/ci/install-build-deps.sh ./ "$(ls ./vendored/fastrdp-freerdp3_*.deb)"
+      - name: Version
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          packaging/ci/set-version.sh "$(packaging/ci/upstream-version.sh)" ${{ matrix.codename }} ${{ matrix.suffix }}
+      - name: dpkg-buildpackage
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir out
+          mv ../*.deb ../*.changes ../*.buildinfo out/
+          mv ../*.ddeb out/ 2>/dev/null || true
+      - name: lintian
+        run: lintian --fail-on error --display-info --tag-display-limit 0 out/*.changes
+      - name: Install test (all packages, incl. vendored)
+        run: |
+          set -eu
+          set --
+          for d in out/*.deb vendored/*.deb; do
+            case $d in *-dbgsym_*) ;; *) set -- "$@" "./$d" ;; esac
+          done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+          getent group _fastrdp-broker
+          getent passwd _fastrdp-proxy _fastrdp-web xrdp
+          test -f /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
+          for f in /opt/fastrdp/bin/freerdp-proxy /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so; do
+            if ldd "$f" | grep 'not found'; then echo "unresolved libraries in $f"; exit 1; fi
+          done
+          PYTHONPATH=/usr/lib/fastrdp/python python3 -c 'import fastrdp_broker.server, fastrdp_webgate.app'
+          fastrdpctl --help >/dev/null
+          /usr/sbin/xrdp -v | grep -- --enable-ffmpeg
+          test -x /usr/libexec/fastrdp/startwm.sh
+      - uses: actions/upload-artifact@v5
+        with:
+          name: debs-${{ matrix.codename }}
+          path: out/
+          if-no-files-found: error
+
+  publish:
+    name: publish APT repository
+    needs: [tests, build]
+    if: >-
+      github.event_name == 'push' && github.repository_owner == 'linuxrrze' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    permissions:
+      contents: write
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+    env:
+      APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+      APT_SIGNING_KEY_ID: ${{ secrets.APT_SIGNING_KEY_ID }}
+      APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+      APT_REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git gnupg reprepro
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Collect packages per distro
+        run: |
+          set -eu
+          for cn in resolute trixie; do
+            mkdir -p "debs/$cn"
+            cp artifacts/debs-$cn/*.deb artifacts/vendored-$cn-*/*.deb "debs/$cn/"
+          done
+          ls -R debs
+      - name: Channel
+        id: channel
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "name=stable" >> "$GITHUB_OUTPUT"
+          else echo "name=testing" >> "$GITHUB_OUTPUT"; fi
+      - name: Signing key
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ] || [ -z "$APT_SIGNING_KEY_ID" ]; then
+            echo "::error::secrets APT_SIGNING_KEY and APT_SIGNING_KEY_ID are not set (docs/packaging.md)"
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$APT_SIGNING_KEY_ID" >/dev/null
+      - name: Previous repository (gh-pages)
+        run: |
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" old-site \
+            || mkdir -p old-site
+      - name: Build repository
+        run: packaging/apt/publish.sh "${{ steps.channel.outputs.name }}" debs old-site site
+      - name: Push to gh-pages
+        run: |
+          set -eu
+          cd site
+          rm -rf .git
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "APT repository: ${{ steps.channel.outputs.name }} from ${GITHUB_SHA}"
+          # One orphan commit: the branch does not grow with every published .deb.
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+      - name: GitHub release with the packages
+        if: steps.channel.outputs.name == 'stable'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            debs/*/*.deb

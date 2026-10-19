@@ -1,0 +1,2 @@
+# reference only: fastrdp does not build krb5 (see docs/vendoring.md)
+0001-Fix-SPNEGO-mechListMIC-parsing.patch

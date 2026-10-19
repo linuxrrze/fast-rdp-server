@@ -7,12 +7,21 @@
         or (ansible_distribution == 'Debian' and ansible_distribution_major_version | int >= 13)
     fail_msg: fastrdp phases 1-3 target Ubuntu 26.04+ and Debian 13+.
 
+- name: Known install method
+  ansible.builtin.assert:
+    that: fastrdp_install_method in ['build', 'apt']
+    fail_msg: "fastrdp_install_method must be build or apt, not {{ fastrdp_install_method }}"
+
 - name: Base packages
   ansible.builtin.apt:
     name: [chrony, nftables, openssl, python3, ca-certificates, dbus-user-session, polkitd]
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+- name: APT repository with the fastrdp packages
+  ansible.builtin.import_tasks: apt_repo.yml
+  when: fastrdp_install_method == 'apt'
 
 - name: Time sync (Kerberos needs it)
   ansible.builtin.service:

@@ -1,0 +1,4 @@
+# The module must sit in the plugin directory of fastrdp's own FreeRDP build
+# (fastrdp-freerdp3, prefix /opt/fastrdp), which coexists with the distro
+# freerdp3 that gnome-remote-desktop and KRdp keep using. See docs/packaging.md.
+dir-or-file-in-opt

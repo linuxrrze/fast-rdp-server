@@ -7,6 +7,11 @@
 #
 # Needs krb5-kdc krb5-admin-server krb5-pkinit softhsm2 opensc p11-kit-modules plus
 # what run.sh needs. KRB5_SYSROOT / SC_SYSROOT: same packages extracted from .debs.
+#
+# SC_MODULE=p11kit (default) hands the token to the client through p11-kit-proxy
+# (small slot ids). SC_MODULE=softhsm uses libsofthsm2.so directly; its 32-bit slot
+# ids trigger the FreeRDP slot-id truncation bug (docs/upstream.md). CLIENT_LIBDIR
+# runs only the client against other libfreerdp3/libwinpr3 builds (e.g. a fix).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -15,16 +20,21 @@ SC_SYSROOT=${SC_SYSROOT:-}
 MA=$(gcc -print-multiarch)
 LIBDIR=$SYSROOT/usr/lib/$MA
 SCLIB=$SC_SYSROOT/usr/lib/$MA
-PROXY=${PROXY:-$SYSROOT/usr/bin/freerdp-proxy}
 KB=$KRB5_SYSROOT/usr/sbin
 PKINIT_SO=$SCLIB/krb5/plugins/preauth/pkinit.so
 SOFTHSM=$SCLIB/softhsm/libsofthsm2.so
 P11PROXY=$SCLIB/p11-kit-proxy.so
+case ${SC_MODULE:-p11kit} in
+    p11kit) CLIENT_P11=$P11PROXY ;;
+    softhsm) CLIENT_P11=$SOFTHSM ;;
+    *) echo "SC_MODULE must be p11kit or softhsm" >&2; exit 2 ;;
+esac
+CLIENT_LIBDIR=${CLIENT_LIBDIR:-}
 W=$(mktemp -d /tmp/fastrdp-sc.XXXXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
 export LD_LIBRARY_PATH="${KRB5_SYSROOT:+$KRB5_SYSROOT/usr/lib/$MA:}$LIBDIR:$LIBDIR/pulseaudio:$SCLIB:$SCLIB/softhsm${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-INC=(-I"$SYSROOT/usr/include/freerdp3" -I"$SYSROOT/usr/include/winpr3" -I"$SYSROOT/usr/include")
-LNK=(-L"$LIBDIR" "-Wl,-rpath-link,$LIBDIR:$LIBDIR/pulseaudio")
+# shellcheck source=tests/proxy-e2e/freerdp-env.sh
+. "$HERE/freerdp-env.sh"
 gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
 gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \
@@ -160,8 +170,13 @@ python3 "$HERE/fake_broker.py" b.sock b.log 1 > b.out 2>&1 &
 KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" p.ini > proxy.log 2>&1 &
 for _ in $(seq 50); do grep -q ready b.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23689) 2>/dev/null && break; sleep 0.2; done
 
-E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_PKCS11=$P11PROXY timeout 30 ./client localhost 23689 alice 999999 "" >/dev/null 2>&1 || true
-E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_PKCS11=$P11PROXY timeout 30 ./client localhost 23689 alice 123456 "" >/dev/null 2>&1 || true
+client() {
+    E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_PKCS11=$CLIENT_P11 KRB5_TRACE=$W/client-trace.log \
+        LD_LIBRARY_PATH="${CLIENT_LIBDIR:+$CLIENT_LIBDIR:}$LD_LIBRARY_PATH" \
+        timeout 30 ./client localhost 23689 alice "$1" "" >/dev/null 2>&1 || true
+}
+client 999999
+client 123456
 sleep 1
 
 fail=0
@@ -178,5 +193,8 @@ check "wrong PIN stopped at PKINIT, right PIN reached the broker" 'len(logins) =
 check "Kerberos principal from the smartcard certificate"        'logins[0]["method"] == "nla" and logins[0]["principal"] == "alice@TEST.FASTRDP"'
 check "flagged as smartcard logon"                               'logins[0]["smartcard"] is True'
 check "PIN not forwarded as password"                            'logins[0]["password"] is None'
-if [ $fail -ne 0 ]; then echo "--- proxy log:"; grep -E "fastrdp|ERROR" proxy.log | tail -15; tail -5 kdc.log; fi
+if [ $fail -ne 0 ]; then
+    echo "--- proxy log:"; grep -E "fastrdp|ERROR" proxy.log | tail -15; tail -5 kdc.log
+    echo "--- client PKINIT:"; grep -E "PKINIT loading identity|no matching tokens" client-trace.log | sort -u | head -4
+fi
 exit $fail

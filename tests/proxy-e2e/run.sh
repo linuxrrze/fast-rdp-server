@@ -7,17 +7,17 @@
 # to the back-end: it must be the broker token, never the user's password.
 #
 # Needs: freerdp-proxy, freerdp3-dev, libcjson-dev, openssl, python3, gcc.
-# SYSROOT=/path runs against FreeRDP extracted from .debs instead of the system.
+# SYSROOT=/path runs against FreeRDP extracted from .debs instead of the system;
+# FREERDP_PREFIX=/opt/fastrdp against fastrdp's patched build (see freerdp-env.sh).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
 LIBDIR=$SYSROOT/usr/lib/$(gcc -print-multiarch)
-PROXY=${PROXY:-$SYSROOT/usr/bin/freerdp-proxy}
 W=$(mktemp -d /tmp/fastrdp-e2e.XXXXXX)   # short path: AF_UNIX limit
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
 export LD_LIBRARY_PATH="$LIBDIR:$LIBDIR/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-INC=(-I"$SYSROOT/usr/include/freerdp3" -I"$SYSROOT/usr/include/winpr3" -I"$SYSROOT/usr/include")
-LNK=(-L"$LIBDIR" "-Wl,-rpath-link,$LIBDIR:$LIBDIR/pulseaudio")
+# shellcheck source=tests/proxy-e2e/freerdp-env.sh
+. "$HERE/freerdp-env.sh"
 
 gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson

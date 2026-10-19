@@ -1,0 +1,36 @@
+.TH FASTRDPCTL 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdpctl \- query and control the fastrdp session broker
+.SH SYNOPSIS
+.B fastrdpctl
+.RB [ \-c
+.IR config ]
+.B status
+.br
+.B fastrdpctl
+.RB [ \-c
+.IR config ]
+.B logout
+.I user
+.SH DESCRIPTION
+.B fastrdpctl
+talks to a running
+.BR fastrdp-brokerd (8)
+over its admin socket.
+.TP
+.B status
+List the sessions known to the broker.
+.TP
+.BI logout " user"
+Terminate all sessions of
+.IR user .
+.SH OPTIONS
+.TP
+.BI \-c " config\fR, " \-\-config " config"
+Broker configuration file (default
+.IR /etc/fastrdp/broker.toml ),
+used to find the socket.
+.SH FILES
+.I /etc/fastrdp/broker.toml
+.SH SEE ALSO
+.BR fastrdp-brokerd (8)

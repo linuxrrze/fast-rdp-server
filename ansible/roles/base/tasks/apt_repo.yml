@@ -1,0 +1,44 @@
+---
+# fastrdp APT repository (fastrdp_install_method: apt), see docs/packaging.md.
+- name: APT repository - known channel
+  ansible.builtin.assert:
+    that: fastrdp_apt_channel in ['stable', 'testing']
+    fail_msg: "fastrdp_apt_channel must be stable or testing, not {{ fastrdp_apt_channel }}"
+
+- name: APT repository - keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: APT repository - signing key
+  ansible.builtin.get_url:
+    url: "{{ fastrdp_apt_key_url }}"
+    dest: /etc/apt/keyrings/fast-rdp-server.asc
+    checksum: "{{ fastrdp_apt_key_checksum | default(omit, true) }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: fastrdp_apt_key
+
+- name: APT repository - source
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/fast-rdp-server.sources
+    content: |
+      # {{ ansible_managed }}
+      Types: deb
+      URIs: {{ fastrdp_apt_repo_url }}
+      Suites: {{ fastrdp_apt_suite }}
+      Components: main
+      Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: fastrdp_apt_source
+
+- name: APT repository - refresh package lists  # noqa: no-handler - the next roles install from it
+  ansible.builtin.apt:
+    update_cache: true
+  when: fastrdp_apt_key is changed or fastrdp_apt_source is changed

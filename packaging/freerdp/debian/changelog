@@ -1,0 +1,6 @@
+fastrdp-freerdp3 (3.32.2-1) unstable; urgency=medium
+
+  * FreeRDP 3.32.2 for fastrdp, installed under /opt/fastrdp.
+  * patches/freerdp: core/scard: do not truncate the PKCS#11 slot id.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 19 Oct 2026 19:00:00 +0200

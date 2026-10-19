@@ -11,13 +11,12 @@ SYSROOT=${SYSROOT:-}
 KRB5_SYSROOT=${KRB5_SYSROOT:-}
 MA=$(gcc -print-multiarch)
 LIBDIR=$SYSROOT/usr/lib/$MA
-PROXY=${PROXY:-$SYSROOT/usr/bin/freerdp-proxy}
 KB=$KRB5_SYSROOT/usr/sbin
 W=$(mktemp -d /tmp/fastrdp-nla.XXXXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
 export LD_LIBRARY_PATH="${KRB5_SYSROOT:+$KRB5_SYSROOT/usr/lib/$MA:}$LIBDIR:$LIBDIR/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-INC=(-I"$SYSROOT/usr/include/freerdp3" -I"$SYSROOT/usr/include/winpr3" -I"$SYSROOT/usr/include")
-LNK=(-L"$LIBDIR" "-Wl,-rpath-link,$LIBDIR:$LIBDIR/pulseaudio")
+# shellcheck source=tests/proxy-e2e/freerdp-env.sh
+. "$HERE/freerdp-env.sh"
 gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
 gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \

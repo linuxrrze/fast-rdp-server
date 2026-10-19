@@ -1,0 +1,27 @@
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: resolute-stable
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Ubuntu 26.04 (resolute), stable channel (release tags)
+
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: resolute-testing
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Ubuntu 26.04 (resolute), testing channel (main branch)
+
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: trixie-stable
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Debian 13 (trixie), stable channel (release tags)
+
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: trixie-testing
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Debian 13 (trixie), testing channel (main branch)

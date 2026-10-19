@@ -24,6 +24,14 @@
     owner: root
     group: root
     mode: u=rwX,g=rX,o=rX
+  when: fastrdp_install_method == 'build'
+  notify: Restart fastrdp-webgate
+
+- name: Webgate package (APT repository)
+  ansible.builtin.apt:
+    name: fastrdp-webgate
+    state: "{{ fastrdp_apt_package_state }}"
+  when: fastrdp_install_method == 'apt'
   notify: Restart fastrdp-webgate
 
 - name: Generate secrets once (cookie signing key, Guacamole JSON key)
@@ -121,6 +129,14 @@
     src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-webgate.service"
     dest: /etc/systemd/system/fastrdp-webgate.service
     mode: "0644"
+  when: fastrdp_install_method == 'build'
+  notify: Restart fastrdp-webgate
+
+- name: No unit copy from build installs shadowing the packaged unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/fastrdp-webgate.service
+    state: absent
+  when: fastrdp_install_method == 'apt'
   notify: Restart fastrdp-webgate
 
 - name: Quadlet directory

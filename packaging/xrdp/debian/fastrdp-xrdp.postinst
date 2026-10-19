@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+if [ "$1" = configure ]; then
+    # Host-specific secrets, never shipped in the package (same as the Ansible role).
+    if [ ! -e /etc/xrdp/cert.pem ] && [ ! -e /etc/xrdp/key.pem ]; then
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+            -days 3650 -subj /CN=fastrdp-xrdp-backend \
+            -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem 2>/dev/null
+        chown root:xrdp /etc/xrdp/key.pem
+        chmod 0640 /etc/xrdp/key.pem
+        chmod 0644 /etc/xrdp/cert.pem
+    fi
+    if [ ! -e /etc/xrdp/rsakeys.ini ]; then
+        xrdp-keygen xrdp /etc/xrdp/rsakeys.ini >/dev/null
+        chown root:xrdp /etc/xrdp/rsakeys.ini
+        chmod 0640 /etc/xrdp/rsakeys.ini
+    fi
+fi

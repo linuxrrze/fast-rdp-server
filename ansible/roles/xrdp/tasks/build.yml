@@ -7,96 +7,34 @@
 - name: Build
   when: not fastrdp_xrdp_stamp.stat.exists
   block:
-    - name: Source directory
-      ansible.builtin.file:
-        path: "{{ fastrdp_xrdp_src_dir }}"
-        state: directory
-        mode: "0755"
-
-    - name: Download release tarballs
-      ansible.builtin.get_url:
-        url: "{{ item.url }}"
-        dest: "{{ fastrdp_xrdp_src_dir }}/"
-        checksum: "sha256:{{ item.sha256 }}"
-        mode: "0644"
-      loop:
-        - url: "https://github.com/neutrinolabs/xrdp/releases/download/v{{ fastrdp_xrdp_version }}/xrdp-{{ fastrdp_xrdp_version }}.tar.gz"
-          sha256: "{{ fastrdp_xrdp_sha256 }}"
-        - url: "https://github.com/neutrinolabs/xorgxrdp/releases/download/v{{ fastrdp_xorgxrdp_version }}/xorgxrdp-{{ fastrdp_xorgxrdp_version }}.tar.gz"
-          sha256: "{{ fastrdp_xorgxrdp_sha256 }}"
-
-    - name: Unpack xorgxrdp
-      ansible.builtin.unarchive:
-        src: "{{ fastrdp_xrdp_src_dir }}/xorgxrdp-{{ fastrdp_xorgxrdp_version }}.tar.gz"
-        dest: "{{ fastrdp_xrdp_src_dir }}"
-        remote_src: true
-
-    - name: Fresh xrdp source tree (patches apply to the pristine release)
-      ansible.builtin.shell:
-        cmd: |
-          set -e
-          rm -rf "xrdp-{{ fastrdp_xrdp_version }}"
-          tar xzf "xrdp-{{ fastrdp_xrdp_version }}.tar.gz"
-        chdir: "{{ fastrdp_xrdp_src_dir }}"
-      changed_when: true
-
-    - name: Patch files
+    - name: Build inputs (sources.yml, patches, build scripts)
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../patches/xrdp/{{ item }}"
+        src: "{{ playbook_dir }}/../{{ item }}"
         dest: "{{ fastrdp_xrdp_src_dir }}/{{ item }}"
-        mode: "0644"
-      loop: "{{ fastrdp_xrdp_patches }}"
+        mode: u=rwX,g=rX,o=rX
+      loop: [third_party/, patches/xrdp/]
 
-    - name: Apply fastrdp patches to xrdp (FFmpeg hardware H.264 encoder)  # noqa: command-instead-of-module - ansible.posix is not a dependency
-      ansible.builtin.command:
-        cmd: "patch -p1 -i {{ fastrdp_xrdp_src_dir }}/{{ item }}"
-        chdir: "{{ fastrdp_xrdp_src_dir }}/xrdp-{{ fastrdp_xrdp_version }}"
-      loop: "{{ fastrdp_xrdp_patches }}"
-      changed_when: true
-
-    - name: Build and install xrdp
+    - name: Fetch, patch, build and install xrdp + xorgxrdp (third_party/build-xrdp.sh)
       ansible.builtin.shell:
         cmd: |
-          set -e
-          autoreconf -fi
-          ./configure --prefix=/usr/local --sysconfdir=/etc --localstatedir=/var \
-            --with-systemdsystemunitdir=/etc/systemd/system \
-            --enable-x264 --enable-fuse --enable-pixman --enable-opus --enable-mp3lame \
-            --enable-jpeg --enable-ipv6 --enable-utmp \
-            {{ '--enable-ffmpeg' if fastrdp_xrdp_h264_encoder_effective != 'x264' else '' }}
-          make -j"$(nproc)"
-          make install
-        chdir: "{{ fastrdp_xrdp_src_dir }}/xrdp-{{ fastrdp_xrdp_version }}"
-      changed_when: true
-
-    - name: Build and install xorgxrdp
-      ansible.builtin.shell:
-        cmd: |
-          set -e
-          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-          ./configure --prefix=/usr/local --sysconfdir=/etc \
-            {{ '--enable-glamor' if fastrdp_xorgxrdp_glamor | bool else '' }}
-          make -j"$(nproc)"
-          make install
-        chdir: "{{ fastrdp_xrdp_src_dir }}/xorgxrdp-{{ fastrdp_xorgxrdp_version }}"
+          set -euo pipefail
+          rm -rf build
+          xrdp=$(third_party/fetch.sh xrdp build)
+          xorgxrdp=$(third_party/fetch.sh xorgxrdp build)
+          third_party/build-xrdp.sh "$xrdp" "$xorgxrdp"
+          rm -rf build
+        chdir: "{{ fastrdp_xrdp_src_dir }}"
+        executable: /bin/bash
+      environment:
+        FASTRDP_XRDP_PREFIX: /usr/local
+        FASTRDP_XRDP_UNITDIR: /etc/systemd/system
+        FASTRDP_XRDP_FFMPEG: "{{ '1' if fastrdp_xrdp_h264_encoder_effective != 'x264' else '0' }}"
+        FASTRDP_XORGXRDP_GLAMOR: "{{ '1' if fastrdp_xorgxrdp_glamor | bool else '0' }}"
       changed_when: true
 
     - name: Refresh linker cache
       ansible.builtin.command: ldconfig
       changed_when: true
-
-    - name: Verify H.264 support was compiled in
-      ansible.builtin.shell:
-        cmd: set -o pipefail && /usr/local/sbin/xrdp -v | grep -q -- '--enable-x264'
-        executable: /bin/bash
-      changed_when: false
-
-    - name: Verify the FFmpeg encoder was compiled in
-      ansible.builtin.shell:
-        cmd: set -o pipefail && /usr/local/sbin/xrdp -v | grep -q -- '--enable-ffmpeg'
-        executable: /bin/bash
-      changed_when: false
-      when: fastrdp_xrdp_h264_encoder_effective != 'x264'
 
     - name: Build stamp
       ansible.builtin.file:
