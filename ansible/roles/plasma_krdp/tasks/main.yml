@@ -1,0 +1,67 @@
+---
+- name: Plasma (Wayland) + KRdp
+  ansible.builtin.apt:
+    name: "{{ fastrdp_plasma_packages }}"
+    state: present
+    install_recommends: false
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [/usr/libexec/fastrdp, /etc/systemd/user/plasma-kwin_wayland.service.d]
+
+- name: Session helpers
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/libexec/{{ item }}"
+    dest: "/usr/libexec/fastrdp/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [session-plasma, kwin-wayland-launch]
+
+- name: KWin on the virtual backend inside fastrdp sessions (user drop-in)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/user-dropins/plasma-kwin_wayland-fastrdp.conf"
+    dest: /etc/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Session PAM stack
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/pam/fastrdp-session"
+    dest: /etc/pam.d/fastrdp-session
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Session unit template
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-plasma@.service"
+    dest: /etc/systemd/system/fastrdp-plasma@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Plasma defaults for remote sessions (no lock screen, no compositing animations)
+  ansible.builtin.copy:
+    dest: "/etc/xdg/{{ item.file }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - file: kscreenlockerrc
+      content: |
+        [Daemon]
+        Autolock=false
+        LockOnResume=false
+    - file: kdeglobals
+      content: |
+        [KDE]
+        AnimationDurationFactor=0

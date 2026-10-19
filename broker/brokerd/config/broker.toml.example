@@ -1,0 +1,79 @@
+# /etc/fastrdp/broker.toml  (rendered by ansible role "broker")
+
+[broker]
+socket = "/run/fastrdp/broker.sock"        # proxy module + fastrdpctl
+token_socket = "/run/fastrdp/token.sock"   # pam_fastrdp_token (root only)
+proxy_user = "_fastrdp-proxy"
+state_dir = "/var/lib/fastrdp"
+runtime_dir = "/run/fastrdp"
+port_range = [33900, 34899]                # loopback ports for per-user Wayland back-ends
+token_ttl = 60
+session_start_timeout = 90
+
+[auth]
+realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA
+strip_realm = true                # alice@EXAMPLE.COM -> local account "alice"
+pam_service = "fastrdp"           # password checks (TLS logins) + account checks
+allow_groups = ["rdp-users"]      # empty list = every valid account
+allow_tls_password_login = true   # clients without NLA (password+OTP in one field)
+
+[mfa]
+mode = "otp_or_push"              # none | otp | push | otp_or_push
+exempt_groups = []
+otp_lengths = [6]                 # keep one TOTP length; see docs/auth-matrix.md
+yubikey_otp = true
+
+[mfa.privacyidea]
+url = "https://privacyidea.example.com"
+realm = "example"
+ca_file = "/etc/fastrdp/privacyidea-ca.pem"
+timeout = 10
+push_timeout = 60
+service_user = "fastrdp-trigger"  # admin with triggerchallenge policy; "" = use user password
+service_password_file = "/etc/fastrdp/privacyidea-service.secret"
+
+[defaults]
+desktop = "xfce"
+geometry = "1920x1080"
+
+[defaults.groups]                 # AD group -> default desktop
+"rdp-gnome" = "gnome"
+"rdp-kde" = "plasma"
+
+[desktops.xfce]
+backend = "xrdp"
+xsession = "xfce"
+label = "Xfce"
+
+[desktops.mate]
+backend = "xrdp"
+xsession = "mate"
+
+[desktops.cinnamon]
+backend = "xrdp"
+xsession = "cinnamon"
+
+[desktops.lxqt]
+backend = "xrdp"
+xsession = "lxqt"
+
+[desktops.plasma-x11]
+backend = "xrdp"
+xsession = "plasmax11"
+
+[desktops.gnome]
+backend = "gnome"
+
+[desktops.plasma]
+backend = "plasma"
+
+[backends.xrdp]
+host = "127.0.0.1"
+port = 3390
+listener_user = "root"   # xrdp binds as root, then drops privileges
+
+[backends.gnome]
+unit = "gnome-headless-session@{user}.service"
+
+[backends.plasma]
+unit = "fastrdp-plasma@{user}.service"

@@ -1,0 +1,19 @@
+---
+- name: Provided TERMSRV keytab
+  ansible.builtin.copy:
+    src: "{{ fastrdp_termsrv_keytab_src }}"
+    dest: /etc/fastrdp/termsrv.keytab
+    owner: root
+    group: _fastrdp-proxy
+    mode: "0640"
+  when: fastrdp_termsrv_keytab_src | length > 0
+
+- name: Keytab must exist
+  ansible.builtin.stat:
+    path: /etc/fastrdp/termsrv.keytab
+  register: fastrdp_keytab
+
+- name: Keytab present
+  ansible.builtin.assert:
+    that: fastrdp_keytab.stat.exists
+    fail_msg: Provide fastrdp_termsrv_keytab_src (TERMSRV/{{ ansible_fqdn }}) and an sssd.conf for provider "none".

@@ -1,0 +1,7 @@
+---
+profile: production
+offline: true
+skip_list:
+  # One project-wide prefix (fastrdp_) is used instead of per-role prefixes:
+  # several variables are shared between roles on purpose.
+  - var-naming[no-role-prefix]

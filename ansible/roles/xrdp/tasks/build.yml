@@ -1,0 +1,77 @@
+---
+- name: Already built?
+  ansible.builtin.stat:
+    path: "{{ fastrdp_build_stamp }}"
+  register: fastrdp_xrdp_stamp
+
+- name: Build
+  when: not fastrdp_xrdp_stamp.stat.exists
+  block:
+    - name: Source directory
+      ansible.builtin.file:
+        path: "{{ fastrdp_xrdp_src_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download release tarballs
+      ansible.builtin.get_url:
+        url: "{{ item.url }}"
+        dest: "{{ fastrdp_xrdp_src_dir }}/"
+        checksum: "sha256:{{ item.sha256 }}"
+        mode: "0644"
+      loop:
+        - url: "https://github.com/neutrinolabs/xrdp/releases/download/v{{ fastrdp_xrdp_version }}/xrdp-{{ fastrdp_xrdp_version }}.tar.gz"
+          sha256: "{{ fastrdp_xrdp_sha256 }}"
+        - url: "https://github.com/neutrinolabs/xorgxrdp/releases/download/v{{ fastrdp_xorgxrdp_version }}/xorgxrdp-{{ fastrdp_xorgxrdp_version }}.tar.gz"
+          sha256: "{{ fastrdp_xorgxrdp_sha256 }}"
+
+    - name: Unpack
+      ansible.builtin.unarchive:
+        src: "{{ fastrdp_xrdp_src_dir }}/{{ item }}.tar.gz"
+        dest: "{{ fastrdp_xrdp_src_dir }}"
+        remote_src: true
+      loop:
+        - "xrdp-{{ fastrdp_xrdp_version }}"
+        - "xorgxrdp-{{ fastrdp_xorgxrdp_version }}"
+
+    - name: Build and install xrdp
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          ./configure --prefix=/usr/local --sysconfdir=/etc --localstatedir=/var \
+            --with-systemdsystemunitdir=/etc/systemd/system \
+            --enable-x264 --enable-fuse --enable-pixman --enable-opus --enable-mp3lame \
+            --enable-jpeg --enable-ipv6 --enable-utmp
+          make -j"$(nproc)"
+          make install
+        chdir: "{{ fastrdp_xrdp_src_dir }}/xrdp-{{ fastrdp_xrdp_version }}"
+      changed_when: true
+
+    - name: Build and install xorgxrdp
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+          ./configure --prefix=/usr/local --sysconfdir=/etc \
+            {{ '--enable-glamor' if fastrdp_xorgxrdp_glamor | bool else '' }}
+          make -j"$(nproc)"
+          make install
+        chdir: "{{ fastrdp_xrdp_src_dir }}/xorgxrdp-{{ fastrdp_xorgxrdp_version }}"
+      changed_when: true
+
+    - name: Refresh linker cache
+      ansible.builtin.command: ldconfig
+      changed_when: true
+
+    - name: Verify H.264 support was compiled in
+      ansible.builtin.shell:
+        cmd: set -o pipefail && /usr/local/sbin/xrdp -v | grep -q -- '--enable-x264'
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Build stamp
+      ansible.builtin.file:
+        path: "{{ fastrdp_build_stamp }}"
+        state: touch
+        mode: "0644"
+      notify: Restart xrdp

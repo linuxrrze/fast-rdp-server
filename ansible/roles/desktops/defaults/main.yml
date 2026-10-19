@@ -1,0 +1,19 @@
+---
+# Packages per desktop. X11 desktops run in xrdp sessions, Wayland ones through
+# their own back-ends (roles gnome_rd and plasma_krdp install those).
+fastrdp_desktop_packages:
+  xfce: [xfce4, xfce4-goodies]
+  mate: [mate-desktop-environment-core]
+  cinnamon: [cinnamon-core]
+  lxqt: [lxqt-core]
+  plasma-x11: [plasma-desktop, plasma-session-x11, kwin-x11]
+  gnome: []
+  plasma: []
+# Name of /usr/share/xsessions/<name>.desktop for each X11 desktop.
+fastrdp_desktop_xsessions:
+  xfce: xfce
+  mate: mate
+  cinnamon: cinnamon
+  lxqt: lxqt
+  plasma-x11: plasmax11
+fastrdp_desktop_common_packages: [dbus-x11, xauth, x11-xserver-utils, xdg-utils, fonts-noto-core]

@@ -1,0 +1,80 @@
+---
+- name: Distribution xrdp packages removed (replaced by the source build)
+  ansible.builtin.apt:
+    name: [xrdp, xorgxrdp]
+    state: absent
+
+- name: Build and runtime dependencies
+  ansible.builtin.apt:
+    name: "{{ fastrdp_xrdp_build_packages + fastrdp_xrdp_runtime_packages }}"
+    state: present
+
+- name: Runtime user for the unprivileged xrdp daemon
+  ansible.builtin.user:
+    name: xrdp
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Build xrdp and xorgxrdp
+  ansible.builtin.include_tasks: build.yml
+  vars:
+    fastrdp_build_stamp: >-
+      {{ fastrdp_xrdp_src_dir }}/.installed-{{ fastrdp_xrdp_version }}-{{ fastrdp_xorgxrdp_version
+      }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}
+
+- name: Loopback back-end certificate for xrdp
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650
+      -subj /CN=fastrdp-xrdp-backend -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem
+    creates: /etc/xrdp/cert.pem
+
+- name: Back-end key readable by the xrdp daemon only
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: xrdp
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /etc/xrdp/key.pem, mode: "0640"}
+    - {path: /etc/xrdp/cert.pem, mode: "0644"}
+
+- name: Configure xrdp, sesman, GFX codecs and Xorg
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: xrdp.ini.j2, dest: /etc/xrdp/xrdp.ini}
+    - {src: sesman.ini.j2, dest: /etc/xrdp/sesman.ini}
+    - {src: gfx.toml.j2, dest: /etc/xrdp/gfx.toml}
+    - {src: xorg.conf.j2, dest: /etc/X11/xrdp/xorg.conf}
+  notify: Restart xrdp
+
+- name: Session start script (desktop chosen by the broker)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/libexec/startwm.sh"
+    dest: /etc/xrdp/startwm.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: PAM - xrdp only accepts broker tokens
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/pam/xrdp-sesman"
+    dest: /etc/pam.d/xrdp-sesman
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable xrdp services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [xrdp-sesman.service, xrdp.service]

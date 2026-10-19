@@ -1,0 +1,13 @@
+---
+- name: Reload udev
+  ansible.builtin.command: udevadm control --reload-rules
+  changed_when: true
+  notify: Trigger udev drm
+
+- name: Trigger udev drm
+  ansible.builtin.command: udevadm trigger --subsystem-match=drm
+  changed_when: true
+
+- name: GPU reboot required
+  ansible.builtin.debug:
+    msg: nvidia-drm options changed - reboot this host to activate KMS.

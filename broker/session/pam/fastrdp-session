@@ -1,0 +1,13 @@
+#%PAM-1.0
+# Session-only stack for broker-started headless sessions (fastrdp-plasma@.service).
+# Authentication already happened at the proxy/broker; systemd never calls "auth" here.
+account  [default=bad success=ok user_unknown=ignore] pam_sss.so
+account  required  pam_permit.so
+session  required  pam_limits.so
+session  required  pam_loginuid.so
+session  required  pam_env.so readenv=1 envfile=/etc/default/locale
+session  optional  pam_keyinit.so force revoke
+session  required  pam_systemd.so class=user type=wayland desktop=KDE
+session  optional  pam_mkhomedir.so umask=0077
+session  optional  pam_sss.so
+-session optional  pam_kwallet5.so auto_start

@@ -1,0 +1,51 @@
+#!/bin/sh
+# Headless Plasma 6 session for fastrdp (run by fastrdp-plasma@<user>.service as the user).
+# Environment (from the broker's EnvironmentFile): FASTRDP_PORT, FASTRDP_RDP_USER,
+# FASTRDP_RDP_PASSWORD, FASTRDP_WIDTH, FASTRDP_HEIGHT, FASTRDP_TLS_CERT, FASTRDP_TLS_KEY.
+set -eu
+: "${FASTRDP_PORT:?}" "${FASTRDP_RDP_USER:?}" "${FASTRDP_RDP_PASSWORD:?}"
+: "${FASTRDP_TLS_CERT:?}" "${FASTRDP_TLS_KEY:?}"
+W=${FASTRDP_WIDTH:-1920}
+H=${FASTRDP_HEIGHT:-1080}
+
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma KDE_FULL_SESSION=true
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR:?}/bus"
+
+# plasma-kwin_wayland.service reads these (see user drop-in) and starts KWin on
+# its virtual backend instead of DRM.
+systemctl --user set-environment FASTRDP_HEADLESS=1 FASTRDP_WIDTH="$W" FASTRDP_HEIGHT="$H"
+cleanup() {
+    systemctl --user unset-environment FASTRDP_HEADLESS FASTRDP_WIDTH FASTRDP_HEIGHT || true
+    [ -n "${KRDP_PID:-}" ] && kill "$KRDP_PID" 2>/dev/null || true
+    [ -n "${PLASMA_PID:-}" ] && kill "$PLASMA_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+startplasma-wayland &
+PLASMA_PID=$!
+
+# Wait for the compositor socket (kwin_wayland_wrapper creates wayland-0 by default).
+i=0
+while [ ! -S "$XDG_RUNTIME_DIR/wayland-0" ]; do
+    i=$((i + 1))
+    [ "$i" -gt 120 ] && { echo "session-plasma: compositor did not start" >&2; exit 1; }
+    kill -0 "$PLASMA_PID" 2>/dev/null || { echo "session-plasma: startplasma-wayland exited" >&2; exit 1; }
+    sleep 0.5
+done
+export WAYLAND_DISPLAY=wayland-0
+
+# --plasma streams via KWin's screencast protocol: no portal permission dialog in a headless session.
+# The password is visible in /proc/*/cmdline unless /proc is mounted with hidepid
+# (fastrdp_proc_hidepid). It is useless to other users anyway: nftables lets only
+# the proxy connect to back-end ports, and the password changes every session.
+krdpserver --plasma --address 127.0.0.1 --port "$FASTRDP_PORT" \
+    --username "$FASTRDP_RDP_USER" --password "$FASTRDP_RDP_PASSWORD" \
+    --certificate "$FASTRDP_TLS_CERT" --certificate-key "$FASTRDP_TLS_KEY" \
+    --monitor 0 &
+KRDP_PID=$!
+
+# The session ends when either Plasma or KRdp ends.
+while kill -0 "$PLASMA_PID" 2>/dev/null && kill -0 "$KRDP_PID" 2>/dev/null; do
+    sleep 2
+done

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[libdefaults]
+    default_realm = {{ fastrdp_realm }}
+    dns_lookup_realm = false
+    dns_lookup_kdc = true
+    rdns = false
+    udp_preference_limit = 0
+    # One credential cache per login, shared by all processes of that session.
+    default_ccache_name = KCM:
+
+[domain_realm]
+    .{{ fastrdp_domain }} = {{ fastrdp_realm }}
+    {{ fastrdp_domain }} = {{ fastrdp_realm }}

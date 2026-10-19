@@ -1,0 +1,24 @@
+#%PAM-1.0
+# xrdp accepts nothing but one-time broker tokens (see pam_fastrdp_token.c).
+# With a known password the token module hands it on, so pam_sss gets a TGT.
+auth     required  pam_env.so readenv=1
+auth     required  pam_env.so readenv=1 envfile=/etc/default/locale
+auth     [success=ok ignore=1 default=die] pam_fastrdp_token.so
+auth     optional  pam_sss.so use_first_pass
+auth     required  pam_permit.so
+-auth    optional  pam_gnome_keyring.so
+-auth    optional  pam_kwallet5.so
+
+account  [default=bad success=ok user_unknown=ignore] pam_sss.so
+account  required  pam_permit.so
+
+password required  pam_deny.so
+
+session  required  pam_limits.so
+session  required  pam_loginuid.so
+session  optional  pam_keyinit.so force revoke
+session  required  pam_systemd.so class=user type=x11
+session  optional  pam_mkhomedir.so umask=0077
+session  optional  pam_sss.so
+-session optional  pam_gnome_keyring.so auto_start
+-session optional  pam_kwallet5.so auto_start

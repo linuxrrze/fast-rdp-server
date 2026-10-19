@@ -1,0 +1,43 @@
+---
+fastrdp_xrdp_version: 0.10.6.1
+fastrdp_xrdp_sha256: 2f7beb5a3b2529c8d72dc0df9b8cdca31ab0e0c14d1e3421210f5e6ec0ab3b75
+fastrdp_xorgxrdp_version: 0.10.5
+fastrdp_xorgxrdp_sha256: a5d03435f0ef48bf3d5010e63d9264f2334e7063cba3ecd8d4c0a15616a4f712
+fastrdp_xrdp_src_dir: /usr/local/src/fastrdp
+# glamor = Xorg renders with the GPU (Mesa drivers). NVIDIA's GBM path is
+# experimental in xorgxrdp; VirtualGL is the default there.
+fastrdp_xorgxrdp_glamor: "{{ fastrdp_gpu_effective == 'mesa' or fastrdp_xorgxrdp_nvidia_glamor | bool }}"
+fastrdp_xorgxrdp_nvidia_glamor: false
+fastrdp_xorgxrdp_drm_device: /dev/dri/renderD128
+# H.264 (x264) settings, see gfx.toml(5)
+fastrdp_x264_preset: ultrafast
+fastrdp_x264_fps: 60
+fastrdp_xrdp_max_sessions: 100
+# Disconnected sessions are kept (reconnect); kill after N minutes, 0 = never.
+fastrdp_xrdp_disconnected_time_limit: 0
+fastrdp_xrdp_build_packages:
+  - build-essential
+  - autoconf
+  - automake
+  - libtool
+  - pkgconf
+  - nasm
+  - libssl-dev
+  - libpam0g-dev
+  - libx11-dev
+  - libxfixes-dev
+  - libxrandr-dev
+  - libxkbfile-dev
+  - libjpeg-dev
+  - libfuse3-dev
+  - libopus-dev
+  - libmp3lame-dev
+  - libpixman-1-dev
+  - libx264-dev
+  - libimlib2-dev
+  - libfreetype-dev
+  - xserver-xorg-dev
+  - libepoxy-dev
+  - libgbm-dev
+  - libdrm-dev
+fastrdp_xrdp_runtime_packages: [xserver-xorg-core, fuse3, dbus-x11, xauth]

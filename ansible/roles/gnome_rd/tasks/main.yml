@@ -1,0 +1,44 @@
+---
+- name: GNOME + gnome-remote-desktop
+  ansible.builtin.apt:
+    name: "{{ fastrdp_gnome_packages }}"
+    state: present
+    install_recommends: false
+
+- name: GDM provides headless sessions (gnome-headless-session@.service, GDM 50+)
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/system/gnome-headless-session@.service
+  register: fastrdp_gdm_headless
+
+- name: Headless session support present
+  ansible.builtin.assert:
+    that: fastrdp_gdm_headless.stat.exists
+    fail_msg: GDM on this host lacks gnome-headless-session@.service (needs GDM 50+).
+
+- name: GDM running (manages headless user displays)
+  ansible.builtin.systemd_service:
+    name: gdm.service
+    enabled: true
+    state: started
+
+- name: System-wide g-r-d remote-login daemon stays off (the broker starts per-user headless g-r-d)
+  ansible.builtin.systemd_service:
+    name: gnome-remote-desktop.service
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Session defaults for remote GNOME (no screen lock, no idle blank)
+  ansible.builtin.copy:
+    dest: /etc/dconf/db/local.d/50-fastrdp
+    content: |
+      [org/gnome/desktop/screensaver]
+      lock-enabled=false
+      [org/gnome/desktop/session]
+      idle-delay=uint32 0
+      [org/gnome/desktop/interface]
+      enable-animations=false
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Compile dconf database

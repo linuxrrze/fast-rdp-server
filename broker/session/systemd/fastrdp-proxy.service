@@ -1,0 +1,35 @@
+[Unit]
+Description=fastrdp RDP front-end (freerdp-proxy3 + fastrdp module)
+After=network-online.target fastrdp-brokerd.service
+Wants=network-online.target fastrdp-brokerd.service
+
+[Service]
+Type=simple
+User=_fastrdp-proxy
+Group=_fastrdp-proxy
+# Kerberos NLA: the acceptor reads TERMSRV/<fqdn> keys from this keytab.
+Environment=KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab
+Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
+ExecStart=/usr/bin/freerdp-proxy /etc/fastrdp/proxy.ini
+Restart=on-failure
+RestartSec=2
+CacheDirectory=fastrdp-proxy
+CacheDirectoryMode=0700
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

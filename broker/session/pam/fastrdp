@@ -1,0 +1,12 @@
+#%PAM-1.0
+# Used by fastrdp-brokerd: password check for non-NLA logins + account checks
+# (expiry, lock, SSSD access control) for every login.
+auth     required  pam_env.so
+auth     required  pam_faillock.so preauth
+auth     [success=1 default=bad] pam_sss.so
+auth     [default=die] pam_faillock.so authfail
+auth     required  pam_faillock.so authsucc
+account  required  pam_faillock.so
+account  required  pam_nologin.so
+account  [default=bad success=ok user_unknown=ignore] pam_sss.so
+account  required  pam_permit.so

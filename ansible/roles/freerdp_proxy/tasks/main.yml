@@ -1,0 +1,71 @@
+---
+- name: Install freerdp-proxy and build dependencies
+  ansible.builtin.apt:
+    name: "{{ fastrdp_proxy_packages + fastrdp_proxy_build_packages }}"
+    state: present
+
+- name: FreeRDP version
+  ansible.builtin.command: pkg-config --modversion freerdp3
+  register: fastrdp_freerdp_version
+  changed_when: false
+
+- name: FreeRDP new enough
+  ansible.builtin.assert:
+    that: fastrdp_freerdp_version.stdout is version(fastrdp_proxy_min_version, '>=')
+    fail_msg: "FreeRDP {{ fastrdp_freerdp_version.stdout }} < {{ fastrdp_proxy_min_version }}"
+
+- name: Plugin sources
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/proxy-module/"
+    dest: /usr/local/src/fastrdp/proxy-module/
+    mode: u=rwX,g=rX,o=rX
+  register: fastrdp_plugin_src
+
+- name: Build and install the fastrdp proxy module  # noqa: no-handler - the proxy refuses to start without it
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      cmake --build build -j"$(nproc)"
+      cmake --install build
+    chdir: /usr/local/src/fastrdp/proxy-module
+  when: fastrdp_plugin_src is changed
+  changed_when: true
+  notify: Restart fastrdp-proxy
+
+- name: Proxy configuration
+  ansible.builtin.template:
+    src: proxy.ini.j2
+    dest: /etc/fastrdp/proxy.ini
+    owner: root
+    group: _fastrdp-proxy
+    mode: "0640"
+  notify: Restart fastrdp-proxy
+
+- name: Proxy unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-proxy.service"
+    dest: /etc/systemd/system/fastrdp-proxy.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fastrdp-proxy
+
+- name: Front-end port open
+  ansible.builtin.copy:
+    dest: /etc/nftables.d/fastrdp-front.nft
+    content: |
+      # {{ ansible_managed }}
+      # Placeholder: add your site's inbound policy for TCP {{ fastrdp_listen_port }} here
+      # (e.g. only from the VPN/NetBird range). The fastrdp table only restricts back-end ports.
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Proxy running
+  ansible.builtin.systemd_service:
+    name: fastrdp-proxy.service
+    enabled: true
+    state: started
+    daemon_reload: true

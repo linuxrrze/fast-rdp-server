@@ -1,0 +1,50 @@
+# {{ ansible_managed }}
+[broker]
+proxy_user = "_fastrdp-proxy"
+port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range[1] }}]
+
+[auth]
+realms = ["{{ fastrdp_realm | upper }}"]
+strip_realm = true
+pam_service = "fastrdp"
+allow_groups = {{ fastrdp_allow_groups | to_json }}
+allow_tls_password_login = {{ fastrdp_allow_tls_logins | bool | lower }}
+
+[mfa]
+mode = "{{ fastrdp_mfa_mode }}"
+exempt_groups = {{ fastrdp_mfa_exempt_groups | to_json }}
+otp_lengths = {{ fastrdp_otp_lengths | to_json }}
+yubikey_otp = true
+
+[mfa.privacyidea]
+url = "{{ fastrdp_privacyidea_url if fastrdp_mfa_mode != 'none' else '' }}"
+realm = "{{ fastrdp_privacyidea_realm }}"
+ca_file = "{{ '/etc/fastrdp/privacyidea-ca.pem' if fastrdp_privacyidea_ca_src | length > 0 else '' }}"
+verify_tls = {{ fastrdp_privacyidea_verify_tls | default(true) | bool | lower }}
+service_user = "{{ fastrdp_privacyidea_service_user }}"
+service_password_file = "/etc/fastrdp/privacyidea-service.secret"
+
+[defaults]
+desktop = "{{ fastrdp_default_desktop }}"
+geometry = "{{ fastrdp_default_geometry }}"
+
+[defaults.groups]
+{% for group, desk in fastrdp_group_desktops.items() %}
+{{ group | to_json }} = "{{ desk }}"
+{% endfor %}
+
+{% for desk in fastrdp_desktops %}
+[desktops.{{ desk }}]
+{% if desk == 'gnome' %}
+backend = "gnome"
+{% elif desk == 'plasma' %}
+backend = "plasma"
+{% else %}
+backend = "xrdp"
+xsession = "{{ fastrdp_desktop_xsessions[desk] }}"
+{% endif %}
+
+{% endfor %}
+[backends.xrdp]
+port = {{ fastrdp_xrdp_port }}
+listener_user = "root"   # xrdp binds as root, then drops to runtime_user

@@ -1,0 +1,8 @@
+#!/bin/sh
+# ExecStart for plasma-kwin_wayland.service (user drop-in). Normal logins get the
+# stock command; fastrdp headless sessions get KWin's virtual backend.
+if [ "${FASTRDP_HEADLESS:-0}" = 1 ]; then
+    exec kwin_wayland_wrapper --xwayland --virtual \
+        --width "${FASTRDP_WIDTH:-1920}" --height "${FASTRDP_HEIGHT:-1080}"
+fi
+exec kwin_wayland_wrapper --xwayland

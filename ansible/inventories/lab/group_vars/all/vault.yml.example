@@ -1,0 +1,4 @@
+---
+# Copy to vault.yml and encrypt: ansible-vault encrypt vault.yml
+vault_fastrdp_join_password: "changeme"
+vault_fastrdp_privacyidea_service_password: "changeme"

@@ -1,0 +1,36 @@
+---
+- name: CA certificate of the privacyIDEA server
+  ansible.builtin.copy:
+    src: "{{ fastrdp_privacyidea_ca_src }}"
+    dest: /etc/fastrdp/privacyidea-ca.pem
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_privacyidea_ca_src | length > 0
+
+- name: Service account secret for privacyIDEA push triggers
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/privacyidea-service.secret
+    content: "{{ fastrdp_privacyidea_service_password }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: fastrdp_privacyidea_service_user | length > 0
+  no_log: true
+
+- name: Check that privacyIDEA is reachable
+  ansible.builtin.uri:
+    url: "{{ fastrdp_privacyidea_url }}/healthz/"
+    ca_path: "{{ '/etc/fastrdp/privacyidea-ca.pem' if fastrdp_privacyidea_ca_src | length > 0 else omit }}"
+    validate_certs: "{{ fastrdp_privacyidea_verify_tls }}"
+    status_code: [200]
+  register: fastrdp_pi_health
+  failed_when: false
+  changed_when: false
+
+- name: Warn when privacyIDEA is unreachable
+  ansible.builtin.debug:
+    msg: >-
+      privacyIDEA at {{ fastrdp_privacyidea_url }} did not answer /healthz/
+      ({{ fastrdp_pi_health.status | default('no response') }}). MFA logins will fail until it does.
+  when: fastrdp_pi_health.status | default(0) != 200

@@ -1,0 +1,9 @@
+---
+# VirtualGL wraps GL/Vulkan apps of X11 (xrdp) sessions onto the GPU when the
+# X server itself cannot use it (NVIDIA proprietary driver without glamor).
+fastrdp_virtualgl: "{{ fastrdp_gpu_effective | default('none') == 'nvidia' }}"
+fastrdp_virtualgl_version: 3.1.5
+fastrdp_virtualgl_sha256: df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e
+# Render nodes are designed for unprivileged use. Remote sessions have no seat,
+# so logind never grants uaccess ACLs; open them to all users instead.
+fastrdp_render_nodes_world_accessible: true

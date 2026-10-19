@@ -1,0 +1,33 @@
+[Unit]
+Description=fastrdp session broker
+Documentation=file:///usr/share/doc/fastrdp/architecture.md
+After=network-online.target sssd.service
+Wants=network-online.target
+Before=fastrdp-proxy.service xrdp-sesman.service
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=/usr/lib/fastrdp/python
+ExecStartPre=/usr/bin/python3 -m fastrdp_broker --check
+ExecStart=/usr/bin/python3 -m fastrdp_broker
+Restart=on-failure
+RestartSec=2
+# /run/fastrdp holds the sockets, desktop choices and session env files.
+RuntimeDirectory=fastrdp
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+StateDirectory=fastrdp
+# 0711: users traverse to their own back-end certs in users/<name>/ (root-owned dirs)
+StateDirectoryMode=0711
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

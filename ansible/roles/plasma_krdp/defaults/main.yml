@@ -1,0 +1,9 @@
+---
+fastrdp_plasma_packages:
+  - plasma-desktop
+  - plasma-workspace
+  - kwin-wayland
+  - krdp
+  - xwayland
+  - konsole
+  - dolphin

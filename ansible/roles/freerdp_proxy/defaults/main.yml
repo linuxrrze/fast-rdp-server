@@ -1,0 +1,7 @@
+---
+fastrdp_proxy_packages: [freerdp-proxy]
+fastrdp_proxy_build_packages: [build-essential, cmake, pkgconf, freerdp3-dev, libwinpr3-dev, libcjson-dev]
+# Minimum FreeRDP version: 3.32 adds [Target] CertificatePolicy used below.
+fastrdp_proxy_min_version: "3.32.0"
+# Seconds the proxy waits for the broker (must exceed the MFA push timeout).
+fastrdp_proxy_broker_timeout: 120

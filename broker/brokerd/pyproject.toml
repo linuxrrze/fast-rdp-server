@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastrdp-broker"
+version = "0.1.0"
+description = "Session broker for a multi-user RDP terminal server behind freerdp-proxy3"
+requires-python = ">=3.11"
+dependencies = []  # stdlib only, so the daemon runs on distro Python without a venv
+
+[project.scripts]
+fastrdp-brokerd = "fastrdp_broker.__main__:daemon_main"
+fastrdpctl = "fastrdp_broker.__main__:ctl_main"
+
+[tool.setuptools.packages.find]
+include = ["fastrdp_broker*"]

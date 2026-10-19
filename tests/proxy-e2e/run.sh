@@ -1,0 +1,98 @@
+#!/bin/bash
+# End-to-end test of the fastrdp proxy module inside the real freerdp-proxy:
+#
+#   client --TLS--> proxy A (+fastrdp) --broker A--> proxy B (+fastrdp) --broker B--> (nowhere)
+#
+# Proxy B stands in for a back-end, so broker B records exactly what proxy A sent
+# to the back-end: it must be the broker token, never the user's password.
+#
+# Needs: freerdp-proxy, freerdp3-dev, libcjson-dev, openssl, python3, gcc.
+# SYSROOT=/path runs against FreeRDP extracted from .debs instead of the system.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+SYSROOT=${SYSROOT:-}
+LIBDIR=$SYSROOT/usr/lib/$(gcc -print-multiarch)
+PROXY=${PROXY:-$SYSROOT/usr/bin/freerdp-proxy}
+W=$(mktemp -d /tmp/fastrdp-e2e.XXXXXX)   # short path: AF_UNIX limit
+trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
+export LD_LIBRARY_PATH="$LIBDIR:$LIBDIR/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+INC=(-I"$SYSROOT/usr/include/freerdp3" -I"$SYSROOT/usr/include/winpr3" -I"$SYSROOT/usr/include")
+LNK=(-L"$LIBDIR" "-Wl,-rpath-link,$LIBDIR:$LIBDIR/pulseaudio")
+
+gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
+    "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
+gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \
+    "${LNK[@]}" -lfreerdp3 -lwinpr3
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+    -subj /CN=e2e -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
+
+cd "$W"
+mkproxy() { # name port broker-socket
+cat > "$1.ini" <<EOT
+[Server]
+Host=127.0.0.1
+Port=$2
+[Target]
+FixedTarget=false
+CertificatePolicy=allow
+SmartcardAuth=false
+[Channels]
+GFX=true
+[Input]
+Keyboard=true
+Mouse=true
+[Security]
+ServerTlsSecurity=true
+ServerNlaSecurity=false
+ServerRdpSecurity=false
+ClientTlsSecurity=true
+ClientNlaSecurity=false
+ClientRdpSecurity=false
+ClientExtSecurity=false
+ClientAllowFallbackToTls=false
+[Plugins]
+Modules=fastrdp
+Required=fastrdp
+[Certificates]
+CertificateFile=$W/cert.pem
+PrivateKeyFile=$W/key.pem
+[FastRDP]
+BrokerSocket=$3
+Timeout=10
+AllowTls=true
+EOT
+}
+mkproxy a 23389 a.sock
+mkproxy b 23390 b.sock
+python3 "$HERE/fake_broker.py" a.sock a.log 23390 > a.out 2>&1 &
+python3 "$HERE/fake_broker.py" b.sock b.log 23391 > b.out 2>&1 &
+LD_PRELOAD="$W/shim.so" "$PROXY" a.ini > proxy-a.log 2>&1 &
+LD_PRELOAD="$W/shim.so" "$PROXY" b.ini > proxy-b.log 2>&1 &
+for _ in $(seq 50); do grep -q ready a.out b.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null && break; sleep 0.2; done
+
+timeout 20 ./client 127.0.0.1 23389 alice good fastrdp:gnome >/dev/null 2>&1 || true
+timeout 20 ./client 127.0.0.1 23389 mallory bad "" >/dev/null 2>&1 || true
+sleep 1
+
+fail=0
+expect() { # description python-expression-over(a,b)
+    if python3 - "$2" <<'PY'
+import json, sys
+load = lambda f: [json.loads(l) for l in open(f)] if __import__("os").path.exists(f) else []
+a, b = load("a.log"), load("b.log")
+la = [r for r in a if r["op"] == "login"]
+lb = [r for r in b if r["op"] == "login"]
+sys.exit(0 if eval(sys.argv[1]) else 1)
+PY
+    then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
+}
+expect "front broker saw both logins"                 'len(la) == 2'
+expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
+expect "back-end received the token, not the password" 'len(lb) == 1 and lb[0]["password"] == "fastrdp1:TOKEN" and lb[0]["user"] == "alice"'
+expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
+expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
+expect "session end reported to the broker"            'any(r["op"] == "end" and r["session_id"] == la[0]["session_id"] for r in a)'
+if [ $fail -ne 0 ]; then
+    echo "--- proxy A log:"; grep -E "fastrdp|ERROR" proxy-a.log | tail -20
+fi
+exit $fail

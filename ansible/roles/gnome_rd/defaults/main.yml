@@ -1,0 +1,10 @@
+---
+fastrdp_gnome_packages:
+  - gdm3
+  - gnome-shell
+  - gnome-session
+  - gnome-remote-desktop
+  - gnome-control-center
+  - gnome-console
+  - nautilus
+  - xwayland

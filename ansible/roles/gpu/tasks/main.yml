@@ -1,0 +1,98 @@
+---
+- name: PCI tools
+  ansible.builtin.apt:
+    name: pciutils
+    state: present
+
+- name: Detect GPU vendors
+  ansible.builtin.command: lspci -nn -d ::0300
+  register: fastrdp_lspci_vga
+  changed_when: false
+
+- name: Detect 3D controllers (headless datacenter GPUs)
+  ansible.builtin.command: lspci -nn -d ::0302
+  register: fastrdp_lspci_3d
+  changed_when: false
+
+- name: Choose GPU stack
+  ansible.builtin.set_fact:
+    fastrdp_gpu_effective: >-
+      {%- set pci = fastrdp_lspci_vga.stdout ~ fastrdp_lspci_3d.stdout -%}
+      {%- if fastrdp_gpu != 'auto' -%}{{ fastrdp_gpu }}
+      {%- elif '[10de:' in pci -%}nvidia
+      {%- elif '[8086:' in pci or '[1002:' in pci -%}mesa
+      {%- else -%}none{%- endif -%}
+
+- name: Report GPU stack
+  ansible.builtin.debug:
+    msg: "GPU stack: {{ fastrdp_gpu_effective }}"
+
+- name: Mesa userspace (GL, Vulkan, VA-API)
+  ansible.builtin.apt:
+    name: [libgl1-mesa-dri, mesa-vulkan-drivers, va-driver-all, vainfo, vulkan-tools, mesa-utils]
+    state: present
+
+- name: NVIDIA driver (Ubuntu)
+  ansible.builtin.command: ubuntu-drivers install
+  args:
+    creates: /usr/bin/nvidia-smi
+  when:
+    - fastrdp_gpu_effective == 'nvidia'
+    - ansible_distribution == 'Ubuntu'
+
+- name: NVIDIA driver (Debian, non-free)
+  ansible.builtin.apt:
+    name: [nvidia-driver, nvidia-vulkan-icd]
+    state: present
+  when:
+    - fastrdp_gpu_effective == 'nvidia'
+    - ansible_distribution == 'Debian'
+
+- name: NVIDIA KMS + GBM for headless Wayland compositors
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/fastrdp-nvidia.conf
+    content: |
+      # GNOME/KWin headless sessions need nvidia-drm KMS (GBM back-end).
+      options nvidia-drm modeset=1 fbdev=1
+      # Keep VRAM allocations across suspend of idle GPUs.
+      options nvidia NVreg_PreserveVideoMemoryAllocations=1
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_gpu_effective == 'nvidia'
+  notify: GPU reboot required
+
+- name: Render nodes usable from seat-less remote sessions
+  ansible.builtin.copy:
+    dest: /etc/udev/rules.d/70-fastrdp-render.rules
+    content: |
+      SUBSYSTEM=="drm", KERNEL=="renderD*", MODE="0666"
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_render_nodes_world_accessible | bool
+  notify: Reload udev
+
+- name: VirtualGL package
+  ansible.builtin.get_url:
+    url: "https://github.com/VirtualGL/virtualgl/releases/download/{{ fastrdp_virtualgl_version }}/virtualgl_{{ fastrdp_virtualgl_version }}_amd64.deb"
+    dest: "/var/cache/fastrdp-virtualgl_{{ fastrdp_virtualgl_version }}_amd64.deb"
+    checksum: "sha256:{{ fastrdp_virtualgl_sha256 }}"
+    mode: "0644"
+  when: fastrdp_virtualgl | bool
+
+- name: VirtualGL installed
+  ansible.builtin.apt:
+    deb: "/var/cache/fastrdp-virtualgl_{{ fastrdp_virtualgl_version }}_amd64.deb"
+  when: fastrdp_virtualgl | bool
+
+- name: VirtualGL EGL back-end for all users (no 3D X server needed)
+  ansible.builtin.copy:
+    dest: /etc/profile.d/fastrdp-virtualgl.sh
+    content: |
+      # vglrun renders through EGL on the GPU's DRM device, not a separate X server.
+      export VGL_DISPLAY=egl
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_virtualgl | bool

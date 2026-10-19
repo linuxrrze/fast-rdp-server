@@ -1,0 +1,64 @@
+; {{ ansible_managed }}
+; freerdp-proxy3 front-end. Every login goes through the fastrdp module:
+; NLA (Kerberos) or TLS credentials -> fastrdp-brokerd (account, groups, MFA,
+; session start) -> back-end chosen by the broker.
+[Server]
+Host=0.0.0.0
+Port={{ fastrdp_listen_port }}
+
+[Target]
+; Targets come from the broker (ServerFetchTargetAddr), never from client routing tokens.
+FixedTarget=false
+; Back-ends are loopback-only; the broker checks the listener's uid before routing
+; and nftables lets only this service connect to them.
+CertificatePolicy=allow
+TlsSecLevel=1
+SmartcardAuth=false
+
+[Codecs]
+RFX=true
+NSC=true
+
+[Channels]
+GFX=true
+DisplayControl=true
+Clipboard=true
+AudioInput=true
+AudioOutput=true
+DeviceRedirection=true
+VideoRedirection=true
+CameraRedirection=true
+RemoteApp=false
+PassthroughIsBlacklist=true
+Passthrough=
+Intercept=
+
+[Input]
+Keyboard=true
+Mouse=true
+Multitouch=true
+
+[Security]
+ServerNlaSecurity=true
+ServerTlsSecurity={{ fastrdp_allow_tls_logins | bool | lower }}
+ServerRdpSecurity=false
+ServerExtSecurity=false
+; per-target values are set by the module (TLS for xrdp, NLA for g-r-d/KRdp)
+ClientNlaSecurity=true
+ClientTlsSecurity=true
+ClientRdpSecurity=false
+ClientExtSecurity=false
+ClientAllowFallbackToTls=false
+
+[Plugins]
+Modules=fastrdp
+Required=fastrdp
+
+[Certificates]
+CertificateFile=/etc/fastrdp/front.crt
+PrivateKeyFile=/etc/fastrdp/front.key
+
+[FastRDP]
+BrokerSocket=/run/fastrdp/broker.sock
+Timeout={{ fastrdp_proxy_broker_timeout }}
+AllowTls={{ fastrdp_allow_tls_logins | bool | lower }}

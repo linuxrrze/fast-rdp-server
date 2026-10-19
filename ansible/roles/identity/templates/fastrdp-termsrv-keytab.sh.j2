@@ -1,0 +1,25 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Copy only the TERMSRV/* keys from the host keytab into the proxy's keytab.
+set -eu
+SRC=/etc/krb5.keytab
+DST=/etc/fastrdp/termsrv.keytab
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# ktutil slot numbers of all non-TERMSRV entries, highest first (deleting shifts later slots).
+slots=$(printf 'rkt %s\nlist\nquit\n' "$SRC" | ktutil \
+    | awk '$1 ~ /^[0-9]+$/ && $3 !~ /^TERMSRV\// {print $1}' | sort -rn)
+{
+    echo "rkt $SRC"
+    for s in $slots; do echo "delent $s"; done
+    echo "wkt $TMP/termsrv.keytab"
+    echo quit
+} | ktutil >/dev/null
+
+if ! klist -k "$TMP/termsrv.keytab" | grep -q 'TERMSRV/'; then
+    echo "no TERMSRV keys in $SRC - run: adcli update --add-service-principal=TERMSRV/$(hostname -f)" >&2
+    exit 1
+fi
+install -o root -g _fastrdp-proxy -m 0640 "$TMP/termsrv.keytab" "$DST.new"
+mv -f "$DST.new" "$DST"

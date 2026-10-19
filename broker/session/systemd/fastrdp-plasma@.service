@@ -1,0 +1,16 @@
+# Headless Plasma (Wayland) session for user %i, started by fastrdp-brokerd.
+# PAMName opens a real logind session (see /etc/pam.d/fastrdp-session).
+[Unit]
+Description=fastrdp headless Plasma session for %i
+After=systemd-user-sessions.service fastrdp-brokerd.service
+ConditionPathExists=/run/fastrdp/sessions/%i.plasma.env
+
+[Service]
+Type=simple
+User=%i
+PAMName=fastrdp-session
+EnvironmentFile=/run/fastrdp/sessions/%i.plasma.env
+ExecStart=/usr/libexec/fastrdp/session-plasma
+KillMode=control-group
+Restart=no
+TimeoutStopSec=20

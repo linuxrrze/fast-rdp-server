@@ -1,0 +1,28 @@
+---
+- name: FreeIPA client package
+  ansible.builtin.apt:
+    name: freeipa-client
+    state: present
+
+- name: Enrol in FreeIPA
+  ansible.builtin.command:
+    cmd: >-
+      ipa-client-install --unattended --mkhomedir --domain={{ fastrdp_domain }}
+      --realm={{ fastrdp_realm }} --principal={{ fastrdp_join_user }}
+      --password={{ fastrdp_join_password }}
+    creates: /etc/ipa/default.conf
+  no_log: true
+
+- name: TERMSRV service and keytab
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -eo pipefail
+      echo "$JOIN_PW" | kinit "{{ fastrdp_join_user }}" >/dev/null
+      ipa service-show "TERMSRV/{{ ansible_fqdn }}" >/dev/null 2>&1 || ipa service-add "TERMSRV/{{ ansible_fqdn }}"
+      ipa-getkeytab -p "TERMSRV/{{ ansible_fqdn }}" -k /etc/fastrdp/termsrv.keytab
+      kdestroy
+    creates: /etc/fastrdp/termsrv.keytab
+  environment:
+    JOIN_PW: "{{ fastrdp_join_password }}"
+  no_log: true

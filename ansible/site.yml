@@ -1,0 +1,29 @@
+---
+# Phases 1-3 (broker before xrdp: xrdp's PAM stack needs pam_fastrdp_token): RDP terminal server with Kerberos/MFA front-end, xrdp (X11) and
+# Wayland back-ends (GNOME headless, Plasma + KRdp).
+- name: Fast RDP terminal servers
+  hosts: rdp_servers
+  roles:
+    - role: base
+      tags: [base]
+    - role: identity
+      tags: [identity]
+    - role: gpu
+      tags: [gpu]
+    - role: desktops
+      tags: [desktops]
+    - role: mfa_privacyidea
+      tags: [mfa]
+      when: fastrdp_mfa_mode != 'none'
+    - role: broker
+      tags: [broker]
+    - role: xrdp
+      tags: [xrdp]
+    - role: gnome_rd
+      tags: [gnome]
+      when: "'gnome' in fastrdp_desktops"
+    - role: plasma_krdp
+      tags: [plasma]
+      when: "'plasma' in fastrdp_desktops"
+    - role: freerdp_proxy
+      tags: [proxy]

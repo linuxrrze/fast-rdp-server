@@ -1,0 +1,32 @@
+---
+- name: Known desktops only
+  ansible.builtin.assert:
+    that: item in fastrdp_desktop_packages
+    fail_msg: "Unknown desktop {{ item }}; known: {{ fastrdp_desktop_packages.keys() | join(', ') }}"
+  loop: "{{ fastrdp_desktops }}"
+
+- name: Desktop packages
+  ansible.builtin.apt:
+    name: "{{ fastrdp_desktop_common_packages + (fastrdp_desktops | map('extract', fastrdp_desktop_packages) | flatten) }}"
+    state: present
+    install_recommends: false
+
+- name: X session files exist
+  ansible.builtin.stat:
+    path: "/usr/share/xsessions/{{ fastrdp_desktop_xsessions[item] }}.desktop"
+  loop: "{{ fastrdp_desktops | select('in', fastrdp_desktop_xsessions) | list }}"
+  register: fastrdp_xsession_files
+
+- name: Every X11 desktop has its session file
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }}: /usr/share/xsessions/{{ fastrdp_desktop_xsessions[item.item] }}.desktop missing"
+    quiet: true
+  loop: "{{ fastrdp_xsession_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: No screen lockers in remote sessions (the RDP client locks)
+  ansible.builtin.apt:
+    name: [light-locker, xscreensaver]
+    state: absent

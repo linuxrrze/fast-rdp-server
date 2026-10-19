@@ -1,0 +1,6 @@
+---
+# Samba/Windows AD: how sssd applies GPO logon rights to the RDP PAM services
+# (enforcing | permissive | disabled). Start permissive, check logs, then enforce.
+fastrdp_ad_gpo_access_control: permissive
+# For provider "none": keytab with TERMSRV/<fqdn> keys, on the controller.
+fastrdp_termsrv_keytab_src: ""

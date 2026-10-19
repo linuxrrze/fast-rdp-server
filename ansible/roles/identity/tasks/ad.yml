@@ -1,0 +1,42 @@
+---
+- name: Check domain membership
+  ansible.builtin.command: realm list --name-only
+  register: fastrdp_realm_list
+  changed_when: false
+
+- name: Join AD domain
+  ansible.builtin.command:
+    cmd: >-
+      realm join --membership-software=adcli --client-software=sssd
+      --user={{ fastrdp_join_user }} {{ fastrdp_domain }}
+    stdin: "{{ fastrdp_join_password }}"
+  when: fastrdp_domain | lower not in fastrdp_realm_list.stdout | lower
+  no_log: true
+  changed_when: true
+
+- name: Register TERMSRV service principal (NLA)
+  ansible.builtin.command:
+    cmd: >-
+      adcli update --domain={{ fastrdp_domain }}
+      --add-service-principal=TERMSRV/{{ ansible_fqdn }}
+      --add-service-principal=TERMSRV/{{ ansible_hostname | upper }}
+    creates: /etc/fastrdp/.termsrv-spn-registered
+  register: fastrdp_spn
+
+- name: Remember SPN registration  # noqa: no-handler - marker belongs to this exact step
+  ansible.builtin.file:
+    path: /etc/fastrdp/.termsrv-spn-registered
+    state: touch
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: fastrdp_spn is changed
+
+- name: SSSD configuration for terminal-server use
+  ansible.builtin.template:
+    src: sssd-ad.conf.j2
+    dest: /etc/sssd/sssd.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart sssd
