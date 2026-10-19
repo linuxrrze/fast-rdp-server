@@ -1,3 +1,4 @@
 ---
+# gpu sets fastrdp_gpu_effective (glamor on/off)
 dependencies:
   - role: gpu

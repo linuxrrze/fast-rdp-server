@@ -1,0 +1,24 @@
+---
+# --- network: low latency for interactive RDP traffic
+fastrdp_tcp_tuning: true
+# BBR + fq pacing keeps queues short on congested WAN links; no slow start after
+# idle avoids a burst of small windows every time the screen starts changing again.
+fastrdp_sysctl_tcp:
+  net.core.default_qdisc: fq
+  net.ipv4.tcp_congestion_control: bbr
+  net.ipv4.tcp_slow_start_after_idle: 0
+  net.ipv4.tcp_notsent_lowat: 131072
+  net.core.rmem_max: 16777216
+  net.core.wmem_max: 16777216
+
+# --- per-user fairness (systemd user-UID.slice; covers xrdp, GNOME and Plasma sessions)
+# "" = no limit. Examples: "400%" (4 cores), "16G".
+fastrdp_user_cpu_quota: ""
+fastrdp_user_memory_max: ""
+fastrdp_user_tasks_max: 4096
+
+# --- encoders
+# KRdp (Plasma): auto | h264_vaapi | libx264 | libopenh264 (KPipeWire never uses NVENC)
+fastrdp_krdp_encoder: auto
+# KRdp encoding quality 0-100 (upper bound when adaptive); "" = KRdp default
+fastrdp_krdp_quality: ""

@@ -38,6 +38,9 @@ CertificatePolicy=allow
 SmartcardAuth=false
 [Channels]
 GFX=true
+; like production: pass every channel (incl. drdynvc/GFX) through
+PassthroughIsBlacklist=true
+Passthrough=
 [Input]
 Keyboard=true
 Mouse=true

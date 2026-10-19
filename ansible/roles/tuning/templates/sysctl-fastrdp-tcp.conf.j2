@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+{% for key, value in fastrdp_sysctl_tcp.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

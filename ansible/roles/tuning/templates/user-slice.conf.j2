@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Applies to every user-UID.slice, i.e. all processes of one user's sessions.
+[Slice]
+CPUWeight=100
+{% if fastrdp_user_cpu_quota %}
+CPUQuota={{ fastrdp_user_cpu_quota }}
+{% endif %}
+{% if fastrdp_user_memory_max %}
+MemoryMax={{ fastrdp_user_memory_max }}
+{% endif %}
+TasksMax={{ fastrdp_user_tasks_max }}

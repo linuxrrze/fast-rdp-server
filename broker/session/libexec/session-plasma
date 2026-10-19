@@ -5,6 +5,13 @@
 set -eu
 : "${FASTRDP_PORT:?}" "${FASTRDP_RDP_USER:?}" "${FASTRDP_RDP_PASSWORD:?}"
 : "${FASTRDP_TLS_CERT:?}" "${FASTRDP_TLS_KEY:?}"
+# Site tuning (ansible role "tuning"): KPIPEWIRE_FORCE_ENCODER, FASTRDP_KRDP_QUALITY
+if [ -r /etc/fastrdp/session.env ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . /etc/fastrdp/session.env
+    set +a
+fi
 W=${FASTRDP_WIDTH:-1920}
 H=${FASTRDP_HEIGHT:-1080}
 
@@ -39,7 +46,9 @@ export WAYLAND_DISPLAY=wayland-0
 # The password is visible in /proc/*/cmdline unless /proc is mounted with hidepid
 # (fastrdp_proc_hidepid). It is useless to other users anyway: nftables lets only
 # the proxy connect to back-end ports, and the password changes every session.
-krdpserver --plasma --address 127.0.0.1 --port "$FASTRDP_PORT" \
+set --
+[ -n "${FASTRDP_KRDP_QUALITY:-}" ] && set -- --quality "$FASTRDP_KRDP_QUALITY"
+krdpserver --plasma --address 127.0.0.1 --port "$FASTRDP_PORT" "$@" \
     --username "$FASTRDP_RDP_USER" --password "$FASTRDP_RDP_PASSWORD" \
     --certificate "$FASTRDP_TLS_CERT" --certificate-key "$FASTRDP_TLS_KEY" \
     --monitor 0 &

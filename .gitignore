@@ -5,3 +5,5 @@ __pycache__/
 build/
 broker/pam_fastrdp_token/test/harness
 *.retry
+tests/perf/rdpbench/rdpbench
+tests/perf/rdpbench/perfload

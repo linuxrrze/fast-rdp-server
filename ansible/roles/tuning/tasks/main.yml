@@ -1,0 +1,49 @@
+---
+- name: BBR congestion control module at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/fastrdp-bbr.conf
+    content: "tcp_bbr\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_tcp_tuning | bool
+
+- name: BBR module loaded now
+  ansible.builtin.command: modprobe tcp_bbr
+  when: fastrdp_tcp_tuning | bool
+  changed_when: false
+
+- name: TCP settings for interactive remote desktops
+  ansible.builtin.template:
+    src: sysctl-fastrdp-tcp.conf.j2
+    dest: /etc/sysctl.d/61-fastrdp-tcp.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_tcp_tuning | bool
+  notify: Apply TCP sysctl
+
+- name: Drop-in directory for all user slices
+  ansible.builtin.file:
+    path: /etc/systemd/system/user-.slice.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Per-user resource limits
+  ansible.builtin.template:
+    src: user-slice.conf.j2
+    dest: /etc/systemd/system/user-.slice.d/50-fastrdp.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for slices
+
+- name: Session tuning environment (read by session-plasma)
+  ansible.builtin.template:
+    src: session.env.j2
+    dest: /etc/fastrdp/session.env
+    owner: root
+    group: root
+    mode: "0644"

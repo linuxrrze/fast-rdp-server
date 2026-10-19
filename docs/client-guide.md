@@ -4,6 +4,11 @@ Always connect to the server's **FQDN** (Kerberos needs it), e.g. `rdp1.lab.exam
 
 ## FreeRDP 3 (Linux, macOS) – reference client
 
+Check that your build can decode H.264: `xfreerdp3 /buildconfig | tr ' ' '\n' | grep GFX_H264`
+must say `ON`. **Ubuntu 26.04's packages say `OFF`**: they still work, but fall
+back to RFX/progressive at several times the bandwidth. See
+[performance.md](performance.md).
+
 ```sh
 # Kerberos NLA, desktop from server defaults, GFX/H.264 AVC444, adaptive network
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM \

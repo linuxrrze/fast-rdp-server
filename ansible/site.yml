@@ -12,6 +12,8 @@
       tags: [gpu]
     - role: desktops
       tags: [desktops]
+    - role: tuning
+      tags: [tuning]
     - role: mfa_privacyidea
       tags: [mfa]
       when: fastrdp_mfa_mode != 'none'
