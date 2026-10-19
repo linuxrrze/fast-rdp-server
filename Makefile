@@ -1,5 +1,5 @@
 # Developer checks. Integration tests need FreeRDP 3.32+ dev files; see tests/proxy-e2e/.
-.PHONY: test test-broker test-webgate test-pam test-gpu test-e2e test-e2e-nla test-e2e-smartcard perf-tools perf-proxy lint
+.PHONY: test-wlroots test test-broker test-webgate test-pam test-gpu test-e2e test-e2e-nla test-e2e-smartcard perf-tools perf-proxy lint
 
 test: test-broker test-webgate test-pam test-gpu lint
 
@@ -21,6 +21,9 @@ perf-tools:
 perf-proxy:
 	tests/perf/proxy-overhead.sh 15 3
 
+test-wlroots:   # xvfb xwayland wlr-randr wl-clipboard xclip x11-utils + sway/labwc/wayfire
+	tests/wlroots/run.sh
+
 test-e2e:
 	tests/proxy-e2e/run.sh
 
@@ -32,4 +35,7 @@ test-e2e-smartcard:   # + krb5-pkinit softhsm2 opensc p11-kit-modules
 
 lint:
 	cd ansible && ansible-lint site.yml
-	shellcheck broker/session/libexec/* tests/proxy-e2e/*.sh tests/smoke/*.sh tests/perf/*.sh
+	shellcheck broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
+		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
+		tests/proxy-e2e/*.sh tests/smoke/*.sh tests/perf/*.sh
+	shellcheck -e SC1090,SC2015 tests/wlroots/run.sh

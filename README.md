@@ -10,6 +10,8 @@ A Windows-RDS-style terminal server for Linux, built from maintained parts:
     with H.264.
   - **GNOME 50** through GDM headless sessions + gnome-remote-desktop.
   - **Plasma 6 Wayland** through KWin's virtual backend + KRdp.
+  - **Sway, labwc, Wayfire** (wlroots) nested in an xrdp session, so they keep
+    xrdp's H.264 path.
 - **GPU where possible:**
   - glamor rendering on Intel/AMD.
   - VA-API/NVENC H.264 in the Wayland back-ends.
@@ -36,6 +38,7 @@ tests/
   smoke/              checks for a deployed host
   perf/               rdpbench (headless benchmark client), perfload, proxy-overhead/compare scripts
   gpu/                session_report.py: which renderer/H.264 encoder a session really uses
+  wlroots/            wlroots-in-x launcher tests (Sway, labwc, Wayfire on Xvfb)
 ```
 
 ## Deploy (lab)
@@ -75,4 +78,5 @@ make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 | Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); containers/Keycloak need a lab run |
 | Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
 | xrdp PR #3868 (NLA) | assessed: Kerberos OK only with FreeRDP U2U disabled; no smartcards; proxy stays the NLA point |
-| wlroots desktops, xrdp HW encoder | not started |
+| wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
+| xrdp HW encoder | not started |

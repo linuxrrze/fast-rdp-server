@@ -7,6 +7,10 @@ fastrdp_desktop_packages:
   cinnamon: [cinnamon-core]
   lxqt: [lxqt-core]
   plasma-x11: [plasma-desktop, plasma-session-x11, kwin-x11]
+  # wlroots compositors, nested in the xrdp X session (wlroots X11 backend)
+  sway: [sway, swaybg, foot]
+  labwc: [labwc, foot]
+  wayfire: [wayfire, foot]
   gnome: []
   plasma: []
 # Name of /usr/share/xsessions/<name>.desktop for each X11 desktop.
@@ -16,4 +20,10 @@ fastrdp_desktop_xsessions:
   cinnamon: cinnamon
   lxqt: lxqt
   plasma-x11: plasmax11
+  sway: fastrdp-sway
+  labwc: fastrdp-labwc
+  wayfire: fastrdp-wayfire
+fastrdp_wlroots_desktops: [sway, labwc, wayfire]
+# launcher (wlroots-in-x) and clipboard bridge needs
+fastrdp_wlroots_common_packages: [xwayland, wlr-randr, wl-clipboard, xclip, x11-utils, x11-xkb-utils, python3]
 fastrdp_desktop_common_packages: [dbus-x11, xauth, x11-xserver-utils, xdg-utils, fonts-noto-core]

@@ -11,6 +11,41 @@
     state: present
     install_recommends: false
 
+- name: Helper packages for wlroots desktops
+  ansible.builtin.apt:
+    name: "{{ fastrdp_wlroots_common_packages }}"
+    state: present
+    install_recommends: false
+  when: fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+
+- name: Launcher directory for wlroots desktops
+  ansible.builtin.file:
+    path: /usr/libexec/fastrdp
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+
+- name: Launcher and clipboard bridge for wlroots desktops
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/libexec/{{ item }}"
+    dest: "/usr/libexec/fastrdp/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [wlroots-in-x, clipboard-bridge]
+  when: fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+
+- name: X session entries for wlroots desktops
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/xsessions/fastrdp-{{ item }}.desktop"
+    dest: "/usr/share/xsessions/fastrdp-{{ item }}.desktop"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ fastrdp_desktops | intersect(fastrdp_wlroots_desktops) }}"
+
 - name: X session files exist
   ansible.builtin.stat:
     path: "/usr/share/xsessions/{{ fastrdp_desktop_xsessions[item] }}.desktop"

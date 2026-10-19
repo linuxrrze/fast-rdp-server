@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Text clipboard bridge between an X display ($DISPLAY) and a Wayland compositor
+($WAYLAND_DISPLAY), used by wlroots-in-x. xrdp's clipboard channel talks to X; apps in
+the nested Wayland desktop use the Wayland clipboard. Polls both sides (0.5 s) and
+copies whichever changed last; content hashes prevent ping-pong."""
+
+import hashlib
+import subprocess
+import sys
+import time
+
+MAX = 4 * 1024 * 1024
+
+
+def run(cmd, data=None):
+    try:
+        r = subprocess.run(cmd, input=data, capture_output=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout[:MAX] if r.returncode == 0 else None
+
+
+def get_x():
+    return run(["xclip", "-selection", "clipboard", "-o", "-t", "UTF8_STRING"])
+
+
+def get_wl():
+    return run(["wl-paste", "--no-newline", "--type", "text/plain;charset=utf-8"])
+
+
+def set_x(data):
+    # xclip forks to serve the selection; don't wait for it.
+    p = subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "-t", "UTF8_STRING"],
+                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p.communicate(data)
+
+
+def set_wl(data):
+    subprocess.Popen(["wl-copy", "--type", "text/plain;charset=utf-8"], stdin=subprocess.PIPE,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).communicate(data)
+
+
+def digest(data):
+    return hashlib.sha256(data).digest() if data else None
+
+
+def main():
+    last = digest(get_x()) or digest(get_wl())
+    while True:
+        time.sleep(0.5)
+        x, w = get_x(), get_wl()
+        dx, dw = digest(x), digest(w)
+        if dx and dx != last and dx != dw:
+            set_wl(x)
+            last = dx
+        elif dw and dw != last and dw != dx:
+            set_x(w)
+            last = dw
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

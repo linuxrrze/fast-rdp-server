@@ -1,0 +1,89 @@
+#!/bin/sh
+# Run a wlroots compositor (sway, labwc, wayfire) as the "desktop" of an xrdp X11
+# session: the compositor uses wlroots' X11 backend and draws into one fullscreen
+# window of the xorgxrdp display. xrdp keeps doing what it does best (H.264, GFX,
+# clipboard/drive/audio channels, reconnects); the user gets a Wayland desktop.
+#
+#   wlroots-in-x sway|labwc|wayfire [compositor args...]
+set -eu
+COMP=${1:?usage: wlroots-in-x sway|labwc|wayfire [args]}
+shift
+: "${DISPLAY:?must run inside the xrdp X session}"
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+
+export WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP="$COMP" XDG_SESSION_DESKTOP="$COMP"
+# Firefox, Qt and GTK prefer Wayland inside the compositor.
+export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM="wayland;xcb" GDK_BACKEND="wayland,x11"
+
+# GPU path: glamor offers DRI3 -> wlroots renders with GLES2 and shares dma-bufs with
+# Xorg. Without DRI3 (no GPU, NVIDIA proprietary), render in software and use MIT-SHM.
+if ! xdpyinfo -queryExtensions 2>/dev/null | grep -q 'DRI3'; then
+    export WLR_RENDERER=pixman
+fi
+
+# Keyboard: xrdp sets the X keymap from the RDP client; give the compositor the same.
+eval "$(setxkbmap -query 2>/dev/null | awk '
+    $1=="model:"   {print "export XKB_DEFAULT_MODEL=" $2}
+    $1=="layout:"  {print "export XKB_DEFAULT_LAYOUT=" $2}
+    $1=="variant:" {print "export XKB_DEFAULT_VARIANT=" $2}
+    $1=="options:" {print "export XKB_DEFAULT_OPTIONS=" $2}')"
+
+EXTRA=""
+case "$COMP" in
+    sway)
+        # sway refuses the NVIDIA proprietary driver unless told otherwise.
+        [ -e /proc/driver/nvidia/version ] && EXTRA="--unsupported-gpu"
+        ;;
+    labwc|wayfire) ;;
+    *) echo "wlroots-in-x: unsupported compositor $COMP" >&2; exit 2 ;;
+esac
+
+# shellcheck disable=SC2086 # EXTRA is empty or a single flag
+"$COMP" $EXTRA "$@" &
+COMP_PID=$!
+cleanup() { kill "$COMP_PID" 2>/dev/null || true; pkill -P $$ 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+
+# The compositor's Wayland socket: the listening Unix socket in $XDG_RUNTIME_DIR that
+# this very process holds. Matching by name alone breaks when a crashed earlier
+# session left a stale wayland-N behind and wlroots reuses that name.
+compositor_socket() {
+    inodes=$(for fd in /proc/"$COMP_PID"/fd/*; do readlink "$fd"; done 2>/dev/null \
+             | sed -n 's/^socket:\[\([0-9]*\)\]$/\1/p' | tr '\n' ' ')
+    [ -n "$inodes" ] || return 0
+    awk -v dir="$XDG_RUNTIME_DIR/" -v inodes=" $inodes " '
+        NR > 1 && index(inodes, " " $7 " ") && index($8, dir) == 1 {
+            name = substr($8, length(dir) + 1)
+            if (name ~ /^wayland-[0-9]+$/) { print name; exit }
+        }' /proc/net/unix
+}
+WL=""
+i=0
+while [ -z "$WL" ] && [ $i -lt 100 ] && kill -0 "$COMP_PID" 2>/dev/null; do
+    WL=$(compositor_socket)
+    i=$((i + 1))
+    [ -n "$WL" ] || sleep 0.1
+done
+[ -n "$WL" ] || { echo "wlroots-in-x: $COMP did not create a Wayland socket" >&2; exit 1; }
+
+# Follow the RDP window size: xrdp resizes the X root window (dynamic resolution,
+# reconnects with another size); give the compositor's X11 output the same mode.
+(
+    last=""
+    while kill -0 "$COMP_PID" 2>/dev/null; do
+        size=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2; exit}')
+        if [ -n "$size" ] && [ "$size" != "$last" ]; then
+            if WAYLAND_DISPLAY=$WL wlr-randr --output X11-1 --custom-mode "$size" 2>/dev/null; then
+                last=$size
+            fi
+        fi
+        sleep 1
+    done
+) &
+
+# Clipboard between the X display (RDP clipboard channel) and the Wayland desktop.
+WAYLAND_DISPLAY=$WL "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/clipboard-bridge" &
+
+wait "$COMP_PID"

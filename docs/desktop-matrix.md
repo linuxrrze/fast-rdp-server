@@ -11,7 +11,38 @@ Status legend:
 | `plasma-x11` | xrdp | Xorg + xorgxrdp | as above | as above | to validate; Plasma 6.6 on Ubuntu 26.04 still ships the X11 session |
 | `gnome` (GNOME 50+, Wayland only) | gnome-remote-desktop headless, started via GDM `gnome-headless-session@USER` | Mutter headless | GPU via Mesa/NVIDIA GBM | H.264 via **VA-API or NVENC (GPU)**; without either: RFX progressive (g-r-d has no software H.264) | to validate |
 | `plasma` (Plasma 6, Wayland) | KRdp (`krdpserver --plasma`) in a `kwin_wayland --virtual` session | KWin virtual backend | GPU via Mesa/NVIDIA GBM | H.264 via **VA-API** (Intel/AMD); **x264 on CPU on NVIDIA** (KPipeWire has no NVENC path) | to validate; **unofficial** headless mode (spike) |
-| Sway, labwc, Hyprland (wlroots) | – | – | – | – | phase 5 (wayvnc + xrdp VNC-over-UDS) |
+| `sway`, `labwc`, `wayfire` (wlroots, Wayland) | xrdp; the compositor runs **nested** on the wlroots X11 backend inside the xorgxrdp display (`wlroots-in-x`) | Xorg + xorgxrdp, compositor fullscreen in one X window | GLES via glamor/DRI3 (Intel/AMD); pixman (software) otherwise | same as X11 desktops: **x264 (CPU)** | launcher verified with Xvfb: start, resize to the X root size, clipboard both ways, restart over a stale socket (`tests/wlroots/run.sh`); full xrdp session to validate |
+| Hyprland | – | – | – | – | not supported: Hyprland 0.53 (Aquamarine) has no X11 backend; would need a second nesting layer |
+
+## wlroots desktops (Sway, labwc, Wayfire)
+
+There is no maintained RDP server for wlroots compositors; wayvnc is the only
+exporter, and a VNC hop would lose H.264 and the GPU path. Instead, the compositor
+runs **inside** an ordinary xrdp session:
+
+1. The broker routes the login to xrdp like any X11 desktop. The xsession entry
+   `fastrdp-<compositor>` runs `/usr/libexec/fastrdp/wlroots-in-x <compositor>`.
+2. The launcher starts the compositor with `WLR_BACKENDS=x11`, so it draws into
+   one fullscreen window of the xorgxrdp display. xrdp still provides H.264/GFX,
+   clipboard, drives, audio and reconnects.
+3. **Renderer:** GLES when the X server offers DRI3 (xorgxrdp-glamor on
+   Intel/AMD); otherwise pixman. Wayfire's GL effects (cube, fisheye, …) need GLES.
+4. **Size:** the launcher watches the X root size (dynamic resolution, reconnects)
+   and sets the compositor's output with `wlr-randr --custom-mode`.
+5. **Keyboard:** the compositor gets the X session's layout (`setxkbmap -query`)
+   at start.
+6. **Clipboard:** `clipboard-bridge` copies text both ways between X (the RDP
+   clipboard channel) and the Wayland clipboard.
+7. **Restarts:** the compositor's socket is identified from its own file
+   descriptors, so stale `wayland-N` sockets from a crashed session are harmless.
+
+Notes:
+- Sway's default modifier is the Windows key, which many RDP clients keep for the
+  local OS. Use the client's "send Windows key to remote" option or change `$mod` in
+  `~/.config/sway/config`.
+- Only text crosses the clipboard bridge.
+- A keyboard layout change in the client needs a reconnect, which restarts the
+  compositor.
 
 ## Choosing a desktop
 

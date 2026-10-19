@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Labwc (Wayland, fastrdp)
+Comment=Labwc running on the wlroots X11 backend inside an xrdp session
+Exec=/usr/libexec/fastrdp/wlroots-in-x labwc
+Type=Application
+DesktopNames=Labwc

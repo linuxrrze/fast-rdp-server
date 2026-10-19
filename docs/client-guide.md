@@ -60,4 +60,5 @@ Write the desktop name to `~/.config/fastrdp/desktop`, e.g.
 `echo plasma > ~/.config/fastrdp/desktop`. It applies from the next login.
 
 Available names: see `fastrdp_desktops` in the inventory (`xfce`, `mate`,
-`cinnamon`, `lxqt`, `plasma-x11`, `gnome`, `plasma`).
+`cinnamon`, `lxqt`, `plasma-x11`, `gnome`, `plasma`, and the wlroots desktops
+`sway`, `labwc`, `wayfire`).

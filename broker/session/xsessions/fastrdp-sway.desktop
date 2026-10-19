@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Sway (Wayland, fastrdp)
+Comment=Sway running on the wlroots X11 backend inside an xrdp session
+Exec=/usr/libexec/fastrdp/wlroots-in-x sway
+Type=Application
+DesktopNames=Sway

@@ -35,6 +35,7 @@ fastrdp_otp_lengths: [6]
 
 # ---------------------------------------------------------------- desktops
 # X11 (xrdp): xfce mate cinnamon lxqt plasma-x11 | Wayland: gnome plasma
+# wlroots (Wayland, nested in xrdp): sway labwc wayfire
 fastrdp_desktops: [xfce, mate, gnome, plasma]
 fastrdp_default_desktop: xfce
 fastrdp_group_desktops: {}                # e.g. {rdp-kde: plasma}

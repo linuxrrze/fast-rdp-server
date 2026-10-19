@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Wayfire (Wayland, fastrdp)
+Comment=Wayfire running on the wlroots X11 backend inside an xrdp session
+Exec=/usr/libexec/fastrdp/wlroots-in-x wayfire
+Type=Application
+DesktopNames=Wayfire
