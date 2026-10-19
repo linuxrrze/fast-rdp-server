@@ -1,0 +1,34 @@
+[Unit]
+Description=fastrdp web gateway (OIDC login -> Guacamole)
+After=network-online.target fastrdp-brokerd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=_fastrdp-web
+Group=_fastrdp-web
+# broker.sock is group-owned by _fastrdp-broker; the broker re-checks the uid per operation.
+# Never _fastrdp-proxy: that group can read the TERMSRV keytab and the RDP TLS key.
+SupplementaryGroups=_fastrdp-broker
+Environment=PYTHONPATH=/usr/lib/fastrdp/python
+ExecStartPre=/usr/bin/python3 -m fastrdp_webgate --check
+ExecStart=/usr/bin/python3 -m fastrdp_webgate
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

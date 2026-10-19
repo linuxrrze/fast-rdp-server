@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 
 TOKEN_PREFIX = "fastrdp1:"
+WEB_TOKEN_PREFIX = "fastrdp-web1:"
 
 
 @dataclass
@@ -23,8 +24,9 @@ class _Entry:
 
 
 class TokenStore:
-    def __init__(self, ttl: int):
+    def __init__(self, ttl: int, prefix: str = TOKEN_PREFIX):
         self.ttl = ttl
+        self.prefix = prefix
         self._tokens: dict[str, _Entry] = {}
 
     def _purge(self) -> None:
@@ -34,7 +36,7 @@ class TokenStore:
 
     def issue(self, user: str, password: str | None) -> str:
         self._purge()
-        token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        token = self.prefix + secrets.token_urlsafe(32)
         self._tokens[token] = _Entry(user, time.monotonic() + self.ttl, password)
         return token
 

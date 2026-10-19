@@ -20,6 +20,11 @@
     state: started
     enabled: true
 
+- name: Group for broker socket clients (proxy, webgate)
+  ansible.builtin.group:
+    name: _fastrdp-broker
+    system: true
+
 - name: Proxy service account
   ansible.builtin.user:
     name: _fastrdp-proxy

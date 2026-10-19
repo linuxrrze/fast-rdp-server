@@ -18,7 +18,8 @@ A Windows-RDS-style terminal server for Linux, built from maintained parts:
 Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/architecture.md) ·
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
 [docs/desktop-matrix.md](docs/desktop-matrix.md) · Performance: [docs/performance.md](docs/performance.md) ·
-Clients: [docs/client-guide.md](docs/client-guide.md)
+Clients: [docs/client-guide.md](docs/client-guide.md) · Web: [docs/web-access.md](docs/web-access.md) ·
+Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md)
 
 ## Layout
 
@@ -27,10 +28,11 @@ broker/
   brokerd/            fastrdp-brokerd (Python 3.11+, stdlib only) + unit/protocol tests
   proxy-module/       freerdp-proxy3 module (C, CMake)
   pam_fastrdp_token/  PAM module: xrdp accepts only one-time broker tokens (C) + functional test
+  webgate/            fastrdp-webgate: Keycloak OIDC login -> one-time token -> Guacamole (Python)
   session/            systemd units, PAM stacks, session launchers (startwm.sh, session-plasma)
 ansible/              roles: base identity gpu desktops xrdp gnome_rd plasma_krdp mfa_privacyidea broker freerdp_proxy
 tests/
-  proxy-e2e/          real freerdp-proxy + module end-to-end tests (TLS, and Kerberos NLA with a throwaway KDC)
+  proxy-e2e/          real freerdp-proxy + module end-to-end tests (TLS, Kerberos NLA, smartcard/PKINIT)
   smoke/              checks for a deployed host
   perf/               rdpbench (headless benchmark client), perfload, proxy-overhead/compare scripts
   gpu/                session_report.py: which renderer/H.264 encoder a session really uses
@@ -70,4 +72,7 @@ make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 | xrdp/X11 desktops, GNOME headless, Plasma headless | deployed by the roles; **need validation on a lab host** (see docs/desktop-matrix.md) |
 | Phase 4 tooling (rdpbench, perfload, session_report, tuning role) | implemented and tested; proxy overhead measured (no fps loss, ~0.3–0.5 % core per Mbit/s) |
 | Phase 4 GPU validation (Intel/AMD/NVIDIA) | **needs GPU hosts**, see the runbook in docs/performance.md |
-| Smartcard pre-logon, web/Guacamole path, wlroots desktops, xrdp HW encoder | phase 5 / not supported yet |
+| Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); containers/Keycloak need a lab run |
+| Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
+| xrdp PR #3868 (NLA) | assessed: Kerberos OK only with FreeRDP U2U disabled; no smartcards; proxy stays the NLA point |
+| wlroots desktops, xrdp HW encoder | not started |

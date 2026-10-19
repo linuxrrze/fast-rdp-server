@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Tomcat (8080) cannot be bound to loopback in the Guacamole image; keep it, guacd
+# and the webgate local. Browsers reach them only through nginx on 443.
+table inet fastrdp_web
+delete table inet fastrdp_web
+table inet fastrdp_web {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        iifname != "lo" tcp dport { 4822, 8080, 8090 } ct state new drop
+    }
+}

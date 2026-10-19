@@ -1,6 +1,7 @@
 # {{ ansible_managed }}
 [broker]
 proxy_user = "_fastrdp-proxy"
+socket_group = "_fastrdp-broker"
 port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range[1] }}]
 
 [auth]
@@ -45,6 +46,12 @@ xsession = "{{ fastrdp_desktop_xsessions[desk] }}"
 {% endif %}
 
 {% endfor %}
+[web]
+enabled = {{ fastrdp_web_enabled | bool | lower }}
+gateway_user = "_fastrdp-web"
+# guacd runs with host networking and connects to the proxy via loopback
+allowed_clients = ["127.0.0.1", "::1"]
+
 [backends.xrdp]
 port = {{ fastrdp_xrdp_port }}
 listener_user = "root"   # xrdp binds as root, then drops to runtime_user

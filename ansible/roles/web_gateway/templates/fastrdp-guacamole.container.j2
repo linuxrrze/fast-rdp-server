@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+# Only the JSON auth extension is enabled: users arrive with an encrypted, signed,
+# 30-second connection blob from fastrdp-webgate.
+[Unit]
+Description=Guacamole web application (fastrdp web path)
+Requires=fastrdp-guacd.service
+After=fastrdp-guacd.service
+
+[Container]
+Image={{ fastrdp_guacamole_image }}
+ContainerName=fastrdp-guacamole
+Network=host
+Environment=GUACD_HOSTNAME=127.0.0.1
+Environment=GUACD_PORT=4822
+Environment=WEBAPP_CONTEXT=guacamole
+Environment=JSON_ENABLED=true
+# JSON_SECRET_KEY: read by podman from a root-only file at start, so it never
+# appears in the generated unit (systemctl cat/show are world-readable).
+EnvironmentFile=/etc/fastrdp/guacamole.env
+Environment=REMOTE_IP_VALVE_ENABLED=true
+NoNewPrivileges=true
+# Own subordinate uid range: container processes do not share a uid with host users.
+UserNS=auto
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

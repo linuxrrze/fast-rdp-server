@@ -1,0 +1,33 @@
+# /etc/fastrdp/webgate.toml (rendered by ansible role "web_gateway")
+[webgate]
+listen = "127.0.0.1:8090"
+public_url = "https://rdp1.lab.example.com"
+path_prefix = "/web"
+cookie_secret_file = "/etc/fastrdp/webgate-cookie.secret"
+session_lifetime = 900
+broker_socket = "/run/fastrdp/broker.sock"
+desktops = ["xfce", "mate", "gnome", "plasma"]
+
+[oidc]
+issuer = "https://keycloak.lab.example.com/realms/lab"
+client_id = "fastrdp-web"
+client_secret_file = "/etc/fastrdp/webgate-oidc.secret"
+scopes = "openid profile"
+username_claim = "preferred_username"
+strip_domains = ["lab.example.com"]       # alice@lab.example.com -> alice; other domains refused
+# Prove MFA: Keycloak puts the step-up level into "acr" (Authentication flow
+# "Condition - Level of Authentication"); configure the client's ACR to LoA mapping.
+required_acr = ["mfa"]
+required_amr_any = []
+
+[guacamole]
+url = "/guacamole/"
+json_secret_key_file = "/etc/fastrdp/guacamole-json.key"
+connection_host = "127.0.0.1"
+connection_port = 3389
+data_ttl = 30
+cert_fingerprint_file = "/etc/fastrdp/front.fingerprint"
+
+[guacamole.rdp_parameters]
+enable-font-smoothing = "true"
+color-depth = "32"

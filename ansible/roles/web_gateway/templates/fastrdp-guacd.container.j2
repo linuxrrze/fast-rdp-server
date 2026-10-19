@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# guacd connects to the fastrdp proxy at 127.0.0.1 (host network), which the broker
+# requires for web tokens. It listens on loopback only.
+[Unit]
+Description=Guacamole proxy daemon (fastrdp web path)
+
+[Container]
+Image={{ fastrdp_guacd_image }}
+ContainerName=fastrdp-guacd
+Network=host
+Entrypoint=/opt/guacamole/sbin/guacd
+Exec=-f -b 127.0.0.1 -l 4822 -L info
+NoNewPrivileges=true
+# Own subordinate uid range: container processes do not share a uid with host users.
+UserNS=auto
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

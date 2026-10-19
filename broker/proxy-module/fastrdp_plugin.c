@@ -52,6 +52,7 @@
 typedef struct
 {
 	BOOL nla;
+	BOOL smartcard; /* TSSmartCardCreds: the "password" is the card PIN */
 	char* user;
 	char* domain;
 	char* password;
@@ -322,15 +323,21 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 			wipe_free(&s->domain);
 			s->domain = _strdup(td);
 		}
-		if (tp && *tp)
+		/* With smartcard logon (PKINIT) the client delegates TSSmartCardCreds and FreeRDP
+		 * stores the PIN as "password". Never pass a PIN on as a password: it would end up
+		 * in pam_sss (failed-logon counters, lockouts) or at the MFA server. */
+		s->smartcard = freerdp_settings_get_bool(front, FreeRDP_PasswordIsSmartcardPin);
+		if (tp && *tp && !s->smartcard)
 		{
 			wipe_free(&s->password);
 			s->password = _strdup(tp);
 		}
+		if (s->smartcard)
+			wipe_free(&s->password);
 		if (!s->user)
 			s->user = _strdup(ai.User);
-		WLog_INFO(TAG, "[%s] NLA logon: principal %s, rdp user %s", pdata->session_id,
-		          s->principal, s->user ? s->user : "(none)");
+		WLog_INFO(TAG, "[%s] NLA logon: principal %s, rdp user %s%s", pdata->session_id,
+		          s->principal, s->user ? s->user : "(none)", s->smartcard ? " (smartcard)" : "");
 	}
 	else if (!config_bool(pdata, "AllowTls", FALSE))
 	{
@@ -390,8 +397,12 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	add_str(req, "domain", s->domain);
 	add_str(req, "password", s->password);
 	add_str(req, "principal", s->principal);
+	cJSON_AddBoolToObject(req, "smartcard", s->smartcard);
 	add_str(req, "desktop_hint", freerdp_settings_get_string(front, FreeRDP_AlternateShell));
-	add_str(req, "client_address", freerdp_settings_get_string(front, FreeRDP_ClientAddress));
+	/* The socket's peer address, not FreeRDP_ClientAddress: the latter comes from the
+	 * client's own Client Info PDU and can be anything. */
+	const freerdp_peer* peer = pdata->ps->peer;
+	add_str(req, "client_address", (peer && peer->hostname[0]) ? peer->hostname : NULL);
 	cJSON_AddNumberToObject(req, "width", freerdp_settings_get_uint32(front, FreeRDP_DesktopWidth));
 	cJSON_AddNumberToObject(req, "height",
 	                        freerdp_settings_get_uint32(front, FreeRDP_DesktopHeight));

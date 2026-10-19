@@ -1,0 +1,175 @@
+---
+- name: Web path needs an OIDC client secret
+  ansible.builtin.assert:
+    that: fastrdp_web_oidc_client_secret | length > 0
+    fail_msg: Set vault_fastrdp_web_oidc_client_secret (Keycloak client fastrdp-web).
+
+- name: Packages
+  ansible.builtin.apt:
+    name: [podman, nginx, python3-cryptography]
+    state: present
+
+- name: Webgate service account
+  ansible.builtin.user:
+    name: _fastrdp-web
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Webgate package
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/webgate/fastrdp_webgate"
+    dest: /usr/lib/fastrdp/python/
+    owner: root
+    group: root
+    mode: u=rwX,g=rX,o=rX
+  notify: Restart fastrdp-webgate
+
+- name: Generate secrets once (cookie signing key, Guacamole JSON key)
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      umask 077
+      [ -s {{ item.path }} ] || openssl rand -hex {{ item.bytes }} > {{ item.path }}
+    creates: "{{ item.path }}"
+  loop:
+    - {path: /etc/fastrdp/webgate-cookie.secret, bytes: 32}
+    - {path: /etc/fastrdp/guacamole-json.key, bytes: 16}
+
+- name: OIDC client secret
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/webgate-oidc.secret
+    content: "{{ fastrdp_web_oidc_client_secret }}\n"
+    mode: "0640"
+    owner: root
+    group: _fastrdp-web
+  no_log: true
+  notify: Restart fastrdp-webgate
+
+- name: Secrets readable by the webgate
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: _fastrdp-web
+    mode: "0640"
+  loop: [/etc/fastrdp/webgate-cookie.secret, /etc/fastrdp/guacamole-json.key]
+
+- name: CA of the IdP
+  ansible.builtin.copy:
+    src: "{{ fastrdp_web_oidc_ca_src }}"
+    dest: /etc/fastrdp/webgate-idp-ca.pem
+    mode: "0644"
+  when: fastrdp_web_oidc_ca_src | length > 0
+
+- name: Guacamole JSON key for the container
+  ansible.builtin.slurp:
+    src: /etc/fastrdp/guacamole-json.key
+  register: fastrdp_guac_key
+  no_log: true
+
+- name: Container environment with the JSON key (root only, read by podman at start)
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/guacamole.env
+    content: "JSON_SECRET_KEY={{ fastrdp_guac_key.content | b64decode | trim }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Restart guacamole
+
+- name: Subordinate ids for podman UserNS=auto
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: "^containers:"
+    line: "containers:2147483647:2147483648"
+    create: true
+    mode: "0644"
+  loop: [/etc/subuid, /etc/subgid]
+
+- name: Fingerprint of the proxy certificate (guacd pins it)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      openssl x509 -in /etc/fastrdp/front.crt -noout -fingerprint -sha256
+      | sed 's/^.*=//' | tr 'A-F' 'a-f'
+    executable: /bin/bash
+  register: fastrdp_front_fp
+  changed_when: false
+
+- name: Store the fingerprint for the webgate
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/front.fingerprint
+    content: "sha256:{{ fastrdp_front_fp.stdout | trim }}\n"
+    owner: root
+    group: _fastrdp-web
+    mode: "0640"
+  notify: Restart fastrdp-webgate
+
+- name: Webgate configuration
+  ansible.builtin.template:
+    src: webgate.toml.j2
+    dest: /etc/fastrdp/webgate.toml
+    owner: root
+    group: _fastrdp-web
+    mode: "0640"
+  notify: Restart fastrdp-webgate
+
+- name: Webgate unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-webgate.service"
+    dest: /etc/systemd/system/fastrdp-webgate.service
+    mode: "0644"
+  notify: Restart fastrdp-webgate
+
+- name: Quadlet directory
+  ansible.builtin.file:
+    path: /etc/containers/systemd
+    state: directory
+    mode: "0755"
+
+- name: Guacamole containers (podman quadlets)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/containers/systemd/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [fastrdp-guacd.container, fastrdp-guacamole.container]
+  notify: Restart guacamole
+
+- name: Guacamole/guacd/webgate ports stay local (host networking)
+  ansible.builtin.template:
+    src: fastrdp-web.nft.j2
+    dest: /etc/nftables.d/fastrdp-web.nft
+    mode: "0644"
+  notify: Reload nftables
+
+- name: Reverse proxy
+  ansible.builtin.template:
+    src: nginx-fastrdp-web.conf.j2
+    dest: /etc/nginx/sites-available/fastrdp-web.conf
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Reverse proxy enabled
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/fastrdp-web.conf
+    dest: /etc/nginx/sites-enabled/fastrdp-web.conf
+    state: link
+  notify: Reload nginx
+
+- name: Default nginx site disabled
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Services running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: "{{ omit if item.startswith('fastrdp-guac') else true }}"
+    daemon_reload: true
+  loop: [fastrdp-guacd.service, fastrdp-guacamole.service, fastrdp-webgate.service, nginx.service]

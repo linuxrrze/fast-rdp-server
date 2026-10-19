@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+[webgate]
+listen = "127.0.0.1:8090"
+public_url = "{{ fastrdp_web_public_url }}"
+path_prefix = "/web"
+cookie_secret_file = "/etc/fastrdp/webgate-cookie.secret"
+session_lifetime = {{ fastrdp_web_session_lifetime }}
+broker_socket = "/run/fastrdp/broker.sock"
+desktops = {{ fastrdp_web_desktops | to_json }}
+
+[oidc]
+issuer = "{{ fastrdp_web_oidc_issuer }}"
+client_id = "{{ fastrdp_web_oidc_client_id }}"
+client_secret_file = "/etc/fastrdp/webgate-oidc.secret"
+username_claim = "{{ fastrdp_web_username_claim }}"
+strip_domains = {{ fastrdp_web_strip_domains | to_json }}
+required_acr = {{ fastrdp_web_required_acr | to_json }}
+required_amr_any = {{ fastrdp_web_required_amr_any | to_json }}
+ca_file = "{{ '/etc/fastrdp/webgate-idp-ca.pem' if fastrdp_web_oidc_ca_src | length > 0 else '' }}"
+
+[guacamole]
+url = "/guacamole/"
+json_secret_key_file = "/etc/fastrdp/guacamole-json.key"
+connection_host = "127.0.0.1"
+connection_port = {{ fastrdp_listen_port }}
+data_ttl = 30
+cert_fingerprint_file = "/etc/fastrdp/front.fingerprint"
+
+[guacamole.rdp_parameters]
+{% for k, v in fastrdp_web_rdp_parameters.items() %}
+{{ k | to_json }} = {{ v | string | to_json }}
+{% endfor %}

@@ -18,6 +18,9 @@ class BrokerSection:
     socket: str = "/run/fastrdp/broker.sock"
     token_socket: str = "/run/fastrdp/token.sock"
     proxy_user: str = "_fastrdp-proxy"
+    # Group owning broker.sock (proxy + webgate join it); "" = the proxy user's group.
+    # Keep it separate from the proxy's own group, which can read the keytab and TLS key.
+    socket_group: str = ""
     state_dir: str = "/var/lib/fastrdp"
     runtime_dir: str = "/run/fastrdp"
     port_range: tuple[int, int] = (33900, 34899)
@@ -32,6 +35,16 @@ class AuthSection:
     pam_service: str = "fastrdp"
     allow_groups: list[str] = field(default_factory=list)
     allow_tls_password_login: bool = True
+
+
+@dataclass
+class WebSection:
+    """Browser access through fastrdp-webgate + Guacamole (MFA happens at the IdP)."""
+    enabled: bool = False
+    gateway_user: str = "_fastrdp-web"   # uid allowed to request web tokens
+    # Web tokens are only accepted on logins coming from guacd (client address seen by the proxy).
+    allowed_clients: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
+    token_ttl: int = 60
 
 
 @dataclass
@@ -81,6 +94,7 @@ class Config:
     broker: BrokerSection
     auth: AuthSection
     mfa: MfaSection
+    web: WebSection
     desktops: dict[str, Desktop]
     backends: dict[str, BackendSection]
     default_desktop: str
@@ -131,6 +145,7 @@ def parse(raw: dict) -> Config:
     mfa_raw = dict(raw.pop("mfa", {}))
     pi = _section(PrivacyIdeaSection, dict(mfa_raw.pop("privacyidea", {})), "mfa.privacyidea")
     mfa = _section(MfaSection, mfa_raw, "mfa")
+    web = _section(WebSection, dict(raw.pop("web", {})), "web")
     mfa.privacyidea = pi
     if mfa.mode not in VALID_MFA_MODES:
         raise ConfigError(f"[mfa] mode must be one of {VALID_MFA_MODES}")
@@ -182,6 +197,7 @@ def parse(raw: dict) -> Config:
         broker=broker,
         auth=auth,
         mfa=mfa,
+        web=web,
         desktops=desktops,
         backends=backends,
         default_desktop=default_desktop,

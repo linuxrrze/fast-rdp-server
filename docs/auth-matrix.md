@@ -7,12 +7,16 @@
 | NLA, user types a password (mstsc, xfreerdp3 `/u /p`, Remmina) | Kerberos (client gets a ticket with the password) | `push` (`otp_or_push`/`push`) | yes, the delegated password reaches `pam_sss` | **Recommended.** The client must reach a KDC (VPN, or a KDC proxy in FreeRDP). |
 | NLA, single sign-on from a domain-joined Windows client | Kerberos ticket of the logged-on user | `push` | only if Windows delegates the password ("Allow delegating default credentials") | Without a password: xrdp sessions have no TGT (`kinit` inside the session) |
 | TLS, password+OTP in one field | PAM `fastrdp` (SSSD) | OTP appended to the password (`otp`, `otp_or_push`) | yes | For clients without Kerberos. Needs `fastrdp_allow_tls_logins: true`. |
-| Web: Guacamole + Keycloak (phase 5) | Keycloak (OIDC) | Keycloak / privacyIDEA incl. FIDO2/WebAuthn | no | Planned |
-| Smartcard / PIV logon | not supported | – | – | freerdp-proxy has no smartcard CredSSP on the server side; xrdp disables smartcard redirection by default since 0.10.6 |
+| Web: Guacamole + Keycloak | Keycloak (OIDC) | at Keycloak (OTP, WebAuthn/FIDO2, privacyIDEA), proven by `acr`/`amr` | no | `fastrdp_web_enabled`; see [web-access.md](web-access.md) |
+| Smartcard / PIV / YubiKey PIV (NLA) | Kerberos via **PKINIT** (certificate + PIN) | `push`, or exempt group for "smart card required" accounts | no (PIN is never forwarded) | Tested with a software token; real cards/AD/mstsc to validate. See [smartcard-nla.md](smartcard-nla.md) |
 
-YubiKeys work as **YubiKey OTP** (44 modhex characters appended to the password,
-detected automatically) or as TOTP/HOTP tokens enrolled in privacyIDEA. FIDO2 is
-web-only.
+YubiKeys work in three ways:
+- **PIV smartcard** (NLA logon via PKINIT);
+- **YubiKey OTP** (44 modhex characters appended to the password, detected
+  automatically);
+- TOTP/HOTP tokens enrolled in privacyIDEA.
+
+FIDO2/WebAuthn is available on the web path (at Keycloak).
 
 ## MFA modes (`fastrdp_mfa_mode`)
 

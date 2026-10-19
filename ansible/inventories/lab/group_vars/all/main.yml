@@ -19,6 +19,9 @@ fastrdp_front_key_src: ""
 # Accept clients without NLA (password + OTP typed into one field).
 fastrdp_allow_tls_logins: true
 
+# Browser access via Keycloak + Guacamole (role web_gateway, docs/web-access.md)
+fastrdp_web_enabled: false
+
 # ---------------------------------------------------------------- MFA
 # none | otp | push | otp_or_push   (see docs/auth-matrix.md)
 fastrdp_mfa_mode: none

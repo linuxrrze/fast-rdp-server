@@ -1,0 +1,22 @@
+---
+# Browser access: Keycloak (OIDC) -> fastrdp-webgate -> Guacamole -> fastrdp proxy.
+fastrdp_web_enabled: false
+fastrdp_web_public_url: "https://{{ ansible_fqdn }}"
+fastrdp_web_oidc_issuer: https://keycloak.lab.example.com/realms/lab
+fastrdp_web_oidc_client_id: fastrdp-web
+fastrdp_web_oidc_client_secret: "{{ vault_fastrdp_web_oidc_client_secret | default('') }}"
+fastrdp_web_oidc_ca_src: ""
+fastrdp_web_username_claim: preferred_username
+# user@<domain> claims are accepted only for these domains; anything else is refused
+fastrdp_web_strip_domains: ["{{ fastrdp_domain | lower }}"]
+# MFA proof required from the IdP (see docs/web-access.md)
+fastrdp_web_required_acr: [mfa]
+fastrdp_web_required_amr_any: []
+fastrdp_web_desktops: "{{ fastrdp_desktops }}"
+fastrdp_web_session_lifetime: 900   # webgate login only; RDP sessions are not affected
+fastrdp_guacamole_version: 1.6.0
+fastrdp_guacamole_image: "docker.io/guacamole/guacamole:{{ fastrdp_guacamole_version }}"
+fastrdp_guacd_image: "docker.io/guacamole/guacd:{{ fastrdp_guacamole_version }}"
+fastrdp_web_rdp_parameters:
+  enable-font-smoothing: "true"
+  color-depth: "32"

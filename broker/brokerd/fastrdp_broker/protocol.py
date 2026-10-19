@@ -2,7 +2,7 @@
 
 Proxy module -> broker.sock:
   {"op": "login", "session_id": str, "method": "nla"|"tls", "user": str, "domain": str,
-   "password": str|null, "principal": str|null, "desktop_hint": str|null,
+   "password": str|null, "principal": str|null, "smartcard": bool, "desktop_hint": str|null,
    "client_address": str|null, "width": int|null, "height": int|null}
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
@@ -10,6 +10,10 @@ Proxy module -> broker.sock:
   -> {"ok": false, "error": str}
 
   {"op": "end", "session_id": str}  -> {"ok": true}
+
+fastrdp-webgate ([web] gateway_user) -> broker.sock:
+  {"op": "web_token", "user": str}
+  -> {"ok": true, "user": str, "token": "fastrdp-web1:...", "desktops": [str]}
 
 PAM module -> token.sock (root only):
   {"op": "redeem", "user": str, "token": str} -> {"ok": true, "password": str|null}

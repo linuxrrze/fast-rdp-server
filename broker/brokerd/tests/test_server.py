@@ -18,19 +18,22 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "broker.toml.example"
 ME = pwd.getpwuid(os.getuid())
 
 
-def make_cfg(tmp: str, **mfa) -> config.Config:
+def make_cfg(tmp: str, web: bool = False, **mfa) -> config.Config:
     with open(EXAMPLE, "rb") as fh:
         raw = tomllib.load(fh)
     raw["broker"].update(
         socket=f"{tmp}/broker.sock",
         token_socket=f"{tmp}/token.sock",
         proxy_user=ME.pw_name,
+        socket_group="",
         state_dir=f"{tmp}/state",
         runtime_dir=f"{tmp}/run",
     )
     raw["auth"]["allow_groups"] = []
     raw["mfa"]["mode"] = "none"
     raw["mfa"].update(mfa)
+    if web:
+        raw["web"] = {"enabled": True, "gateway_user": ME.pw_name, "allowed_clients": ["127.0.0.1"]}
     return config.parse(raw)
 
 
@@ -55,7 +58,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         from fastrdp_broker.server import Broker
 
         self.tmp = tempfile.TemporaryDirectory()
-        self.cfg = make_cfg(self.tmp.name)
+        self.cfg = make_cfg(self.tmp.name, web=True)
         self.broker = Broker(self.cfg)
         self.target = Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls")
         self.ensure = mock.AsyncMock(return_value=self.target)
@@ -88,6 +91,14 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply["target"]["port"], 3390)
         req = self.ensure.call_args.args[0]
         self.assertEqual((req.user.name, req.password, req.width, req.desktop.name), ("alice", "pw", 2560, "xfce"))
+
+    async def test_smartcard_pin_never_used_as_password(self):
+        reply = await request(self.cfg.broker.socket, {
+            "op": "login", "session_id": "sc", "method": "nla", "user": "alice",
+            "principal": "alice@EXAMPLE.COM", "password": "123456", "smartcard": True,
+        })
+        self.assertTrue(reply["ok"], reply)
+        self.assertIsNone(self.ensure.call_args.args[0].password)
 
     async def test_nla_principal_mismatch_denied(self):
         reply = await request(self.cfg.broker.socket, {
@@ -171,6 +182,64 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         self.assertEqual(await reader.read(), b"")
         writer.close()
+
+
+class WebTokenTests(BrokerTests):
+    """Browser path: webgate -> web_token -> Guacamole/guacd -> proxy (TLS) -> broker."""
+
+    async def get_web_token(self, user="alice"):
+        reply = await request(self.cfg.broker.socket, {"op": "web_token", "user": user})
+        self.assertTrue(reply["ok"], reply)
+        self.assertIn("xfce", reply["desktops"])
+        return reply["token"]
+
+    def web_login(self, token, address="127.0.0.1", user="alice"):
+        return request(self.cfg.broker.socket, {
+            "op": "login", "session_id": "w1", "method": "tls", "user": user,
+            "password": token, "client_address": address, "desktop_hint": "fastrdp:mate",
+        })
+
+    async def test_web_token_login_once_and_skips_mfa(self):
+        self.broker.mfa.cfg.mode = "push"
+        self.broker.mfa.pi = mock.Mock()
+        token = await self.get_web_token()
+        self.assertTrue(token.startswith("fastrdp-web1:"))
+        reply = await self.web_login(token)
+        self.assertTrue(reply["ok"], reply)
+        self.broker.mfa.pi.trigger_challenge.assert_not_called()
+        from fastrdp_broker import pamauth
+        pamauth.authenticate.assert_not_called()
+        self.assertIsNone(self.ensure.call_args.args[0].password)
+        self.assertFalse((await self.web_login(token))["ok"])  # single use
+
+    async def test_web_token_wrong_client_address(self):
+        token = await self.get_web_token()
+        self.assertFalse((await self.web_login(token, address="10.1.2.3"))["ok"])
+
+    async def test_web_token_bound_to_user(self):
+        token = await self.get_web_token("alice")
+        self.assertFalse((await self.web_login(token, user="bob"))["ok"])
+
+    async def test_web_token_not_valid_for_xrdp_pam(self):
+        token = await self.get_web_token()
+        self.assertEqual(self.broker.tokens.redeem("alice", token), (False, None))
+
+
+class WebDisabledTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_token_op_refused_when_disabled(self):
+        from fastrdp_broker.server import Broker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(tmp)
+            broker = Broker(cfg)
+            task = asyncio.create_task(broker.serve())
+            for _ in range(50):
+                if os.path.exists(cfg.broker.socket):
+                    break
+                await asyncio.sleep(0.02)
+            reply = await request(cfg.broker.socket, {"op": "web_token", "user": "alice"})
+            self.assertEqual(reply, {"ok": False, "error": "not permitted"})
+            task.cancel()
 
 
 if __name__ == "__main__":

@@ -56,6 +56,8 @@ class PlasmaBackend(Backend):
         port = self.allocate_port()
         try:
             return await self._start(req, port)
+        except sysutil.CommandError as exc:  # e.g. back-end certificate creation
+            raise BackendError(f"Plasma session for {user.name}: {exc}") from None
         finally:
             self.release_port(port)
 

@@ -26,6 +26,7 @@ desktop session. A small broker decides who gets in and which desktop they get.
 | fastrdp proxy module | `broker/proxy-module/` (C) | in the proxy | Binds NLA identity to the Kerberos principal, asks the broker, routes to the back-end, swaps credentials |
 | `fastrdp-brokerd` | `broker/brokerd/` (Python, stdlib only) | root | Account and group checks, MFA, desktop choice, session start/reuse, one-time tokens |
 | `pam_fastrdp_token` | `broker/pam_fastrdp_token/` (C) | in xrdp-sesman | xrdp accepts only one-time broker tokens; hands the real password on for the TGT |
+| fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)) |
 | xrdp + xorgxrdp | built from release tarballs by Ansible | `xrdp` (daemon), root (sesman) | X11 desktops, H.264 via x264 |
 | gnome-remote-desktop | distro package | the user | GNOME headless sessions, hardware H.264 (VA-API/NVENC) |
 | KRdp | distro package | the user | Plasma sessions (FreeRDP + PipeWire, VA-API H.264) |
@@ -38,6 +39,10 @@ desktop session. A small broker decides who gets in and which desktop they get.
      checked that way.
    - *TLS* (optional, `fastrdp_allow_tls_logins`): the client sends user and
      password (+OTP) in the Client Info PDU. The broker verifies them through PAM.
+   - *Smartcard*: NLA as above. The client got its ticket by PKINIT, and the
+     card PIN is never forwarded ([smartcard-nla.md](smartcard-nla.md)).
+   - *Web*: guacd logs in over TLS with a one-time `fastrdp-web1:` token, which
+     is accepted only from loopback and only once.
 2. **Identity binding** (module, `ServerPeerLogon`). For NLA the module reads the
    authenticated principal with `SECPKG_ATTR_AUTH_IDENTITY`. The user name and
    password from the client's TSCredentials are only used if the user matches that
@@ -94,7 +99,7 @@ desktop session. A small broker decides who gets in and which desktop they get.
   - g-r-d/KRdp credentials are random per session and stored in the root-only
     `/var/lib/fastrdp/sessions.json`.
 - **Sockets:**
-  - `broker.sock` (0660, group `_fastrdp-proxy`) accepts `login`/`end` only from
+  - `broker.sock` (0660, group `_fastrdp-broker`: proxy and webgate) accepts `login`/`end` only from
     the proxy uid, and `status`/`logout` only from root.
   - `token.sock` (0600) accepts only root, i.e. xrdp-sesman.
 

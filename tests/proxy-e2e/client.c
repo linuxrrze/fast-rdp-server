@@ -1,7 +1,9 @@
 /* Minimal headless RDP client for the e2e tests.
  * usage: client HOST PORT USER PASSWORD SHELL
  * Default: TLS security, credentials in the Client Info PDU.
- * E2E_NLA=1: NLA with Kerberos only (E2E_DOMAIN = realm), credentials via CredSSP. */
+ * E2E_NLA=1: NLA with Kerberos only (E2E_DOMAIN = realm), credentials via CredSSP.
+ * E2E_PKCS11=/path/module.so (with E2E_NLA=1): smartcard logon, PKINIT through the
+ *   PKCS#11 token; PASSWORD is the PIN. */
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
 #include <stdio.h>
@@ -19,6 +21,8 @@ int main(int argc, char** argv)
 	freerdp_settings_set_string(s, FreeRDP_Password, argv[4]);
 	freerdp_settings_set_string(s, FreeRDP_AlternateShell, argv[5]);
 	freerdp_settings_set_bool(s, FreeRDP_AutoLogonEnabled, TRUE);
+	if (getenv("E2E_CLIENT_ADDRESS")) /* claimed address in the Client Info PDU */
+		freerdp_settings_set_string(s, FreeRDP_ClientAddress, getenv("E2E_CLIENT_ADDRESS"));
 	const BOOL nla = getenv("E2E_NLA") && strcmp(getenv("E2E_NLA"), "1") == 0;
 	freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, nla);
 	freerdp_settings_set_bool(s, FreeRDP_RdpSecurity, FALSE);
@@ -26,9 +30,18 @@ int main(int argc, char** argv)
 	if (nla)
 	{
 		freerdp_settings_set_string(s, FreeRDP_Domain, getenv("E2E_DOMAIN"));
-		freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "kerberos,!ntlm");
+		freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList,
+		                            getenv("E2E_AUTH_PKGS") ? getenv("E2E_AUTH_PKGS") : "kerberos,!ntlm");
+		if (getenv("E2E_PKCS11"))
+		{
+			freerdp_settings_set_bool(s, FreeRDP_SmartcardLogon, TRUE);
+			freerdp_settings_set_string(s, FreeRDP_Pkcs11Module, getenv("E2E_PKCS11"));
+		}
 	}
-	freerdp_settings_set_bool(s, FreeRDP_IgnoreCertificate, TRUE);
+	if (getenv("E2E_CERT_FP")) /* pin like guacd's cert-fingerprints, no ignore */
+		freerdp_settings_set_string(s, FreeRDP_CertificateAcceptedFingerprints, getenv("E2E_CERT_FP"));
+	else
+		freerdp_settings_set_bool(s, FreeRDP_IgnoreCertificate, TRUE);
 	freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, 2560);
 	freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, 1440);
 	BOOL ok = freerdp_connect(inst);

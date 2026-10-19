@@ -40,7 +40,7 @@ Multitouch=true
 
 [Security]
 ServerNlaSecurity=true
-ServerTlsSecurity={{ fastrdp_allow_tls_logins | bool | lower }}
+ServerTlsSecurity={{ (fastrdp_allow_tls_logins | bool or fastrdp_web_enabled | bool) | lower }}
 ServerRdpSecurity=false
 ServerExtSecurity=false
 ; per-target values are set by the module (TLS for xrdp, NLA for g-r-d/KRdp)
@@ -61,4 +61,6 @@ PrivateKeyFile=/etc/fastrdp/front.key
 [FastRDP]
 BrokerSocket=/run/fastrdp/broker.sock
 Timeout={{ fastrdp_proxy_broker_timeout }}
-AllowTls={{ fastrdp_allow_tls_logins | bool | lower }}
+; TLS logins are needed for password+OTP clients and for the web path (guacd has no
+; Kerberos); the broker decides which credentials it accepts on them.
+AllowTls={{ (fastrdp_allow_tls_logins | bool or fastrdp_web_enabled | bool) | lower }}

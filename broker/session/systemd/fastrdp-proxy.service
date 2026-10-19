@@ -7,6 +7,7 @@ Wants=network-online.target fastrdp-brokerd.service
 Type=simple
 User=_fastrdp-proxy
 Group=_fastrdp-proxy
+SupplementaryGroups=_fastrdp-broker
 # Kerberos NLA: the acceptor reads TERMSRV/<fqdn> keys from this keytab.
 Environment=KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab
 Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
