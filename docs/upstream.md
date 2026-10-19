@@ -119,9 +119,10 @@ one MIT selects, not only xrdp:
 |---|---|---|---|
 | 1.22.1 (Ubuntu 26.04) | rejected, `GSS_S_DEFECTIVE_TOKEN` | ok | exit 1 "AFFECTED" |
 | 1.22.2 (self-built, `MIT_LIBDIR=`) | ok | ok | exit 0 |
+| 1.21.3 (Debian 13, with its WinPR 3.15) | rejected, `GSS_S_DEFECTIVE_TOKEN` | rejected the same way: WinPR 3.15 knows no `u2u` package name and still offers U2U first | exit 1 "AFFECTED" (Kerberos completed, only the MIC token rejected) |
 
-The client in both runs is the stock Ubuntu FreeRDP 3.32.1, so FreeRDP needs no
-change.
+The client in the first two runs is the stock Ubuntu FreeRDP 3.32.1, so FreeRDP needs
+no change. With Debian 13's WinPR 3.15 and MIT 1.22.2 both runs succeed (exit 0).
 
 A side observation, not reported: WinPR records Kerberos sequence numbers only when
 `ISC_REQ_SEQUENCE_DETECT` is requested, so its MIC tokens carry `SND_SEQ = 0`. MIT

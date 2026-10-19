@@ -8,6 +8,8 @@
 #
 # Exit 0: MIT acceptor fine. Exit 1: affected (defaults fail, !u2u works). Other: setup
 # or unexpected failure.
+# WinPR before "u2u" became a package name (Debian 13: 3.15) offers U2U first in both
+# runs; then "affected" means: Kerberos completed, only the MIC token was rejected.
 #
 # Needs libwinpr3-dev (FreeRDP 3), libkrb5-dev, krb5-kdc, krb5-admin-server, or
 # SYSROOT / KRB5_SYSROOT with them extracted. WINPR_LIBDIR / MIT_LIBDIR test other
@@ -79,10 +81,25 @@ if [ $rc_default -eq 0 ] && [ $rc_nou2u -eq 0 ]; then
     echo "ok   MIT acceptor handles the initiator mechListMIC"
     exit 0
 fi
-if [ $rc_default -eq 6 ] && [ $rc_nou2u -eq 0 ]; then
+# The acceptor rejected the round 3 token (only the mechListMIC, after the AP exchange)
+# as GSS_S_DEFECTIVE_TOKEN
+mic_rejected() {
+    awk '/^round /{r=$2} /MIT acceptor: major/{m=$4; mr=r}
+         END{exit !(mr == "3:" && m == "0x90000")}' "$1"
+}
+affected() {
     echo "AFFECTED: MIT krb5 ignores the initiator's mechListMIC (krb5 #9183, fixed in 1.22.2)"
     grep -A3 "^round 3" out.default | sed 's/^/    /'
     exit 1
+}
+if [ $rc_default -eq 6 ] && [ $rc_nou2u -eq 0 ]; then
+    affected
+fi
+if [ $rc_default -eq 6 ] && [ $rc_nou2u -eq 6 ] &&
+   grep -q 'Unknown authentication package name: u2u' out.nou2u &&
+   mic_rejected out.default && mic_rejected out.nou2u; then
+    echo "note: this WinPR cannot exclude U2U, so there is no run without the MIC exchange"
+    affected
 fi
 echo "unexpected result"; cat out.default out.nou2u
 exit 2

@@ -17,8 +17,10 @@ for u in _fastrdp-proxy _fastrdp-web xrdp; do check "user $u" getent passwd "$u"
 check "proxy module in fastrdp-freerdp3's plugin directory" test -f "$PLUGIN"
 for f in "$P/bin/freerdp-proxy" "$P/bin/xfreerdp" "$PLUGIN"; do
     check "$f: all libraries resolve" bash -c '! env -u LD_LIBRARY_PATH ldd "$1" | grep "not found"' _ "$f"
+    # ldd prints $ORIGIN paths unnormalized (/opt/fastrdp/bin/../lib/libfreerdp3.so.3)
     check "$f: FreeRDP from $P/lib" \
-        bash -c 'env -u LD_LIBRARY_PATH ldd "$1" | grep -E "^\s*libfreerdp3\.so" | grep -q " $2/lib/"' _ "$f" "$P"
+        bash -c 'l=$(env -u LD_LIBRARY_PATH ldd "$1" | awk "/^[[:space:]]*libfreerdp3\\.so/ {print \$3}")
+                 [ -n "$l" ] && [ "$(dirname "$(readlink -f "$l")")" = "$2/lib" ]' _ "$f" "$P"
 done
 # DT_RPATH (not RUNPATH) on fastrdp-freerdp3's own binaries: wins over LD_LIBRARY_PATH
 for f in "$P/bin/freerdp-proxy" "$P/bin/xfreerdp" "$P/lib/libfreerdp-server-proxy3.so.3"; do
