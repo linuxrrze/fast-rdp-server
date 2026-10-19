@@ -3,8 +3,32 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Smoke checks on a deployed fastrdp host (run as root). Prints ok/FAIL per check.
 #   sudo tests/smoke/check-host.sh [test-user]
+#   tests/smoke/check-host.sh --ports      print the ports read from the configuration
 # With a test user, also checks NSS/group resolution and asks the broker for status.
+# Ports come from the deployed configuration (fastrdp_listen_port, fastrdp_xrdp_port).
 set -uo pipefail
+PROXY_INI=${FASTRDP_PROXY_INI:-/etc/fastrdp/proxy.ini}
+BROKER_TOML=${FASTRDP_BROKER_TOML:-/etc/fastrdp/broker.toml}
+
+# ini_value FILE SECTION KEY / toml_value FILE TABLE KEY (flat files written by the roles)
+ini_value() {
+    awk -F= -v s="[$2]" -v k="$3" '
+        /^\[/ { in_s = ($0 == s); next }
+        in_s && $1 ~ "^[ \t]*" k "[ \t]*$" { v = $2; gsub(/[ \t]/, "", v); print v; exit }' "$1" 2>/dev/null
+}
+toml_value() {
+    awk -F= -v s="[$2]" -v k="$3" '
+        /^\[/ { in_s = ($0 == s); next }
+        in_s && $1 ~ "^[ \t]*" k "[ \t]*$" { v = $2; sub(/#.*/, "", v); gsub(/[ \t"]/, "", v); print v; exit }' "$1" 2>/dev/null
+}
+PROXY_PORT=$(ini_value "$PROXY_INI" Server Port)
+XRDP_PORT=$(toml_value "$BROKER_TOML" backends.xrdp port)
+PROXY_PORT=${PROXY_PORT:-3389}
+XRDP_PORT=${XRDP_PORT:-3390}
+if [ "${1:-}" = --ports ]; then
+    echo "proxy=$PROXY_PORT xrdp=$XRDP_PORT"
+    exit 0
+fi
 USER_TO_TEST=${1:-}
 fail=0
 ok()   { echo "ok   $*"; }
@@ -14,8 +38,9 @@ chk()  { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"
 for u in fastrdp-brokerd fastrdp-proxy xrdp-sesman xrdp sssd; do
     chk "service $u active" systemctl is-active --quiet "$u"
 done
-chk "proxy listens on :3389"          bash -c "ss -Hltn 'sport = :3389' | grep -q ."
-chk "xrdp listens on loopback only"   bash -c "ss -Hltn 'sport = :3390' | grep -q '127.0.0.1:3390' && ! ss -Hltn 'sport = :3390' | grep -qv '127.0.0.1'"
+chk "proxy listens on :$PROXY_PORT"    bash -c "ss -Hltn 'sport = :$PROXY_PORT' | grep -q ."
+chk "xrdp listens on loopback only (:$XRDP_PORT)" \
+    bash -c "ss -Hltn 'sport = :$XRDP_PORT' | grep -q '127.0.0.1:$XRDP_PORT' && ! ss -Hltn 'sport = :$XRDP_PORT' | grep -qv '127.0.0.1'"
 chk "broker socket present"           test -S /run/fastrdp/broker.sock
 chk "token socket root-only"          bash -c "[ \"\$(stat -c %a /run/fastrdp/token.sock)\" = 600 ]"
 chk "nftables fastrdp table loaded"   nft list table inet fastrdp
@@ -32,7 +57,7 @@ chk "time in sync (Kerberos)"         bash -c "chronyc tracking | grep -q 'Leap 
 
 # Local users must not reach back-end ports (nftables skuid rule).
 if id nobody >/dev/null 2>&1; then
-    if runuser -u nobody -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/3390' 2>/dev/null; then
+    if runuser -u nobody -- bash -c "exec 3<>/dev/tcp/127.0.0.1/$XRDP_PORT" 2>/dev/null; then
         bad "back-end port reachable by other local users"
     else
         ok "back-end port blocked for other local users"

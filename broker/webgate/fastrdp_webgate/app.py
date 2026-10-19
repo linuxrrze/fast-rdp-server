@@ -38,11 +38,11 @@ class BrokerError(Exception):
     pass
 
 
-def broker_web_token(path: str, user: str, timeout: float = 15) -> dict:
+def broker_request(path: str, op: str, user: str, timeout: float = 15) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         s.connect(path)
-        s.sendall(json.dumps({"op": "web_token", "user": user}).encode() + b"\n")
+        s.sendall(json.dumps({"op": op, "user": user}).encode() + b"\n")
         line = s.makefile("rb").readline(65536)
     try:
         reply = json.loads(line)
@@ -51,6 +51,15 @@ def broker_web_token(path: str, user: str, timeout: float = 15) -> dict:
     if not reply.get("ok"):
         raise BrokerError(reply.get("error", "refused"))
     return reply
+
+
+def broker_web_token(path: str, user: str, timeout: float = 15) -> dict:
+    return broker_request(path, "web_token", user, timeout)
+
+
+def broker_web_desktops(path: str, user: str, timeout: float = 15) -> dict:
+    """Desktops the broker allows this user (no token is issued)."""
+    return broker_request(path, "web_desktops", user, timeout)
 
 
 class Webgate:
@@ -64,6 +73,10 @@ class Webgate:
         self.redirect_uri = cfg.webgate.public_url.rstrip("/") + self.prefix + "/callback"
         self.secure = cfg.webgate.public_url.startswith("https://")
         self.cert_fingerprint = cert_fingerprint
+
+    def offers(self, desktop: str) -> bool:
+        """Desktop offered on the web path ([webgate] desktops; empty = all the broker allows)."""
+        return not self.cfg.webgate.desktops or desktop in self.cfg.webgate.desktops
 
     def username_from_claims(self, claims: dict) -> str | None:
         user = str(claims.get(self.cfg.oidc.username_claim, ""))
@@ -210,15 +223,26 @@ def make_handler(app: Webgate):
             ])
 
         def chooser(self, user: str, csrf: str):
+            # Only desktops the broker allows this user (and the site offers on the web).
+            try:
+                reply = broker_web_desktops(app.cfg.webgate.broker_socket, user)
+            except (OSError, BrokerError) as exc:
+                log.warning("broker refused desktop list for %s: %s", user, exc)
+                return self.error_page(403, "You are not allowed to use remote desktops.")
+            allowed = [d for d in reply.get("desktops", []) if app.offers(d.get("name", ""))]
+            default = reply.get("default", "")
             options = "".join(
-                f'<option value="{html.escape(d)}">{html.escape(d)}</option>'
-                for d in app.cfg.webgate.desktops
+                f'<option value="{html.escape(d["name"])}"{" selected" if d["name"] == default else ""}>'
+                f'{html.escape(d.get("label") or d["name"])}</option>'
+                for d in allowed
             )
+            if not options:
+                return self.error_page(403, "No remote desktop is available for your account.")
             body = (
                 f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
                 f'<form method="post" action="{app.prefix}/connect">'
                 f'<input type="hidden" name="csrf" value="{csrf}">'
-                f'<label>Desktop <select name="desktop"><option value="">default</option>{options}'
+                f'<label>Desktop <select name="desktop">{options}'
                 f'</select></label> <button type="submit">Connect</button></form>'
                 f'<form method="post" action="{app.prefix}/logout">'
                 f'<input type="hidden" name="csrf" value="{csrf}">'
@@ -248,13 +272,17 @@ def make_handler(app: Webgate):
                 return self.redirect(target or app.prefix + "/",
                                      [("Set-Cookie", app.cookie(SESSION_COOKIE, "", 0))])
             desktop = form.get("desktop") or None
-            if desktop and (not SAFE_DESKTOP.match(desktop) or desktop not in app.cfg.webgate.desktops):
+            if desktop and (not SAFE_DESKTOP.match(desktop) or not app.offers(desktop)):
                 return self.error_page(400, "Unknown desktop.")
             try:
                 reply = broker_web_token(app.cfg.webgate.broker_socket, sess["user"])
             except (OSError, BrokerError) as exc:
                 log.warning("broker refused web token for %s: %s", sess["user"], exc)
                 return self.error_page(403, "You are not allowed to use remote desktops.")
+            if desktop and desktop not in reply.get("desktops", []):
+                # The broker would silently start the user's default desktop instead.
+                log.warning("%s asked for desktop %s, which is not allowed", sess["user"], desktop)
+                return self.error_page(403, "This desktop is not available for your account.")
             blob = guacjson.encrypt(app.guac_key, app.connection_payload(reply["user"], reply["token"], desktop))
             sep = "&" if "?" in app.cfg.guacamole.url else "?"
             self.redirect(app.cfg.guacamole.url + sep + "data=" + urllib.parse.quote(blob, safe=""))

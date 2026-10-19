@@ -1,4 +1,5 @@
 ---
-# gpu sets fastrdp_gpu_effective (glamor on/off)
+# common: site-wide defaults and checks; gpu sets fastrdp_gpu_effective (glamor on/off)
 dependencies:
+  - role: common
   - role: gpu

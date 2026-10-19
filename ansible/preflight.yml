@@ -1,0 +1,568 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+#
+# Read-only preflight checks before site.yml (docs/quickstart.md). Uses the same inventory,
+# vault and SSH/sudo settings as the deployment and changes nothing on the targets: only
+# facts, read-only commands (getent, ss, sysfs, timedatectl), TCP probes and HTTP GETs.
+#
+#   cd ansible && ansible-playbook -i inventories/<name>/hosts.yml preflight.yml [--ask-vault-pass] [-K]
+#   make preflight INVENTORY=<name>
+#
+# Prints PASS/WARN/FAIL per check with the fix, and fails the host if any check FAILs.
+- name: Preflight checks for fastrdp hosts (read-only)
+  hosts: rdp_servers
+  become: false
+  gather_facts: true
+  vars:
+    # Role defaults are not loaded in this play: read them, so inventory values still win.
+    preflight_role_defaults: >-
+      {{ query('ansible.builtin.file', *(['common', 'base', 'gpu', 'identity', 'mfa_privacyidea', 'web_gateway', 'xrdp']
+         | map('regex_replace', '^(.*)$', playbook_dir ~ '/roles/\1/defaults/main.yml')))
+         | map('ansible.builtin.from_yaml') | list | ansible.builtin.combine }}
+    # No usable role default (roles/common/tasks/main.yml refuses them empty).
+    preflight_required_vars: [fastrdp_realm, fastrdp_domain]
+    preflight_realm: "{{ fastrdp_realm | default('') }}"
+    preflight_domain: "{{ fastrdp_domain | default('') | lower }}"
+    preflight_idp: "{{ fastrdp_identity_provider | default('') }}"
+    preflight_desktops: "{{ fastrdp_desktops | default([]) }}"
+    preflight_gpu: "{{ fastrdp_gpu | default('auto') }}"
+    preflight_mfa_mode: "{{ fastrdp_mfa_mode | default('none') }}"
+    preflight_listen_port: "{{ fastrdp_listen_port | default(3389) | int }}"
+    preflight_xrdp_port: "{{ fastrdp_xrdp_port | default(3390) | int }}"
+    preflight_port_range: "{{ fastrdp_backend_port_range | default([33900, 34899]) }}"
+    preflight_cert_src: "{{ fastrdp_front_cert_src | default('') }}"
+    preflight_key_src: "{{ fastrdp_front_key_src | default('') }}"
+    preflight_install_method: "{{ fastrdp_install_method | default(preflight_role_defaults.fastrdp_install_method) }}"
+    preflight_apt_repo_url: "{{ fastrdp_apt_repo_url | default(preflight_role_defaults.fastrdp_apt_repo_url) }}"
+    preflight_apt_channel: "{{ fastrdp_apt_channel | default(preflight_role_defaults.fastrdp_apt_channel) }}"
+    # Same expressions as the base role defaults (fastrdp_apt_suite, fastrdp_apt_key_url).
+    preflight_apt_suite: "{{ fastrdp_apt_suite | default(ansible_facts.distribution_release ~ '-' ~ preflight_apt_channel) }}"
+    preflight_apt_key_url: "{{ fastrdp_apt_key_url | default(preflight_apt_repo_url ~ '/fast-rdp-server-archive-keyring.asc') }}"
+    preflight_web_enabled: "{{ fastrdp_web_enabled | default(preflight_role_defaults.fastrdp_web_enabled) | bool }}"
+    preflight_web_issuer: "{{ fastrdp_web_oidc_issuer | default(preflight_role_defaults.fastrdp_web_oidc_issuer) | regex_replace('/+$', '') }}"
+    preflight_web_ca_src: "{{ fastrdp_web_oidc_ca_src | default(preflight_role_defaults.fastrdp_web_oidc_ca_src) }}"
+    preflight_web_secret: "{{ fastrdp_web_oidc_client_secret | default(vault_fastrdp_web_oidc_client_secret | default('')) }}"
+    preflight_pi_url: "{{ fastrdp_privacyidea_url | default('') | regex_replace('/+$', '') }}"
+    preflight_pi_ca_src: "{{ fastrdp_privacyidea_ca_src | default('') }}"
+    preflight_pi_verify: "{{ fastrdp_privacyidea_verify_tls | default(preflight_role_defaults.fastrdp_privacyidea_verify_tls) | bool }}"
+    preflight_keytab_src: "{{ fastrdp_termsrv_keytab_src | default(preflight_role_defaults.fastrdp_termsrv_keytab_src) }}"
+    preflight_render_world: "{{ fastrdp_render_nodes_world_accessible | default(preflight_role_defaults.fastrdp_render_nodes_world_accessible) | bool }}"
+    preflight_drm_device: "{{ fastrdp_xorgxrdp_drm_device | default(preflight_role_defaults.fastrdp_xorgxrdp_drm_device) }}"
+    # Rough sizing of the server itself; sessions need more (detail line of the check).
+    preflight_heavy_desktops: "{{ preflight_desktops | intersect(['gnome', 'plasma', 'plasma-x11', 'cinnamon']) | length > 0 }}"
+    preflight_min_ram_mb: "{{ 4096 if preflight_heavy_desktops else 2048 }}"
+    preflight_rec_ram_mb: "{{ 16384 if preflight_heavy_desktops else 8192 }}"
+    preflight_min_vcpus: 2
+    preflight_rec_vcpus: "{{ 8 if preflight_heavy_desktops else 4 }}"
+    preflight_min_disk_gb: "{{ 10 if preflight_install_method == 'build' else 5 }}"
+  tasks:
+    - name: Start with an empty report
+      ansible.builtin.set_fact:
+        preflight_results: []
+
+    # ------------------------------------------------------------------ inventory
+    - name: Result - required inventory variables
+      vars:
+        missing: >-
+          {{ ((preflight_required_vars
+               + (['fastrdp_privacyidea_url'] if preflight_mfa_mode != 'none' else []))
+              | difference(query('ansible.builtin.varnames', '^fastrdp_')))
+             + (['vault_fastrdp_join_password (vault.yml)']
+                if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default('') | length == 0
+                   and fastrdp_join_password | default('') | length == 0 else [])
+             | sort }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'inventory variables',
+             'status': 'FAIL' if missing else 'PASS',
+             'detail': ('missing: ' ~ missing | join(', ')) if missing else 'all required variables set',
+             'fix': 'run scripts/fastrdp-setup, or add them to group_vars (see inventories/lab)'}] }}
+
+    - name: Result - identity settings
+      vars:
+        problems: >-
+          {{ ([] if preflight_idp in ['ad', 'ipa', 'none'] else ['fastrdp_identity_provider must be ad, ipa or none'])
+             + ([] if preflight_realm == preflight_realm | upper else ['fastrdp_realm should be upper case'])
+             + (['AD realm must be the DNS domain in upper case (' ~ preflight_domain | upper ~ ')']
+                if preflight_idp == 'ad' and preflight_realm != preflight_domain | upper else [])
+             + (['join password is empty: is vault.yml loaded (--ask-vault-pass)?']
+                if preflight_idp in ['ad', 'ipa'] and fastrdp_join_password | default('') | length == 0 else [])
+             + (['fastrdp_default_desktop is not in fastrdp_desktops']
+                if fastrdp_default_desktop | default('') not in preflight_desktops else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'identity/desktop settings',
+             'status': 'FAIL' if problems else 'PASS',
+             'detail': problems | join('; ') if problems else preflight_idp ~ ' realm ' ~ preflight_realm,
+             'fix': 'correct group_vars/all/main.yml (or vault.yml)'}] }}
+
+    # ------------------------------------------------------------------ OS
+    - name: Result - operating system
+      vars:
+        supported: >-
+          {{ (ansible_facts.distribution == 'Ubuntu' and ansible_facts.distribution_version is version('26.04', '>='))
+             or (ansible_facts.distribution == 'Debian' and ansible_facts.distribution_major_version | int >= 13) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'operating system',
+             'status': 'PASS' if supported else 'FAIL',
+             'detail': ansible_facts.distribution ~ ' ' ~ ansible_facts.distribution_version ~ ' (' ~ ansible_facts.distribution_release ~ ', '
+                       ~ ansible_facts.architecture ~ ')',
+             'fix': 'install Ubuntu 26.04 or Debian 13 (amd64)'}] }}
+
+    - name: Check privilege escalation (sudo) works
+      block:
+        - name: Run a no-op command as root
+          ansible.builtin.command: /usr/bin/true
+          become: true
+          changed_when: false
+          register: preflight_become
+
+        - name: Result - sudo
+          ansible.builtin.set_fact:
+            preflight_results: "{{ preflight_results + [{'check': 'sudo', 'status': 'PASS', 'detail': 'become works', 'fix': ''}] }}"
+      rescue:
+        - name: Result - sudo failed
+          ansible.builtin.set_fact:
+            preflight_become_failed: true
+            preflight_results: >-
+              {{ preflight_results + [{'check': 'sudo', 'status': 'FAIL',
+                 'detail': ansible_failed_result.msg | default('become failed') | split() | join(' ') | truncate(160),
+                 'fix': 'pass --ask-become-pass (-K), or allow the SSH user to sudo'}] }}
+
+    # ------------------------------------------------------------------ name and DNS
+    - name: Resolve the FQDN on the target (NSS, as Kerberos and sssd see it)
+      ansible.builtin.command: getent ahosts {{ ansible_facts.fqdn }}
+      register: preflight_fwd
+      changed_when: false
+      failed_when: false
+
+    - name: Resolve the FQDN from the admin machine (as clients see it)
+      ansible.builtin.command: getent ahosts {{ ansible_facts.fqdn }}
+      register: preflight_fwd_ctl
+      delegate_to: localhost
+      changed_when: false
+      failed_when: false
+
+    - name: Result - FQDN and forward DNS
+      vars:
+        addrs: "{{ preflight_fwd.stdout_lines | map('split') | map('first') | unique | list }}"
+        nonloop: "{{ addrs | reject('match', '^(127\\.|::1$)') | list }}"
+        own: "{{ ansible_facts.all_ipv4_addresses | default([]) + ansible_facts.all_ipv6_addresses | default([]) }}"
+        problems: >-
+          {{ (['hostname is not fully qualified (' ~ ansible_facts.fqdn ~ ')'] if '.' not in ansible_facts.fqdn else [])
+             + (['FQDN does not resolve on the host'] if preflight_fwd.rc != 0 else [])
+             + (['FQDN resolves only to loopback ' ~ addrs | join(',')] if preflight_fwd.rc == 0 and not nonloop else [])
+             + (['FQDN does not resolve from the admin machine'] if preflight_fwd_ctl.rc != 0 else []) }}
+        warnings: >-
+          {{ (['inventory name ' ~ inventory_hostname ~ ' differs from the host FQDN ' ~ ansible_facts.fqdn
+               ~ ' (clients must use ' ~ ansible_facts.fqdn ~ ')'] if inventory_hostname | lower != ansible_facts.fqdn | lower
+               and inventory_hostname not in ['localhost', ansible_host | default('')] else [])
+             + (['FQDN is not in the realm domain ' ~ preflight_domain]
+                if preflight_idp in ['ad', 'ipa'] and not (ansible_facts.fqdn | lower).endswith('.' ~ preflight_domain) else [])
+             + (['short name ' ~ ansible_facts.hostname ~ ' is longer than 15 characters (AD truncates the computer account)']
+                if preflight_idp == 'ad' and ansible_facts.hostname | length > 15 else [])
+             + (['FQDN resolves to ' ~ nonloop | join(',') ~ ', which is not an address of this host (NAT?)']
+                if nonloop and not (nonloop | intersect(own)) else []) }}
+      ansible.builtin.set_fact:
+        preflight_first_ip: "{{ nonloop | first | default('') }}"
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'FQDN / forward DNS',
+             'status': 'FAIL' if problems else ('WARN' if warnings else 'PASS'),
+             'detail': (problems + warnings) | join('; ') if (problems + warnings) else ansible_facts.fqdn ~ ' -> ' ~ addrs | join(','),
+             'fix': 'set the hostname to the FQDN (hostnamectl set-hostname), add an A/AAAA record, and remove a '
+                    ~ '127.0.1.1 <fqdn> line from /etc/hosts'}] }}
+
+    - name: Reverse lookup of the host address
+      ansible.builtin.command: getent hosts {{ preflight_first_ip }}
+      register: preflight_rev
+      changed_when: false
+      failed_when: false
+      when: preflight_first_ip | length > 0
+
+    - name: Result - reverse DNS
+      vars:
+        names: "{{ (preflight_rev.stdout | default('')).split()[1:] | map('lower') | list }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'reverse DNS',
+             'status': 'SKIP' if not preflight_first_ip else ('PASS' if ansible_facts.fqdn | lower in names else 'WARN'),
+             'detail': 'no address to check' if not preflight_first_ip
+                       else preflight_first_ip ~ ' -> ' ~ (names | join(',') if names else 'no PTR record'),
+             'fix': 'add a PTR record ' ~ preflight_first_ip ~ ' -> ' ~ ansible_facts.fqdn
+                    ~ ' (Kerberos here does not need it, but FreeIPA and some clients do)'}] }}
+
+    # ------------------------------------------------------------------ time
+    - name: Read clock and NTP state
+      ansible.builtin.command: timedatectl show -p NTPSynchronized --value
+      register: preflight_ntp
+      changed_when: false
+      failed_when: false
+
+    - name: Read the target clock
+      ansible.builtin.command: date +%s
+      register: preflight_epoch
+      changed_when: false
+
+    - name: Result - time
+      vars:
+        skew: "{{ ((preflight_epoch.stdout | int) - (now().timestamp() | int)) | abs }}"
+        synced: "{{ preflight_ntp.stdout | trim == 'yes' }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'time sync',
+             'status': 'FAIL' if skew | int > 300 else ('WARN' if skew | int > 60 or not synced else 'PASS'),
+             'detail': 'offset to the admin machine ' ~ skew ~ ' s, NTP synchronized: ' ~ (preflight_ntp.stdout | trim or 'unknown'),
+             'fix': 'Kerberos allows 5 min skew: set the clock and point chrony at your DCs/NTP servers '
+                    ~ '(the playbook installs and enables chrony)'}] }}
+
+    # ------------------------------------------------------------------ Kerberos / directory
+    - name: Look up KDC and LDAP SRV records and probe them
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          lookup() {
+              if command -v dig >/dev/null 2>&1; then dig +short +time=3 +tries=1 SRV "$1"
+              elif command -v host >/dev/null 2>&1; then host -W 3 -t SRV "$1"
+              elif command -v resolvectl >/dev/null 2>&1; then resolvectl query --legend=no -t SRV "$1" 2>/dev/null
+              elif command -v nslookup >/dev/null 2>&1; then nslookup -type=SRV "$1"
+              else echo NOTOOL; fi
+          }
+          for spec in $SRV_SPECS; do
+              name=${spec%%=*}
+              out=$(lookup "$name")
+              if [ "$out" = NOTOOL ]; then echo "NOTOOL $name"; continue; fi
+              # "<prio> <weight> <port> <target>" in the output of every tool
+              recs=$(grep -oE '[0-9]+ [0-9]+ [0-9]+ [A-Za-z0-9._-]+' <<<"$out" | head -n 5 || true)
+              if [ -z "$recs" ]; then echo "NONE $name"; continue; fi
+              while read -r _ _ port target; do
+                  target=${target%.}
+                  if timeout 3 bash -c "exec 3<>/dev/tcp/$target/$port" 2>/dev/null; then st=open; else st=closed; fi
+                  echo "SRV $name $target $port $st"
+              done <<<"$recs"
+          done
+      environment:
+        SRV_SPECS: >-
+          _kerberos._tcp.{{ preflight_domain }}{{ (' _ldap._tcp.' ~ preflight_domain) if preflight_idp in ['ad', 'ipa'] else '' }}
+      register: preflight_srv
+      changed_when: false
+      failed_when: false
+      when: preflight_domain | length > 0
+
+    - name: Result - Kerberos KDC and directory
+      vars:
+        out: "{{ preflight_srv.stdout_lines | default([]) }}"
+        kdc_all: "{{ out | select('match', '^SRV _kerberos') | list }}"
+        kdc_open: "{{ kdc_all | select('search', ' open$') | list }}"
+        ldap_all: "{{ out | select('match', '^SRV _ldap') | list }}"
+        ldap_open: "{{ ldap_all | select('search', ' open$') | list }}"
+        notool: "{{ out | select('match', '^NOTOOL') | list | length > 0 }}"
+        problems: >-
+          {{ (['no _kerberos._tcp.' ~ preflight_domain ~ ' SRV records'] if not kdc_all and not notool else [])
+             + (['no KDC reachable on TCP ' ~ kdc_all | map('split') | map(attribute=2) | join(',')] if kdc_all and not kdc_open else [])
+             + (['no _ldap._tcp SRV records'] if preflight_idp in ['ad', 'ipa'] and not ldap_all and not notool else [])
+             + (['no LDAP server reachable'] if ldap_all and not ldap_open else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'realm / KDC',
+             'status': 'SKIP' if not preflight_domain else ('FAIL' if problems else ('WARN' if notool else 'PASS')),
+             'detail': 'fastrdp_domain not set' if not preflight_domain else
+                       (problems | join('; ') if problems else
+                       ('no SRV lookup tool (dig/host/resolvectl/nslookup) on the host' if notool else
+                       'KDC ' ~ kdc_open | map('split') | map(attribute=2) | unique | join(',')
+                       ~ ((', LDAP ' ~ ldap_open | map('split') | map(attribute=2) | unique | join(',')) if ldap_open else ''))),
+             'fix': 'krb5.conf finds KDCs via DNS SRV only: use the AD/IPA DNS servers as the host resolver '
+                    ~ '(or add _kerberos._tcp SRV records), and open TCP 88 (and 389) to the KDCs'}] }}
+
+    - name: Look for an existing TERMSRV keytab and sssd.conf (provider none)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/etc/fastrdp/termsrv.keytab, /etc/sssd/sssd.conf]
+      become: true
+      register: preflight_none_files
+      when:
+        - preflight_idp == 'none'
+        - not preflight_become_failed | default(false)
+
+    - name: Result - keytab and sssd.conf for provider none
+      vars:
+        on_host: "{{ preflight_none_files.results | default([]) | selectattr('stat', 'defined') | selectattr('stat.exists')
+                     | map(attribute='item') | list }}"
+        keytab_ok: "{{ (preflight_keytab_src | length > 0 and preflight_keytab_src is file) or '/etc/fastrdp/termsrv.keytab' in on_host }}"
+        sssd_ok: "{{ '/etc/sssd/sssd.conf' in on_host }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'keytab / sssd.conf',
+             'status': 'PASS' if keytab_ok and sssd_ok else ('WARN' if preflight_become_failed | default(false) else 'FAIL'),
+             'detail': 'TERMSRV keytab ' ~ ('found' if keytab_ok else 'missing (fastrdp_termsrv_keytab_src or /etc/fastrdp/termsrv.keytab)')
+                       ~ ', /etc/sssd/sssd.conf ' ~ ('found' if sssd_ok else 'missing')
+                       ~ (' (files on the host not checked: sudo failed)' if preflight_become_failed | default(false) else ''),
+             'fix': 'provider none: create TERMSRV/' ~ ansible_facts.fqdn ~ ' in your KDC, export the keytab and set '
+                    ~ 'fastrdp_termsrv_keytab_src; install an sssd.conf for your LDAP'}] }}
+      when: preflight_idp == 'none'
+
+    # ------------------------------------------------------------------ ports
+    - name: List listening TCP ports (/proc/net, no iproute2 needed)
+      ansible.builtin.command:
+        argv: [awk, 'FNR > 1 && $4 == "0A" { split($2, a, ":"); print a[2] }', /proc/net/tcp, /proc/net/tcp6]
+      register: preflight_ss
+      changed_when: false
+      failed_when: false
+
+    - name: Which related services are running
+      ansible.builtin.service_facts:
+
+    - name: Result - ports
+      vars:
+        listening: "{{ preflight_ss.stdout_lines | map('int', base=16) | unique | list }}"
+        services: "{{ ansible_facts.services | default({}) }}"
+        active: >-
+          {{ ['fastrdp-proxy', 'xrdp', 'nginx']
+             | select('in', services | dict2items | selectattr('value.state', 'eq', 'running')
+                            | map(attribute='key') | map('regex_replace', '\.service$', '') | list) | list }}
+        ports: >-
+          {{ [{'port': preflight_listen_port | int, 'owner': 'fastrdp-proxy', 'what': 'RDP'},
+              {'port': preflight_xrdp_port | int, 'owner': 'xrdp', 'what': 'xrdp (loopback)'}]
+             + ([{'port': 443, 'owner': 'nginx', 'what': 'web HTTPS'}, {'port': 80, 'owner': 'nginx', 'what': 'web HTTP'}]
+                if preflight_web_enabled else []) }}
+        busy: >-
+          {{ ports | selectattr('port', 'in', listening) | rejectattr('owner', 'in', active) | list }}
+        stock_xrdp: "{{ 'xrdp' in active and preflight_listen_port | int in busy | map(attribute='port') | list }}"
+        in_range: >-
+          {{ listening | select('ge', preflight_port_range[0] | int) | select('le', preflight_port_range[1] | int) | list }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'ports',
+             'status': 'FAIL' if busy else ('WARN' if in_range else 'PASS'),
+             'detail': ('in use: ' ~ busy | map(attribute='port') | join(',') ~ (' (stock xrdp on the RDP port)' if stock_xrdp else ''))
+                       if busy else (('free: ' ~ ports | map(attribute='port') | join(','))
+                       ~ ((', listeners in the back-end range: ' ~ in_range | join(',')) if in_range else '')),
+             'fix': ('apt purge xrdp (the playbook installs its own) or ' if stock_xrdp else '')
+                    ~ 'find the owner with: sudo ss -ltnp; stop it or change fastrdp_listen_port/fastrdp_backend_port_range'}] }}
+
+    # ------------------------------------------------------------------ GPU
+    - name: Read GPUs and render nodes (sysfs, /dev/dri)
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          for d in /sys/bus/pci/devices/*; do
+              [ -r "$d/class" ] || continue
+              case $(cat "$d/class") in 0x0300*|0x0302*) echo "GPU $(cat "$d/vendor") ${d##*/}";; esac
+          done
+          for n in /dev/dri/renderD*; do [ -e "$n" ] && echo "NODE $(stat -c '%n %a %G' "$n")"; done
+          command -v nvidia-smi >/dev/null 2>&1 && echo "NVIDIA_SMI yes"
+          command -v mokutil >/dev/null 2>&1 && echo "SB $(mokutil --sb-state 2>/dev/null | head -n 1)"
+          grep -rhsE '^[^#]*(non-free)' /etc/apt/sources.list /etc/apt/sources.list.d/ >/dev/null && echo "NONFREE yes"
+          exit 0
+      register: preflight_gpu_raw
+      changed_when: false
+
+    - name: Result - GPU
+      vars:
+        out: "{{ preflight_gpu_raw.stdout_lines }}"
+        vendors: "{{ out | select('match', '^GPU ') | map('split') | map(attribute=1) | list }}"
+        nodes: "{{ out | select('match', '^NODE ') | map('split') | list }}"
+        detected: >-
+          {{ 'nvidia' if '0x10de' in vendors else ('mesa' if '0x8086' in vendors or '0x1002' in vendors else 'none') }}
+        effective: "{{ detected if preflight_gpu == 'auto' else preflight_gpu }}"
+        secure_boot: "{{ out | select('match', '^SB .*enabled') | list | length > 0 }}"
+        problems: >-
+          {{ (['fastrdp_gpu is nvidia but no NVIDIA GPU was found'] if preflight_gpu == 'nvidia' and detected != 'nvidia' else [])
+             + (['fastrdp_gpu is mesa but no Intel/AMD GPU was found'] if preflight_gpu == 'mesa' and '0x8086' not in vendors
+                and '0x1002' not in vendors else [])
+             + (['no render node ' ~ preflight_drm_device ~ ' (GPU driver not loaded)']
+                if effective == 'mesa' and preflight_drm_device not in nodes | map(attribute=1) | list else []) }}
+        warnings: >-
+          {{ (['NVIDIA driver not installed yet: the playbook installs it, then reboot'] if effective == 'nvidia'
+              and out | select('match', '^NVIDIA_SMI') | list | length == 0 else [])
+             + (['Secure Boot is on: the NVIDIA kernel module must be signed/enrolled (MOK)'] if effective == 'nvidia' and secure_boot else [])
+             + (['Debian: enable the non-free component for nvidia-driver'] if effective == 'nvidia' and ansible_facts.distribution == 'Debian'
+                and out | select('match', '^NONFREE') | list | length == 0 else [])
+             + (['render nodes are not world-accessible and fastrdp_render_nodes_world_accessible is false: sessions cannot use the GPU']
+                if effective != 'none' and not preflight_render_world and nodes | rejectattr('2', 'match', '.*6$') | list else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'GPU',
+             'status': 'FAIL' if problems else ('WARN' if warnings else 'PASS'),
+             'detail': 'requested ' ~ preflight_gpu ~ ', detected ' ~ detected ~ ' -> ' ~ effective
+                       ~ (', render nodes: ' ~ nodes | map('join', ' ') | map('regex_replace', '^NODE ', '') | join('; ') if nodes else ', no render nodes')
+                       ~ (('; ' ~ (problems + warnings) | join('; ')) if (problems + warnings) else ''),
+             'fix': 'set fastrdp_gpu to auto/none, or install/load the GPU driver; the gpu role makes render nodes 0666'}] }}
+
+    # ------------------------------------------------------------------ resources
+    - name: Free space on /
+      ansible.builtin.command: df -Pk /
+      register: preflight_df
+      changed_when: false
+
+    - name: Result - CPU, RAM and disk
+      vars:
+        ram: "{{ ansible_facts.memtotal_mb | int }}"
+        cpus: "{{ ansible_facts.processor_vcpus | default(ansible_facts.processor_cores) | int }}"
+        disk_gb: "{{ ((preflight_df.stdout_lines[-1].split()[3] | int) / 1024 / 1024) | round(1) }}"
+        per_user_mb: "{{ 2048 if preflight_heavy_desktops else 1024 }}"
+        users: "{{ [((ram | int) - 2048) // ([per_user_mb | int, 1] | max), 0] | max }}"
+        fail: >-
+          {{ ram | int < preflight_min_ram_mb | int or cpus | int < preflight_min_vcpus | int
+             or disk_gb | float < preflight_min_disk_gb | float }}
+        warn: "{{ ram | int < preflight_rec_ram_mb | int or cpus | int < preflight_rec_vcpus | int }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'CPU / RAM / disk',
+             'status': 'FAIL' if fail else ('WARN' if warn else 'PASS'),
+             'detail': cpus ~ ' vCPU, ' ~ ram ~ ' MiB RAM, ' ~ disk_gb ~ ' GiB free on / (minimum ' ~ preflight_min_vcpus ~ ' vCPU, '
+                       ~ preflight_min_ram_mb ~ ' MiB, ' ~ preflight_min_disk_gb ~ ' GiB; recommended ' ~ preflight_rec_vcpus
+                       ~ ' vCPU, ' ~ preflight_rec_ram_mb ~ ' MiB); rough capacity ~' ~ users ~ ' concurrent sessions of '
+                       ~ preflight_desktops | join('/'),
+             'fix': 'add vCPUs/RAM/disk, or offer lighter desktops (xfce, lxqt, mate)'}] }}
+
+    # ------------------------------------------------------------------ external services
+    - name: Probe privacyIDEA from the host
+      ansible.builtin.uri:
+        url: "{{ preflight_pi_url }}/healthz/"
+        method: GET
+        validate_certs: "{{ preflight_pi_verify and preflight_pi_ca_src | length == 0 }}"
+        timeout: 10
+      register: preflight_pi
+      failed_when: false
+      when: preflight_mfa_mode != 'none' and preflight_pi_url | length > 0
+
+    - name: Result - privacyIDEA
+      vars:
+        problems: >-
+          {{ (['fastrdp_privacyidea_url not set'] if not preflight_pi_url else [])
+             + (['/healthz/ answered ' ~ (preflight_pi.status | default(-1)) ~ ' ' ~ (preflight_pi.msg | default('') | truncate(80))]
+                if preflight_pi_url and preflight_pi.status | default(-1) != 200 else [])
+             + (['CA file ' ~ preflight_pi_ca_src ~ ' not found on the admin machine']
+                if preflight_pi_ca_src and preflight_pi_ca_src is not file else [])
+             + (['service password empty (vault loaded?)'] if fastrdp_privacyidea_service_user | default('') | length > 0
+                and fastrdp_privacyidea_service_password | default('') | length == 0 else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'privacyIDEA',
+             'status': 'FAIL' if problems else 'PASS',
+             'detail': problems | join('; ') if problems else preflight_pi_url ~ ' healthy'
+                       ~ (' (TLS not verified here: CA is checked from the controller copy at deploy time)' if preflight_pi_ca_src else ''),
+             'fix': 'check URL, firewall/proxy from the host to privacyIDEA, and fastrdp_privacyidea_ca_src'}] }}
+      when: preflight_mfa_mode != 'none'
+
+    - name: Probe the OIDC issuer from the host
+      ansible.builtin.uri:
+        url: "{{ preflight_web_issuer }}/.well-known/openid-configuration"
+        method: GET
+        validate_certs: "{{ preflight_web_ca_src | length == 0 }}"
+        return_content: true
+        timeout: 10
+      register: preflight_oidc
+      failed_when: false
+      when: preflight_web_enabled
+
+    - name: Result - web access (Keycloak/OIDC)
+      vars:
+        issuer: "{{ (preflight_oidc.json | default({})).issuer | default('') }}"
+        problems: >-
+          {{ (['discovery answered ' ~ (preflight_oidc.status | default(-1)) ~ ' ' ~ (preflight_oidc.msg | default('') | truncate(80))]
+              if preflight_oidc.status | default(-1) != 200 else [])
+             + (['issuer in discovery is ' ~ issuer ~ ', expected ' ~ preflight_web_issuer]
+                if preflight_oidc.status | default(-1) == 200 and issuer != preflight_web_issuer else [])
+             + (['OIDC client secret empty (vault_fastrdp_web_oidc_client_secret; vault loaded?)'] if not preflight_web_secret else [])
+             + (['CA file ' ~ preflight_web_ca_src ~ ' not found on the admin machine']
+                if preflight_web_ca_src and preflight_web_ca_src is not file else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'web / OIDC',
+             'status': 'FAIL' if problems else 'PASS',
+             'detail': problems | join('; ') if problems else preflight_web_issuer ~ ' discovery ok',
+             'fix': 'fastrdp_web_oidc_issuer must be the realm URL exactly as Keycloak reports it; see docs/web-access.md'}] }}
+      when: preflight_web_enabled
+
+    - name: Probe the APT repository from the host
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        method: GET
+        timeout: 10
+      loop:
+        - "{{ preflight_apt_repo_url }}/dists/{{ preflight_apt_suite }}/InRelease"
+        - "{{ preflight_apt_key_url }}"
+      register: preflight_apt
+      failed_when: false
+      when: preflight_install_method == 'apt'
+
+    - name: Result - install method
+      vars:
+        bad: "{{ preflight_apt.results | default([]) | rejectattr('status', 'defined') | list
+                 + (preflight_apt.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'eq', 200) | list) }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'install method',
+             'status': ('FAIL' if bad else 'PASS') if preflight_install_method == 'apt' else 'PASS',
+             'detail': ('apt: ' ~ (bad | map(attribute='item') | join(', ') ~ ' not reachable' if bad else 'suite ' ~ preflight_apt_suite ~ ' found'))
+                       if preflight_install_method == 'apt' else 'build: FreeRDP and xrdp are compiled on the host (10-20 min first run)',
+             'fix': 'the repository may not be published for ' ~ preflight_apt_suite ~ ' yet: use fastrdp_install_method: build, '
+                    ~ 'or fastrdp_apt_channel: testing; check HTTPS from the host'}] }}
+
+    - name: Check the RDP certificate on the admin machine
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          cert=$PREFLIGHT_CERT key=$PREFLIGHT_KEY fqdn=$PREFLIGHT_FQDN
+          [ -r "$cert" ] || { echo "ERR certificate $cert not readable"; exit 0; }
+          [ -r "$key" ] || { echo "ERR key $key not readable"; exit 0; }
+          openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || echo "ERR certificate expired"
+          openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null || echo "WARN certificate expires within 30 days"
+          san=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null)
+          # exact name, or a wildcard for its parent domain
+          tr ',' '\n' <<<"$san" | sed 's/^ *//' | grep -qixF -e "DNS:$fqdn" -e "DNS:*.${fqdn#*.}" \
+              || echo "ERR certificate has no subjectAltName DNS:$fqdn"
+          [ "$(openssl x509 -in "$cert" -noout -pubkey)" = "$(openssl pkey -in "$key" -pubout 2>/dev/null)" ] \
+              || echo "ERR key does not match the certificate"
+          exit 0
+      environment:
+        PREFLIGHT_CERT: "{{ preflight_cert_src }}"
+        PREFLIGHT_KEY: "{{ preflight_key_src }}"
+        PREFLIGHT_FQDN: "{{ ansible_facts.fqdn }}"
+      register: preflight_cert
+      delegate_to: localhost
+      changed_when: false
+      when: preflight_cert_src | length > 0
+
+    - name: Result - RDP certificate
+      vars:
+        out: "{{ preflight_cert.stdout_lines | default([]) }}"
+        errs: "{{ out | select('match', '^ERR ') | map('regex_replace', '^ERR ', '') | list }}"
+        warns: "{{ out | select('match', '^WARN ') | map('regex_replace', '^WARN ', '') | list }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'RDP certificate',
+             'status': ('FAIL' if errs else ('WARN' if warns else 'PASS')) if preflight_cert_src else 'WARN',
+             'detail': ((errs + warns) | join('; ') if (errs + warns) else preflight_cert_src ~ ' valid for ' ~ ansible_facts.fqdn)
+                       if preflight_cert_src else 'self-signed certificate will be generated (lab only: clients warn)',
+             'fix': 'use a certificate for ' ~ ansible_facts.fqdn ~ ' (full chain) and its key: fastrdp_front_cert_src/fastrdp_front_key_src'}] }}
+
+    # ------------------------------------------------------------------ report
+    - name: Format the report
+      vars:
+        line: >-
+          {{ '%-4s  %s: %s' | format(item.status, item.check, item.detail) }}{{ ('  ->  fix: ' ~ item.fix) if item.status in ['WARN', 'FAIL'] else '' }}
+      ansible.builtin.set_fact:
+        preflight_lines: "{{ preflight_lines | default([]) + [line] }}"
+      loop: "{{ preflight_results }}"
+      loop_control:
+        label: "{{ item.check }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ preflight_lines }}"
+
+    - name: Fail the host when a check failed
+      vars:
+        failed_checks: "{{ preflight_results | selectattr('status', 'eq', 'FAIL') | map(attribute='check') | list }}"
+      ansible.builtin.assert:
+        that: failed_checks | length == 0
+        fail_msg: "Preflight FAILED: {{ failed_checks | join(', ') }}. Fix them (see the report above), then run preflight again."
+        success_msg: "Preflight passed ({{ preflight_results | selectattr('status', 'eq', 'WARN') | list | length }} warnings). Next: site.yml"
+        quiet: false

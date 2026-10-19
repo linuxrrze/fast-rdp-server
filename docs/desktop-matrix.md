@@ -1,5 +1,8 @@
 # Desktops, back-ends and GPU use
 
+Per-back-end details (how sessions start, files, configuration, troubleshooting):
+[backends/](backends/README.md).
+
 Status legend:
 - **verified** = tested in this repository (unit tests, build, or proxy end-to-end tests).
 - **to validate** = written against upstream source/docs; needs a lab run on real hardware.
@@ -24,7 +27,8 @@ runs **inside** an ordinary xrdp session:
    `fastrdp-<compositor>` runs `/usr/libexec/fastrdp/wlroots-in-x <compositor>`.
 2. The launcher starts the compositor with `WLR_BACKENDS=x11`, so it draws into
    one fullscreen window of the xorgxrdp display. xrdp still provides H.264/GFX,
-   clipboard, drives, audio and reconnects.
+   clipboard, drives, audio and reconnects (audio needs an xrdp sink module, which
+   no role installs; see [backends/xrdp.md](backends/xrdp.md#channels)).
 3. **Renderer:** GLES when the X server offers DRI3 (xorgxrdp-glamor on
    Intel/AMD); otherwise pixman. Wayfire's GL effects (cube, fisheye, …) need GLES.
 4. **Size:** the launcher watches the X root size (dynamic resolution, reconnects)
@@ -84,9 +88,12 @@ runbook: [performance.md](performance.md).
   - Works natively in GNOME/Plasma Wayland sessions.
   - In X11 sessions it works with glamor (DRI3) on Mesa. On NVIDIA it goes through
     the NVIDIA ICD; check with `vulkaninfo --summary`.
-- **xrdp encodes H.264 on the CPU** (x264; `fastrdp_x264_threads`, default 2 per
-  session). Size CPUs for that. A VA-API/NVENC encoder for xrdp is a phase 5
-  candidate.
+- **xrdp encoder:** with the fastrdp FFmpeg patch (`patches/xrdp/`), xrdp encodes
+  H.264 with VA-API (Intel/AMD) or NVENC (NVIDIA) when `fastrdp_xrdp_h264_encoder`
+  is `auto`, and falls back to x264 on the CPU (`fastrdp_x264_threads`, default 2
+  per session) if the GPU encoder fails its start-up probe or no GPU is found. The
+  hardware path is not yet tested on real GPUs; size CPUs for x264 until it is.
+  Details: [backends/xrdp.md](backends/xrdp.md#encoding).
 
 ## Validation items before production
 
@@ -100,4 +107,5 @@ runbook: [performance.md](performance.md).
      `pam_sss ... gdm` denials).
 3. **glamor stability** on the actual GPUs; NVIDIA with VirtualGL.
 4. **GFX/H.264 passthrough** through freerdp-proxy for each back-end (client shows
-   AVC444; compare fps with and without the proxy).
+   an H.264 codec: AVC420 for xrdp, which has no AVC444; compare fps with and
+   without the proxy).

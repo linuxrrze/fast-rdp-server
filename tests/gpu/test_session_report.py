@@ -85,6 +85,33 @@ class VerdictTests(unittest.TestCase):
                 self.assertIsNone(rows[0]["libraries"])
                 self.assertIn("xrdp.log", session_report.verdict(rows)["h264_encoding"])
 
+    def test_wlroots_compositor_is_a_renderer(self):
+        # Regression: sway/labwc/wayfire (wlroots-in-x) were not recognised as renderers.
+        for comp in ("sway", "labwc", "wayfire"):
+            with self.subTest(comp):
+                rows, v = self.run_scan(
+                    dict(pid=80, comm=comp, devices=["/dev/dri/renderD128"],
+                         libs=["/usr/lib/x86_64-linux-gnu/libgallium-25.so"]),
+                )
+                self.assertEqual([r["role"] for r in rows], ["render"])
+                self.assertEqual(v["rendering"], "gpu (mesa)")
+
+    def test_xrdp_processes_disagree(self):
+        # Regression: with several xrdp processes (one per connection, all users) the last
+        # one scanned decided the verdict, which could describe another user's session.
+        _, v = self.run_scan(
+            dict(pid=90, comm="xrdp", uid=999, devices=["/dev/dri/renderD128"],
+                 libs=["/usr/lib/libavcodec.so.62", "/usr/lib/x86_64-linux-gnu/libva.so.2"]),
+            dict(pid=91, comm="xrdp", uid=999),
+        )
+        self.assertIn("differs between xrdp processes", v["h264_encoding"])
+        self.assertIn("vaapi (gpu, xrdp ffmpeg)", v["h264_encoding"])
+        self.assertIn("x264 (cpu)", v["h264_encoding"])
+
+    def test_xrdp_processes_agree(self):
+        _, v = self.run_scan(dict(pid=92, comm="xrdp", uid=999), dict(pid=93, comm="xrdp", uid=999))
+        self.assertEqual(v["h264_encoding"], "x264 (cpu)")
+
     def test_other_users_ignored(self):
         rows, _ = self.run_scan(dict(pid=50, comm="gnome-shell", uid=UID + 4242))
         self.assertEqual(rows, [])

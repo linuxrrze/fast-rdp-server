@@ -9,7 +9,7 @@ and each vendored build can be dropped when its fixes reach the distributions.
 
 | Dependency | Version | Local patches | Installed to | Used by |
 |---|---|---|---|---|
-| FreeRDP | 3.32.2 | `patches/freerdp/`: PKCS#11 slot id fix (smartcard logon) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
+| FreeRDP | 3.32.2 | `patches/freerdp/`: PKCS#11 slot id fix (client-side smartcard logon) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
 | xrdp | 0.10.6.1 | `patches/xrdp/`: FFmpeg H.264 encoder (VA-API, NVENC, QSV) | `/usr` (package), `/usr/local` (Ansible build) | X11 sessions |
 | xorgxrdp | 0.10.5 | none (built together with xrdp, with glamor) | Xorg module directory | X11 sessions |
 
@@ -21,6 +21,19 @@ Not vendored:
   `tests/krb5-spnego/run.sh` shows whether a host's krb5 is affected (fixed in 1.22.2).
 - **gnome-remote-desktop, KRdp, the distribution's freerdp3.** These are unchanged
   and keep linking the distribution's FreeRDP.
+
+## Is each piece really required?
+
+Checked 2026-10-19 against the distribution packages. Each patch directory has a
+README with the full reasoning, evidence and the condition for dropping it.
+
+| Item | Required? | Why | Without it | Regression test | Drop when |
+|---|---|---|---|---|---|
+| Vendored **FreeRDP** | **yes** | The proxy needs ≥ 3.32 (`CertificatePolicy`). Debian 13 ships 3.15.0 (3.32.1 only in backports); Ubuntu 26.04 ships 3.32.1. One tested version everywhere; H.264 in fastrdp's client builds | No supported proxy on Debian 13 without backports; version drift between distributions | e2e suites with `FREERDP_PREFIX=/opt/fastrdp` | Both distributions ship ≥ 3.32 *and* the slot id fix is upstream (or the client is no longer shipped) |
+| `patches/freerdp/0001` slot id | **client side only** | Fixes PKINIT smartcard logon of the `xfreerdp` that fastrdp ships, with PKCS#11 modules using slot ids ≥ 65536 (SoftHSM2, some HSMs). The server never runs this code. OpenSC/YubiKey PIV are unaffected | `fastrdp-freerdp3`'s client fails PKINIT with such tokens; the SoftHSM e2e regression test fails | `SC_MODULE=softhsm tests/proxy-e2e/run_smartcard.sh` | A FreeRDP release contains the fix |
+| Vendored **xrdp/xorgxrdp** | **yes** | Debian 13 and Ubuntu 26.04 ship xrdp 0.10.1: no H.264 (0.10.2), no unprivileged daemon (0.10.2/0.10.5), none of the `gfx.toml` settings fastrdp renders; 19 later CVE fixes only as far as backported | X11 sessions without H.264, xrdp running as root, configuration partly ignored | `build-xrdp.sh` feature checks; xrdp e2e via the smoke test on a host | Both distributions ship ≥ 0.10.5 *and* the encoder patch is upstream |
+| `patches/xrdp/0001` FFmpeg encoder | **yes, for GPU encoding** | The only way to use VA-API/QSV/NVENC in xrdp sessions in a released xrdp; falls back to libx264 | CPU-only H.264 (x264), about one core or more per active 1080p session | `patches/xrdp/test/run_test.sh` (libx264 path, GPU→fallback, fallback disabled) | An xrdp release offers VA-API hardware encoding |
+| `patches/krb5/0001` SPNEGO MIC | **no** (reference only, not built) | No fastrdp login path uses an MIT SPNEGO acceptor (proxy, g-r-d and KRdp use WinPR; xrdp gets tokens). Kept as root-cause evidence and for distribution bug reports | nothing changes for fastrdp | `tests/krb5-spnego/run.sh` checks a host | Distributions ship krb5 ≥ 1.22.2 |
 
 ## One source of truth
 

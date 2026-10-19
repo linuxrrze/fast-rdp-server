@@ -153,8 +153,8 @@ class Broker:
         )
         return {"ok": True, "user": user.name, "desktop": desktop.name, "target": target.as_dict()}
 
-    async def issue_web_token(self, msg: dict) -> dict:
-        """fastrdp-webgate asks for a one-time login token after OIDC login."""
+    async def _web_user(self, msg: dict) -> tuple[identity.LocalUser, list[dict]]:
+        """User named by fastrdp-webgate (OIDC-authenticated) and the desktops it may use."""
         name = identity.normalize_rdp_user(str_field(msg, "user", required=True))
         user = identity.resolve(name, None, self.cfg.auth)
         if not identity.user_allowed(user, self.cfg.auth):
@@ -163,17 +163,41 @@ class Broker:
             await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, None)
         except pamauth.PamError as exc:
             raise Denied(f"account check failed for {user.name}: {exc}") from None
-        desktops = [d for d in self.cfg.desktops if identity.desktop_allowed(self.cfg, d, user)]
+        desktops = [
+            {"name": d.name, "label": d.label or d.name}
+            for d in self.cfg.desktops.values()
+            if identity.desktop_allowed(self.cfg, d.name, user)
+        ]
+        return user, desktops
+
+    async def web_desktops(self, msg: dict) -> dict:
+        """fastrdp-webgate lists the desktops for its chooser (no token issued)."""
+        user, desktops = await self._web_user(msg)
+        default = identity.choose_desktop(self.cfg, user, None)
+        return {"ok": True, "user": user.name, "desktops": desktops, "default": default}
+
+    async def issue_web_token(self, msg: dict) -> dict:
+        """fastrdp-webgate asks for a one-time login token after OIDC login."""
+        user, desktops = await self._web_user(msg)
         log.info("web token issued for %s", user.name)
         return {
             "ok": True,
             "user": user.name,
             "token": self.web_tokens.issue(user.name, None),
-            "desktops": desktops,
+            "desktops": [d["name"] for d in desktops],
         }
 
     # ---------------------------------------------------------------- admin
+    async def reap(self) -> None:
+        """Drop records of sessions that no longer exist (e.g. xrdp sessions ended in-session)."""
+        for s in list(self.state.sessions.values()):
+            backend = self.backends.get(s.backend)
+            if backend is not None and not await backend.alive(s):
+                log.info("%s: %s session gone, dropping its record", s.user, s.backend)
+                self.state.drop(s.user, s.backend)
+
     async def status(self) -> dict:
+        await self.reap()
         return {
             "ok": True,
             "sessions": [s.public() for s in self.state.sessions.values()],
@@ -205,6 +229,8 @@ class Broker:
                         reply = {"ok": True}
                     elif op == "web_token" and self.web_uid is not None and uid == self.web_uid:
                         reply = await self.issue_web_token(msg)
+                    elif op == "web_desktops" and self.web_uid is not None and uid == self.web_uid:
+                        reply = await self.web_desktops(msg)
                     elif op == "status" and uid == 0:
                         reply = await self.status()
                     elif op == "logout" and uid == 0:

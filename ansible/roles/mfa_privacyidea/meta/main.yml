@@ -1,0 +1,4 @@
+---
+# common: site-wide defaults (fastrdp_realm, fastrdp_desktops, ports, MFA, ...) and checks
+dependencies:
+  - role: common

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# {{ limits_comment }}
+[{{ limits_section }}]
+CPUWeight=100
+{% if limits_cpu_quota %}
+CPUQuota={{ limits_cpu_quota }}
+{% endif %}
+{% if limits_memory_max %}
+MemoryMax={{ limits_memory_max }}
+{% endif %}
+{% if limits_tasks_max %}
+TasksMax={{ limits_tasks_max }}
+{% endif %}

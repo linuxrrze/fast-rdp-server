@@ -1,9 +1,13 @@
 # Tests, Debian/Ubuntu packages and the signed APT repository on GitHub Pages.
-# See docs/packaging.md.
+# See docs/packaging.md; the test inventory is tests/README.md.
 #
-#   pull requests         tests + package builds (+ lintian)
+#   pull requests         tests + package builds (+ lintian) + e2e against the builds
 #   push to main          ... + publish suites <codename>-testing
 #   push of tag vX.Y[.Z]  ... + publish suites <codename>-stable + GitHub release
+#
+# All tests live in this one workflow: the e2e suites need the vendored FreeRDP
+# artifact, the xrdp encoder test needs the vendored xrdp build tree, and publishing
+# waits for the e2e suites.
 name: packages
 
 on:
@@ -22,24 +26,44 @@ concurrency:
 
 jobs:
   tests:
-    name: tests (unit, PAM, ansible-lint, shellcheck)
+    name: tests (${{ matrix.codename }}; unit, PAM, scripts, publish, ansible, lint)
     runs-on: ubuntu-latest
-    container: ubuntu:26.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:26.04", codename: resolute}
+          - {image: "debian:trixie", codename: trixie}
+    env:
+      FASTRDP_TESTS_STRICT: "1"   # a missing tool fails the test instead of skipping it
     steps:
       - name: Tools
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git make gcc libc6-dev pkgconf libpam0g-dev libpam-modules \
-            libcjson-dev python3 python3-venv python3-cryptography
+            libcjson-dev python3 python3-venv python3-cryptography \
+            dpkg-dev curl patch xz-utils reprepro gnupg gpgv
       - uses: actions/checkout@v5
       - name: ansible-lint, shellcheck (same versions as the documented dev setup)
         run: |
           python3 -m venv /opt/lint
           /opt/lint/bin/pip install --quiet ansible-core==2.21.5 ansible-lint==26.10.1 shellcheck-py==0.11.0.1
           echo /opt/lint/bin >> "$GITHUB_PATH"
-      - name: make test-broker test-webgate test-pam test-gpu lint
-        run: make test-broker test-webgate test-pam test-gpu lint
+      # = test-broker test-webgate test-pam test-gpu lint test-scripts test-publish test-ansible
+      - name: make test-all
+        run: make test-all
+      - name: actionlint
+        if: matrix.codename == 'resolute'
+        run: |
+          set -eu
+          v=1.7.7
+          curl -fsSLo /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v$v/actionlint_${v}_linux_amd64.tar.gz"
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint
+          make lint-ci
 
   # fastrdp's own builds of FreeRDP (/opt/fastrdp) and xrdp + xorgxrdp, from
   # third_party/sources.yml + patches/<name>/. Rebuilt only when the upstream
@@ -83,10 +107,12 @@ jobs:
             'packaging/ci/prepare-vendored.sh', 'packaging/ci/set-version.sh',
             'packaging/ci/make-source-archive.sh') }}
       - name: Build
+        id: build
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -eu
           dir=$(packaging/ci/prepare-vendored.sh ${{ matrix.pkg }} "$RUNNER_TEMP/vendored")
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
           packaging/ci/install-build-deps.sh "$dir"
           cd "$dir"
           "$GITHUB_WORKSPACE/packaging/ci/set-version.sh" "$(dpkg-parsechangelog -S Version)" \
@@ -100,6 +126,11 @@ jobs:
       - name: lintian
         if: steps.cache.outputs.cache-hit != 'true'
         run: lintian --fail-on error --display-info --tag-display-limit 0 vendored-out/*.changes
+      # Needs the built tree, so it runs with the build. patches/xrdp/test/ is part of
+      # the cache key: a changed test rebuilds and reruns.
+      - name: xrdp FFmpeg encoder test (libx264; h264_vaapi/h264_nvenc without GPU)
+        if: matrix.pkg == 'xrdp' && steps.cache.outputs.cache-hit != 'true'
+        run: make test-xrdp-encoder XRDP_SRC="${{ steps.build.outputs.dir }}/src/xrdp"
       - name: Save build
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -155,26 +186,100 @@ jobs:
           for d in out/*.deb vendored/*.deb; do
             case $d in *-dbgsym_*) ;; *) set -- "$@" "./$d" ;; esac
           done
-          DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
-          getent group _fastrdp-broker
-          getent passwd _fastrdp-proxy _fastrdp-web xrdp
-          test -f /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
-          for f in /opt/fastrdp/bin/freerdp-proxy /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so; do
-            if ldd "$f" | grep 'not found'; then echo "unresolved libraries in $f"; exit 1; fi
-          done
-          PYTHONPATH=/usr/lib/fastrdp/python python3 -c 'import fastrdp_broker.server, fastrdp_webgate.app'
-          fastrdpctl --help >/dev/null
-          /usr/sbin/xrdp -v | grep -- --enable-ffmpeg
-          test -x /usr/libexec/fastrdp/startwm.sh
+          DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" binutils
+          # users, library resolution, RPATH/RUNPATH, imports, units, xrdp FFmpeg build
+          FASTRDP_TESTS_STRICT=1 tests/packaging/check-installed.sh
       - uses: actions/upload-artifact@v5
         with:
           name: debs-${{ matrix.codename }}
           path: out/
           if-no-files-found: error
 
+  # The proxy module inside the real freerdp-proxy of the vendored FreeRDP build.
+  # SC_MODULE=softhsm is the regression test for patches/freerdp (PKCS#11 slot id
+  # truncation): it fails with an unpatched FreeRDP.
+  e2e:
+    name: proxy e2e (${{ matrix.codename }}, vendored FreeRDP)
+    needs: vendored
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:26.04", codename: resolute}
+          - {image: "debian:trixie", codename: trixie}
+    env:
+      FREERDP_PREFIX: /opt/fastrdp
+    steps:
+      - name: Tools
+        run: |
+          # package scripts start no daemons (krb5-kdc, krb5-admin-server): the tests run their own
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod +x /usr/sbin/policy-rc.d
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: vendored-${{ matrix.codename }}-freerdp
+          path: vendored
+      - name: fastrdp-freerdp3 + test dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            "$(ls ./vendored/fastrdp-freerdp3_*.deb)" \
+            gcc libc6-dev libcjson-dev openssl python3 \
+            krb5-kdc krb5-admin-server krb5-user krb5-pkinit softhsm2 opensc p11-kit p11-kit-modules
+      - name: TLS (run.sh)
+        run: tests/proxy-e2e/run.sh
+      - name: Kerberos NLA (run_nla.sh)
+        if: ${{ !cancelled() }}
+        run: tests/proxy-e2e/run_nla.sh
+      - name: Smartcard PKINIT via p11-kit (run_smartcard.sh)
+        if: ${{ !cancelled() }}
+        run: tests/proxy-e2e/run_smartcard.sh
+      - name: Smartcard PKINIT via SoftHSM directly (slot id fix, patches/freerdp)
+        if: ${{ !cancelled() }}
+        env:
+          SC_MODULE: softhsm
+        run: tests/proxy-e2e/run_smartcard.sh
+
+  # Informational: is the distribution's MIT krb5 affected by the SPNEGO mechListMIC
+  # regression (docs/vendoring.md)? "Affected" is a warning; any other failure fails.
+  krb5-spnego:
+    name: krb5 SPNEGO check (${{ matrix.codename }}, informational)
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:26.04", codename: resolute}
+          - {image: "debian:trixie", codename: trixie}
+    steps:
+      - name: Tools
+        run: |
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+          chmod +x /usr/sbin/policy-rc.d
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git gcc libc6-dev libwinpr3-dev libkrb5-dev krb5-kdc krb5-admin-server
+      - uses: actions/checkout@v5
+      - name: tests/krb5-spnego/run.sh
+        shell: bash
+        run: |
+          rc=0
+          tests/krb5-spnego/run.sh 2>&1 | tee /tmp/spnego.out || rc=${PIPESTATUS[0]}
+          # exit 1 means "affected" only with the verdict line (a failed compile exits 1 too)
+          if [ "$rc" -eq 1 ] && grep -q '^AFFECTED:' /tmp/spnego.out; then
+            echo "::warning title=MIT krb5 SPNEGO (${{ matrix.codename }})::affected by krb5 #9183 (fixed in 1.22.2); fastrdp's paths use WinPR's acceptor"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+
   publish:
     name: publish APT repository
-    needs: [tests, build]
+    needs: [tests, build, e2e]
     if: >-
       github.event_name == 'push' && github.repository_owner == 'linuxrrze' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -187,7 +292,6 @@ jobs:
       cancel-in-progress: false
     env:
       APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
-      APT_SIGNING_KEY_ID: ${{ secrets.APT_SIGNING_KEY_ID }}
       APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
       APT_REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
       GH_TOKEN: ${{ github.token }}
@@ -218,15 +322,22 @@ jobs:
           else echo "name=testing" >> "$GITHUB_OUTPUT"; fi
       - name: Signing key
         run: |
-          if [ -z "$APT_SIGNING_KEY" ] || [ -z "$APT_SIGNING_KEY_ID" ]; then
-            echo "::error::secrets APT_SIGNING_KEY and APT_SIGNING_KEY_ID are not set (docs/packaging.md)"
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::secret APT_SIGNING_KEY is not set (docs/packaging.md)"
             exit 1
           fi
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
           install -d -m 0700 "$GNUPGHOME"
           printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
-          gpg --batch --list-secret-keys "$APT_SIGNING_KEY_ID" >/dev/null
+          # The secret holds exactly one key; publish.sh signs with its fingerprint.
+          fprs=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "sec" {s = 1; next} s && $1 == "fpr" {print $10; s = 0}')
+          if [ "$(printf '%s\n' "$fprs" | grep -c .)" != 1 ]; then
+            echo "::error::APT_SIGNING_KEY must contain exactly one secret (primary) key"
+            exit 1
+          fi
+          echo "APT_SIGNING_KEY_ID=$fprs" >> "$GITHUB_ENV"
+          echo "signing with $fprs"
       - name: Previous repository (gh-pages)
         run: |
           git clone --depth 1 --branch gh-pages \

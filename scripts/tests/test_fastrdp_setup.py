@@ -1,0 +1,478 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+"""Tests for scripts/fastrdp-setup (non-interactive mode).
+
+    python3 -m unittest discover -s scripts/tests      # or: make test-setup
+
+PyYAML (for parsing the output and the role defaults) and ansible-vault are used when
+present; without ansible-vault a stub stands in for it.
+"""
+
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+ROLES = REPO / "ansible" / "roles"
+
+try:
+    import yaml
+except ImportError:      # plain admin machine
+    yaml = None
+
+
+def load_tool():
+    loader = importlib.machinery.SourceFileLoader("fastrdp_setup", str(REPO / "scripts" / "fastrdp-setup"))
+    spec = importlib.util.spec_from_loader("fastrdp_setup", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+setup = load_tool()
+
+SECRETS = {
+    "join_password": "J0in-Secret!x",
+    "privacyidea_service_password": "PI-Service-Secret#7",
+    "web_oidc_client_secret": "oidc-Client-Secret-42",
+}
+
+LAB = {
+    "profile": "lab",
+    "hosts": "rdp1.lab.example.com",
+    "ssh_user": "admin",
+    "identity_provider": "ad",
+    "join_password": SECRETS["join_password"],
+    "desktops": "xfce",
+    "install_method": "build",
+}
+
+STUB_VAULT = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    # ansible-vault stand-in: "encrypt --vault-password-file F --output OUT -"
+    import sys
+    args = sys.argv[1:]
+    assert args[0] == "encrypt" and args[-1] == "-", args
+    out = args[args.index("--output") + 1]
+    data = sys.stdin.read().encode()
+    with open(out, "w") as f:
+        f.write("$ANSIBLE_VAULT;1.1;AES256\\n" + data.hex() + "\\n")
+""")
+
+
+def role_defaults():
+    merged = {}
+    for f in sorted(ROLES.glob("*/defaults/main.yml")):
+        merged.update(yaml.safe_load(f.read_text()) or {})
+    return merged
+
+
+def role_corpus():
+    files = [p for p in ROLES.rglob("*") if p.is_file()] + [REPO / "ansible" / "site.yml"]
+    return "\n".join(p.read_text(errors="replace") for p in files)
+
+
+class SetupTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="fastrdp-setup-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.out = self.tmp / "inventories"
+        self.pwfile = self.tmp / "vault-pass"
+        self.pwfile.write_text("test-vault-password\n")
+        self.stub = self.tmp / "ansible-vault-stub"
+        self.stub.write_text(STUB_VAULT)
+        self.stub.chmod(0o755)
+        # PEM files for the production answers
+        self.cert = self.tmp / "rdp.crt"
+        self.cert.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+        self.key = self.tmp / "rdp.key"
+        self.key.write_text("-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n")
+        self.ca = self.tmp / "pi-ca.pem"
+        self.ca.write_text(self.cert.read_text())
+
+    def production(self, **over):
+        a = {
+            "profile": "production",
+            "hosts": ["rdp1.corp.example.com", "rdp2.corp.example.com"],
+            "name": "corp",
+            "ssh_user": "deploy",
+            "become_password": True,
+            "identity_provider": "ipa",
+            "domain": "corp.example.com",
+            "realm": "CORP.EXAMPLE.COM",
+            "join_user": "admin",
+            "allow_groups": "rdp-users,rdp-admins",
+            "desktops": "xfce,gnome,plasma",
+            "default_desktop": "gnome",
+            "gpu": "nvidia",
+            "mfa_mode": "otp_or_push",
+            "privacyidea_url": "https://pi.corp.example.com/",
+            "privacyidea_realm": "corp",
+            "privacyidea_ca": str(self.ca),
+            "privacyidea_service_user": "fastrdp-svc",
+            "mfa_exempt_groups": ["breakglass"],
+            "allow_tls_logins": "yes",
+            "web_enabled": True,
+            "web_oidc_issuer": "https://sso.corp.example.com/realms/corp",
+            "web_oidc_client_id": "fastrdp",
+            "install_method": "apt",
+            "apt_channel": "stable",
+            "apt_key_checksum": "sha256:" + "ab" * 32,
+            "tls": "provided",
+            "tls_cert": str(self.cert),
+            "tls_key": str(self.key),
+        }
+        a.update(SECRETS)
+        a.pop("join_password")       # comes from the environment instead
+        a.update(over)
+        return a
+
+    def run_tool(self, answers, *extra, env=None, vault=None):
+        """Run main() in-process; returns (rc, stdout, stderr)."""
+        path = self.tmp / "answers.json"
+        path.write_text(json.dumps(answers))
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("FASTRDP_")}
+        environ["FASTRDP_ANSIBLE_VAULT"] = str(vault or self.stub)
+        environ.update(env or {})
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, environ, clear=True), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = setup.main(["--non-interactive", "--answers", str(path), "--output-dir", str(self.out),
+                             "--vault-password-file", str(self.pwfile), *extra])
+        return rc, out.getvalue(), err.getvalue()
+
+    def generate(self, answers, *extra, **kw):
+        rc, out, err = self.run_tool(answers, *extra, **kw)
+        self.assertEqual(rc, 0, err)
+        name = answers.get("name") or answers["hosts"].split(".")[0]
+        return self.out / name, out
+
+    @staticmethod
+    def main_keys(text):
+        return re.findall(r"^([A-Za-z_][A-Za-z0-9_]*):", text, re.M)
+
+
+class TestGeneratedInventory(SetupTestCase):
+    def test_lab_files_and_yaml(self):
+        inv, _ = self.generate(LAB)
+        for f in ("hosts.yml", "group_vars/all/main.yml", "group_vars/all/vault.yml", "setup-answers.json"):
+            self.assertTrue((inv / f).is_file(), f)
+        if yaml is None:
+            self.skipTest("PyYAML not installed")
+        hosts = yaml.safe_load((inv / "hosts.yml").read_text())
+        group = hosts["all"]["children"]["rdp_servers"]
+        self.assertEqual(list(group["hosts"]), ["rdp1.lab.example.com"])
+        self.assertEqual(group["vars"], {"ansible_user": "admin"})
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertEqual(main["fastrdp_realm"], "LAB.EXAMPLE.COM")
+        self.assertEqual(main["fastrdp_domain"], "lab.example.com")
+        # Only what differs from the role defaults (roles/common): a lab with xfce, the
+        # default ports and the vault-backed join password needs nothing else.
+        for name in ("fastrdp_desktops", "fastrdp_allow_groups", "fastrdp_front_cert_src",
+                     "fastrdp_backend_port_range", "fastrdp_default_geometry", "fastrdp_proc_hidepid",
+                     "fastrdp_join_password"):
+            self.assertNotIn(name, main)
+        # build is the role default, so it is not written
+        self.assertNotIn("fastrdp_install_method", main)
+        self.assertNotIn("fastrdp_web_enabled", main)
+
+    @unittest.skipIf(yaml is None, "PyYAML not installed")
+    def test_production_yaml(self):
+        inv, out = self.generate(self.production(), env={"FASTRDP_JOIN_PASSWORD": "J0in-Secret!x"})
+        self.assertEqual(inv.name, "corp")
+        hosts = yaml.safe_load((inv / "hosts.yml").read_text())
+        self.assertEqual(list(hosts["all"]["children"]["rdp_servers"]["hosts"]),
+                         ["rdp1.corp.example.com", "rdp2.corp.example.com"])
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        expect = {
+            "fastrdp_identity_provider": "ipa",
+            "fastrdp_join_user": "admin",
+            "fastrdp_allow_groups": ["rdp-users", "rdp-admins"],
+            "fastrdp_desktops": ["xfce", "gnome", "plasma"],
+            "fastrdp_default_desktop": "gnome",
+            "fastrdp_gpu": "nvidia",
+            "fastrdp_mfa_mode": "otp_or_push",
+            "fastrdp_privacyidea_url": "https://pi.corp.example.com",
+            "fastrdp_privacyidea_realm": "corp",
+            "fastrdp_privacyidea_ca_src": str(self.ca),
+            "fastrdp_privacyidea_service_user": "fastrdp-svc",
+            "fastrdp_mfa_exempt_groups": ["breakglass"],
+            "fastrdp_web_enabled": True,
+            "fastrdp_web_oidc_issuer": "https://sso.corp.example.com/realms/corp",
+            "fastrdp_web_oidc_client_id": "fastrdp",
+            "fastrdp_install_method": "apt",
+            "fastrdp_apt_key_checksum": "sha256:" + "ab" * 32,
+            "fastrdp_front_cert_src": str(self.cert),
+            "fastrdp_front_key_src": str(self.key),
+        }
+        for k, v in expect.items():
+            self.assertEqual(main.get(k), v, k)
+        # equal to the role defaults -> not written
+        for k in ("fastrdp_apt_channel", "fastrdp_web_public_url", "fastrdp_web_oidc_ca_src",
+                  "fastrdp_ad_gpo_access_control"):
+            self.assertNotIn(k, main)
+        self.assertIn("--ask-become-pass", out)
+        self.assertIn("make preflight INVENTORY=", out)
+
+    def test_only_known_variables(self):
+        corpus = role_corpus()
+        for answers, env in ((LAB, {}), (self.production(), {"FASTRDP_JOIN_PASSWORD": "x"}),
+                             (dict(LAB, identity_provider="none", name="mit", join_password=None), {})):
+            answers = {k: v for k, v in answers.items() if v is not None}
+            inv, _ = self.generate(answers, "--force", env=env)
+            text = (inv / "group_vars/all/main.yml").read_text()
+            keys = self.main_keys(text)
+            self.assertTrue(keys)
+            for k in keys:
+                self.assertIn(k, setup.VARIABLE_NAMES, k)
+                self.assertRegex(corpus, r"\b" + k + r"\b", f"{k} is not used by any role")
+            self.assertEqual(setup.check_known_variables(text), [])
+            # every vault_* reference in main.yml is a key the assistant writes to vault.yml
+            for ref in re.findall(r"\b(vault_[a-z0-9_]+)", text):
+                self.assertIn(ref, setup.VAULT_KEYS.values())
+            # hosts.yml carries only connection variables
+            hosts_keys = set(re.findall(r"^\s+(ansible_[a-z_]+):", (inv / "hosts.yml").read_text(), re.M))
+            self.assertLessEqual(hosts_keys, {"ansible_user", "ansible_connection"})
+
+    def test_vault_keys_are_read_by_inventory_or_roles(self):
+        corpus = role_corpus()
+        lab_main = (REPO / "ansible/inventories/lab/group_vars/all/main.yml").read_text()
+        for key in setup.VAULT_KEYS.values():
+            self.assertTrue(re.search(r"\b" + key + r"\b", corpus + lab_main), key)
+
+    def test_only_differences_from_role_defaults(self):
+        inv, _ = self.generate(self.production(), env={"FASTRDP_JOIN_PASSWORD": "x"})
+        values = setup.variables_for(setup.resolve(json.loads((inv / "setup-answers.json").read_text())
+                                                   | SECRETS | {"join_password": "x"}, False))
+        text = (inv / "group_vars/all/main.yml").read_text()
+        for sec, name, default, _c in setup.VARIABLES:
+            if default is setup.REQUIRED:
+                if name in values:
+                    self.assertIn(f"\n{name}:", text, name)
+            elif name in self.main_keys(text):
+                self.assertNotEqual(values[name], default, f"{name} equals the role default")
+
+    def test_every_line_commented(self):
+        inv, _ = self.generate(LAB)
+        lines = (inv / "group_vars/all/main.yml").read_text().splitlines()
+        for i, line in enumerate(lines):
+            if re.match(r"^fastrdp_", line):
+                self.assertTrue(lines[i - 1].startswith("#"), line)
+                self.assertRegex(lines[i - 1], r"\((required|default: .*)\)$")
+
+    def test_rerun_from_saved_answers_is_identical(self):
+        inv, _ = self.generate(self.production(), env={"FASTRDP_JOIN_PASSWORD": "x"})
+        first = (inv / "group_vars/all/main.yml").read_text()
+        saved = json.loads((inv / "setup-answers.json").read_text())
+        rc, _o, err = self.run_tool(saved, "--force", env={
+            "FASTRDP_JOIN_PASSWORD": "x",
+            "FASTRDP_PRIVACYIDEA_SERVICE_PASSWORD": "y",
+            "FASTRDP_WEB_OIDC_CLIENT_SECRET": "z"})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((inv / "group_vars/all/main.yml").read_text(), first)
+
+    def test_print_answers_writes_nothing(self):
+        rc, out, err = self.run_tool(LAB, "--print-answers")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(json.loads(out)["realm"], "LAB.EXAMPLE.COM")
+        self.assertNotIn(SECRETS["join_password"], out)
+
+
+class TestRoleConsistency(unittest.TestCase):
+    """The assistant's view of the roles must match the roles."""
+
+    @unittest.skipIf(yaml is None, "PyYAML not installed")
+    def test_role_defaults_match(self):
+        actual = role_defaults()
+        for name, value in setup.ROLE_DEFAULTS.items():
+            self.assertIn(name, actual, name)
+            self.assertEqual(actual[name], value, name)
+        for _s, name, default, _c in setup.VARIABLES:
+            if default is setup.REQUIRED:
+                # placeholder default that roles/common refuses
+                self.assertEqual(actual.get(name), "", f"{name}: REQUIRED needs an empty role default")
+            else:
+                self.assertIn(name, actual, f"{name} has no role default (roles/common)")
+                self.assertEqual(actual.get(name), default, name)
+
+    def test_required_variables_cover_roles(self):
+        """Every variable the roles use has a role default, and the assistant's REQUIRED set is
+        exactly what roles/common insists on (non-empty checks)."""
+        texts = [p.read_text(errors="replace") for p in ROLES.rglob("*") if p.is_file()]
+        texts.append((REPO / "ansible/site.yml").read_text())
+        used = set(re.findall(r"\bfastrdp_[a-z0-9_]+", "\n".join(texts)))
+        defaults = set()
+        for f in ROLES.glob("*/defaults/main.yml"):
+            defaults |= set(re.findall(r"^(fastrdp_[a-z0-9_]+):", f.read_text(), re.M))
+        produced = set()
+        for f in list(ROLES.glob("*/tasks/*.yml")) + list(ROLES.glob("*/handlers/*.yml")):
+            t = f.read_text()
+            produced |= set(re.findall(r"register:\s*(fastrdp_[a-z0-9_]+)", t))
+            produced |= set(re.findall(r"^\s+(fastrdp_[a-z0-9_]+):\s", t, re.M))   # set_fact keys
+        not_variables = {"fastrdp_broker", "fastrdp_web", "fastrdp_webgate"}  # python packages, nft table
+        self.assertEqual(used - defaults - produced - not_variables, set(),
+                         "roles use these without a default; add them to roles/common/defaults")
+        checks = (ROLES / "common/tasks/main.yml").read_text()
+        empty_defaults = set()
+        for f in ROLES.glob("*/defaults/main.yml"):
+            empty_defaults |= set(re.findall(r'^(fastrdp_[a-z0-9_]+): ""', f.read_text(), re.M))
+        must_be_set = set(re.findall(r"- (fastrdp_[a-z0-9_]+) \| length > 0", checks)) & empty_defaults
+        known_required = {n for _s, n, d, _c in setup.VARIABLES if d is setup.REQUIRED}
+        self.assertEqual(known_required, must_be_set)
+
+    def test_desktops_match_role(self):
+        text = (ROLES / "desktops/defaults/main.yml").read_text()
+        block = text.split("fastrdp_desktop_packages:", 1)[1].split("\n# ", 1)[0]
+        role_desks = set(re.findall(r"^  ([a-z0-9-]+):", block, re.M))
+        self.assertEqual(role_desks, set(setup.ALL_DESKTOPS))
+
+
+class TestVault(SetupTestCase):
+    def assert_no_cleartext(self, inv):
+        for f in inv.rglob("*"):
+            if f.is_file():
+                data = f.read_text(errors="replace")
+                for s in SECRETS.values():
+                    self.assertNotIn(s, data, f"{s!r} in clear text in {f}")
+
+    def test_stub_vault_encrypts(self):
+        inv, out = self.generate(self.production(join_password=SECRETS["join_password"]))
+        vault = inv / "group_vars/all/vault.yml"
+        self.assertTrue(vault.read_text().startswith("$ANSIBLE_VAULT;"))
+        self.assertEqual(stat.S_IMODE(vault.stat().st_mode), 0o600)
+        self.assert_no_cleartext(inv)
+        for s in SECRETS.values():
+            self.assertNotIn(s, out)
+        # what went into the vault
+        plain = bytes.fromhex(vault.read_text().splitlines()[1]).decode()
+        self.assertIn('vault_fastrdp_join_password: "J0in-Secret!x"', plain)
+        self.assertIn("vault_fastrdp_privacyidea_service_password", plain)
+        self.assertIn("vault_fastrdp_web_oidc_client_secret", plain)
+        self.assertFalse(list(inv.rglob(".vault.yml.tmp")))
+
+    @unittest.skipUnless(shutil.which("ansible-vault"), "ansible-vault not installed")
+    def test_real_ansible_vault(self):
+        a = self.production(join_password=SECRETS["join_password"])
+        inv, _ = self.generate(a, vault=shutil.which("ansible-vault"))
+        vault = inv / "group_vars/all/vault.yml"
+        self.assertTrue(vault.read_text().startswith("$ANSIBLE_VAULT;1.1;AES256"))
+        self.assert_no_cleartext(inv)
+        r = subprocess.run(["ansible-vault", "view", "--vault-password-file", str(self.pwfile), str(vault)],
+                           capture_output=True, text=True, check=True)
+        if yaml is not None:
+            data = yaml.safe_load(r.stdout)
+            self.assertEqual(data, {setup.VAULT_KEYS[k]: v for k, v in SECRETS.items()})
+
+    def test_vault_password_from_environment(self):
+        path = self.tmp / "a.json"
+        path.write_text(json.dumps(LAB))
+        env = {"FASTRDP_ANSIBLE_VAULT": str(self.stub), "FASTRDP_VAULT_PASSWORD": "pw"}
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+            rc = setup.main(["--non-interactive", "--answers", str(path), "--output-dir", str(self.out)])
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "rdp1/group_vars/all/vault.yml").read_text().startswith("$ANSIBLE_VAULT;"))
+
+    def test_missing_ansible_vault_needs_opt_in(self):
+        with mock.patch.object(setup, "find_ansible_vault", return_value=None):
+            rc, _o, err = self.run_tool(LAB)
+            self.assertEqual(rc, 2)
+            self.assertIn("ansible-vault not found", err)
+            self.assertFalse((self.out / "rdp1/group_vars/all/vault.yml").exists())
+            rc, out, err = self.run_tool(LAB, "--plaintext-vault", "--force")
+        self.assertEqual(rc, 0, err)
+        vault = self.out / "rdp1/group_vars/all/vault.yml"
+        self.assertEqual(stat.S_IMODE(vault.stat().st_mode), 0o600)
+        self.assertIn("NOT encrypted", out)
+
+    def test_failing_vault_leaves_no_file(self):
+        bad = self.tmp / "bad-vault"
+        bad.write_text("#!/bin/sh\necho boom >&2\nexit 1\n")
+        bad.chmod(0o755)
+        rc, _o, err = self.run_tool(LAB, vault=bad)
+        self.assertEqual(rc, 2)
+        self.assertIn("boom", err)
+        self.assertFalse((self.out / "rdp1/group_vars/all/vault.yml").exists())
+
+    def test_no_secrets_no_vault(self):
+        a = dict(LAB, identity_provider="none")
+        a.pop("join_password")
+        inv, out = self.generate(a)
+        self.assertFalse((inv / "group_vars/all/vault.yml").exists())
+        self.assertNotIn("vault-pass", out)
+
+
+class TestValidation(SetupTestCase):
+    def assert_rejected(self, answers, fragment, *extra):
+        rc, _o, err = self.run_tool(answers, *extra)
+        self.assertEqual(rc, 2, err)
+        self.assertIn(fragment, err)
+        self.assertFalse(self.out.exists())
+
+    def test_rejections(self):
+        self.assert_rejected(dict(LAB, hosts="rdp1"), "not a fully qualified host name")
+        self.assert_rejected(dict(LAB, desktops="xfce,kde"), "unknown desktop 'kde'")
+        self.assert_rejected(dict(LAB, desktops="xfce", default_desktop="gnome"), "default desktop must be one of")
+        self.assert_rejected(dict(LAB, realm="OTHER.EXAMPLE.COM"), "AD realm is the DNS domain")
+        self.assert_rejected(dict(LAB, realm="lab.example.com"), "upper case")
+        self.assert_rejected(dict(LAB, gpu="amd"), "choose one of")
+        self.assert_rejected(dict(LAB, mfa_mode="otp", privacyidea_url="https://pi.example.com",
+                                  allow_tls_logins=False), "needs TLS logins")
+        self.assert_rejected(dict(LAB, mfa_mode="push", privacyidea_url="http://pi.example.com"), "use https://")
+        self.assert_rejected(dict(LAB, mfa_mode="push"), "privacyidea_url: missing answer")
+        self.assert_rejected(dict(LAB, tls="provided", tls_cert="/nonexistent.pem", tls_key=str(self.key)),
+                             "does not exist")
+        self.assert_rejected(dict(LAB, tls="provided", tls_cert=str(self.key), tls_key=str(self.key)),
+                             "not a PEM certificate")
+        self.assert_rejected(dict(LAB, install_method="apt", apt_key_checksum="md5:00"), "sha256:<64 hex digits>")
+        self.assert_rejected(dict(LAB, name="lab"), "shipped example")
+        self.assert_rejected(dict(LAB, colour="blue"), "unknown answer key(s): colour")
+        no_pw = dict(LAB)
+        no_pw.pop("join_password")
+        self.assert_rejected(no_pw, "FASTRDP_JOIN_PASSWORD")
+
+    def test_existing_inventory_needs_force(self):
+        self.generate(LAB)
+        rc, _o, err = self.run_tool(LAB)
+        self.assertEqual(rc, 2)
+        self.assertIn("--force", err)
+
+    def test_relative_paths_become_absolute(self):
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        inv, _ = self.generate(dict(LAB, tls="provided", tls_cert="rdp.crt", tls_key="rdp.key"))
+        text = (inv / "group_vars/all/main.yml").read_text()
+        self.assertIn(f"fastrdp_front_cert_src: {self.cert}", text)
+
+    def test_interactive_reasks_until_valid(self):
+        q = next(q for q in setup.QUESTIONS if q.key == "gpu")
+        out = io.StringIO()
+        value = setup.ask_interactive(q, {}, stream_in=io.StringIO("amd\n\n"), stream_out=out)
+        self.assertEqual(value, "auto")          # Enter takes the default after the error
+        self.assertIn("choose one of", out.getvalue())
+
+    def test_yaml_scalar_quoting(self):
+        self.assertEqual(setup.yaml_scalar("xfce"), "xfce")
+        for s in ("yes", "on", "1920x1080", "a: b", "{{ x }}", "", "#x", "x y"):
+            q = setup.yaml_scalar(s)
+            self.assertTrue(q.startswith('"'), (s, q))
+            self.assertEqual(json.loads(q), s)
+
+
+if __name__ == "__main__":
+    unittest.main()

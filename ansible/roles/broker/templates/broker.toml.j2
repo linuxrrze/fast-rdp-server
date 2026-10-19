@@ -36,6 +36,12 @@ geometry = "{{ fastrdp_default_geometry }}"
 
 {% for desk in fastrdp_desktops %}
 [desktops.{{ desk }}]
+{% if desk in fastrdp_desktop_labels %}
+label = {{ fastrdp_desktop_labels[desk] | to_json }}
+{% endif %}
+{% if desk in fastrdp_desktop_groups %}
+groups = {{ fastrdp_desktop_groups[desk] | to_json }}
+{% endif %}
 {% if desk == 'gnome' %}
 backend = "gnome"
 {% elif desk == 'plasma' %}

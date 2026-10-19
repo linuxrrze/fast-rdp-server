@@ -1,8 +1,54 @@
 # Patches for xrdp 0.10.6.1
 
-Applied by the Ansible `xrdp` role to the pristine release tarball before building.
+Applied by `third_party/fetch.sh xrdp` (series: `series`) to the release tarball
+listed in `third_party/sources.yml`. `third_party/build-xrdp.sh` builds it together
+with xorgxrdp 0.10.5, both for the Ansible build path and for the `fastrdp-xrdp`
+package. Policy: [docs/vendoring.md](../../docs/vendoring.md).
+
+## Why fastrdp builds xrdp at all
+
+The vendored build is required even without the patch. **Debian 13 and Ubuntu 26.04
+both ship xrdp 0.10.1** (`0.10.1-3.1+deb13u2`, `0.10.1-4.1ubuntu0.1`) and xorgxrdp
+0.10.2. fastrdp's configuration needs newer features (xrdp NEWS.md):
+
+| fastrdp uses | Since | In 0.10.1? |
+|---|---|---|
+| H.264 in the GFX pipeline, `gfx.toml` (`[codec] h264_encoder`, `[x264.*]`) | 0.10.2 | no: no `xrdp_tconfig`, no x264 support |
+| Unprivileged xrdp daemon (`runtime_user`/`runtime_group` = `xrdp`) | 0.10.2; started unprivileged by the service manager since 0.10.5 | no |
+| Separate H.264/RFX frame intervals (`normal_frame_interval`, `rfx_frame_interval`) | 0.10.2 | no |
+| x264 VBV settings (0.10.2) and `threads` (0.10.3) in `gfx.toml` | 0.10.2 / 0.10.3 | no |
+| Security fixes listed in the 0.10.5, 0.10.6 and 0.10.6.1 release notes (19 CVEs) | 0.10.5–0.10.6.1 | only as far as the distributions backport them |
+
+The distributions' 0.10.1 packages would therefore run fastrdp's X11 sessions
+without H.264, with xrdp as root, and with the configuration templates partly
+ignored. Debian's trixie-backports has 0.10.6.1, but without this patch.
 
 ## 0001 – FFmpeg H.264 encoder (VA-API, NVENC, QSV)
+
+**Is it required?** Yes for the project goal of GPU-accelerated encoding in X11
+sessions; xrdp works without it.
+- Without the patch, xrdp encodes H.264 on the CPU only (x264/OpenH264). That costs
+  roughly one or more cores per active 1080p session (docs/performance.md).
+- With it, Intel/AMD (VA-API, QSV) and NVIDIA (NVENC) encoders are used.
+- An unusable GPU falls back to libx264, so the patch never makes things worse
+  than the unpatched build.
+- The GNOME and Plasma back-ends do not use xrdp and are unaffected.
+- Upstream xrdp's unreleased `xrdp_accel_assist` covers NVENC only (see
+  [docs/upstream.md §4](../../docs/upstream.md)).
+
+**Drop it when** an xrdp release offers VA-API hardware encoding, through
+`accel_assist` or otherwise, and fastrdp vendors that release.
+
+**Regression tests.** `test/run_test.sh` covers the following, and CI runs it
+against the built tree:
+- libx264 through the patch's code path;
+- VA-API/NVENC falling back to libx264;
+- `fallback = ""` refused.
+
+`build-xrdp.sh` fails if `--enable-ffmpeg` or `--enable-x264` is missing from the
+build.
+
+### Design
 
 Upstream xrdp 0.10 encodes H.264 only in software (x264/OpenH264). This patch adds
 an encoder backend on FFmpeg's libavcodec, selected in `gfx.toml`:

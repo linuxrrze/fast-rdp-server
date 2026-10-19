@@ -190,7 +190,8 @@ class FakeIdP(BaseHTTPRequestHandler):
         self.reply(200, json.dumps({"id_token": tok, "access_token": "x"}).encode())
 
 
-def fake_broker(path, seen):
+def fake_broker(path, seen, allowed=("xfce", "gnome")):
+    """allowed: desktops the broker permits this user (a mutable list may change later)."""
     srv = socket.socket(socket.AF_UNIX)
     srv.bind(path)
     srv.listen(5)
@@ -200,8 +201,13 @@ def fake_broker(path, seen):
             conn, _ = srv.accept()
             req = json.loads(conn.makefile().readline())
             seen.append(req)
-            conn.sendall(json.dumps({"ok": True, "user": req["user"], "token": "fastrdp-web1:TOK",
-                                     "desktops": ["xfce"]}).encode() + b"\n")
+            if req["op"] == "web_desktops":
+                reply = {"ok": True, "user": req["user"], "default": allowed[0] if allowed else "",
+                         "desktops": [{"name": d, "label": d.upper()} for d in allowed]}
+            else:
+                reply = {"ok": True, "user": req["user"], "token": "fastrdp-web1:TOK",
+                         "desktops": list(allowed)}
+            conn.sendall(json.dumps(reply).encode() + b"\n")
             conn.close()
     threading.Thread(target=run, daemon=True).start()
 
@@ -219,7 +225,8 @@ class FlowTests(unittest.TestCase):
         FakeIdP.acr = "mfa"
         threading.Thread(target=idp.serve_forever, daemon=True).start()
         self.seen = []
-        fake_broker(f"{self.tmp}/b.sock", self.seen)
+        self.allowed = ["xfce", "gnome"]
+        fake_broker(f"{self.tmp}/b.sock", self.seen, self.allowed)
         cfg = config.parse({
             "webgate": {"public_url": "http://127.0.0.1:1", "broker_socket": f"{self.tmp}/b.sock",
                         "desktops": ["xfce", "gnome"]},
@@ -276,7 +283,29 @@ class FlowTests(unittest.TestCase):
                          ("alice", "alice", "fastrdp-web1:TOK"))
         self.assertEqual((params["initial-program"], params["security"]), ("fastrdp:gnome", "tls"))
         self.assertLess(data["expires"] / 1000 - time.time(), 31)
-        self.assertEqual(self.seen, [{"op": "web_token", "user": "alice"}])
+        self.assertEqual(self.seen, [{"op": "web_desktops", "user": "alice"},
+                                     {"op": "web_token", "user": "alice"}])
+
+    def test_chooser_lists_only_allowed_desktops(self):
+        # Regression: the chooser offered every configured desktop, and a desktop the
+        # broker does not allow silently started the user's default instead.
+        self.allowed[:] = ["xfce"]
+        self.login()
+        _, _, body = self.fetch(self.base + "/web/")
+        self.assertIn('value="xfce" selected>XFCE<', body)
+        self.assertNotIn("gnome", body)
+        csrf = body.split('name="csrf" value="')[1].split('"')[0]
+        status, h, _ = self.fetch(self.base + "/web/connect",
+                                  urllib.parse.urlencode({"csrf": csrf, "desktop": "gnome"}).encode())
+        self.assertEqual(status, 403)
+        self.assertNotIn("Location", h)
+
+    def test_no_allowed_desktop(self):
+        self.allowed[:] = []
+        self.login()
+        status, _, body = self.fetch(self.base + "/web/")
+        self.assertEqual(status, 403)
+        self.assertIn("No remote desktop", body)
 
     def test_csrf_required(self):
         self.login()

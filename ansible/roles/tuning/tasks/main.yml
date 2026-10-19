@@ -23,21 +23,37 @@
   when: fastrdp_tcp_tuning | bool
   notify: Apply TCP sysctl
 
-- name: Drop-in directory for all user slices
+- name: Drop-in directories for resource limits
   ansible.builtin.file:
-    path: /etc/systemd/system/user-.slice.d
+    path: "/etc/systemd/system/{{ item.unit }}.d"
     state: directory
     owner: root
     group: root
     mode: "0755"
+  loop: "{{ fastrdp_limit_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
 
-- name: Per-user resource limits
+# Per-user limits apply to user-UID.slice (xrdp/X11 and GNOME sessions, Plasma's user
+# units) and to each fastrdp-plasma@USER.service: a system service keeps its processes
+# (startplasma-wayland, krdpserver) in its own cgroup, outside the user's slice. The xrdp daemon encodes
+# H.264 for all users in xrdp.service, so it only gets an aggregate cap.
+- name: Resource limits
   ansible.builtin.template:
-    src: user-slice.conf.j2
-    dest: /etc/systemd/system/user-.slice.d/50-fastrdp.conf
+    src: limits.conf.j2
+    dest: "/etc/systemd/system/{{ item.unit }}.d/50-fastrdp.conf"
     owner: root
     group: root
     mode: "0644"
+  vars:
+    limits_section: "{{ item.section }}"
+    limits_comment: "{{ item.comment }}"
+    limits_cpu_quota: "{{ item.cpu_quota }}"
+    limits_memory_max: "{{ item.memory_max }}"
+    limits_tasks_max: "{{ item.tasks_max }}"
+  loop: "{{ fastrdp_limit_units }}"
+  loop_control:
+    label: "{{ item.unit }}"
   notify: Reload systemd for slices
 
 - name: Session tuning environment (read by session-plasma)

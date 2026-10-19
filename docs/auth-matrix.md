@@ -4,8 +4,8 @@
 
 | Client / method | First factor | Second factor (privacyIDEA) | Session gets a Kerberos TGT | Notes |
 |---|---|---|---|---|
-| NLA, user types a password (mstsc, xfreerdp3 `/u /p`, Remmina) | Kerberos (client gets a ticket with the password) | `push` (`otp_or_push`/`push`) | yes, the delegated password reaches `pam_sss` | **Recommended.** The client must reach a KDC (VPN, or a KDC proxy in FreeRDP). |
-| NLA, single sign-on from a domain-joined Windows client | Kerberos ticket of the logged-on user | `push` | only if Windows delegates the password ("Allow delegating default credentials") | Without a password: xrdp sessions have no TGT (`kinit` inside the session) |
+| NLA, user types a password (mstsc, xfreerdp3 `/u /p`, Remmina) | Kerberos (client gets a ticket with the password) | `push` (`otp_or_push`/`push`) | **X11 desktops (xrdp, incl. wlroots): yes**, the delegated password reaches `pam_sss` through the xrdp PAM stack. **GNOME, Plasma: no**; those back-ends receive only a per-session random secret, never the user's password (`kinit` in the session) | **Recommended.** The client must reach a KDC (VPN, or a KDC proxy in FreeRDP). |
+| NLA, single sign-on from a domain-joined Windows client | Kerberos ticket of the logged-on user | `push` | X11 desktops only, and only if Windows delegates the password ("Allow delegating default credentials"); GNOME/Plasma: no | Without a password no session has a TGT (`kinit` inside the session) |
 | TLS, password+OTP in one field | PAM `fastrdp` (SSSD) | OTP appended to the password (`otp`, `otp_or_push`) | yes | For clients without Kerberos. Needs `fastrdp_allow_tls_logins: true`. |
 | Web: Guacamole + Keycloak | Keycloak (OIDC) | at Keycloak (OTP, WebAuthn/FIDO2, privacyIDEA), proven by `acr`/`amr` | no | `fastrdp_web_enabled`; see [web-access.md](web-access.md) |
 | Smartcard / PIV / YubiKey PIV (NLA) | Kerberos via **PKINIT** (certificate + PIN) | `push`, or exempt group for "smart card required" accounts | no (PIN is never forwarded) | Tested with a software token; real cards/AD/mstsc to validate. See [smartcard-nla.md](smartcard-nla.md) |

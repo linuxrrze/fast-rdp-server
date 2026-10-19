@@ -11,11 +11,38 @@ fastrdp_sysctl_tcp:
   net.core.rmem_max: 16777216
   net.core.wmem_max: 16777216
 
-# --- per-user fairness (systemd user-UID.slice; covers xrdp, GNOME and Plasma sessions)
-# "" = no limit. Examples: "400%" (4 cores), "16G".
+# --- per-user fairness. "" = no limit. Examples: "400%" (4 cores), "16G".
+# Applied to every user-UID.slice (X11/xrdp and GNOME sessions, Plasma's KWin and shell)
+# and to every fastrdp-plasma@USER.service (Plasma: startplasma-wayland and krdpserver,
+# the H.264 encoder, run in that system unit, outside the user's slice).
 fastrdp_user_cpu_quota: ""
 fastrdp_user_memory_max: ""
 fastrdp_user_tasks_max: 4096
+# xrdp.service encodes H.264 for ALL X11 sessions (one process, uid xrdp), so per-user
+# limits cannot cover it. Optional cap for the whole daemon, e.g. "800%"; size it for
+# the number of concurrent sessions (docs/performance.md).
+fastrdp_xrdp_cpu_quota: ""
+fastrdp_xrdp_memory_max: ""
+# Units that get limits (internal; derived from the settings above).
+fastrdp_limit_units:
+  - unit: user-.slice
+    section: Slice
+    comment: "Every user-UID.slice: all processes of a user's xrdp/X11 and GNOME sessions."
+    cpu_quota: "{{ fastrdp_user_cpu_quota }}"
+    memory_max: "{{ fastrdp_user_memory_max }}"
+    tasks_max: "{{ fastrdp_user_tasks_max }}"
+  - unit: fastrdp-plasma@.service
+    section: Service
+    comment: "Every headless Plasma session (startplasma-wayland, krdpserver): same per-user limits."
+    cpu_quota: "{{ fastrdp_user_cpu_quota }}"
+    memory_max: "{{ fastrdp_user_memory_max }}"
+    tasks_max: "{{ fastrdp_user_tasks_max }}"
+  - unit: xrdp.service
+    section: Service
+    comment: "The xrdp daemon encodes for all X11 sessions: aggregate cap only."
+    cpu_quota: "{{ fastrdp_xrdp_cpu_quota }}"
+    memory_max: "{{ fastrdp_xrdp_memory_max }}"
+    tasks_max: ""
 
 # --- encoders
 # KRdp (Plasma): auto | h264_vaapi | libx264 | libopenh264 (KPipeWire never uses NVENC)

@@ -1,0 +1,56 @@
+---
+# Site-wide settings shared by several roles. Every role that uses them depends on
+# this role (meta/main.yml), so an inventory only has to set what differs. The
+# values marked REQUIRED have no usable default; tasks/main.yml checks them first.
+
+# ---------------------------------------------------------------- identity
+fastrdp_realm: ""                    # REQUIRED: Kerberos realm, e.g. EXAMPLE.COM
+fastrdp_domain: ""                   # REQUIRED: DNS domain, e.g. example.com
+fastrdp_identity_provider: ad        # ad (Samba AD / Active Directory) | ipa (FreeIPA) | none (keytab provided)
+fastrdp_join_user: Administrator     # account used for the domain join
+fastrdp_join_password: "{{ vault_fastrdp_join_password | default('') }}"    # secret: vault.yml
+# Who may log in: members of these groups; [] = every user who can authenticate.
+fastrdp_allow_groups: []
+
+# ---------------------------------------------------------------- front end
+fastrdp_listen_port: 3389
+fastrdp_front_cert_src: ""           # PEM on the controller; "" = self-signed (lab only)
+fastrdp_front_key_src: ""
+# Allow password logins over TLS (clients without NLA, the web path); false = NLA only.
+fastrdp_allow_tls_logins: true
+
+# ---------------------------------------------------------------- MFA
+fastrdp_mfa_mode: none               # none | otp | push | otp_or_push (docs/auth-matrix.md)
+fastrdp_privacyidea_url: ""          # REQUIRED when fastrdp_mfa_mode != none
+fastrdp_privacyidea_realm: ""
+fastrdp_privacyidea_ca_src: ""       # PEM on the controller; "" = system trust store
+fastrdp_privacyidea_service_user: "" # admin with triggerchallenge right ("" = use user password)
+fastrdp_privacyidea_service_password: "{{ vault_fastrdp_privacyidea_service_password | default('') }}"  # vault.yml
+fastrdp_mfa_exempt_groups: []
+fastrdp_otp_lengths: [6]
+
+# ---------------------------------------------------------------- web access
+# Browser path (Keycloak + Guacamole, role web_gateway). Read by the broker and proxy
+# templates too, so it lives here; the web_gateway role holds the other web settings.
+fastrdp_web_enabled: false
+
+# ---------------------------------------------------------------- desktops
+fastrdp_desktops: [xfce]             # xfce mate cinnamon lxqt budgie i3 sway labwc wayfire gnome plasma
+fastrdp_default_desktop: xfce        # must be one of fastrdp_desktops
+fastrdp_group_desktops: {}           # default desktop per group, e.g. {rdp-kde: plasma}
+# Restrict desktops to groups, e.g. {plasma: [rdp-kde]}; desktops not listed are open
+# to every allowed user.
+fastrdp_desktop_groups: {}
+fastrdp_desktop_labels: {}           # display names, e.g. {xfce: "XFCE (light)"}
+fastrdp_default_geometry: 1920x1080
+
+# ---------------------------------------------------------------- performance
+fastrdp_gpu: auto                    # auto | nvidia | mesa | none
+fastrdp_x264_threads: 2
+fastrdp_backend_port_range: [33900, 34899]
+fastrdp_xrdp_port: 3390
+
+# ---------------------------------------------------------------- hardening
+# Hide other users' processes (/proc hidepid). The nftables owner rules already stop
+# other users from reaching back-end ports.
+fastrdp_proc_hidepid: false

@@ -4,6 +4,9 @@ fastrdp turns a Linux host into a multi-user RDP terminal server. One front-end
 (`freerdp-proxy3`) authenticates every connection and hands it to a per-user
 desktop session. A small broker decides who gets in and which desktop they get.
 
+Per-back-end details (session start, files, configuration, GPU path, security,
+troubleshooting): [backends/](backends/README.md).
+
 ```
  client (mstsc, xfreerdp3, Remmina)
     │  RDP over TLS; NLA/Kerberos or password(+OTP)        :3389, only exposed port
@@ -13,7 +16,7 @@ desktop session. A small broker decides who gets in and which desktop they get.
     ▼
  fastrdp-brokerd  (root)  ── PAM "fastrdp" (SSSD) ── privacyIDEA (OTP / push)
     │ starts or reuses the user's session and returns host:port + credentials
-    ├── X11 desktops ─ xrdp 0.10.6 + xorgxrdp(-glamor) ─────────── 127.0.0.1:3390
+    ├── X11 desktops ─ xrdp 0.10.6.1 + xorgxrdp(-glamor) ───────── 127.0.0.1:3390
     ├── GNOME 50+    ─ GDM gnome-headless-session@USER + g-r-d ── 127.0.0.1:339xx
     └── Plasma 6     ─ fastrdp-plasma@USER: KWin --virtual + KRdp  127.0.0.1:339xx
 ```
@@ -22,12 +25,12 @@ desktop session. A small broker decides who gets in and which desktop they get.
 
 | Component | Source | Runs as | Purpose |
 |---|---|---|---|
-| `freerdp-proxy3` | distro package | `_fastrdp-proxy` | RDP front-end: TLS, NLA (Kerberos acceptor via `/etc/fastrdp/termsrv.keytab`), channel passthrough (GFX/H.264, clipboard, drives, audio) |
+| `freerdp-proxy` | fastrdp's patched FreeRDP in `/opt/fastrdp` (`fastrdp-freerdp3`; [vendoring.md](vendoring.md)) | `_fastrdp-proxy` | RDP front-end: TLS, NLA (Kerberos acceptor via `/etc/fastrdp/termsrv.keytab`), channel passthrough (GFX/H.264, clipboard, drives, audio) |
 | fastrdp proxy module | `broker/proxy-module/` (C) | in the proxy | Binds NLA identity to the Kerberos principal, asks the broker, routes to the back-end, swaps credentials |
 | `fastrdp-brokerd` | `broker/brokerd/` (Python, stdlib only) | root | Account and group checks, MFA, desktop choice, session start/reuse, one-time tokens |
 | `pam_fastrdp_token` | `broker/pam_fastrdp_token/` (C) | in xrdp-sesman | xrdp accepts only one-time broker tokens; hands the real password on for the TGT |
 | fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)) |
-| xrdp + xorgxrdp | built from release tarballs by Ansible | `xrdp` (daemon), root (sesman) | X11 desktops, H.264 via x264 |
+| xrdp + xorgxrdp | release tarballs + `patches/xrdp/`, built by Ansible or packaged as `fastrdp-xrdp` | `xrdp` (daemon), root (sesman) | X11 and wlroots desktops; H.264 via FFmpeg VA-API/NVENC/QSV (fastrdp patch) or x264 |
 | gnome-remote-desktop | distro package | the user | GNOME headless sessions, hardware H.264 (VA-API/NVENC) |
 | KRdp | distro package | the user | Plasma sessions (FreeRDP + PipeWire, VA-API H.264) |
 
@@ -68,7 +71,8 @@ desktop session. A small broker decides who gets in and which desktop they get.
      That unit opens a logind session through PAM `fastrdp-session`, runs KWin on its
      virtual backend and starts `krdpserver --plasma` on the allocated loopback port.
 6. **Back-end connection** (module, `ClientPreConnect`): the proxy connects with the
-   broker's credentials and protocol (TLS for xrdp, NLA for g-r-d/KRdp). The
+   broker's credentials and protocol (TLS for xrdp, NLA for g-r-d/KRdp; on this
+   loopback hop NLA uses NTLM, `AuthenticationPackageList=!kerberos`). The
    client's alternate-shell request is dropped.
 7. On disconnect the module reports `end`. Sessions keep running, and the next
    login of the same user reconnects to them.

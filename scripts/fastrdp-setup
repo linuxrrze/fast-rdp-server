@@ -1,0 +1,901 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+"""fastrdp-setup: guided creation of an Ansible inventory for fast-rdp-server.
+
+Runs on the admin machine (Python 3 standard library only). Asks the questions a
+deployment needs, writes
+
+    ansible/inventories/<name>/hosts.yml
+    ansible/inventories/<name>/group_vars/all/main.yml   (only what the roles need or what differs)
+    ansible/inventories/<name>/group_vars/all/vault.yml  (secrets, encrypted with ansible-vault)
+    ansible/inventories/<name>/setup-answers.json        (the answers without secrets, for re-runs)
+
+and prints the next commands (preflight, playbook, smoke test, first connection).
+
+    scripts/fastrdp-setup                               # interactive
+    scripts/fastrdp-setup --answers site.json --non-interactive \\
+        --vault-password-file ~/.fastrdp-vault          # scripted (secrets from FASTRDP_* env vars)
+
+See docs/quickstart.md.
+"""
+
+import argparse
+import getpass
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+ANSIBLE_DIR = REPO / "ansible"
+APT_REPO_URL = "https://linuxrrze.github.io/fast-rdp-server"
+SUPPORTED_SUITES = ("resolute", "trixie")      # Ubuntu 26.04, Debian 13
+
+X11_DESKTOPS = ["xfce", "mate", "cinnamon", "lxqt", "plasma-x11"]
+WAYLAND_DESKTOPS = ["gnome", "plasma"]
+WLROOTS_DESKTOPS = ["sway", "labwc", "wayfire"]
+ALL_DESKTOPS = X11_DESKTOPS + WAYLAND_DESKTOPS + WLROOTS_DESKTOPS
+
+# Values from ansible/roles/*/defaults/main.yml for the variables this tool may set.
+# scripts/tests/test_fastrdp_setup.py checks that they still match the roles.
+ROLE_DEFAULTS = {
+    "fastrdp_install_method": "build",
+    "fastrdp_apt_channel": "stable",
+    "fastrdp_apt_key_checksum": "",
+    "fastrdp_ad_gpo_access_control": "permissive",
+    "fastrdp_termsrv_keytab_src": "",
+    "fastrdp_privacyidea_verify_tls": True,
+    "fastrdp_web_enabled": False,
+    "fastrdp_web_public_url": "https://{{ ansible_fqdn }}",
+    "fastrdp_web_oidc_issuer": "https://keycloak.lab.example.com/realms/lab",
+    "fastrdp_web_oidc_client_id": "fastrdp-web",
+    "fastrdp_web_oidc_ca_src": "",
+}
+REQUIRED = object()   # marker: no usable role default; roles/common checks that it is set
+
+# Output order, section and comment of every variable the tool can write.
+# default: the role default (written only when different) or REQUIRED (always written;
+# the role default is "" and roles/common/tasks/main.yml refuses it).
+VARIABLES = [
+    ("identity", "fastrdp_realm", REQUIRED, "Kerberos realm; only principals of this realm may log in"),
+    ("identity", "fastrdp_domain", REQUIRED, "DNS domain of the realm (KDCs are found via DNS SRV records)"),
+    ("identity", "fastrdp_identity_provider", "ad",
+     "ad = Samba/Windows AD (realm join), ipa = FreeIPA, none = MIT KDC, keytab + sssd.conf provided"),
+    ("identity", "fastrdp_join_user", "Administrator", "account that joins the host (used on the first run only)"),
+    ("identity", "fastrdp_join_password", "{{ vault_fastrdp_join_password | default('') }}", "from vault.yml"),
+    ("identity", "fastrdp_termsrv_keytab_src", "", "keytab with TERMSRV/<fqdn> keys, on this machine"),
+    ("identity", "fastrdp_allow_groups", [], "groups allowed to log in ([] = every directory user)"),
+    ("identity", "fastrdp_ad_gpo_access_control", "permissive",
+     "AD GPO logon right 'Allow log on through Remote Desktop Services'"),
+    ("installation", "fastrdp_install_method", "build",
+     "apt = packages from the fastrdp APT repository, build = compile on the host"),
+    ("installation", "fastrdp_apt_channel", "stable", "stable = release tags, testing = main branch"),
+    ("installation", "fastrdp_apt_key_checksum", "", "pin the repository key"),
+    ("front-end", "fastrdp_listen_port", 3389, "RDP port of the fastrdp proxy"),
+    ("front-end", "fastrdp_front_cert_src", "",
+     "PEM certificate on this machine; \"\" = self-signed on the host (lab only)"),
+    ("front-end", "fastrdp_front_key_src", "", "PEM private key on this machine"),
+    ("front-end", "fastrdp_allow_tls_logins", True,
+     "accept clients without NLA (password, plus OTP, typed into one field)"),
+    ("MFA", "fastrdp_mfa_mode", "none", "none | otp | push | otp_or_push (docs/auth-matrix.md)"),
+    ("MFA", "fastrdp_privacyidea_url", "", "privacyIDEA base URL"),
+    ("MFA", "fastrdp_privacyidea_realm", "", "privacyIDEA realm (\"\" = its default realm)"),
+    ("MFA", "fastrdp_privacyidea_ca_src", "", "CA of privacyIDEA, on this machine (\"\" = system trust store)"),
+    ("MFA", "fastrdp_privacyidea_verify_tls", True, "verify privacyIDEA's TLS certificate"),
+    ("MFA", "fastrdp_privacyidea_service_user", "",
+     "admin with the triggerchallenge right (\"\" = trigger push with the user's password)"),
+    ("MFA", "fastrdp_privacyidea_service_password", "{{ vault_fastrdp_privacyidea_service_password | default('') }}", "from vault.yml"),
+    ("MFA", "fastrdp_mfa_exempt_groups", [], "groups that skip MFA (break-glass accounts)"),
+    ("MFA", "fastrdp_otp_lengths", [6], "TOTP length taken from the end of the password (use one length)"),
+    ("desktops", "fastrdp_desktops", ["xfce"],
+     "X11: xfce mate cinnamon lxqt plasma-x11 | Wayland: gnome plasma | wlroots: sway labwc wayfire"),
+    ("desktops", "fastrdp_default_desktop", "xfce", "desktop for users without their own choice"),
+    ("desktops", "fastrdp_group_desktops", {}, "per-group default desktop, e.g. {rdp-kde: plasma}"),
+    ("desktops", "fastrdp_default_geometry", "1920x1080", "initial session size"),
+    ("web", "fastrdp_web_enabled", False, "browser access via Keycloak + Guacamole (docs/web-access.md)"),
+    ("web", "fastrdp_web_public_url", "https://{{ ansible_fqdn }}", "URL users open in the browser"),
+    ("web", "fastrdp_web_oidc_issuer", "https://keycloak.lab.example.com/realms/lab", "OIDC issuer (Keycloak realm URL)"),
+    ("web", "fastrdp_web_oidc_client_id", "fastrdp-web", "confidential OIDC client; its secret is in vault.yml"),
+    ("web", "fastrdp_web_oidc_ca_src", "", "CA of the IdP, on this machine (\"\" = system trust store)"),
+    ("performance", "fastrdp_gpu", "auto", "auto | nvidia | mesa | none"),
+    ("performance", "fastrdp_x264_threads", 2, "x264 threads per xrdp session"),
+    ("performance", "fastrdp_backend_port_range", [33900, 34899], "loopback ports for back-end sessions"),
+    ("performance", "fastrdp_xrdp_port", 3390, "xrdp listens on loopback only"),
+    ("hardening", "fastrdp_proc_hidepid", False, "hide other users' processes (/proc hidepid)"),
+]
+VARIABLE_NAMES = [v[1] for v in VARIABLES]
+
+# vault.yml keys -> the main.yml variable that reads them
+VAULT_KEYS = {
+    "join_password": "vault_fastrdp_join_password",
+    "privacyidea_service_password": "vault_fastrdp_privacyidea_service_password",
+    "web_oidc_client_secret": "vault_fastrdp_web_oidc_client_secret",   # read by the web_gateway role default
+}
+SECRET_ENV = {
+    "join_password": "FASTRDP_JOIN_PASSWORD",
+    "privacyidea_service_password": "FASTRDP_PRIVACYIDEA_SERVICE_PASSWORD",
+    "web_oidc_client_secret": "FASTRDP_WEB_OIDC_CLIENT_SECRET",
+}
+
+
+class SetupError(Exception):
+    pass
+
+
+# ----------------------------------------------------------------------------- validators
+# Each takes the raw answer (string from the prompt, or any JSON value from an answers
+# file) and the answers so far; returns the normalised value or raises SetupError.
+
+HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+GROUP_RE = re.compile(r"^[^\s,:\"']+$")
+
+
+def _list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [v.strip() for v in str(value).replace(" ", ",").split(",") if v.strip()]
+
+
+def _bool(value, _a=None):
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("y", "yes", "true", "1", "on"):
+        return True
+    if v in ("n", "no", "false", "0", "off"):
+        return False
+    raise SetupError("answer yes or no")
+
+
+def _str(value, _a=None):
+    return "" if value is None else str(value).strip()
+
+
+def v_choice(*choices):
+    def check(value, _a=None):
+        v = _str(value).lower()
+        if v not in choices:
+            raise SetupError("choose one of: " + ", ".join(choices))
+        return v
+    return check
+
+
+def v_fqdn(value, _a=None):
+    v = _str(value).lower().rstrip(".")
+    if not HOST_RE.match(v):
+        raise SetupError(f"{value!r} is not a fully qualified host name (e.g. rdp1.example.com)")
+    return v
+
+
+def v_hosts(value, a):
+    hosts = [h.lower() for h in _list(value)]
+    if not hosts:
+        raise SetupError("at least one host is needed")
+    if a.get("connection") == "local":
+        return hosts
+    return [v_fqdn(h) for h in hosts]
+
+
+def v_name(value, _a=None):
+    v = _str(value)
+    if not NAME_RE.match(v):
+        raise SetupError("use lower-case letters, digits, '-' and '_'")
+    if v == "lab":
+        raise SetupError("'lab' is the shipped example inventory; choose another name")
+    return v
+
+
+def v_user(value, _a=None):
+    v = _str(value)
+    if v and not re.match(r"^[A-Za-z_][A-Za-z0-9_.@-]*$", v):
+        raise SetupError("not a valid user name")
+    return v
+
+
+def v_realm(value, a):
+    v = _str(value)
+    if not re.match(r"^[A-Z0-9]([A-Z0-9-]*[A-Z0-9])?(\.[A-Z0-9]([A-Z0-9-]*[A-Z0-9])?)+$", v):
+        raise SetupError("realms are upper case DNS-style names, e.g. EXAMPLE.COM")
+    if a.get("identity_provider") == "ad" and v != a.get("domain", "").upper():
+        raise SetupError(f"an AD realm is the DNS domain in upper case: {a.get('domain', '').upper()}")
+    return v
+
+
+def v_groups(value, _a=None):
+    groups = _list(value)
+    for g in groups:
+        if not GROUP_RE.match(g):
+            raise SetupError(f"invalid group name {g!r}")
+    return groups
+
+
+def v_desktops(value, _a=None):
+    desks = []
+    for d in _list(value):
+        d = d.lower()
+        if d not in ALL_DESKTOPS:
+            raise SetupError(f"unknown desktop {d!r}; known: {' '.join(ALL_DESKTOPS)}")
+        if d not in desks:
+            desks.append(d)
+    if not desks:
+        raise SetupError("choose at least one desktop")
+    return desks
+
+
+def v_default_desktop(value, a):
+    v = _str(value).lower()
+    if v not in a["desktops"]:
+        raise SetupError("the default desktop must be one of: " + ", ".join(a["desktops"]))
+    return v
+
+
+def v_url(value, _a=None):
+    v = _str(value).rstrip("/")
+    if not re.match(r"^https?://[A-Za-z0-9.-]+(:\d+)?(/\S*)?$", v):
+        raise SetupError("expected a URL like https://host.example.com/path")
+    return v
+
+
+def v_https_url(value, a=None):
+    v = v_url(value, a)
+    if not v.startswith("https://"):
+        raise SetupError("use https:// (credentials and tokens go over this connection)")
+    return v
+
+
+def v_file(optional):
+    def check(value, _a=None):
+        v = _str(value)
+        if not v:
+            if optional:
+                return ""
+            raise SetupError("a path is needed")
+        p = Path(os.path.expanduser(v)).resolve()
+        if not p.is_file():
+            raise SetupError(f"{p} does not exist (paths are on this admin machine)")
+        if not os.access(p, os.R_OK):
+            raise SetupError(f"{p} is not readable")
+        return str(p)
+    return check
+
+
+def v_pem(kind):
+    base = v_file(optional=False)
+
+    def check(value, a=None):
+        p = base(value, a)
+        head = Path(p).read_text(errors="replace")
+        marker = "-----BEGIN CERTIFICATE-----" if kind == "cert" else "PRIVATE KEY-----"
+        if marker not in head:
+            raise SetupError(f"{p} is not a PEM {'certificate' if kind == 'cert' else 'private key'}")
+        return p
+    return check
+
+
+def v_secret(value, _a=None):
+    v = "" if value is None else str(value)
+    if not v:
+        raise SetupError("a value is needed")
+    if "\n" in v:
+        raise SetupError("single line only")
+    return v
+
+
+def v_checksum(value, _a=None):
+    v = _str(value).lower()
+    if v and not re.match(r"^sha256:[0-9a-f]{64}$", v):
+        raise SetupError("expected sha256:<64 hex digits>")
+    return v
+
+
+def v_web_url(value, a=None):
+    if _str(value) == ROLE_DEFAULTS["fastrdp_web_public_url"]:
+        return ROLE_DEFAULTS["fastrdp_web_public_url"]
+    return v_https_url(value, a)
+
+
+def v_tls_logins(value, a):
+    v = _bool(value)
+    if not v and a.get("mfa_mode") == "otp":
+        raise SetupError("MFA mode 'otp' needs TLS logins (NLA has no channel for an OTP)")
+    return v
+
+
+# ----------------------------------------------------------------------------- questions
+
+def probe_apt_repo(url=APT_REPO_URL, timeout=5):
+    """True if the APT repository has a suite for a supported release."""
+    for suite in SUPPORTED_SUITES:
+        try:
+            req = urllib.request.Request(f"{url}/dists/{suite}-stable/InRelease", method="HEAD")
+            with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310 (fixed https URL)
+                if r.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+    return False
+
+
+def _default_install_method(a):
+    probe = a.get("_apt_probe")
+    if probe is None:
+        return "build"
+    return "apt" if probe else "build"
+
+
+class Q:
+    def __init__(self, key, prompt, validate, default=None, when=None, secret=False, help=None,
+                 ask=None):
+        self.key, self.prompt, self.validate = key, prompt, validate
+        self.default = default          # value or callable(answers)
+        self.when = when or (lambda a: True)
+        self.ask = ask or (lambda a: True)   # False: not asked interactively, default used
+        self.secret, self.help = secret, help
+
+    def default_for(self, a):
+        return self.default(a) if callable(self.default) else self.default
+
+
+def _is_prod(a):
+    return a.get("profile") == "production"
+
+
+def _join(a):
+    return a.get("identity_provider") in ("ad", "ipa")
+
+
+def _mfa(a):
+    return a.get("mfa_mode", "none") != "none"
+
+
+def _web(a):
+    return bool(a.get("web_enabled"))
+
+
+QUESTIONS = [
+    Q("profile", "Deployment type (lab / production)", v_choice("lab", "production"), "lab",
+      help="lab: self-signed certificate, everyone in the directory may log in.\n"
+           "production: asks for certificates, allowed groups, MFA and hardening options."),
+    Q("hosts", "RDP server(s), fully qualified, comma-separated", v_hosts,
+      help="Clients must connect to exactly this FQDN (Kerberos service TERMSRV/<fqdn>)."),
+    Q("name", "Inventory name (ansible/inventories/<name>)", v_name,
+      lambda a: re.sub(r"[^a-z0-9_-]", "-", a["hosts"][0].split(".")[0])),
+    Q("ssh_user", "SSH user on the host(s) (empty = from ~/.ssh/config)", v_user,
+      lambda a: getpass.getuser()),
+    Q("become_password", "Does this user need a password for sudo? (y/n)", _bool,
+      lambda a: False, when=lambda a: a.get("ssh_user") != "root"),
+    Q("identity_provider", "Directory: ad (Samba/Windows AD) / ipa (FreeIPA) / none (MIT KDC, keytab provided)",
+      v_choice("ad", "ipa", "none"), "ad",
+      help="ad and ipa join the host automatically. With none you provide the TERMSRV keytab\n"
+           "and /etc/sssd/sssd.conf yourself."),
+    Q("domain", "DNS domain of the realm", v_fqdn,
+      lambda a: a["hosts"][0].split(".", 1)[1] if "." in a["hosts"][0] else "",
+      help="The KDCs are found via DNS SRV records (_kerberos._tcp.<domain>)."),
+    Q("realm", "Kerberos realm", v_realm, lambda a: a["domain"].upper()),
+    Q("join_user", "Join account", _str,
+      lambda a: "Administrator" if a["identity_provider"] == "ad" else "admin", when=_join),
+    Q("join_password", "Join password (stored in the encrypted vault)", v_secret, when=_join, secret=True),
+    Q("termsrv_keytab", "TERMSRV keytab on this machine (empty = already on the host)", v_file(True), "",
+      when=lambda a: a["identity_provider"] == "none",
+      help="Keytab with TERMSRV/<fqdn>@REALM keys, installed as /etc/fastrdp/termsrv.keytab."),
+    Q("allow_groups", "Groups allowed to log in (comma-separated, empty = every directory user)", v_groups,
+      lambda a: ["rdp-users"] if _is_prod(a) else []),
+    Q("ad_gpo_access_control", "AD GPO logon-right check: permissive / enforcing / disabled",
+      v_choice("permissive", "enforcing", "disabled"), "permissive",
+      when=lambda a: a["identity_provider"] == "ad", ask=_is_prod,
+      help="permissive only logs denials. Check the logs, then switch to enforcing."),
+    Q("desktops", "Desktops (comma-separated)", v_desktops, ["xfce"],
+      help="X11 (xrdp):        " + " ".join(X11_DESKTOPS) + "\n"
+           "Wayland:           " + " ".join(WAYLAND_DESKTOPS) + "  (need more RAM/CPU, GPU recommended)\n"
+           "wlroots (in xrdp): " + " ".join(WLROOTS_DESKTOPS)),
+    Q("default_desktop", "Default desktop", v_default_desktop, lambda a: a["desktops"][0]),
+    Q("gpu", "GPU: auto / nvidia / mesa (Intel, AMD) / none", v_choice("auto", "nvidia", "mesa", "none"), "auto"),
+    Q("mfa_mode", "MFA with privacyIDEA: none / push / otp / otp_or_push",
+      v_choice("none", "push", "otp", "otp_or_push"), "none",
+      help="push: approve on the phone (works with NLA). otp: code appended to the password\n"
+           "(TLS logins only). otp_or_push: OTP if appended, otherwise push."),
+    Q("privacyidea_url", "privacyIDEA URL", v_https_url, when=_mfa),
+    Q("privacyidea_realm", "privacyIDEA realm (empty = its default realm)", _str, "", when=_mfa),
+    Q("privacyidea_ca", "CA certificate of privacyIDEA on this machine (empty = system trust store)",
+      v_file(True), "", when=_mfa),
+    Q("privacyidea_service_user", "privacyIDEA service admin for push (empty = none)", _str, "",
+      when=lambda a: a.get("mfa_mode") in ("push", "otp_or_push"),
+      help="Needed for push after Kerberos single sign-on (no password reaches the server).\n"
+           "Without it, push is triggered with the user's password (policy otppin=userstore)."),
+    Q("privacyidea_service_password", "Password of the service admin (stored in the vault)", v_secret,
+      when=lambda a: _mfa(a) and bool(a.get("privacyidea_service_user")), secret=True),
+    Q("mfa_exempt_groups", "Groups exempt from MFA (comma-separated, empty = none)", v_groups, [],
+      when=_mfa, ask=_is_prod),
+    Q("allow_tls_logins", "Allow TLS logins without NLA (password[+OTP] in one field)? (y/n)",
+      v_tls_logins, True, ask=_is_prod,
+      help="Needed for clients that cannot reach a KDC and for MFA mode otp. NLA-only is stricter."),
+    Q("web_enabled", "Browser access via Keycloak/OIDC + Guacamole? (y/n)", _bool, False),
+    Q("web_oidc_issuer", "OIDC issuer URL (e.g. https://keycloak.example.com/realms/main)", v_https_url,
+      when=_web),
+    Q("web_oidc_client_id", "OIDC client id", _str, "fastrdp-web", when=_web),
+    Q("web_oidc_client_secret", "OIDC client secret (stored in the vault)", v_secret, when=_web, secret=True),
+    Q("web_oidc_ca", "CA certificate of the IdP on this machine (empty = system trust store)",
+      v_file(True), "", when=_web),
+    Q("web_public_url", "Public web URL", v_web_url, "https://{{ ansible_fqdn }}", when=_web,
+      ask=lambda a: False),
+    Q("install_method", "Install method: apt (packages, recommended) / build (compile on the host)",
+      v_choice("apt", "build"), _default_install_method,
+      help="apt installs signed packages from " + APT_REPO_URL + "\n"
+           "(no compiler on the host, fast, updates via apt). It is the recommended method\n"
+           "once the repository is published for your release. build compiles FreeRDP and xrdp\n"
+           "on the host from this checkout (slower; needed for local changes)."),
+    Q("apt_channel", "APT channel: stable (releases) / testing (main branch)", v_choice("stable", "testing"),
+      "stable", when=lambda a: a.get("install_method") == "apt"),
+    Q("apt_key_checksum", "Repository key checksum sha256:<hex> (empty = trust the HTTPS download)",
+      v_checksum, "", when=lambda a: a.get("install_method") == "apt", ask=_is_prod),
+    Q("tls", "RDP certificate: self-signed (lab) / provided (PEM files)", v_choice("self-signed", "provided"),
+      lambda a: "provided" if _is_prod(a) else "self-signed",
+      help="Clients warn about a self-signed certificate. For production use a certificate\n"
+           "for the FQDN from your CA (web access uses the same certificate)."),
+    Q("tls_cert", "Certificate (PEM, full chain) on this machine", v_pem("cert"),
+      when=lambda a: a.get("tls") == "provided"),
+    Q("tls_key", "Private key (PEM) on this machine", v_pem("key"), when=lambda a: a.get("tls") == "provided"),
+]
+QUESTION_KEYS = {q.key for q in QUESTIONS}
+# Answers without a question (answers file / --set only).
+EXTRA_KEYS = {"connection", "privacyidea_verify_tls", "vault_password_file"}
+
+
+# ----------------------------------------------------------------------------- answering
+
+def ask_interactive(q, a, stream_in=sys.stdin, stream_out=sys.stderr):
+    """Ask until the answer validates."""
+    default = q.default_for(a)
+    if q.help:
+        print("\n" + q.help, file=stream_out)
+    while True:
+        if q.secret:
+            raw = getpass.getpass(q.prompt + ": ")
+            if raw:
+                again = getpass.getpass("  repeat: ")
+                if again != raw:
+                    print("  do not match, again", file=stream_out)
+                    continue
+        else:
+            shown = ""
+            if default is not None:
+                shown = default
+                if isinstance(default, list):
+                    shown = ",".join(default)
+                elif isinstance(default, bool):
+                    shown = "y" if default else "n"
+                shown = f" [{shown}]" if shown != "" else " [none]"
+            print(f"{q.prompt}{shown}: ", end="", file=stream_out, flush=True)
+            raw = stream_in.readline()
+            if not raw:
+                raise SetupError("input ended")
+            raw = raw.rstrip("\n")
+            if raw.strip() == "" and default is not None:
+                raw = default
+        try:
+            return q.validate(raw, a)
+        except SetupError as e:
+            print(f"  -> {e}", file=stream_out)
+
+
+def resolve(given, interactive, env=os.environ):
+    """Fill and validate all answers. given: dict from answers file / --set."""
+    unknown = set(given) - QUESTION_KEYS - EXTRA_KEYS
+    if unknown:
+        raise SetupError("unknown answer key(s): " + ", ".join(sorted(unknown)))
+    a = {k: given[k] for k in EXTRA_KEYS if k in given}
+    if "privacyidea_verify_tls" in a:
+        a["privacyidea_verify_tls"] = _bool(a["privacyidea_verify_tls"])
+    if interactive and "install_method" not in given:
+        print("Checking the fastrdp APT repository ...", file=sys.stderr)
+        a["_apt_probe"] = probe_apt_repo()
+        if not a["_apt_probe"]:
+            print("  not published yet (or not reachable): defaulting to build.\n"
+                  "  Once it is published, apt is the recommended install method.", file=sys.stderr)
+    errors = []
+    for q in QUESTIONS:
+        try:
+            if not q.when(a):
+                continue
+            if q.key in given:
+                try:
+                    a[q.key] = q.validate(given[q.key], a)
+                except SetupError as e:
+                    if not interactive:
+                        raise
+                    print(f"{q.key}: {e}", file=sys.stderr)
+                    a[q.key] = ask_interactive(q, a)
+            elif q.secret and env.get(SECRET_ENV.get(q.key, "")):
+                a[q.key] = v_secret(env[SECRET_ENV[q.key]], a)
+            elif interactive and q.ask(a):
+                a[q.key] = ask_interactive(q, a)
+            else:
+                default = q.default_for(a)
+                if default is None:
+                    hint = f" (or environment variable {SECRET_ENV[q.key]})" if q.key in SECRET_ENV else ""
+                    raise SetupError(f"missing answer{hint}")
+                a[q.key] = q.validate(default, a)
+        except SetupError as e:
+            errors.append(f"{q.key}: {e}")
+            a[q.key] = None
+        except (TypeError, KeyError, AttributeError, IndexError):
+            # depends on an earlier answer that is missing or invalid
+            if not errors:
+                raise
+            a[q.key] = None
+    if errors:
+        raise SetupError("invalid answers:\n  " + "\n  ".join(errors))
+    a.pop("_apt_probe", None)
+    return a
+
+
+# ----------------------------------------------------------------------------- generation
+
+def variables_for(a):
+    """All role variables for these answers (name -> value), before default filtering."""
+    v = {
+        "fastrdp_realm": a["realm"],
+        "fastrdp_domain": a["domain"],
+        "fastrdp_identity_provider": a["identity_provider"],
+        "fastrdp_allow_groups": a["allow_groups"],
+        "fastrdp_listen_port": 3389,
+        "fastrdp_front_cert_src": a.get("tls_cert", "") if a["tls"] == "provided" else "",
+        "fastrdp_front_key_src": a.get("tls_key", "") if a["tls"] == "provided" else "",
+        "fastrdp_allow_tls_logins": a["allow_tls_logins"],
+        "fastrdp_mfa_mode": a["mfa_mode"],
+        "fastrdp_privacyidea_realm": a.get("privacyidea_realm", ""),
+        "fastrdp_privacyidea_ca_src": a.get("privacyidea_ca", ""),
+        "fastrdp_privacyidea_service_user": a.get("privacyidea_service_user", ""),
+        "fastrdp_mfa_exempt_groups": a.get("mfa_exempt_groups", []),
+        "fastrdp_otp_lengths": [6],
+        "fastrdp_desktops": a["desktops"],
+        "fastrdp_default_desktop": a["default_desktop"],
+        "fastrdp_group_desktops": {},
+        "fastrdp_default_geometry": "1920x1080",
+        "fastrdp_gpu": a["gpu"],
+        "fastrdp_x264_threads": 2,
+        "fastrdp_backend_port_range": [33900, 34899],
+        "fastrdp_xrdp_port": 3390,
+        "fastrdp_proc_hidepid": False,
+        "fastrdp_install_method": a["install_method"],
+        "fastrdp_web_enabled": a["web_enabled"],
+    }
+    if _join(a):
+        v["fastrdp_join_user"] = a["join_user"]
+        v["fastrdp_join_password"] = "{{ vault_fastrdp_join_password | default('') }}"
+    if a["identity_provider"] == "ad":
+        v["fastrdp_ad_gpo_access_control"] = a.get("ad_gpo_access_control", "permissive")
+    if a["identity_provider"] == "none":
+        v["fastrdp_termsrv_keytab_src"] = a.get("termsrv_keytab", "")
+    if _mfa(a):
+        v["fastrdp_privacyidea_url"] = a["privacyidea_url"]
+        if "privacyidea_verify_tls" in a:
+            v["fastrdp_privacyidea_verify_tls"] = a["privacyidea_verify_tls"]
+        if a.get("privacyidea_service_user"):
+            v["fastrdp_privacyidea_service_password"] = \
+                "{{ vault_fastrdp_privacyidea_service_password | default('') }}"
+    if a["install_method"] == "apt":
+        v["fastrdp_apt_channel"] = a["apt_channel"]
+        v["fastrdp_apt_key_checksum"] = a.get("apt_key_checksum", "")
+    if _web(a):
+        v["fastrdp_web_oidc_issuer"] = a["web_oidc_issuer"]
+        v["fastrdp_web_oidc_client_id"] = a["web_oidc_client_id"]
+        v["fastrdp_web_oidc_ca_src"] = a.get("web_oidc_ca", "")
+        v["fastrdp_web_public_url"] = a.get("web_public_url", ROLE_DEFAULTS["fastrdp_web_public_url"])
+    return v
+
+
+def secrets_for(a):
+    return {VAULT_KEYS[k]: a[k] for k in VAULT_KEYS if a.get(k)}
+
+
+_PLAIN_RE = re.compile(r"^[A-Za-z_./][A-Za-z0-9_./@-]*$")
+_YAML_WORDS = {"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"}
+
+
+def yaml_scalar(value):
+    """YAML for a scalar/list/dict of scalars: plain when unambiguous, else JSON (valid YAML)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(yaml_scalar(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{yaml_scalar(k)}: {yaml_scalar(v)}" for k, v in value.items()) + "}"
+    s = str(value)
+    if _PLAIN_RE.match(s) and s.lower() not in _YAML_WORDS and not s.endswith(":"):
+        return s
+    return json.dumps(s, ensure_ascii=False)
+
+
+def render_main(a):
+    values = variables_for(a)
+    out = ["---",
+           "# Generated by scripts/fastrdp-setup. Only two kinds of variables are here:",
+           "#   (required)     no usable default (roles/common checks it), so every inventory sets it;",
+           "#   (default: X)   differs from the role default X (ansible/roles/*/defaults/main.yml).",
+           "# Regenerate with: scripts/fastrdp-setup --answers <this dir>/setup-answers.json --force",
+           "# Paths (*_src) are on the admin machine."]
+    section = None
+    for sec, name, default, comment in VARIABLES:
+        if name not in values:
+            continue
+        value = values[name]
+        if default is not REQUIRED and value == default:
+            continue
+        if sec != section:
+            out.append("")
+            out.append(f"# {'-' * (70 - len(sec))} {sec}")
+            if sec == "MFA" and not _mfa(a):
+                out.append("# MFA is off; the broker configuration still reads these privacyIDEA settings.")
+            section = sec
+        note = "required" if default is REQUIRED else f"default: {yaml_scalar(default)}"
+        out.append(f"# {comment} ({note})")
+        out.append(f"{name}: {yaml_scalar(value)}")
+    return "\n".join(out) + "\n"
+
+
+def render_hosts(a):
+    out = ["---", "# Generated by scripts/fastrdp-setup.", "all:", "  children:", "    rdp_servers:",
+           "      hosts:"]
+    for h in a["hosts"]:
+        out.append(f"        {yaml_scalar(h)}: {{}}")
+    hv = {}
+    if a.get("ssh_user"):
+        hv["ansible_user"] = a["ssh_user"]
+    if a.get("connection"):
+        hv["ansible_connection"] = a["connection"]
+    if hv:
+        out.append("      vars:")
+        out.extend(f"        {k}: {yaml_scalar(v)}" for k, v in hv.items())
+    return "\n".join(out) + "\n"
+
+
+def render_vault(secrets):
+    out = ["---"]
+    out.extend(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in secrets.items())
+    return "\n".join(out) + "\n"
+
+
+def public_answers(a):
+    return {k: v for k, v in a.items() if k not in VAULT_KEYS and k != "vault_password_file"}
+
+
+def check_known_variables(main_text, roots=(ANSIBLE_DIR / "roles", ANSIBLE_DIR / "site.yml")):
+    """Every fastrdp_* variable written must be used by the roles (grep). Returns unknown names."""
+    corpus = []
+    for root in roots:
+        root = Path(root)
+        if not root.exists():
+            return None          # not running from a checkout: cannot check
+        files = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+        for f in files:
+            try:
+                corpus.append(f.read_text(errors="replace"))
+            except OSError:
+                pass
+    text = "\n".join(corpus)
+    names = re.findall(r"^(fastrdp_[a-z0-9_]+):", main_text, re.M)
+    return [n for n in names if not re.search(r"\b" + n + r"\b", text)]
+
+
+# ----------------------------------------------------------------------------- vault
+
+def find_ansible_vault():
+    return os.environ.get("FASTRDP_ANSIBLE_VAULT") or shutil.which("ansible-vault")
+
+
+def write_vault(path, secrets, vault_bin, password_file=None, password=None, plaintext_ok=False):
+    """Write vault.yml encrypted (plaintext goes to ansible-vault via stdin, never to disk).
+    Returns 'encrypted' or 'plaintext'."""
+    content = render_vault(secrets)
+    if vault_bin:
+        with tempfile.TemporaryDirectory(prefix="fastrdp-setup-") as tmp:
+            pwfile = password_file
+            if not pwfile:
+                if not password:
+                    raise SetupError("a vault password is needed (--vault-password-file or FASTRDP_VAULT_PASSWORD)")
+                pwfile = os.path.join(tmp, "pw")
+                fd = os.open(pwfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(password + "\n")
+            tmp_out = Path(path).with_name(".vault.yml.tmp")
+            tmp_out.unlink(missing_ok=True)
+            r = subprocess.run([vault_bin, "encrypt", "--vault-password-file", str(pwfile),
+                                "--output", str(tmp_out), "-"],
+                               input=content, text=True, capture_output=True, check=False)
+            if r.returncode != 0 or not tmp_out.exists() or \
+                    not tmp_out.read_text(errors="replace").startswith("$ANSIBLE_VAULT;"):
+                tmp_out.unlink(missing_ok=True)
+                raise SetupError("ansible-vault encrypt failed: " + (r.stderr or r.stdout).strip())
+            os.chmod(tmp_out, 0o600)
+            os.replace(tmp_out, path)
+        return "encrypted"
+    if not plaintext_ok:
+        raise SetupError("ansible-vault not found: install ansible-core, or pass --plaintext-vault "
+                         "to write vault.yml unencrypted (mode 0600) and encrypt it later")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    os.chmod(path, 0o600)
+    return "plaintext"
+
+
+# ----------------------------------------------------------------------------- main
+
+def load_answers(path):
+    text = Path(path).read_text()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml   # optional: YAML answers files when PyYAML is installed
+        except ImportError:
+            raise SetupError(f"{path}: not JSON (YAML answers files need PyYAML)") from None
+        data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise SetupError(f"{path}: expected a mapping of answers")
+    return data
+
+
+def parse_set(items):
+    out = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SetupError(f"--set {item!r}: expected key=value")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v
+    return out
+
+
+def next_steps(a, inv_dir, vault_mode, password_file):
+    inv_dir = Path(inv_dir).resolve()
+    rel = os.path.relpath(inv_dir, ANSIBLE_DIR) if REPO in inv_dir.parents else str(inv_dir)
+    flags = []
+    if vault_mode:
+        flags.append(f"--vault-password-file {password_file}" if password_file else "--ask-vault-pass")
+    if a.get("become_password"):
+        flags.append("--ask-become-pass")
+    f = (" " + " ".join(flags)) if flags else ""
+    host = a["hosts"][0]
+    make_inv = a["name"] if inv_dir.parent == (ANSIBLE_DIR / "inventories").resolve() else str(inv_dir)
+    user = "alice"
+    lines = [
+        "",
+        f"Inventory written to {inv_dir}",
+        "",
+        "Next steps (from the repository root):",
+        f"  1. Review {inv_dir / 'group_vars/all/main.yml'} (comments say what each line does).",
+        "  2. Preflight, read-only checks on the target(s):",
+        f"       make preflight INVENTORY={make_inv}" +
+        (f" VAULT_PASSWORD_FILE={password_file}" if password_file and vault_mode else ""),
+        f"     or: cd ansible && ansible-playbook -i {rel}/hosts.yml preflight.yml{f}",
+        "  3. Deploy:",
+        f"       make deploy INVENTORY={make_inv}" + (f" VAULT_PASSWORD_FILE={password_file}" if password_file and vault_mode else ""),
+        f"     or: cd ansible && ansible-playbook -i {rel}/hosts.yml site.yml{f}",
+        "  4. Smoke test on the host(s) with a directory user:",
+        f"       cd ansible && ansible -i {rel}/hosts.yml rdp_servers -b{f} \\",
+        f"           -m ansible.builtin.script -a '../tests/smoke/check-host.sh {user}'",
+        "  5. First connection (docs/client-guide.md):",
+        f"       xfreerdp3 /v:{host} /u:{user} /d:{a['realm']} /sec:nla /gfx:avc444 /dynamic-resolution",
+    ]
+    if a["tls"] == "self-signed":
+        lines.append("     (self-signed certificate: accept it once, or add /cert:tofu)")
+    if a["install_method"] == "build":
+        lines += ["", "Note: install method 'build' compiles FreeRDP and xrdp on the host (about 10-20 min",
+                  "on the first run). Once the APT repository is published, re-run with install_method=apt."]
+    if vault_mode == "plaintext":
+        lines += ["", f"WARNING: {inv_dir}/group_vars/all/vault.yml is NOT encrypted. Run:",
+                  f"  ansible-vault encrypt {inv_dir}/group_vars/all/vault.yml"]
+    return "\n".join(lines)
+
+
+def generate(a, out_root, force=False, password_file=None, vault_password=None, plaintext_ok=False,
+             vault_bin=None):
+    inv_dir = Path(out_root) / a["name"]
+    if inv_dir.exists() and not force:
+        raise SetupError(f"{inv_dir} exists; use --force to overwrite or choose another name")
+    main_text = render_main(a)
+    unknown = check_known_variables(main_text)
+    if unknown:
+        raise SetupError("internal error, variables not used by any role: " + ", ".join(unknown))
+    secrets = secrets_for(a)
+    if secrets and not vault_bin and not plaintext_ok:
+        write_vault(None, secrets, None)          # raises the explanation
+    created = not inv_dir.exists()
+    gv = inv_dir / "group_vars" / "all"
+    try:
+        gv.mkdir(parents=True, exist_ok=True)
+        vault_path = gv / "vault.yml"
+        vault_mode = None
+        if secrets:     # first: if encryption fails, nothing else is written
+            vault_mode = write_vault(vault_path, secrets, vault_bin, password_file, vault_password, plaintext_ok)
+        elif vault_path.exists():
+            vault_path.unlink()
+        (inv_dir / "hosts.yml").write_text(render_hosts(a))
+        (gv / "main.yml").write_text(main_text)
+        (inv_dir / "setup-answers.json").write_text(json.dumps(public_answers(a), indent=2) + "\n")
+    except (SetupError, OSError):
+        if created:
+            shutil.rmtree(inv_dir, ignore_errors=True)
+        raise
+    return inv_dir, vault_mode
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        prog="fastrdp-setup", description="Guided inventory creation for fast-rdp-server (docs/quickstart.md).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Secrets for --non-interactive: " + ", ".join(SECRET_ENV.values()) +
+               ", FASTRDP_VAULT_PASSWORD.\nAnswer keys: " + " ".join(q.key for q in QUESTIONS) +
+               " " + " ".join(sorted(EXTRA_KEYS)))
+    p.add_argument("--answers", metavar="FILE", help="answers file (JSON; YAML with PyYAML)")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="single answer (repeatable)")
+    p.add_argument("--non-interactive", action="store_true", help="never prompt; fail on missing answers")
+    p.add_argument("--output-dir", default=str(ANSIBLE_DIR / "inventories"),
+                   help="where the inventory directory is created (default: ansible/inventories)")
+    p.add_argument("--vault-password-file", help="encrypt vault.yml with this password file")
+    p.add_argument("--plaintext-vault", action="store_true",
+                   help="allow writing vault.yml unencrypted when ansible-vault is missing")
+    p.add_argument("--force", action="store_true", help="overwrite an existing inventory directory")
+    p.add_argument("--print-answers", action="store_true", help="only validate and print the answers (no files)")
+    args = p.parse_args(argv)
+
+    try:
+        given = load_answers(args.answers) if args.answers else {}
+        given.update(parse_set(args.set))
+        interactive = not args.non_interactive and sys.stdin.isatty()
+        if not interactive and not args.non_interactive:
+            raise SetupError("stdin is not a terminal: use --non-interactive with --answers/--set")
+        if interactive:
+            print("fast-rdp-server setup. Press Enter to accept the [default].\n", file=sys.stderr)
+        a = resolve(given, interactive)
+        if args.print_answers:
+            print(json.dumps(public_answers(a), indent=2))
+            return 0
+        password_file = args.vault_password_file or a.get("vault_password_file")
+        if password_file:
+            password_file = str(Path(os.path.expanduser(password_file)).resolve())
+            if not os.path.isfile(password_file):
+                raise SetupError(f"vault password file {password_file} not found")
+        vault_bin = find_ansible_vault()
+        vault_password = os.environ.get("FASTRDP_VAULT_PASSWORD")
+        plaintext_ok = args.plaintext_vault
+        if secrets_for(a) and not password_file and not vault_password:
+            if vault_bin and interactive:
+                while True:
+                    vault_password = getpass.getpass("New ansible-vault password for vault.yml: ")
+                    if vault_password and vault_password == getpass.getpass("  repeat: "):
+                        break
+                    print("  empty or not matching, again", file=sys.stderr)
+            elif not vault_bin and interactive and not plaintext_ok:
+                print("ansible-vault was not found.", file=sys.stderr)
+                ans = input("Write vault.yml unencrypted (mode 0600) and encrypt it later? [y/N]: ")
+                plaintext_ok = _bool(ans or "n")
+                if not plaintext_ok:
+                    raise SetupError("aborted: install ansible-core (ansible-vault) and re-run")
+        inv_dir, vault_mode = generate(a, args.output_dir, args.force, password_file, vault_password,
+                                       plaintext_ok, vault_bin)
+        print(next_steps(a, inv_dir, vault_mode, password_file))
+        return 0
+    except SetupError as e:
+        print(f"fastrdp-setup: {e}", file=sys.stderr)
+        return 2
+    except (KeyboardInterrupt, EOFError):
+        print("\naborted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

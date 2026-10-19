@@ -51,6 +51,10 @@ class Backend:
     async def ensure(self, req: LoginRequest) -> Target:
         raise NotImplementedError
 
+    async def alive(self, session: Session) -> bool:
+        """Whether a recorded session still exists. Default: trust the record."""
+        return True
+
     async def logout(self, user: LocalUser) -> None:
         raise NotImplementedError
 

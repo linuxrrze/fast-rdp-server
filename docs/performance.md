@@ -105,7 +105,8 @@ and `libx264`, so KPipeWire's VA-API and x264 paths are available.
 | Variable | Default | Effect |
 |---|---|---|
 | `fastrdp_tcp_tuning` | `true` | BBR + fq, no slow-start after idle, `tcp_notsent_lowat=128k`: lower queueing delay on WAN links |
-| `fastrdp_user_cpu_quota` / `fastrdp_user_memory_max` | unset | Per-user caps on `user-UID.slice` (all of one user's sessions) |
+| `fastrdp_user_cpu_quota` / `fastrdp_user_memory_max` | unset | Per-user caps on `user-UID.slice` and on each `fastrdp-plasma@USER.service` (Plasma's encoder runs there) |
+| `fastrdp_xrdp_cpu_quota` / `fastrdp_xrdp_memory_max` | unset | Cap for `xrdp.service` as a whole: it encodes H.264 for all X11 sessions, so per-user caps cannot cover it |
 | `fastrdp_krdp_encoder` | `auto` | Force `h264_vaapi` / `libx264` / `libopenh264` for Plasma (`KPIPEWIRE_FORCE_ENCODER`) |
 | `fastrdp_krdp_quality` | KRdp default | `krdpserver --quality` (upper bound with adaptive quality) |
 | `fastrdp_xrdp_h264_encoder` | `auto` | xrdp encoder: `auto` (nvenc/vaapi/x264 by GPU), `vaapi`, `nvenc`, `qsv`, `x264` |

@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 
-RENDERERS = ("Xorg", "gnome-shell", "kwin_wayland", "Xwayland")
+RENDERERS = ("Xorg", "gnome-shell", "kwin_wayland", "Xwayland", "sway", "labwc", "wayfire")
 ENCODERS = ("xrdp", "gnome-remote-d", "gnome-remote-desktop-daemon", "krdpserver")
 
 # library substring -> meaning
@@ -124,6 +124,7 @@ def scan(uid: int, root: str = "/proc") -> list[dict]:
 def verdict(rows: list[dict]) -> dict:
     """Summarise rendering and encoding paths from the process evidence."""
     render, encode = "unknown", "unknown"
+    xrdp_verdicts = []
     for r in rows:
         libs, devs = set(r["libraries"] or []), r["devices"]
         if r["role"] == "render":
@@ -135,16 +136,17 @@ def verdict(rows: list[dict]) -> dict:
                 render = "software (llvmpipe)"
         else:
             if r["process"] == "xrdp":
-                # xrdp encodes in its own (unprivileged, uid xrdp) process: x264, or the
-                # fastrdp FFmpeg backend with VA-API/NVENC/QSV.
+                # xrdp encodes in its own (unprivileged, uid xrdp) processes, one per
+                # connection and shared by all users: x264, or the fastrdp FFmpeg backend
+                # with VA-API/NVENC/QSV. Which one serves this session is not visible here.
                 if r["libraries"] is None:
-                    encode = "xrdp: not readable as this user, see xrdp.log 'xrdp_encoder_ffmpeg: using'"
+                    xrdp_verdicts.append("xrdp: not readable as this user, see xrdp.log 'xrdp_encoder_ffmpeg: using'")
                 elif "nvenc" in libs:
-                    encode = "nvenc (gpu, xrdp ffmpeg)"
+                    xrdp_verdicts.append("nvenc (gpu, xrdp ffmpeg)")
                 elif "vaapi" in libs and any("renderD" in d for d in devs):
-                    encode = "vaapi (gpu, xrdp ffmpeg)"
+                    xrdp_verdicts.append("vaapi (gpu, xrdp ffmpeg)")
                 else:
-                    encode = "x264 (cpu)"
+                    xrdp_verdicts.append("x264 (cpu)")
             elif "nvenc" in libs:
                 encode = "nvenc (gpu)"
             elif "vaapi" in libs and any("renderD" in d for d in devs):
@@ -155,6 +157,10 @@ def verdict(rows: list[dict]) -> dict:
                 encode = "openh264 (cpu)"
             elif encode == "unknown":
                 encode = "no h264 encoder loaded (rfx/progressive)"
+    if xrdp_verdicts:
+        kinds = sorted(set(xrdp_verdicts))
+        encode = kinds[0] if len(kinds) == 1 else (
+            "differs between xrdp processes (other users' sessions included): " + "; ".join(kinds))
     return {"rendering": render, "h264_encoding": encode}
 
 

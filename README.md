@@ -6,16 +6,21 @@ A Windows-RDS-style terminal server for Linux, built from maintained parts:
   asks a session broker before letting anyone in.
 - **MFA:** privacyIDEA (TOTP/HOTP, YubiKey OTP, push), shared with Keycloak.
 - **All common desktops:**
-  - X11 desktops (Xfce, MATE, Cinnamon, LXQt, Plasma X11) through **xrdp 0.10.6**
-    with H.264.
+  - X11 desktops (Xfce, MATE, Cinnamon, LXQt, Plasma X11) through **xrdp 0.10.6.1**
+    with H.264, on the GPU via fastrdp's FFmpeg encoder (VA-API, NVENC, QSV).
   - **GNOME 50** through GDM headless sessions + gnome-remote-desktop.
   - **Plasma 6 Wayland** through KWin's virtual backend + KRdp.
   - **Sway, labwc, Wayfire** (wlroots) nested in an xrdp session, so they keep
     xrdp's H.264 path.
 - **GPU where possible:**
   - glamor rendering on Intel/AMD.
-  - VA-API/NVENC H.264 in the Wayland back-ends.
+  - VA-API/NVENC H.264 in the Wayland back-ends and, through fastrdp's patched xrdp,
+    in X11 sessions.
   - VirtualGL on NVIDIA.
+
+**Start here:** [docs/quickstart.md](docs/quickstart.md) (guided setup, preflight,
+first connection) · Back-ends: [docs/backends/](docs/backends/README.md) · Tests:
+[tests/README.md](tests/README.md)
 
 Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/architecture.md) ·
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
@@ -34,8 +39,13 @@ broker/
   session/            systemd units, PAM stacks, session launchers (startwm.sh, session-plasma)
 debian/               Debian/Ubuntu packaging of fastrdp itself (docs/packaging.md)
 packaging/            vendored FreeRDP/xrdp packaging, CI helper scripts, APT repository (reprepro)
-ansible/              roles: base identity gpu desktops xrdp gnome_rd plasma_krdp mfa_privacyidea broker freerdp_proxy
-tests/
+ansible/              roles: common (site-wide defaults + checks) base identity gpu desktops tuning xrdp
+                      gnome_rd plasma_krdp mfa_privacyidea broker freerdp_proxy web_gateway;
+                      preflight.yml (read-only target checks)
+scripts/              fastrdp-setup (guided inventory generator) + tests
+tests/                (inventory and CI map: tests/README.md)
+  ansible/            role templates rendered and parsed; site checks of role common
+  packaging/          fetch/build-key/CI/publish script tests, post-install checks
   proxy-e2e/          real freerdp-proxy + module end-to-end tests (TLS, Kerberos NLA, smartcard/PKINIT)
   smoke/              checks for a deployed host
   perf/               rdpbench (headless benchmark client), perfload, proxy-overhead/compare scripts
@@ -45,39 +55,44 @@ tests/
 third_party/          vendored dependencies: sources.yml (versions, sha256), fetch.sh, build scripts
                       (docs/vendoring.md); FreeRDP -> /opt/fastrdp, xrdp + xorgxrdp
 patches/xrdp/         FFmpeg hardware H.264 encoder for xrdp 0.10.6.1 (+ functional test)
-patches/freerdp/      PKCS#11 slot id fix for smartcard logon
+patches/freerdp/      PKCS#11 slot id fix for client-side smartcard logon
 patches/krb5/         MIT SPNEGO mechListMIC fix (reference only, krb5 is not vendored)
 ```
 
-## Deploy (lab)
+## Deploy
 
-Target: Ubuntu 26.04 or Debian 13, joined to Samba AD / FreeIPA (or keytab provided).
+Target: Ubuntu 26.04 or Debian 13, joined to Samba AD / FreeIPA (or a keytab
+provided). Full walk-through, production checklist and troubleshooting:
+[docs/quickstart.md](docs/quickstart.md).
 
 ```sh
-cd ansible
-$EDITOR inventories/lab/hosts.yml inventories/lab/group_vars/all/main.yml
-cp inventories/lab/group_vars/all/vault.yml.example inventories/lab/group_vars/all/vault.yml
-ansible-vault encrypt inventories/lab/group_vars/all/vault.yml
-ansible-playbook site.yml --ask-vault-pass
-sudo /path/to/repo/tests/smoke/check-host.sh alice          # on the host
+make setup                          # guided: asks ~15 questions, writes ansible/inventories/<name>/
+make preflight INVENTORY=<name>     # read-only checks of the target (DNS, time, KDC, ports, GPU, ...)
+make deploy INVENTORY=<name>        # ansible-playbook site.yml
+sudo tests/smoke/check-host.sh alice                         # on the host
+xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /gfx:avc444
 ```
 
-Then connect: `xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /gfx:avc444`.
+Every role variable has a default (site-wide ones in `ansible/roles/common`); an
+inventory needs only `fastrdp_realm` and `fastrdp_domain` plus what differs. The
+`common` role refuses inconsistent settings before anything is changed.
 
 ## Tests
 
 ```sh
-make test          # broker unit + protocol tests, PAM module test, ansible-lint, shellcheck
-make test-e2e      # needs freerdp-proxy + freerdp3-dev + libcjson-dev, or FREERDP_PREFIX=/opt/fastrdp
-make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
+make test          # unit + protocol tests (broker, webgate, PAM, GPU report, setup), lint
+make test-all      # + build/CI/publish script tests, Ansible template rendering
+make test-e2e test-e2e-nla test-e2e-smartcard   # real freerdp-proxy; FREERDP_PREFIX=/opt/fastrdp
 ```
 
-## Status (phases 1–3)
+What each test guards and where CI runs it: [tests/README.md](tests/README.md).
+
+## Status
 
 | Area | State |
 |---|---|
-| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 28 unit/protocol tests |
-| Proxy module | implemented; end-to-end tested in real freerdp-proxy 3.32.1 (TLS + Kerberos NLA) |
+| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 127 unit/protocol tests incl. regression tests for review findings |
+| Proxy module | implemented; end-to-end tested in real freerdp-proxy (TLS, Kerberos NLA, smartcard) against fastrdp's FreeRDP 3.32.2, in CI |
 | PAM token module | implemented; functional test through libpam |
 | Ansible roles | implemented; `ansible-lint` production profile passes; templates render and are accepted by broker and proxy |
 | xrdp/X11 desktops, GNOME headless, Plasma headless | deployed by the roles; **need validation on a lab host** (see docs/desktop-matrix.md) |
@@ -85,9 +100,11 @@ make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 | Phase 4 GPU validation (Intel/AMD/NVIDIA) | **needs GPU hosts**, see the runbook in docs/performance.md |
 | Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); containers/Keycloak need a lab run |
 | Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
-| xrdp PR #3868 (NLA) | assessed: Kerberos OK only with FreeRDP U2U disabled; no smartcards; proxy stays the NLA point |
+| xrdp PR #3868 (NLA) | assessed: FreeRDP default clients fail because of an MIT krb5 1.21–1.22.1 bug (fixed in 1.22.2); no smartcards; proxy stays the NLA point |
 | wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
-| xrdp hardware H.264 (FFmpeg: VA-API, NVENC, QSV) | patch for xrdp 0.10.6.1 (`patches/xrdp/`), applied by the role; tested via libx264 through the same code path and the no-GPU fallback; real GPUs to validate |
+| xrdp hardware H.264 (FFmpeg: VA-API, NVENC, QSV) | patch for xrdp 0.10.6.1 (`patches/xrdp/`) in fastrdp's xrdp build; tested via libx264 through the same code path and the no-GPU fallback, in CI; real GPUs to validate |
+| Packaging | Debian/Ubuntu packages incl. vendored FreeRDP/xrdp, signed APT repository on GitHub Pages ([docs/packaging.md](docs/packaging.md)) |
+| Setup | guided assistant, read-only preflight, quick start ([docs/quickstart.md](docs/quickstart.md)); not yet run against a real target |
 
 ## License
 

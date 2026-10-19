@@ -24,7 +24,8 @@ fetch=$root/third_party/fetch.sh
 
 pkg=$(cd "$tree" && dpkg-parsechangelog -S Source)
 ver=$(cd "$tree" && dpkg-parsechangelog -S Version)
-if [ -n "$(find "$tree" -maxdepth 2 \( -name '*.o' -o -path '*/debian/tmp' -o -path '*/obj-*' \) -print -quit)" ]; then
+# (no -maxdepth: compiled objects are deep in src/<name>/)
+if [ -n "$(find "$tree" \( -name '*.o' -o -path '*/debian/tmp' -o -path '*/obj-*' \) -print -quit)" ]; then
     echo "$tree contains build products; run this before dpkg-buildpackage" >&2
     exit 1
 fi

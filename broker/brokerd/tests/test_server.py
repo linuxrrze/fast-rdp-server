@@ -195,6 +195,26 @@ class WebTokenTests(BrokerTests):
         self.assertIn("xfce", reply["desktops"])
         return reply["token"]
 
+    async def test_web_desktops_lists_only_allowed(self):
+        # Regression: the webgate chooser offered desktops the broker then refused, and
+        # the session silently fell back to the default desktop.
+        self.cfg.desktops["mate"].groups = ["rdp-mate-only"]  # alice is only in rdp-users
+        reply = await request(self.cfg.broker.socket, {"op": "web_desktops", "user": "alice"})
+        self.assertTrue(reply["ok"], reply)
+        names = [d["name"] for d in reply["desktops"]]
+        self.assertIn("xfce", names)
+        self.assertNotIn("mate", names)
+        self.assertIn({"name": "xfce", "label": "Xfce"}, reply["desktops"])
+        self.assertIn(reply["default"], names)
+        self.assertNotIn("token", reply)
+        token_reply = await request(self.cfg.broker.socket, {"op": "web_token", "user": "alice"})
+        self.assertNotIn("mate", token_reply["desktops"])
+
+    async def test_web_desktops_only_for_webgate(self):
+        with mock.patch.object(self.broker, "web_uid", os.getuid() + 1):
+            reply = await request(self.cfg.broker.socket, {"op": "web_desktops", "user": "alice"})
+        self.assertFalse(reply["ok"])
+
     def web_login(self, token, address="127.0.0.1", user="alice"):
         return request(self.cfg.broker.socket, {
             "op": "login", "session_id": "w1", "method": "tls", "user": user,

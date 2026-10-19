@@ -1,0 +1,22 @@
+---
+- name: Required site settings are present and consistent
+  ansible.builtin.assert:
+    that:
+      - fastrdp_realm | length > 0
+      - fastrdp_domain | length > 0
+      - fastrdp_desktops | length > 0
+      - fastrdp_default_desktop in fastrdp_desktops
+      - fastrdp_group_desktops.values() | difference(fastrdp_desktops) | length == 0
+      - fastrdp_desktop_groups.keys() | difference(fastrdp_desktops) | length == 0
+      - fastrdp_identity_provider in ['ad', 'ipa', 'none']
+      - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push']
+      - fastrdp_mfa_mode == 'none' or fastrdp_privacyidea_url | length > 0
+      - fastrdp_backend_port_range | length == 2
+      - fastrdp_backend_port_range[0] | int < fastrdp_backend_port_range[1] | int
+      - fastrdp_xrdp_port | int != fastrdp_listen_port | int
+    fail_msg: >-
+      Check the site settings (docs/quickstart.md, roles/common/defaults/main.yml):
+      fastrdp_realm and fastrdp_domain are required; fastrdp_default_desktop,
+      fastrdp_group_desktops and fastrdp_desktop_groups may only name desktops from
+      fastrdp_desktops; MFA modes other than none need fastrdp_privacyidea_url.
+    quiet: true

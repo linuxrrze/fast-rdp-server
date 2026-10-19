@@ -1,0 +1,15 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Runs only the common role's site checks with role defaults plus -e overrides.
+# test_templates.py expects success or failure per case.
+- name: Common site checks
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../ansible/roles/common/defaults/main.yml
+  tasks:
+    - name: Site checks
+      ansible.builtin.include_tasks: ../../ansible/roles/common/tasks/main.yml

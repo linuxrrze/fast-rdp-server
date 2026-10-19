@@ -1,0 +1,172 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Renders the main role templates with the lab inventory + role defaults and a few
+# representative overrides, into render_out. Checked by test_templates.py.
+#   ansible-playbook -i localhost, tests/ansible/render.yml -e render_out=DIR
+- name: Render fastrdp templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../ansible/roles/common/defaults/main.yml
+    - ../../ansible/inventories/lab/group_vars/all/main.yml
+    - ../../ansible/roles/desktops/defaults/main.yml
+    - ../../ansible/roles/xrdp/defaults/main.yml
+    - ../../ansible/roles/freerdp_proxy/defaults/main.yml
+    - ../../ansible/roles/web_gateway/defaults/main.yml
+    - ../../ansible/roles/tuning/defaults/main.yml
+  vars:
+    roles_dir: "{{ playbook_dir }}/../../ansible/roles"
+    ansible_fqdn: rdp1.lab.example.com
+    fastrdp_gpu_effective: none
+  tasks:
+    - name: Xrdp gfx.toml per encoder choice
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/xrdp/templates/gfx.toml.j2"
+        dest: "{{ render_out }}/gfx-{{ item.name }}.toml"
+        mode: "0644"
+      vars:
+        fastrdp_xrdp_h264_encoder: "{{ item.encoder }}"
+        fastrdp_gpu_effective: "{{ item.gpu }}"
+      loop:
+        - {name: vaapi, encoder: vaapi, gpu: mesa}
+        - {name: nvenc, encoder: nvenc, gpu: nvidia}
+        - {name: qsv, encoder: qsv, gpu: mesa}
+        - {name: x264, encoder: x264, gpu: mesa}
+        - {name: auto-mesa, encoder: auto, gpu: mesa}
+        - {name: auto-nvidia, encoder: auto, gpu: nvidia}
+        - {name: auto-none, encoder: auto, gpu: none}
+
+    - name: Xrdp xrdp.ini, sesman.ini, xorg.conf
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/xrdp/templates/{{ item }}.j2"
+        dest: "{{ render_out }}/{{ item }}"
+        mode: "0644"
+      vars:
+        fastrdp_xorgxrdp_glamor: true
+        fastrdp_xrdp_disconnected_time_limit: 30
+      loop: [xrdp.ini, sesman.ini, xorg.conf]
+
+    - name: Proxy.ini (TLS logins, web, both off)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-{{ item.name }}.ini"
+        mode: "0644"
+      vars:
+        fastrdp_allow_tls_logins: "{{ item.tls }}"
+        fastrdp_web_enabled: "{{ item.web }}"
+      loop:
+        - {name: lab, tls: true, web: false}
+        - {name: web-only, tls: false, web: true}
+        - {name: nla-only, tls: false, web: false}
+
+    - name: Broker.toml, lab defaults
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-lab.toml"
+        mode: "0644"
+
+    - name: Broker.toml, MFA + wlroots + group defaults
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-mfa.toml"
+        mode: "0644"
+      vars:
+        fastrdp_realm: lab.example.com
+        fastrdp_mfa_mode: otp_or_push
+        fastrdp_mfa_exempt_groups: [rdp-break-glass, "domain admins"]
+        fastrdp_otp_lengths: [6, 8]
+        fastrdp_privacyidea_ca_src: files/pi-ca.pem
+        fastrdp_privacyidea_service_user: pi-service
+        fastrdp_privacyidea_verify_tls: false
+        fastrdp_allow_tls_logins: false
+        fastrdp_web_enabled: true
+        fastrdp_desktops: [xfce, plasma-x11, sway, gnome, plasma]
+        fastrdp_default_desktop: sway
+        fastrdp_group_desktops: {rdp-kde: plasma, "grp \"quoted\"": gnome}
+        fastrdp_desktop_groups: {plasma: [rdp-kde], gnome: [rdp-gnome, "domain users"]}
+        fastrdp_desktop_labels: {sway: "Sway (tiling)", xfce: "XFCE \"light\""}
+        fastrdp_default_geometry: 2560x1440
+
+    - name: Proxy.ini and broker.toml with non-default ports (smoke test parser)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_listen_port: 3399
+        fastrdp_xrdp_port: 3391
+      loop:
+        - {role: freerdp_proxy, src: proxy.ini.j2, dest: proxy-ports.ini}
+        - {role: broker, src: broker.toml.j2, dest: broker-ports.toml}
+
+    - name: Resource limits drop-ins (tuning role)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/tuning/templates/limits.conf.j2"
+        dest: "{{ render_out }}/limits-{{ item.unit }}.conf"
+        mode: "0644"
+      vars:
+        fastrdp_user_cpu_quota: "400%"
+        fastrdp_user_memory_max: 16G
+        fastrdp_xrdp_cpu_quota: "800%"
+        limits_section: "{{ item.section }}"
+        limits_comment: "{{ item.comment }}"
+        limits_cpu_quota: "{{ item.cpu_quota }}"
+        limits_memory_max: "{{ item.memory_max }}"
+        limits_tasks_max: "{{ item.tasks_max }}"
+      loop: "{{ fastrdp_limit_units }}"
+      loop_control:
+        label: "{{ item.unit }}"
+
+    - name: Webgate.toml
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/webgate.toml.j2"
+        dest: "{{ render_out }}/webgate.toml"
+        mode: "0644"
+      vars:
+        fastrdp_web_enabled: true
+        fastrdp_domain: LAB.Example.com
+        fastrdp_web_oidc_ca_src: files/idp-ca.pem
+        fastrdp_web_rdp_parameters:
+          enable-font-smoothing: "true"
+          color-depth: 32
+          resize-method: display-update
+
+# A new site sets only what is required: everything else must come from role
+# defaults (roles/common), and the common checks must pass.
+- name: Render with a minimal inventory (role defaults + realm/domain)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../ansible/roles/common/defaults/main.yml
+    - ../../ansible/roles/desktops/defaults/main.yml
+    - ../../ansible/roles/xrdp/defaults/main.yml
+    - ../../ansible/roles/freerdp_proxy/defaults/main.yml
+    - ../../ansible/roles/web_gateway/defaults/main.yml
+  vars:
+    roles_dir: "{{ playbook_dir }}/../../ansible/roles"
+    ansible_fqdn: rdp1.example.com
+    fastrdp_gpu_effective: none
+  tasks:
+    # set_fact: play vars would lose against the defaults file in vars_files
+    - name: The only settings a minimal inventory needs
+      ansible.builtin.set_fact:
+        fastrdp_realm: EXAMPLE.COM
+        fastrdp_domain: example.com
+
+    - name: Site checks pass
+      ansible.builtin.include_tasks: "{{ roles_dir }}/common/tasks/main.yml"
+
+    - name: Broker.toml, proxy.ini and gfx.toml from defaults
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - {role: broker, src: broker.toml.j2, dest: broker-minimal.toml}
+        - {role: freerdp_proxy, src: proxy.ini.j2, dest: proxy-minimal.ini}
+        - {role: xrdp, src: gfx.toml.j2, dest: gfx-minimal.toml}

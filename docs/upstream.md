@@ -10,7 +10,7 @@ self-built FreeRDP 3.32.1 (with the fix below) and MIT krb5 1.22.2.
 
 | # | Project | Problem | Status |
 |---|---|---|---|
-| 1 | FreeRDP | Smartcard logon: PKCS#11 slot id truncated to 16 bits | fix in `patches/freerdp/`, shipped in `fastrdp-freerdp3`; not submitted |
+| 1 | FreeRDP | Smartcard logon (client side): PKCS#11 slot id truncated to 16 bits | fix in `patches/freerdp/`, shipped in `fastrdp-freerdp3`; not submitted. Necessity: [patches/freerdp/README.md](../patches/freerdp/README.md) |
 | 2 | MIT krb5 (Debian, Ubuntu) | SPNEGO acceptor ignores the initiator's mechListMIC; breaks FreeRDP Kerberos NLA against xrdp PR #3868 | fixed upstream in 1.22.2; fix kept in `patches/krb5/` (reference, not built); distro requests not filed |
 | 3 | xrdp PR #3868 | Not an xrdp bug (see 2); comment with the root cause drafted | not posted |
 | 4 | xrdp | FFmpeg H.264 encoder (VA-API, NVENC, QSV) | `patches/xrdp/`, shipped in `fastrdp-xrdp`; draft PR text in §4 (rebase onto devel, GPU results to do); not submitted |

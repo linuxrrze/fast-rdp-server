@@ -134,20 +134,31 @@ dir=$(packaging/ci/prepare-vendored.sh xrdp /tmp/vendored)   # likewise for fast
 `.github/workflows/packages.yml`, all builds in `ubuntu:26.04` and
 `debian:trixie` containers:
 
-1. **tests**: `make test-broker test-webgate test-pam test-gpu lint`
-   (ansible-lint production profile, shellcheck).
+1. **tests** (both distros): `make test-all` with `FASTRDP_TESTS_STRICT=1` (a
+   missing tool fails instead of skipping): broker, webgate, PAM, GPU report, shell
+   tests of the build/CI/publish scripts, Ansible syntax check and template rendering,
+   setup assistant and preflight, ansible-lint, shellcheck; actionlint on resolute.
+   Inventory and CI mapping of every test: [tests/README.md](../tests/README.md).
 2. **vendored** (per distro x {freerdp, xrdp}): `prepare-vendored.sh` +
-   `dpkg-buildpackage` + lintian. Cached with `actions/cache`; the key is the
-   upstream sha256 value(s) from `sources.yml` plus the hashes of
+   `make-source-archive.sh` (corresponding source, before the build) +
+   `dpkg-buildpackage` + lintian; for xrdp also the FFmpeg encoder test
+   (`make test-xrdp-encoder`) against the built tree. Cached with `actions/cache`;
+   the key is the upstream sha256 value(s) from `sources.yml` plus the hashes of
    `patches/<name>/**`, `packaging/<name>/**`, `third_party/build-<name>.sh`,
    `fetch.sh` and the CI scripts. A cache hit reuses the identical `.deb`s.
 3. **build** (per distro): installs the vendored `fastrdp-freerdp3`, builds
    `fast-rdp-server`, runs lintian (`--fail-on error`), then installs **all**
-   packages in the container and checks users/groups, the module path,
-   unresolved libraries, Python imports and the xrdp FFmpeg build.
-4. **publish** (push to `main` or tag `v*`, after tests and builds): rebuilds the
+   packages in the container and runs `tests/packaging/check-installed.sh` (users
+   and groups, units, module RUNPATH, DT_RPATH of the vendored binaries, FreeRDP
+   resolved from `/opt/fastrdp`, Python imports, broker `--check`, xrdp FFmpeg build).
+4. **e2e** (per distro): installs the vendored FreeRDP and runs the proxy suites
+   against it: TLS, Kerberos NLA, smartcard via p11-kit and smartcard with SoftHSM
+   loaded directly (regression test of `patches/freerdp`).
+5. **krb5-spnego** (per distro, informational): reports whether the distribution's
+   MIT krb5 has the SPNEGO mechListMIC bug as a warning.
+6. **publish** (push to `main` or tag `v*`, after tests, build and e2e): rebuilds the
    APT repository and force-pushes it as a single commit to `gh-pages`; for tags
-   also attaches the `.deb`s to a GitHub release.
+   also attaches the `.deb`s and the source archives to a GitHub release.
 
 ## APT repository
 
@@ -188,7 +199,6 @@ gpg --batch --passphrase '' --quick-gen-key \
     'fast-rdp-server APT repository <marcel@linux-ng.de>' ed25519 sign 3y
 KEYID=$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr:/ {print $10; exit}')
 gpg --armor --export-secret-keys "$KEYID" > apt-signing-key.asc   # -> secret
-echo "$KEYID"                                                     # -> secret
 gpg --armor --export "$KEYID" > fast-rdp-server-archive-keyring.asc  # public, keep a copy
 ```
 
@@ -196,14 +206,16 @@ Repository secrets (Settings > Secrets and variables > Actions):
 
 | Secret | Value |
 |---|---|
-| `APT_SIGNING_KEY` | contents of `apt-signing-key.asc` (ASCII-armored secret key) |
-| `APT_SIGNING_KEY_ID` | the fingerprint printed above |
+| `APT_SIGNING_KEY` | contents of `apt-signing-key.asc` (ASCII-armored secret key, exactly one) |
 | `APT_SIGNING_KEY_PASSPHRASE` | optional, if the key has a passphrase |
+
+The workflow reads the key's fingerprint after importing it and signs with that key.
+The fingerprint is printed in the job log and shown on the repository's index page.
 
 Then delete `apt-signing-key.asc` and `$GNUPGHOME` (or keep them offline).
 Settings > Pages: *Deploy from a branch*, branch `gh-pages`, folder `/`. The
 first push to `main` creates the branch. Publishing is skipped in forks
-(`repository_owner` check) and fails loudly if the secrets are missing.
+(`repository_owner` check) and fails loudly if the secret is missing.
 
 Key rotation: publish the new public key next to the old one first (both in
 the clients' `Signed-By` file), then switch the secrets.

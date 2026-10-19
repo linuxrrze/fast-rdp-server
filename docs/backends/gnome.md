@@ -1,0 +1,196 @@
+# GNOME back-end (GDM headless + gnome-remote-desktop)
+
+Desktop: `gnome` (GNOME 50+, Wayland only). Driver:
+`broker/brokerd/fastrdp_broker/backends/gnome.py`. Status: **to validate** on real
+hosts; nothing in this repository starts a real GNOME session.
+
+fastrdp does not use g-r-d's system "remote login" daemon (the role disables
+`gnome-remote-desktop.service`). It runs g-r-d in **headless mode inside each
+user's session**, started through GDM's `gnome-headless-session@<user>.service`.
+The user never sees a GDM greeter; authentication and MFA happened at the proxy.
+
+## How it works
+
+`GnomeBackend.ensure()` (under the broker's per-user lock):
+
+1. **Reuse:** if `sessions.json` has a `gnome` session for the user,
+   `gnome-headless-session@<user>.service` is active, and the recorded port is held
+   by exactly the user's uid, update `last_login` and return the stored target.
+2. **Otherwise start or repair:**
+   1. allocate a free port from `[broker] port_range` (33900–34899): not in
+      `sessions.json`, not reserved by a start in progress, no loopback/any listener,
+      and bindable on 127.0.0.1;
+   2. generate a random secret (`secrets.token_urlsafe(24)`);
+   3. ensure a per-user self-signed cert (`sysutil.ensure_backend_cert`):
+      `/var/lib/fastrdp/users/<user>/tls.crt` (0644) and `tls.key` (0600), owned by the
+      user, EC P-256, CN `fastrdp-backend-<user>`, 10 years; directories root-owned
+      0711 so the user cannot plant symlinks;
+   4. run as the user, inside the user's systemd manager
+      (`systemctl start user@<uid>.service`, then
+      `systemd-run --machine=<user>@.host --user --wait --pipe …`):
+      ```
+      grdctl --headless rdp set-tls-cert /var/lib/fastrdp/users/<user>/tls.crt
+      grdctl --headless rdp set-tls-key  /var/lib/fastrdp/users/<user>/tls.key
+      grdctl --headless rdp set-port <port>
+      grdctl --headless rdp disable-port-negotiation
+      grdctl --headless rdp set-credentials fastrdp      # secret on stdin
+      grdctl --headless rdp enable
+      systemctl --user enable gnome-remote-desktop-headless.service
+      ```
+   5. if `gnome-headless-session@<user>.service` is already active (session alive,
+      g-r-d gone or on another port): `systemctl --user restart
+      gnome-remote-desktop-headless.service`; else `systemctl start --no-block
+      gnome-headless-session@<user>.service`;
+   6. record the session (port, `rdp_user = "fastrdp"`, secret) in `sessions.json`;
+   7. wait up to `session_start_timeout` (90 s) until the port listens on loopback and
+      is held by exactly the user's uid. Another uid on the port → `port <p> is held
+      by unexpected uid(s)`; nothing → `no listener on port <p> after 90s`.
+3. Return `127.0.0.1:<port>`, `fastrdp` / secret, `security = "nla"`.
+
+The proxy then connects with NLA. The module sets
+`AuthenticationPackageList=!kerberos`, so the loopback hop uses NTLM against the
+credentials g-r-d was given. The client's alternate-shell value is not forwarded.
+
+What GDM's unit does internally (which PAM service it uses, how it registers the
+logind session, how gnome-session pulls in `gnome-remote-desktop-headless.service`
+through `gnome-session.target`) is GDM 50 upstream behaviour and has **not** been
+checked in this repository.
+
+### Processes and users
+
+| Process | User | Started by |
+|---|---|---|
+| `gnome-headless-session@<user>.service` | the user | broker (`systemctl start`), unit shipped by GDM |
+| `gnome-shell` (headless) and session services | the user | GDM / gnome-session (upstream) |
+| `gnome-remote-desktop-daemon` (headless) | the user | user unit `gnome-remote-desktop-headless.service` |
+| `grdctl` calls | the user | broker via `systemd-run --user` |
+
+### Reconnect and session lifetime
+
+- A new login reuses the running session and the same secret as long as the unit is
+  active and the port is held by the user.
+- If g-r-d died or the state file was lost, the broker reconfigures g-r-d on a new
+  port with a new secret and restarts only g-r-d; the GNOME session survives.
+- If the unit is not active, a new GNOME session is started.
+- Sessions run until `fastrdpctl logout USER` (`systemctl stop --no-block
+  gnome-headless-session@USER.service`) or until they end on their own. The
+  broker has no idle or disconnect timeout for GNOME.
+- What happens to a second, concurrent connection of the same user: g-r-d
+  upstream behaviour, not tested.
+
+### Resize, multi-monitor, channels
+
+The broker passes no geometry to g-r-d (width/height from the client are ignored for
+this back-end). Monitor layout, dynamic resize (proxy passes DisplayControl),
+clipboard, audio and drive redirection are whatever g-r-d's headless RDP server
+implements; **none of these is tested through fastrdp**.
+
+## Components on a deployed host
+
+| Path / unit | From |
+|---|---|
+| packages `fastrdp_gnome_packages`: `gdm3, gnome-shell, gnome-session, gnome-remote-desktop, gnome-control-center, gnome-console, nautilus, xwayland` | role `gnome_rd` |
+| `/usr/lib/systemd/system/gnome-headless-session@.service` | GDM 50+ (the role asserts it exists) |
+| `gdm.service` | enabled and started by the role |
+| `gnome-remote-desktop.service` (system) | disabled and stopped by the role |
+| `gnome-remote-desktop-headless.service` (user unit) | g-r-d package; enabled per user by the broker |
+| `/etc/dconf/db/local.d/50-fastrdp` | role: `lock-enabled=false`, `idle-delay=uint32 0`, `enable-animations=false`; compiled by `dconf update` |
+| `/var/lib/fastrdp/users/<user>/tls.{crt,key}` | broker |
+| `/var/lib/fastrdp/sessions.json` (0600 root) | broker: port, `rdp_user`, `rdp_password` |
+| g-r-d's own headless settings and credentials | written by `grdctl` in the user's account; location is g-r-d's choice, not set by fastrdp |
+
+The role `gnome_rd` runs only when `gnome` is in `fastrdp_desktops` (`site.yml`).
+
+## Configuration
+
+| Setting | Default | Where |
+|---|---|---|
+| `fastrdp_desktops` contains `gnome` | inventory | renders `[desktops.gnome] backend = "gnome"` |
+| `fastrdp_gnome_packages` | see above | role `gnome_rd` |
+| `fastrdp_backend_port_range` | `[33900, 34899]` (inventory) | broker `[broker] port_range`, nftables set, `ip_local_reserved_ports` |
+| `[broker] session_start_timeout` | `90` | `config.py` default; not rendered by Ansible |
+| `[backends.gnome] unit` | `gnome-headless-session@{user}.service` | `config.py` default |
+| `[backends.gnome] security` | `nla` | `config.py` default |
+| `fastrdp_group_desktops` | `{}` | e.g. `{rdp-gnome: gnome}` |
+
+There are no GNOME-specific encoder or quality variables in the Ansible roles.
+
+## GPU and performance path
+
+From [performance.md](../performance.md) (upstream source review of g-r-d 50, not
+measured here):
+
+- Mutter renders on the GPU (GBM). NVIDIA needs `nvidia-drm modeset=1` (role `gpu`
+  writes `/etc/modprobe.d/fastrdp-nvidia.conf`; reboot required).
+- g-r-d encodes H.264 with **VA-API via Vulkan** (needs a Vulkan device and a VA
+  driver with H.264 encode, e.g. `va-driver-all`) or **NVENC via CUDA**.
+- **No software H.264.** Without VA-API/NVENC, g-r-d sends RFX progressive, at much
+  higher bandwidth. Avoid `gnome` on GPU-less hosts.
+
+Verify inside the session (as the user):
+
+```sh
+python3 tests/gpu/session_report.py
+#   rendering:     gpu (mesa) | gpu (nvidia)        <- gnome-shell holds a render node
+#   H.264 encoder: vaapi (gpu) | nvenc (gpu) | no h264 encoder loaded (rfx/progressive)
+vainfo | grep EncSlice
+vulkaninfo --summary
+journalctl --user -u gnome-remote-desktop-headless -g HWAccel   # upstream logs "[HWAccel.VAAPI] Successfully initialized"
+```
+
+Tuning knobs: only the generic ones in role `tuning` (`fastrdp_tcp_tuning`,
+`fastrdp_user_cpu_quota`, `fastrdp_user_memory_max`, `fastrdp_user_tasks_max`).
+Whether all GNOME processes land in `user-<uid>.slice` depends on how GDM's unit
+places them; not checked.
+
+## Security properties
+
+- g-r-d listens on a per-user port; the broker refuses to route unless the port is
+  held by exactly the user's uid. A user who grabs a port the broker picked for
+  someone else causes a failed login (`held by unexpected uid`), not a hijack.
+- nftables: only `_fastrdp-proxy` and root may open connections to the port range on
+  loopback; no remote access.
+- Credentials are random per g-r-d (re)configuration and stored in the root-only
+  `sessions.json`. The user can read their own g-r-d credentials (they are in the
+  user's account), which gains nothing: the port is unreachable for the user's own
+  processes (nftables), and it is the user's own session.
+- The user's password never reaches GNOME, so **no Kerberos TGT** exists in the
+  session. Users run `kinit` if they need one. (Keyring unlocking: not handled by
+  fastrdp; upstream behaviour unknown.)
+- AD GPO logon rights: the broker checks PAM service `fastrdp` (mapped in
+  `ad_gpo_map_remote_interactive`). GDM's own PAM service for headless sessions is
+  **not** in that mapping; whether sssd denies or needs it is to validate.
+
+## Limitations and known issues
+
+- Whole back-end: to validate on GNOME 50 / GDM 50 (desktop-matrix item 2).
+- No software H.264.
+- The proxy → g-r-d NLA hop is not covered by automated tests.
+- Running a `gnome` and a `plasma` session for the same user at the same time shares
+  one `XDG_RUNTIME_DIR` and one systemd user manager. `session-plasma` waits for
+  `$XDG_RUNTIME_DIR/wayland-0`, which gnome-shell may already own. Not tested;
+  avoid it (restrict with `groups`, or tell users).
+- `sessions.json` loss (corrupt file) costs only the reuse shortcut: g-r-d is
+  reconfigured on a new port.
+
+## Troubleshooting
+
+| Symptom | Checks |
+|---|---|
+| `backend error: GNOME session for USER: …systemd-run…failed` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
+| `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M USER@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=USER@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
+| `port P is held by unexpected uid(s) [...]` | `ss -ltnp 'sport = :P'`: another user's process holds the port; next login picks another port |
+| Session starts but login at g-r-d fails (proxy log: back-end connect error) | credentials mismatch after a manual `grdctl` change: `fastrdpctl logout USER` and log in again |
+| GPO denial | `journalctl -u sssd -g gpo` / `/var/log/sssd/` for denials naming GDM's PAM service |
+| No H.264 (client shows RFX/progressive) | `vainfo`, `vulkaninfo --summary`, NVIDIA `nvidia-smi`; `session_report.py` verdict; client must decode H.264 ([client-guide.md](../client-guide.md)) |
+| Benchmark direct vs. proxied | `sudo tests/perf/compare-host.sh USER 'PASSWORD'` (reads port and credentials from `sessions.json`) |
+
+## Tests
+
+| Test | What |
+|---|---|
+| `make test-broker` | port allocation/reservation (`BackendHelperTests` uses `GnomeBackend`), listener parsing, config defaults |
+| `make test-gpu` | `session_report.py` verdicts for GNOME with VA-API and NVENC (fake `/proc`) |
+| `tests/perf/compare-host.sh` | manual, on a deployed host |
+
+`GnomeBackend.ensure()` and the GDM/g-r-d interaction have no automated test.
