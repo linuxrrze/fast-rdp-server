@@ -66,6 +66,23 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(v, {"rendering": "software (llvmpipe)", "h264_encoding": "x264 (cpu)"})
         self.assertEqual(len(rows), 2)
 
+    def test_xrdp_vaapi_encoder(self):
+        _, v = self.run_scan(
+            dict(pid=60, comm="Xorg", devices=["/dev/dri/renderD128"]),
+            dict(pid=61, comm="xrdp", uid=999, devices=["/dev/dri/renderD128"],
+                 libs=["/usr/lib/libavcodec.so.62", "/usr/lib/x86_64-linux-gnu/libva.so.2"]),
+        )
+        self.assertEqual(v["h264_encoding"], "vaapi (gpu, xrdp ffmpeg)")
+
+    def test_xrdp_unreadable(self):
+        with tempfile.TemporaryDirectory() as root:
+            fake_proc(root, 70, "xrdp", uid=999)
+            os.chmod(os.path.join(root, "70", "maps"), 0)
+            rows = session_report.scan(UID, root)
+            if os.getuid() != 0:  # root can read anything
+                self.assertIsNone(rows[0]["libraries"])
+                self.assertIn("xrdp.log", session_report.verdict(rows)["h264_encoding"])
+
     def test_other_users_ignored(self):
         rows, _ = self.run_scan(dict(pid=50, comm="gnome-shell", uid=UID + 4242))
         self.assertEqual(rows, [])

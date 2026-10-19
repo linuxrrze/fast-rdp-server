@@ -79,7 +79,8 @@ def open_devices(pid: str, root: str) -> set[str]:
     return out
 
 
-def mapped_hints(pid: str, root: str) -> set[str]:
+def mapped_hints(pid: str, root: str) -> set[str] | None:
+    """Library hints from /proc/<pid>/maps; None if not readable (other user's process)."""
     hints = set()
     try:
         with open(f"{root}/{pid}/maps", encoding="utf-8", errors="replace") as fh:
@@ -88,6 +89,8 @@ def mapped_hints(pid: str, root: str) -> set[str]:
                 for needle, meaning in LIB_HINTS.items():
                     if needle in path:
                         hints.add(meaning)
+    except PermissionError:
+        return None
     except OSError:
         pass
     return hints
@@ -111,7 +114,7 @@ def scan(uid: int, root: str = "/proc") -> list[dict]:
             "role": role,
             "uid": owner,
             "devices": sorted(open_devices(pid, root)),
-            "libraries": sorted(mapped_hints(pid, root)),
+            "libraries": None if (h := mapped_hints(pid, root)) is None else sorted(h),
         })
     return sorted(rows, key=lambda r: (r["role"], r["process"], r["pid"]))
 
@@ -120,7 +123,7 @@ def verdict(rows: list[dict]) -> dict:
     """Summarise rendering and encoding paths from the process evidence."""
     render, encode = "unknown", "unknown"
     for r in rows:
-        libs, devs = set(r["libraries"]), r["devices"]
+        libs, devs = set(r["libraries"] or []), r["devices"]
         if r["role"] == "render":
             if "nvidia-gl" in libs or any(d.startswith("/dev/nvidia") for d in devs):
                 render = "gpu (nvidia)"
@@ -130,7 +133,16 @@ def verdict(rows: list[dict]) -> dict:
                 render = "software (llvmpipe)"
         else:
             if r["process"] == "xrdp":
-                encode = "x264 (cpu)"  # xrdp has no hardware H.264 encoder
+                # xrdp encodes in its own (unprivileged, uid xrdp) process: x264, or the
+                # fastrdp FFmpeg backend with VA-API/NVENC/QSV.
+                if r["libraries"] is None:
+                    encode = "xrdp: not readable as this user, see xrdp.log 'xrdp_encoder_ffmpeg: using'"
+                elif "nvenc" in libs:
+                    encode = "nvenc (gpu, xrdp ffmpeg)"
+                elif "vaapi" in libs and any("renderD" in d for d in devs):
+                    encode = "vaapi (gpu, xrdp ffmpeg)"
+                else:
+                    encode = "x264 (cpu)"
             elif "nvenc" in libs:
                 encode = "nvenc (gpu)"
             elif "vaapi" in libs and any("renderD" in d for d in devs):
@@ -182,7 +194,8 @@ def main() -> int:
     print(f"H.264 encoder: {report['verdict']['h264_encoding']}")
     for r in rows:
         print(f"  {r['role']:6} {r['process']:<28} pid {r['pid']:<7} "
-              f"dev={','.join(r['devices']) or '-'} libs={','.join(r['libraries']) or '-'}")
+              f"dev={','.join(r['devices']) or '-'} "
+              f"libs={'(not readable)' if r['libraries'] is None else ','.join(r['libraries']) or '-'}")
     for key in ("gl_renderer", "vulkan_devices", "vaapi_h264_encode", "nvenc_sessions"):
         for line in report[key]:
             print(f"  {key}: {line}")

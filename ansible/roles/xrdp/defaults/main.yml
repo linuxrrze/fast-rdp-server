@@ -9,6 +9,22 @@ fastrdp_xrdp_src_dir: /usr/local/src/fastrdp
 fastrdp_xorgxrdp_glamor: "{{ fastrdp_gpu_effective == 'mesa' or fastrdp_xorgxrdp_nvidia_glamor | bool }}"
 fastrdp_xorgxrdp_nvidia_glamor: false
 fastrdp_xorgxrdp_drm_device: /dev/dri/renderD128
+# H.264 encoder for xrdp sessions:
+#   auto  = nvenc on NVIDIA, vaapi on Intel/AMD, x264 otherwise
+#   vaapi | nvenc | qsv = FFmpeg hardware encoder (fastrdp patch, falls back to libx264
+#                         if the GPU/driver is not usable at start-up)
+#   x264  = upstream software encoder
+fastrdp_xrdp_h264_encoder: auto
+fastrdp_xrdp_h264_encoder_effective: >-
+  {{ fastrdp_xrdp_h264_encoder if fastrdp_xrdp_h264_encoder != 'auto'
+     else ('nvenc' if fastrdp_gpu_effective == 'nvidia'
+           else ('vaapi' if fastrdp_gpu_effective == 'mesa' else 'x264')) }}
+fastrdp_xrdp_patches:
+  - 0001-Add-FFmpeg-H.264-encoder-VA-API-NVENC-QSV.patch
+# FFmpeg rate control for the hardware encoders: constant quality on the LAN,
+# capped bitrates (kbit/s) elsewhere, like the x264 profiles below.
+fastrdp_ffmpeg_qp: 23
+fastrdp_ffmpeg_gop: 300
 # H.264 (x264) settings, see gfx.toml(5)
 fastrdp_x264_preset: ultrafast
 fastrdp_x264_fps: 60
@@ -17,6 +33,7 @@ fastrdp_xrdp_max_sessions: 100
 fastrdp_xrdp_disconnected_time_limit: 0
 fastrdp_xrdp_build_packages:
   - build-essential
+  - patch
   - autoconf
   - automake
   - libtool
@@ -40,4 +57,6 @@ fastrdp_xrdp_build_packages:
   - libepoxy-dev
   - libgbm-dev
   - libdrm-dev
+  - libavcodec-dev
+  - libavutil-dev
 fastrdp_xrdp_runtime_packages: [xserver-xorg-core, fuse3, dbus-x11, xauth]

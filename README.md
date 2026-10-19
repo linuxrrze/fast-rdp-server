@@ -39,6 +39,7 @@ tests/
   perf/               rdpbench (headless benchmark client), perfload, proxy-overhead/compare scripts
   gpu/                session_report.py: which renderer/H.264 encoder a session really uses
   wlroots/            wlroots-in-x launcher tests (Sway, labwc, Wayfire on Xvfb)
+patches/xrdp/         FFmpeg hardware H.264 encoder for xrdp 0.10.6.1 (+ functional test)
 ```
 
 ## Deploy (lab)
@@ -79,4 +80,4 @@ make test-e2e-nla  # additionally krb5-kdc, krb5-admin-server, krb5-user
 | Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
 | xrdp PR #3868 (NLA) | assessed: Kerberos OK only with FreeRDP U2U disabled; no smartcards; proxy stays the NLA point |
 | wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
-| xrdp HW encoder | not started |
+| xrdp hardware H.264 (FFmpeg: VA-API, NVENC, QSV) | patch for xrdp 0.10.6.1 (`patches/xrdp/`), applied by the role; tested via libx264 through the same code path and the no-GPU fallback; real GPUs to validate |

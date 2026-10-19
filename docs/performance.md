@@ -77,7 +77,7 @@ back to RFX/progressive at 5–10× the bandwidth.
 
 | Back-end | Rendering | H.264 encoding | Intel/AMD | NVIDIA | Evidence |
 |---|---|---|---|---|---|
-| xrdp + xorgxrdp | glamor (`/dev/dri/renderD128`) | **x264 on CPU** (`fastrdp_x264_threads` per session) | GPU render, CPU encode | VirtualGL for GL apps (`vglrun`), CPU encode | xrdp 0.10.6 has only x264/OpenH264 encoders |
+| xrdp + xorgxrdp | glamor (`/dev/dri/renderD128`) | **VA-API / NVENC via the fastrdp FFmpeg patch** (`patches/xrdp/`), x264 as fallback | GPU render, **GPU encode (VA-API)** | VirtualGL for GL apps (`vglrun`), **GPU encode (NVENC)** | upstream 0.10.6 only has x264/OpenH264; the patch adds `h264_encoder = "ffmpeg"`. Not yet tested on real GPUs |
 | GNOME / gnome-remote-desktop 50 | Mutter on GPU (GBM) | **VA-API via Vulkan** (needs a Vulkan device and a VA H.264 encoder), **NVENC via CUDA** | GPU both | GPU both | `grd-rdp-renderer.c`: Vulkan device first, then VA-API; `grd-hwaccel-nvidia.c`. Logs `[HWAccel.VAAPI] Successfully initialized` |
 | Plasma / KRdp 6.6 | KWin on GPU | KPipeWire: **h264_vaapi → libx264 → libopenh264** | GPU both | **CPU (libx264)**: KPipeWire never tries NVENC | `kpipewire/src/pipewireproduce.cpp` |
 
@@ -88,8 +88,12 @@ Consequences:
 - On **Intel/AMD hosts**, both Wayland back-ends encode on the GPU. Install the VA
   driver with H.264 *encode* support: `va-driver-all` includes Intel `iHD` and AMD
   `radeonsi`; check `vainfo | grep EncSlice`.
-- xrdp sessions always encode on the CPU. GPU rendering (glamor) still helps
-  compositing and GL apps.
+- xrdp sessions (X11 and wlroots desktops) encode on the GPU with the fastrdp
+  FFmpeg patch: `fastrdp_xrdp_h264_encoder: auto` picks NVENC or VA-API. If the
+  probe at session start fails, xrdp falls back to libx264 and logs
+  `xrdp_encoder_ffmpeg: … falling back`. The encoder runs in the xrdp daemon, so
+  `session_report.py` may not be able to read it as a normal user; check
+  `xrdp.log` for `xrdp_encoder_ffmpeg: using`.
 
 Ubuntu's FFmpeg (`libavcodec62`) contains `h264_vaapi`, `h264_nvenc`, `h264_vulkan`
 and `libx264`, so KPipeWire's VA-API and x264 paths are available.
@@ -102,7 +106,9 @@ and `libx264`, so KPipeWire's VA-API and x264 paths are available.
 | `fastrdp_user_cpu_quota` / `fastrdp_user_memory_max` | unset | Per-user caps on `user-UID.slice` (all of one user's sessions) |
 | `fastrdp_krdp_encoder` | `auto` | Force `h264_vaapi` / `libx264` / `libopenh264` for Plasma (`KPIPEWIRE_FORCE_ENCODER`) |
 | `fastrdp_krdp_quality` | KRdp default | `krdpserver --quality` (upper bound with adaptive quality) |
-| `fastrdp_x264_threads`, `fastrdp_x264_preset`, `fastrdp_x264_fps` | 2 / ultrafast / 60 | xrdp H.264 cost vs. quality per session |
+| `fastrdp_xrdp_h264_encoder` | `auto` | xrdp encoder: `auto` (nvenc/vaapi/x264 by GPU), `vaapi`, `nvenc`, `qsv`, `x264` |
+| `fastrdp_ffmpeg_qp`, `fastrdp_ffmpeg_gop` | 23 / 300 | Hardware encoder quality (LAN) and IDR interval; WAN profiles cap the bitrate |
+| `fastrdp_x264_threads`, `fastrdp_x264_preset`, `fastrdp_x264_fps` | 2 / ultrafast / 60 | x264 cost vs. quality per session (software path and fallback) |
 
 ## Runbook for a GPU host
 

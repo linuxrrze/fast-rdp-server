@@ -22,7 +22,8 @@
   vars:
     fastrdp_build_stamp: >-
       {{ fastrdp_xrdp_src_dir }}/.installed-{{ fastrdp_xrdp_version }}-{{ fastrdp_xorgxrdp_version
-      }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}
+      }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}-ffmpeg{{ fastrdp_xrdp_h264_encoder_effective != 'x264' }}-p{{
+      fastrdp_xrdp_patches | length }}
 
 - name: Loopback back-end certificate for xrdp
   ansible.builtin.command:

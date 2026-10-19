@@ -1,9 +1,50 @@
 # {{ ansible_managed }}
-# GFX pipeline codecs for xrdp, see gfx.toml(5). H.264 first (AVC420/444), RFX fallback.
+# GFX pipeline codecs for xrdp, see gfx.toml(5). H.264 first (AVC420), RFX fallback.
 [codec]
 order = [ "H.264", "RFX" ]
+{% set enc = fastrdp_xrdp_h264_encoder_effective %}
+{% if enc == 'x264' %}
 h264_encoder = "x264"
+{% else %}
+# FFmpeg hardware encoder (fastrdp xrdp patch); falls back to libx264 at start-up
+# if the GPU, driver or library is not usable.
+h264_encoder = "ffmpeg"
 
+[ffmpeg]
+encoder = "h264_{{ enc }}"
+device = "{{ fastrdp_xorgxrdp_drm_device }}"
+fallback = "libx264"
+
+[ffmpeg.default]
+qp = {{ fastrdp_ffmpeg_qp }}
+gop = {{ fastrdp_ffmpeg_gop }}
+fps_num = {{ fastrdp_x264_fps }}
+fps_den = 1
+
+[ffmpeg.lan]
+
+[ffmpeg.wan]
+bitrate = 12_000
+max_bitrate = 15_000
+
+[ffmpeg.broadband_high]
+bitrate = 6_000
+max_bitrate = 8_000
+
+[ffmpeg.satellite]
+bitrate = 4_000
+max_bitrate = 5_000
+
+[ffmpeg.broadband_low]
+bitrate = 1_400
+max_bitrate = 1_600
+
+[ffmpeg.modem]
+bitrate = 1_000
+max_bitrate = 1_200
+{% endif %}
+
+# x264: always configured, it is also the software path when H.264 is x264
 [x264.default]
 preset = "{{ fastrdp_x264_preset }}"
 tune = "zerolatency"
