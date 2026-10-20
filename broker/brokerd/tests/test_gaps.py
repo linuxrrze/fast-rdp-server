@@ -11,6 +11,8 @@ import os
 import pwd
 import socket
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 import urllib.error
@@ -228,6 +230,26 @@ class SecondFactorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(mfa.MfaDenied):
             await sf.verify("alice", None, "pw")
 
+    async def test_cancelled_push_wait_stops_polling(self):
+        sf = self.factor("push")
+        sf.pi.trigger_challenge.return_value = "tx"
+        started, events = threading.Event(), []
+
+        def wait_for_push(user, txid, cancel):
+            events.append(cancel)
+            started.set()
+            return cancel.wait(10) and False
+
+        sf.pi.wait_for_push.side_effect = wait_for_push
+        task = asyncio.create_task(sf.verify("alice", None, "pw"))
+        await asyncio.to_thread(started.wait, 5)
+        with self.assertLogs("fastrdp_broker.mfa", "INFO") as logs:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertTrue(events[0].is_set())
+        self.assertIn("push wait for alice cancelled", logs.output[-1])
+
 
 # --------------------------------------------------------------- privacyIDEA
 class FakeResp(io.BytesIO):
@@ -313,6 +335,26 @@ class PrivacyIdeaTests(unittest.TestCase):
         self.assertIn(b"transaction_id=tx1", self.calls[2].data)
         self.cfg.push_timeout = 0
         self.assertFalse(PrivacyIdea(self.cfg).wait_for_push("alice", "tx1"))
+
+    def test_wait_for_push_cancelled(self):
+        # The login was abandoned: polling stops at once instead of after push_timeout.
+        self.cfg.push_timeout, self.cfg.poll_interval = 60, 30
+        cancel = threading.Event()
+        pi = PrivacyIdea(self.cfg)
+        with self.urlopen(pi_reply(False)):
+            cancel.set()
+            start = time.monotonic()
+            self.assertFalse(pi.wait_for_push("alice", "tx1", cancel))
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(self.calls, [])  # nothing polled once cancelled
+        # cancelled while sleeping between two polls
+        cancel.clear()
+        threading.Timer(0.2, cancel.set).start()
+        with self.urlopen(pi_reply(False)):
+            start = time.monotonic()
+            self.assertFalse(pi.wait_for_push("alice", "tx1", cancel))
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(len(self.calls), 1)
 
 
 # ---------------------------------------------------------------- identity
@@ -842,6 +884,94 @@ class ServerPolicyTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
                              {"ok": False, "password": None})
             self.assertEqual(await request(sock, {"op": "status"}), {})
             self.assertEqual(await request(sock, {"op": "redeem", "user": "alice"}), {})
+
+
+class AbandonedLoginTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
+    """The proxy closes the broker connection while a login is pending (the user closed
+    the client during an MFA push; fastrdp_plugin.c broker_call)."""
+
+    async def pending_login(self, **kw):
+        reader, writer = await asyncio.open_unix_connection(self.cfg.broker.socket)
+        msg = {"op": "login", "session_id": "s1", "method": "tls", "user": "alice", "password": "pw"}
+        msg.update(kw)
+        writer.write(json.dumps(msg).encode() + b"\n")
+        await writer.drain()
+        return reader, writer
+
+    def blocking_push(self):
+        pi = self.set_mfa("push")
+        pi.trigger_challenge.return_value = "tx"
+        started, cancels = threading.Event(), []
+
+        def wait_for_push(user, txid, cancel):
+            cancels.append(cancel)
+            started.set()
+            cancel.wait(30)
+            return False
+
+        pi.wait_for_push.side_effect = wait_for_push
+        return started, cancels
+
+    async def test_push_wait_cancelled_when_proxy_closes(self):
+        started, cancels = self.blocking_push()
+        _, writer = await self.pending_login()
+        self.assertTrue(await asyncio.to_thread(started.wait, 5))
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            writer.close()
+            for _ in range(100):
+                if cancels[0].is_set():
+                    break
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.05)
+        self.assertTrue(cancels[0].is_set(), "push wait still running")
+        self.assertTrue(any("login of session s1 abandoned" in line for line in logs.output), logs.output)
+        self.assertFalse(any("ERROR" in line for line in logs.output), logs.output)
+        self.ensure.assert_not_called()
+        self.assertEqual(self.broker.active, {})
+        # the broker keeps serving
+        self.set_mfa("none")
+        self.assertTrue((await self.login())["ok"])
+
+    async def test_session_start_under_way_completes(self):
+        self.set_mfa("none")
+        entered, release = asyncio.Event(), asyncio.Event()
+        target = self.ensure.return_value
+
+        async def slow_ensure(req):
+            entered.set()
+            await release.wait()
+            return target
+
+        self.ensure.side_effect = slow_ensure
+        _, writer = await self.pending_login()
+        await asyncio.wait_for(entered.wait(), 5)
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            writer.close()
+            for _ in range(100):
+                if any("abandoned:" in line for line in logs.output):
+                    break
+                await asyncio.sleep(0.02)
+            release.set()
+            for _ in range(100):
+                if any("session started for an abandoned login" in line for line in logs.output):
+                    break
+                await asyncio.sleep(0.02)
+        self.assertTrue(any("session started for an abandoned login" in line for line in logs.output),
+                        logs.output)
+        self.ensure.assert_awaited_once()
+        self.assertEqual(self.broker.active, {})  # never routed, never "connected"
+
+    async def test_data_while_pending_is_a_protocol_error(self):
+        started, cancels = self.blocking_push()
+        reader, writer = await self.pending_login()
+        self.assertTrue(await asyncio.to_thread(started.wait, 5))
+        with self.assertLogs("fastrdp.broker", "WARNING") as logs:
+            writer.write(b'{"op":"status"}\n')
+            await writer.drain()
+            self.assertEqual(await asyncio.wait_for(reader.read(), 5), b"")  # closed, no reply
+        writer.close()
+        self.assertTrue(cancels[0].is_set())
+        self.assertIn("data received while a login was pending", logs.output[-1])
 
 
 class ServerWebDisabledTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):

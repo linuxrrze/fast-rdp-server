@@ -31,6 +31,12 @@ fastrdp_front_cert_src: ""           # PEM on the controller; "" = self-signed (
 fastrdp_front_key_src: ""
 # Allow password logins over TLS (clients without NLA, the web path); false = NLA only.
 fastrdp_allow_tls_logins: true
+# Peers that may log in over TLS (non-NLA) at all: proxy.ini [FastRDP] AllowTlsFrom,
+# addresses/CIDRs, [] = any. Default: loopback only when TLS is there just for the web
+# path (guacd connects from 127.0.0.1), else any (TLS logins on, or no TLS at all).
+# docs/backends/web.md
+fastrdp_tls_login_sources: >-
+  {{ ['127.0.0.1', '::1'] if (fastrdp_web_enabled | bool and not fastrdp_allow_tls_logins | bool) else [] }}
 
 # ---------------------------------------------------------------- MFA
 fastrdp_mfa_mode: none               # none | otp | push | otp_or_push (docs/auth-matrix.md)

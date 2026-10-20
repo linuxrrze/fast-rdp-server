@@ -17,6 +17,10 @@
  *                         profile, see connection_type_from_target()).
  *   ServerSessionEnd      notify the broker and wipe secrets.
  *
+ * The broker call can take as long as an MFA push. It is abandoned as soon as the front
+ * client closes its connection or the proxy aborts the session (broker_call()), so a
+ * user who gives up does not hold the proxy's thread until the timeout.
+ *
  * Refusals after the RDP connection is up carry a Set Error Info PDU
  * ([MS-RDPBCGR] 2.2.5.1.1) so that clients such as mstsc can show a reason instead of a
  * bare disconnect; see errinfo_for_reply().
@@ -26,6 +30,8 @@
  *   BrokerSocket = /run/fastrdp/broker.sock
  *   Timeout      = 120        ; seconds, must exceed the MFA push timeout
  *   AllowTls     = false      ; accept non-NLA logins (password [+OTP] in client info)
+ *   AllowTlsFrom =            ; non-NLA logins only from these peers: comma-separated
+ *                             ; addresses/CIDRs (fastrdp_addr.h); empty = any peer
  */
 
 #include <errno.h>
@@ -33,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -42,6 +49,7 @@
 #include <winpr/string.h>
 #include <winpr/wlog.h>
 #include <winpr/sspi.h>
+#include <winpr/synch.h>
 
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
@@ -49,6 +57,8 @@
 #include <freerdp/server/proxy/proxy_config.h>
 #include <freerdp/server/proxy/proxy_context.h>
 #include <freerdp/server/proxy/proxy_modules_api.h>
+
+#include "fastrdp_addr.h"
 
 #define TAG MODULE_TAG("fastrdp")
 #define PLUGIN_NAME "fastrdp"
@@ -169,15 +179,63 @@ static BOOL write_all(int fd, const char* buf, size_t len)
 	return TRUE;
 }
 
-/* Sends one JSON line, returns the parsed reply (caller frees) or NULL.
- * *timed_out (optional) tells a broker that did not answer in time from other failures. */
-static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s, BOOL* timed_out)
+typedef enum
 {
-	cJSON* reply = NULL;
+	BROKER_FAILED = 0, /* not reachable, I/O error, malformed or incomplete reply */
+	BROKER_REPLIED,
+	BROKER_TIMED_OUT,
+	BROKER_ABANDONED /* the front connection went away while waiting */
+} brokerCallResult;
+
+#define MAX_ABORT_FDS 8
+
+/* Descriptors that end the wait for the broker: the proxy's abort event (readable once
+ * set) and the front client's TCP socket. The socket is found through the peer's event
+ * handles (WinPR binds the transport's socket event to the socket itself); only the
+ * peer's end of the stream counts (POLLRDHUP, POLLHUP, POLLERR), not pending data.
+ * The descriptors stay owned by FreeRDP: polled, never read or closed here. */
+static nfds_t abort_fds(proxyData* pdata, struct pollfd* fds, nfds_t max)
+{
+	nfds_t n = 0;
+	if (!pdata)
+		return 0;
+	if (pdata->abort_event)
+	{
+		const int fd = GetEventFileDescriptor(pdata->abort_event);
+		if (fd >= 0 && n < max)
+			fds[n++] = (struct pollfd){ .fd = fd, .events = POLLIN };
+	}
+	freerdp_peer* peer = pdata->ps ? pdata->ps->peer : NULL;
+	if (!peer || !peer->GetEventHandles)
+		return n;
+	HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
+	const DWORD count = peer->GetEventHandles(peer, handles, ARRAYSIZE(handles));
+	for (DWORD i = 0; i < count && n < max; i++)
+	{
+		const int fd = GetEventFileDescriptor(handles[i]);
+		int type = 0;
+		socklen_t len = sizeof(type);
+		if (fd >= 0 && getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == 0 &&
+		    type == SOCK_STREAM)
+			fds[n++] = (struct pollfd){ .fd = fd, .events = POLLRDHUP };
+	}
+	return n;
+}
+
+/* Sends one JSON line and waits for the one-line reply (parsed into *reply, caller frees).
+ * With `abort_on`, the wait ends early when that session's front connection closes or
+ * its abort event is set (abort_fds()); the broker sees its connection closed and stops
+ * working on the request (MFA push wait). Without it (session end), it does not. */
+static brokerCallResult broker_call(const char* path, const cJSON* request, int timeout_s,
+                                    proxyData* abort_on, cJSON** reply)
+{
+	brokerCallResult rc = BROKER_FAILED;
 	char* text = cJSON_PrintUnformatted(request);
 	char* buf = calloc(1, MAX_REPLY + 1);
 	int fd = -1;
+	const char* sid = abort_on ? abort_on->session_id : "-";
 
+	*reply = NULL;
 	if (!text || !buf)
 		goto out;
 
@@ -189,12 +247,15 @@ static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s,
 	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (fd < 0 || connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0)
 	{
-		WLog_ERR(TAG, "cannot connect to broker at %s: %s", path, strerror(errno));
+		WLog_ERR(TAG, "[%s] cannot connect to broker at %s: %s", sid, path, strerror(errno));
 		goto out;
 	}
 
 	if (!write_all(fd, text, strlen(text)) || !write_all(fd, "\n", 1))
 		goto out;
+
+	struct pollfd fds[1 + MAX_ABORT_FDS] = { { .fd = fd, .events = POLLIN } };
+	const nfds_t nfds = 1 + abort_fds(abort_on, &fds[1], MAX_ABORT_FDS);
 
 	size_t used = 0;
 	struct timespec start;
@@ -208,21 +269,36 @@ static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s,
 		const long left_ms = (long)timeout_s * 1000 - elapsed_ms;
 		if (left_ms <= 0)
 		{
-			WLog_ERR(TAG, "broker did not answer within %d s", timeout_s);
-			if (timed_out)
-				*timed_out = TRUE;
+			WLog_ERR(TAG, "[%s] broker did not answer within %d s", sid, timeout_s);
+			rc = BROKER_TIMED_OUT;
 			goto out;
 		}
-		struct pollfd pfd = { .fd = fd, .events = POLLIN };
-		const int pr = poll(&pfd, 1, (int)left_ms);
+		const int pr = poll(fds, nfds, (int)left_ms);
 		if (pr < 0 && errno == EINTR)
 			continue;
 		if (pr < 0)
 		{
-			WLog_ERR(TAG, "poll on broker socket failed: %s", strerror(errno));
+			WLog_ERR(TAG, "[%s] poll on broker socket failed: %s", sid, strerror(errno));
 			goto out;
 		}
 		if (pr == 0)
+			continue;
+		for (nfds_t i = 1; i < nfds; i++)
+		{
+			if (fds[i].revents)
+			{
+				clock_gettime(CLOCK_MONOTONIC, &now);
+				WLog_WARN(TAG,
+				          "[%s] front connection closed while waiting for the broker "
+				          "(after %ld ms), request abandoned",
+				          sid,
+				          (long)((now.tv_sec - start.tv_sec) * 1000 +
+				                 (now.tv_nsec - start.tv_nsec) / 1000000));
+				rc = BROKER_ABANDONED;
+				goto out;
+			}
+		}
+		if (!fds[0].revents)
 			continue;
 		ssize_t n = recv(fd, buf + used, MAX_REPLY - used, 0);
 		if (n < 0 && errno == EINTR)
@@ -235,10 +311,12 @@ static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s,
 	}
 	if (!memchr(buf, '\n', used))
 	{
-		WLog_ERR(TAG, "incomplete broker reply");
+		WLog_ERR(TAG, "[%s] incomplete broker reply", sid);
 		goto out;
 	}
-	reply = cJSON_Parse(buf);
+	*reply = cJSON_Parse(buf);
+	if (*reply)
+		rc = BROKER_REPLIED;
 
 out:
 	if (fd >= 0)
@@ -253,7 +331,7 @@ out:
 		memset(buf, 0, MAX_REPLY);
 		free(buf);
 	}
-	return reply;
+	return rc;
 }
 
 static const char* json_str(const cJSON* obj, const char* key)
@@ -355,6 +433,27 @@ static BOOL apply_connection_type(const proxyData* pdata, const fastrdpSession* 
 	          freerdp_settings_get_uint32(settings, FreeRDP_ConnectionType));
 	return freerdp_settings_set_uint32(settings, FreeRDP_ConnectionType,
 	                                   s->target_connection_type);
+}
+
+/* ------------------------------------------------------------ TLS logins */
+
+/* [FastRDP] AllowTlsFrom: non-NLA logins only from these peers. The address is the TCP
+ * peer FreeRDP took from getpeername() (freerdp_peer::hostname, also the broker's
+ * client_address), never the client's own claim in the Client Info PDU. */
+static BOOL tls_peer_allowed(const proxyData* pdata)
+{
+	const char* list = config_str(pdata, "AllowTlsFrom", "");
+	const freerdp_peer* peer = pdata->ps ? pdata->ps->peer : NULL;
+	const char* addr = (peer && peer->hostname[0]) ? peer->hostname : NULL;
+	unsigned invalid = 0;
+	const int ok = fastrdp_addr_allowed(list, addr, &invalid);
+	if (invalid)
+		WLog_ERR(TAG, "[%s] AllowTlsFrom: %u invalid entr%s ignored (\"%s\")", pdata->session_id,
+		         invalid, invalid == 1 ? "y" : "ies", list);
+	if (!ok)
+		WLog_WARN(TAG, "[%s] non-NLA login from %s refused (AllowTlsFrom=%s)", pdata->session_id,
+		          addr ? addr : "(unknown address)", list);
+	return ok != 0;
 }
 
 /* ------------------------------------------------------------------ hooks */
@@ -486,6 +585,11 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 
 	if (!s->nla)
 	{
+		/* Checked here, not at ServerPeerLogon: for TLS that runs right after the X.224
+		 * negotiation, before MCS, when no Set Error Info PDU can reach the client yet.
+		 * The Client Info credentials are dropped below without reaching the broker. */
+		if (!tls_peer_allowed(pdata))
+			goto out;
 		/* TLS/RDP security: credentials arrive in the Client Info PDU. */
 		wipe_free(&s->user);
 		wipe_free(&s->domain);
@@ -538,9 +642,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	long timeout = strtol(config_str(pdata, "Timeout", "120"), NULL, 10);
 	if (timeout <= 0 || timeout > 600)
 		timeout = DEFAULT_TIMEOUT_S;
-	BOOL timed_out = FALSE;
-	reply = broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout,
-	                    &timed_out);
+	const brokerCallResult called = broker_call(
+	    config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout, pdata, &reply);
 
 	/* the request held the user's password */
 	cJSON* pw = cJSON_GetObjectItemCaseSensitive(req, "password");
@@ -549,10 +652,12 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	cJSON_Delete(req);
 
 	errinfo = ERRINFO_CB_DESTINATION_NOT_FOUND; /* broker down or malformed reply */
-	if (!reply)
+	if (called != BROKER_REPLIED)
 	{
-		if (timed_out)
+		if (called == BROKER_TIMED_OUT)
 			errinfo = ERRINFO_CB_CONNECTION_CANCELLED;
+		else if (called == BROKER_ABANDONED)
+			errinfo = 0; /* nobody left to tell */
 		goto out;
 	}
 	if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "ok")))
@@ -598,7 +703,8 @@ out:
 	{
 		free(ev->target_address);
 		ev->target_address = NULL;
-		set_front_errinfo(pdata, errinfo);
+		if (errinfo)
+			set_front_errinfo(pdata, errinfo);
 	}
 	if (reply)
 	{
@@ -709,8 +815,10 @@ static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* cus
 		{
 			cJSON_AddStringToObject(req, "op", "end");
 			cJSON_AddStringToObject(req, "session_id", pdata->session_id);
-			cJSON* reply =
-			    broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, 5, NULL);
+			/* not abortable: the front connection is usually gone by now */
+			cJSON* reply = NULL;
+			(void)broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, 5, NULL,
+			                  &reply);
 			cJSON_Delete(reply);
 			cJSON_Delete(req);
 		}

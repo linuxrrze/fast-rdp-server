@@ -9,13 +9,25 @@
  * E2E_RAIL=1: request RemoteApp (INFO_RAIL). E2E_SC_PIN=1: flag the password as a smartcard
  *   PIN (INFO_PASSWORD_IS_SC_PIN). E2E_WORKDIR: Client Info WorkingDir.
  * E2E_CONNECTION_TYPE=N: connectionType 1..7 in the Client Core Data (FreeRDP default 7).
+ * E2E_GIVE_UP_S=N: exit after N seconds wherever the client is (like closing mstsc while
+ *   the server still waits for an MFA push); prints "client: gave up".
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."). */
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+static void give_up(int sig)
+{
+	(void)sig;
+	static const char msg[] = "client: gave up\n";
+	if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0)
+		_exit(1);
+	_exit(0); /* the kernel closes the socket, as for a closed client window */
+}
 int main(int argc, char** argv)
 {
 	if (argc != 6) { fprintf(stderr, "usage: host port user pass shell\n"); return 2; }
@@ -65,6 +77,12 @@ int main(int argc, char** argv)
 		freerdp_settings_set_bool(s, FreeRDP_IgnoreCertificate, TRUE);
 	freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, 2560);
 	freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, 1440);
+	if (getenv("E2E_GIVE_UP_S"))
+	{
+		setvbuf(stdout, NULL, _IONBF, 0);
+		signal(SIGALRM, give_up);
+		alarm((unsigned)atoi(getenv("E2E_GIVE_UP_S")));
+	}
 	BOOL ok = freerdp_connect(inst);
 	printf("client: freerdp_connect=%d\n", ok);
 	/* keep the session alive so the proxy reaches post-connect and contacts the back-end */

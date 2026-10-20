@@ -1,4 +1,18 @@
 ---
+# Packages per GPU stack (fastrdp_gpu_effective). Every stack, "none" included, gets
+# Mesa's DRI/Gallium drivers: they hold llvmpipe, the software GL/EGL renderer that
+# sessions without a usable GPU fall back to (GNOME Shell/KWin headless, GL apps under
+# xorgxrdp without glamor). The desktops pull it in anyway; it is named here so "none"
+# does not depend on that. Everything else is GPU-specific: VA-API (xrdp's h264_vaapi
+# encoder) and Vulkan drivers for Intel/AMD, diagnostics (vainfo, vulkaninfo, glxinfo)
+# where there is a GPU to look at. NVIDIA's own driver comes from the tasks.
+fastrdp_gpu_base_packages: [libgl1-mesa-dri]
+fastrdp_gpu_stack_packages:
+  mesa: [mesa-vulkan-drivers, va-driver-all, vainfo, vulkan-tools, mesa-utils]
+  nvidia: [vulkan-tools, mesa-utils]
+  none: []
+fastrdp_gpu_packages: >-
+  {{ fastrdp_gpu_base_packages + fastrdp_gpu_stack_packages[fastrdp_gpu_effective | default('none')] }}
 # VirtualGL wraps GL/Vulkan apps of X11 (xrdp) sessions onto the GPU when the
 # X server itself cannot use it (NVIDIA proprietary driver without glamor).
 fastrdp_virtualgl: "{{ fastrdp_gpu_effective | default('none') == 'nvidia' }}"

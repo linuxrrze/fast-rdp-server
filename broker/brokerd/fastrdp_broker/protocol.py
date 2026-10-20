@@ -13,6 +13,12 @@ Proxy module -> broker.sock:
 
   {"op": "end", "session_id": str}  -> {"ok": true}
 
+  The module closes the connection without waiting for the "login" reply when its RDP
+  client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the
+  login (Broker.login_unless_abandoned): a push wait stops, a session start already
+  under way completes, nothing is recorded as connected. The module sends nothing else
+  while a login is pending; data instead of EOF is a protocol error.
+
 fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}
   -> {"ok": true, "user": str, "token": "fastrdp-web1:...", "desktops": [str]}

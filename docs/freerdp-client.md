@@ -79,7 +79,7 @@ GNOME and Plasma sessions ignore the connection type
 - Without it, WinPR's Negotiate offers Kerberos U2U, Kerberos and NTLM, in that order
   (`negotiate.c:109-113`, defaults `negotiate.c:319-338`).
 - fastrdp refuses NTLM after NLA: the proxy logs `NLA without Kerberos refused`
-  (`fastrdp_plugin.c:284-287`).
+  (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:481-486`).
 - With `!ntlm`, a Kerberos problem (no KDC, wrong name) fails at once with the Kerberos
   error. Without it, FreeRDP falls back to NTLM, which fastrdp refuses only after NLA,
   with a less helpful error on the client.
@@ -535,7 +535,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 - `/shell:` sets the alternate shell (`cmdline.c:5196-5200`); `.rdp`:
   `alternate shell:s:fastrdp:gnome`.
 - The module sends it to the broker as a hint and never forwards it to the back-end
-  (`fastrdp_plugin.c:405, 509-510`).
+  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:630`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:749-750`).
 - The `fastrdp:` prefix is optional (`identity.py` `hinted_desktop`).
 - Order (`choose_desktop`):
   1. the hint, if that desktop exists and the user may use it (`fastrdp_desktop_groups`);

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -101,13 +102,18 @@ class PrivacyIdea:
         detail = body.get("detail", {})
         return detail.get("transaction_id")
 
-    def wait_for_push(self, user: str, transaction_id: str) -> bool:
+    def wait_for_push(self, user: str, transaction_id: str,
+                      cancel: threading.Event | None = None) -> bool:
+        """Polls until the push is approved (True) or push_timeout passes (False).
+        Setting `cancel` (the login was abandoned) stops the polling early (False)."""
+        stop = cancel or threading.Event()
         deadline = time.monotonic() + self.cfg.push_timeout
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not stop.is_set():
             body = self._request("GET", "/validate/polltransaction", {"transaction_id": transaction_id})
             if body["result"].get("value"):
                 # Finalize: an empty pass together with the transaction id completes the push.
                 final = self.check(user, "", transaction_id)
                 return bool(final["result"].get("value"))
-            time.sleep(self.cfg.poll_interval)
+            if stop.wait(self.cfg.poll_interval):
+                break
         return False

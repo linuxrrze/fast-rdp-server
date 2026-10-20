@@ -87,8 +87,8 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
 - **Duplicate Kerberos OIDs** are handled: "Microsoft may send two versions of the
   kerberos OID" (negotiate.c:1157).
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
-  MS-KRB5. The module's `nla_used_kerberos()` sees package `Kerberos`
-  (`broker/proxy-module/fastrdp_plugin.c:124-143`).
+  MS-KRB5. The module sees package `Kerberos`
+  (`nla_used_kerberos()`, `broker/proxy-module/fastrdp_plugin.c:142-161`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -139,11 +139,11 @@ safe). Still worth a robustness fix upstream (§5).
   - Windows asks for `TERMSRV/<ip>`, which does not exist, and falls back to NTLM.
   - The WinPR NTLM acceptor has no SAM/hash callback in the proxy, so NTLM fails at
     `ntlm_compute.c:285` (SamOpen) or at the latest in the module:
-    `fastrdp_plugin.c:284-289` refuses NLA that is not Kerberos.
+    `fastrdp_server_peer_logon()` (`fastrdp_plugin.c:481-486`) refuses NLA that is not Kerberos.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_plugin.c:384-389`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:611-616`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -222,8 +222,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_plugin.c:318-340`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_plugin.c:331-338`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:513-539`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:527-537`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds | Remote Credential Guard | never reached: RDP_NEG_REQ with REDIRECTED_AUTHENTICATION_MODE_REQUIRED is refused because the proxy does not set `RemoteCredentialGuard` (`nego.c:1335-1360`) | refused |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -240,7 +240,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_plugin.c:282-309`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:479-506`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`mfa.py:58-65`).

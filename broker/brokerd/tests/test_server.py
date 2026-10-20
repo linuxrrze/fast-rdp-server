@@ -166,7 +166,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
             "principal": "alice@EXAMPLE.COM", "password": "pw",
         })
         self.assertTrue(reply["ok"])
-        self.broker.mfa.pi.wait_for_push.assert_called_with("alice", "tx1")
+        self.broker.mfa.pi.wait_for_push.assert_called_with("alice", "tx1", mock.ANY)
 
     async def test_token_socket_rejects_non_root(self):
         tok = self.broker.tokens.issue("alice", None)

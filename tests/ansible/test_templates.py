@@ -168,7 +168,7 @@ class XrdpIni(unittest.TestCase):
 
 
 class ProxyIni(unittest.TestCase):
-    def check(self, name, tls_allowed):
+    def check(self, name, tls_allowed, tls_from=""):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -177,6 +177,9 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual(p["Security"]["ClientAllowFallbackToTls"], "false")
         self.assertEqual(p["Security"]["ServerTlsSecurity"], tls_allowed)
         self.assertEqual(p["FastRDP"]["AllowTls"], tls_allowed)
+        # TLS logins from anywhere only when they are wanted; for the web path alone,
+        # guacd on loopback (fastrdp_plugin.c tls_peer_allowed)
+        self.assertEqual(p["FastRDP"]["AllowTlsFrom"], tls_from)
         self.assertEqual(p["Plugins"]["Modules"], "fastrdp")
         self.assertEqual(p["Plugins"]["Required"], "fastrdp")
         self.assertEqual(p["FastRDP"]["BrokerSocket"], "/run/fastrdp/broker.sock")
@@ -187,10 +190,36 @@ class ProxyIni(unittest.TestCase):
         self.check("proxy-lab.ini", "true")
 
     def test_web_needs_tls(self):
-        self.check("proxy-web-only.ini", "true")
+        self.check("proxy-web-only.ini", "true", "127.0.0.1,::1")
+
+    def test_tls_login_sources_override(self):
+        self.check("proxy-sources.ini", "true", "127.0.0.1,::1,10.1.2.0/24,2001:db8::/32")
 
     def test_nla_only(self):
         self.check("proxy-nla-only.ini", "false")
+
+
+class GpuPackages(unittest.TestCase):
+    """roles/gpu: GPU-specific packages only for the stack that uses them."""
+
+    def stack(self, name):
+        return json.loads((OUT / f"gpu-packages-{name}.json").read_text())
+
+    def test_none_gets_only_software_gl(self):
+        # llvmpipe (libgl1-mesa-dri) is the renderer of GPU-less sessions; nothing else
+        self.assertEqual(self.stack("none"), {"packages": ["libgl1-mesa-dri"], "virtualgl": False})
+
+    def test_mesa_gets_vaapi_and_vulkan(self):
+        pkgs = self.stack("mesa")["packages"]
+        self.assertEqual(pkgs[0], "libgl1-mesa-dri")
+        for p in ("va-driver-all", "vainfo", "mesa-vulkan-drivers", "vulkan-tools", "mesa-utils"):
+            self.assertIn(p, pkgs)
+        self.assertFalse(self.stack("mesa")["virtualgl"])
+
+    def test_nvidia_no_mesa_gpu_drivers(self):
+        s = self.stack("nvidia")
+        self.assertEqual(s["packages"], ["libgl1-mesa-dri", "vulkan-tools", "mesa-utils"])
+        self.assertTrue(s["virtualgl"])
 
 
 class BrokerToml(unittest.TestCase):
@@ -338,6 +367,7 @@ class CommonChecks(unittest.TestCase):
             "unknown identity provider": dict(ok, fastrdp_identity_provider="ldap"),
             "xrdp port = front port": dict(ok, fastrdp_xrdp_port=3389),
             "unknown session_tgt": dict(ok, fastrdp_session_tgt="yes"),
+            "unknown GPU stack": dict(ok, fastrdp_gpu="intel"),
             "alias not a DNS name": dict(ok, fastrdp_termsrv_aliases=["rdp;reboot"]),
             "alias list given as a string": dict(ok, fastrdp_termsrv_aliases="rdp.example.com"),
             "kdc-enforced with hardened (password) indicator": dict(
@@ -352,6 +382,10 @@ class CommonChecks(unittest.TestCase):
             "lan networks as a string": dict(ok, fastrdp_lan_networks="10.0.0.0/8"),
             "lan network not a CIDR": dict(ok, fastrdp_lan_networks=["10.0.0.0/8", "office"]),
             "lan network with a shell character": dict(ok, fastrdp_lan_networks=["10.0.0.0/8;x"]),
+            "TLS login sources as a string": dict(ok, fastrdp_tls_login_sources="127.0.0.1"),
+            "TLS login source not an address": dict(ok, fastrdp_tls_login_sources=["127.0.0.1", "localhost"]),
+            "TLS login source with a newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\nAllowTls=true"]),
+            "TLS login source with a trailing newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\n"]),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -369,6 +403,9 @@ class CommonChecks(unittest.TestCase):
                 self.assertEqual(self.run_checks(**ok, fastrdp_xrdp_autodetect_profile=profile), 0)
         self.assertEqual(self.run_checks(**ok, fastrdp_lan_networks=[
             "10.0.0.0/8", "192.0.2.7", "2001:db8::/32", "::ffff:10.0.0.0/104"]), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[
+            "127.0.0.1", "::1", "10.0.0.0/8", "2001:db8::/32"]), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[]), 0)
 
     def test_aliases_pass(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",

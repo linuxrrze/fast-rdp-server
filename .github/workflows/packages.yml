@@ -99,7 +99,7 @@ jobs:
           echo "sums=$(printf '%s' "$sums" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - name: Restore build
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: vendored-out
           key: >-
@@ -135,11 +135,11 @@ jobs:
         run: make test-xrdp-encoder XRDP_SRC="${{ steps.build.outputs.dir }}/src/xrdp"
       - name: Save build
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: vendored-out
           key: ${{ steps.cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: vendored-${{ matrix.codename }}-${{ matrix.pkg }}
           path: vendored-out/
@@ -165,7 +165,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: vendored-${{ matrix.codename }}-*
           path: vendored
@@ -194,7 +194,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" binutils
           # users, library resolution, RPATH/RUNPATH, imports, units, xrdp FFmpeg build
           FASTRDP_TESTS_STRICT=1 tests/packaging/check-installed.sh
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: debs-${{ matrix.codename }}
           path: out/
@@ -225,7 +225,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: vendored-${{ matrix.codename }}-freerdp
           path: vendored
@@ -307,7 +307,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git gnupg reprepro
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Collect packages per distro
@@ -364,7 +364,7 @@ jobs:
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
       - name: GitHub release with the packages
         if: steps.channel.outputs.name == 'stable'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # .source.tar.xz: corresponding source of the vendored packages (docs/licensing.md)
           files: |

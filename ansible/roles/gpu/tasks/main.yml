@@ -27,9 +27,9 @@
   ansible.builtin.debug:
     msg: "GPU stack: {{ fastrdp_gpu_effective }}"
 
-- name: Mesa userspace (GL, Vulkan, VA-API)
+- name: Graphics userspace for the GPU stack (software GL always; VA-API/Vulkan for Mesa GPUs)
   ansible.builtin.apt:
-    name: [libgl1-mesa-dri, mesa-vulkan-drivers, va-driver-all, vainfo, vulkan-tools, mesa-utils]
+    name: "{{ fastrdp_gpu_packages }}"
     state: present
 
 - name: NVIDIA driver (Ubuntu)

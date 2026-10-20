@@ -23,6 +23,11 @@ browser ──https──▶ nginx :443
   - if it was issued to the **webgate's uid** (`[web] gateway_user`);
   - for the **same user**, **once**, within **60 s**;
   - on a login arriving from **guacd's address** (`allowed_clients`, loopback).
+- Without TLS logins for RDP clients (`fastrdp_allow_tls_logins: false`) the proxy
+  offers TLS only because of guacd, so its module accepts TLS logins **from loopback
+  only** (`proxy.ini` `[FastRDP] AllowTlsFrom=127.0.0.1,::1`, variable
+  `fastrdp_tls_login_sources`). Other clients get Set Error Info 0x7 before anything
+  reaches the broker; NLA is not affected.
 - Guacamole only runs the **JSON auth extension**:
   - There are no Guacamole users or passwords.
   - Each login is a connection blob that the webgate signs (HMAC-SHA256) and

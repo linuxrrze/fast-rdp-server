@@ -13,7 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 from . import conntype, identity, pamauth, tgt
-from .backends import BACKENDS, Backend, BackendError, LoginRequest
+from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
 from .config import Config
 from .identity import IdentityError, LocalUser
 from .mfa import MfaDenied, SecondFactor, split_otp
@@ -235,9 +235,21 @@ class Broker:
             width, height = int(w), int(h)
 
         backend = self.backends[desktop.backend]
-        async with self.user_locks[user.name]:
-            await self.session_tgt(user, password, backend)
-            target = await backend.ensure(LoginRequest(user, desktop, password, width, height))
+
+        async def start() -> Target:
+            async with self.user_locks[user.name]:
+                await self.session_tgt(user, password, backend)
+                return await backend.ensure(LoginRequest(user, desktop, password, width, height))
+
+        # A session start that is under way completes even if the proxy gives up on this
+        # login (handle_broker_client): stopping it halfway could leave a half-started
+        # session behind, a finished one is simply there at the next login.
+        starting = asyncio.ensure_future(start())
+        try:
+            target = await asyncio.shield(starting)
+        except asyncio.CancelledError:
+            starting.add_done_callback(lambda t: self._abandoned_start_done(t, user.name))
+            raise
         self.active[session_id] = user.name
         log.info(
             "login %s session=%s desktop=%s -> %s:%d (%s)",
@@ -246,6 +258,40 @@ class Broker:
         reply = {"ok": True, "user": user.name, "desktop": desktop.name, "target": target.as_dict()}
         self.add_connection_type(reply["target"], msg, backend, user)
         return reply
+
+    @staticmethod
+    def _abandoned_start_done(task: asyncio.Future, name: str) -> None:
+        if task.cancelled():
+            return
+        if (exc := task.exception()) is not None:
+            log.warning("%s: session start for an abandoned login failed: %s", name, exc)
+        else:
+            log.info("%s: session started for an abandoned login; it is reused at the next login", name)
+
+    async def login_unless_abandoned(self, msg: dict, reader: asyncio.StreamReader) -> dict | None:
+        """login(), cancelled when the proxy closes the connection first: the user gave up
+        (closed the client during an MFA push) and the proxy dropped the request
+        (fastrdp_plugin.c broker_call). Returns None then. Cancelling stops a push wait
+        (mfa.py); a session start already under way completes (login()). The proxy sends
+        nothing else while it waits, so data instead of EOF is a protocol error."""
+        login = asyncio.ensure_future(self.login(msg))
+        peer = asyncio.ensure_future(reader.read(1))
+        try:
+            await asyncio.wait({login, peer}, return_when=asyncio.FIRST_COMPLETED)
+            finished = login.done()
+        finally:
+            for task in (login, peer):
+                if not task.done():
+                    task.cancel()
+            # let the cancellations run: the reader must be free for the next message
+            await asyncio.gather(login, peer, return_exceptions=True)
+        if finished:
+            return login.result()  # Denied etc. propagate as before
+        if peer.exception() is None and peer.result():  # a reset counts as closed
+            raise ProtocolError("data received while a login was pending")
+        log.info("login of session %s abandoned: the proxy closed the connection (client gone)",
+                 msg.get("session_id"))
+        return None
 
     # ---------------------------------------------------------------- network
     def add_connection_type(self, target: dict, msg: dict, backend: Backend, user: LocalUser) -> None:
@@ -333,7 +379,9 @@ class Broker:
                 op = msg["op"]
                 try:
                     if op == "login" and uid == self.proxy_uid:
-                        reply = await self.login(msg)
+                        reply = await self.login_unless_abandoned(msg, reader)
+                        if reply is None:
+                            break
                     elif op == "end" and uid == self.proxy_uid:
                         user = self.active.pop(str(msg.get("session_id")), None)
                         log.info("session end %s user=%s", msg.get("session_id"), user)
@@ -357,7 +405,16 @@ class Broker:
                 except BackendError as exc:
                     log.error("backend error: %s", exc)
                     reply = {"ok": False, "error": "session could not be started", "reason": "backend"}
-                await write_message(writer, reply)
+                try:
+                    await write_message(writer, reply)
+                except ConnectionError:
+                    # The peer went away just before the reply (e.g. the proxy's client
+                    # closed as the login completed). The proxy never routed this session
+                    # and will not report its end.
+                    if op == "login" and reply.get("ok"):
+                        self.active.pop(str(msg.get("session_id")), None)
+                    log.info("uid %d closed the connection before the %r reply", uid, op)
+                    break
         except ProtocolError as exc:
             log.warning("protocol error from uid %d: %s", uid, exc)
         except Exception:

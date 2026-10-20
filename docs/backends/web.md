@@ -38,7 +38,9 @@ browser ─https─▶ nginx :443 ─/web/──────▶ fastrdp-webgate 
       (`data_ttl`);
    3. redirect to `/guacamole/?data=…`.
 5. Guacamole decrypts the blob and has guacd connect to the proxy with TLS.
-6. Proxy (`AllowTls=true`, forced on when the web path is enabled) → broker `login`
+6. Proxy (`AllowTls=true`, forced on when the web path is enabled; with
+   `fastrdp_allow_tls_logins: false` also `AllowTlsFrom=127.0.0.1,::1`, so only guacd on
+   loopback gets a TLS login at all) → broker `login`
    with `method = "tls"` and the web token as password. The broker:
    - requires `[web] enabled`;
    - requires the **TCP peer address** seen by the proxy to be in `allowed_clients`
@@ -88,6 +90,7 @@ Role `web_gateway` (`ansible/roles/web_gateway/defaults/main.yml`):
 | Variable | Default | Renders |
 |---|---|---|
 | `fastrdp_web_enabled` | `false` | runs the role; broker `[web] enabled`; proxy `ServerTlsSecurity` and `AllowTls` on |
+| `fastrdp_tls_login_sources` (roles/common) | `[127.0.0.1, "::1"]` if web on and `fastrdp_allow_tls_logins` off, else `[]` (any) | proxy `[FastRDP] AllowTlsFrom`: peers allowed to log in over TLS (addresses/CIDRs) |
 | `fastrdp_web_public_url` | `https://{{ ansible_fqdn }}` | `[webgate] public_url` (redirect URI = `<url>/web/callback`) |
 | `fastrdp_web_oidc_issuer` | `https://keycloak.lab.example.com/realms/lab` | `[oidc] issuer` |
 | `fastrdp_web_oidc_client_id` | `fastrdp-web` | `[oidc] client_id` |

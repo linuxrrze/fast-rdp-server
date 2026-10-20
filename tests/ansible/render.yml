@@ -19,12 +19,22 @@
     - ../../ansible/roles/tuning/defaults/main.yml
     - ../../ansible/roles/identity/defaults/main.yml
     - ../../ansible/roles/base/defaults/main.yml
+    - ../../ansible/roles/gpu/defaults/main.yml
   vars:
     roles_dir: "{{ playbook_dir }}/../../ansible/roles"
     ansible_fqdn: rdp1.lab.example.com
     ansible_hostname: rdp1
     fastrdp_gpu_effective: none
   tasks:
+    - name: GPU packages per stack (role gpu)
+      ansible.builtin.copy:
+        dest: "{{ render_out }}/gpu-packages-{{ item }}.json"
+        content: "{{ {'packages': fastrdp_gpu_packages, 'virtualgl': fastrdp_virtualgl | bool} | to_json }}"
+        mode: "0644"
+      vars:
+        fastrdp_gpu_effective: "{{ item }}"
+      loop: [none, mesa, nvidia]
+
     - name: Derived names - TERMSRV principals (identity), front certificate SAN (base)
       ansible.builtin.copy:
         dest: "{{ render_out }}/names-{{ item.name }}.json"
@@ -155,6 +165,16 @@
         - {name: lab, tls: true, web: false}
         - {name: web-only, tls: false, web: true}
         - {name: nla-only, tls: false, web: false}
+
+    - name: Proxy.ini, TLS login sources set explicitly (fastrdp_tls_login_sources)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-sources.ini"
+        mode: "0644"
+      vars:
+        fastrdp_allow_tls_logins: true
+        fastrdp_web_enabled: true
+        fastrdp_tls_login_sources: [127.0.0.1, "::1", 10.1.2.0/24, "2001:db8::/32"]
 
     - name: Broker.toml, lab defaults
       ansible.builtin.template:

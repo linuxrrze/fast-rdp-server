@@ -1,11 +1,11 @@
 # Developer checks. Integration tests need FreeRDP 3.32+ dev files; see tests/proxy-e2e/.
 # Overview of every test, what it guards and where CI runs it: tests/README.md.
 .PHONY: deb test-xrdp-encoder test-wlroots test test-all test-broker test-webgate test-pam test-gpu \
-	test-scripts test-publish test-ansible test-e2e test-e2e-nla test-e2e-smartcard \
+	test-scripts test-publish test-ansible test-proxy-module test-e2e test-e2e-nla test-e2e-smartcard \
 	test-e2e-smartcard-softhsm check-krb5-spnego perf-tools perf-proxy lint lint-ci test-docs \
 	test-keycloak test-prototypes
 
-test: test-broker test-webgate test-pam test-gpu test-prototypes lint
+test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototypes lint
 
 # Everything that runs locally without root (missing tools: SKIP, or FAIL with
 # FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, python3-cryptography, ansible-core,
@@ -20,6 +20,12 @@ test-webgate:   # needs python3-cryptography
 
 test-pam:
 	$(MAKE) -C broker/pam_fastrdp_token check
+
+# AllowTlsFrom address lists of the proxy module (fastrdp_addr.h); gcc only, no FreeRDP
+test-proxy-module:
+	mkdir -p build
+	$(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_addr tests/proxy-module/test_addr.c
+	build/test_addr
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report
@@ -42,7 +48,10 @@ test-ansible:   # ansible-core; syntax check + role templates rendered and parse
 # FreeRDP switches in docs/freerdp-client.md, docs/client-guide.md and docs/manual-setup.md
 # vs. FreeRDP's own switch table. Downloads the vendored FreeRDP source (network, or FASTRDP_SOURCES_CACHE);
 # FREERDP_SRC=<tree> or FREERDP_HELP_CMD=xfreerdp3 instead. Not in test-all (network).
+# Also: fastrdp_plugin.c:N line references in the docs point into the function they name
+# (offline).
 test-docs:   # python3; curl patch for the download
+	python3 -I tests/docs/check_module_refs.py --self-test
 	tests/docs/test_freerdp_switches.sh
 
 perf-tools:

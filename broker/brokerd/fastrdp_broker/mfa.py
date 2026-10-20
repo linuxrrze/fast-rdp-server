@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 
 from .config import MfaSection
 from .privacyidea import PrivacyIdea, PrivacyIdeaError
@@ -64,7 +65,15 @@ class SecondFactor:
                 if not txid:
                     raise MfaDenied("no challenge-capable token for user")
                 log.info("push challenge sent to %s (transaction %s)", user, txid)
-                if await asyncio.to_thread(self.pi.wait_for_push, user, txid):
+                cancel = threading.Event()
+                try:
+                    approved = await asyncio.to_thread(self.pi.wait_for_push, user, txid, cancel)
+                except asyncio.CancelledError:
+                    # The proxy gave up on the login (user closed the client): stop polling.
+                    cancel.set()
+                    log.info("push wait for %s cancelled (transaction %s)", user, txid)
+                    raise
+                if approved:
                     return "push"
                 raise MfaDenied("push not confirmed in time", "mfa_timeout")
             raise MfaDenied("OTP required: append it to the password")

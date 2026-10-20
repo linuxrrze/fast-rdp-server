@@ -436,7 +436,8 @@ QUESTIONS = [
       when=_mfa, ask=_is_prod),
     Q("allow_tls_logins", "Allow TLS logins without NLA (password[+OTP] in one field)? (y/n)",
       v_tls_logins, True, ask=_is_prod,
-      help="Needed for clients that cannot reach a KDC and for MFA mode otp. NLA-only is stricter."),
+      help="Needed for clients that cannot reach a KDC and for MFA mode otp. NLA-only is stricter; "
+           "browser access then still uses TLS, from loopback (guacd) only."),
     Q("web_enabled", "Browser access via Keycloak/OIDC + Guacamole? (y/n)", _bool, False),
     Q("web_oidc_issuer", "OIDC issuer URL (e.g. https://keycloak.example.com/realms/main)", v_https_url,
       when=_web),

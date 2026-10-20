@@ -538,13 +538,29 @@ existing `proc /proc` line), then `mount -o remount /proc`.
 ## 6. GPU
 
 Role `gpu`; background in [performance.md](performance.md) and
-[desktop-matrix.md](desktop-matrix.md#gpu-notes). The role always installs the Mesa
-userspace and opens the render nodes; the rest depends on the GPU stack.
+[desktop-matrix.md](desktop-matrix.md#gpu-notes). Find the GPU stack first
+(`fastrdp_gpu: auto` does the same; set `nvidia`, `mesa` or `none` to override):
 
 ```sh
-apt install pciutils libgl1-mesa-dri mesa-vulkan-drivers va-driver-all vainfo vulkan-tools mesa-utils
+apt install pciutils
 lspci -nn -d ::0300; lspci -nn -d ::0302       # [10de:...] nvidia, [8086:...]/[1002:...] mesa, else none
 ```
+
+Packages per stack (`fastrdp_gpu_packages` in `roles/gpu/defaults/main.yml`):
+
+| Stack | Packages |
+|---|---|
+| every stack, `none` included | `libgl1-mesa-dri`: Mesa's llvmpipe, the software GL/EGL renderer that sessions without a usable GPU fall back to (GNOME Shell/KWin headless, GL apps under xorgxrdp without glamor). The desktops pull it in anyway. |
+| `mesa` (Intel/AMD) | `mesa-vulkan-drivers va-driver-all vainfo vulkan-tools mesa-utils` (VA-API for xrdp's `h264_vaapi`, Vulkan, diagnostics) |
+| `nvidia` | `vulkan-tools mesa-utils` (diagnostics) plus the NVIDIA driver below |
+
+```sh
+apt install libgl1-mesa-dri                                                # none
+apt install libgl1-mesa-dri mesa-vulkan-drivers va-driver-all vainfo vulkan-tools mesa-utils   # mesa
+apt install libgl1-mesa-dri vulkan-tools mesa-utils                        # nvidia
+```
+
+The role opens the render nodes on every stack (no render node exists without a GPU):
 
 `/etc/udev/rules.d/70-fastrdp-render.rules` (`root:root 0644`; remote sessions have no
 seat, so logind never grants render-node ACLs):
@@ -1184,11 +1200,23 @@ Timeout=120
 ; TLS logins are needed for password+OTP clients and for the web path (guacd has no
 ; Kerberos); the broker decides which credentials it accepts on them.
 AllowTls=true
+; TLS logins only from these peers (addresses/CIDRs, empty = any): loopback only when TLS
+; is there just for guacd (web path without fastrdp_allow_tls_logins).
+AllowTlsFrom=
 ```
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)
-**or** web access are enabled, else `false`. `Timeout` (`fastrdp_proxy_broker_timeout`)
-must exceed the MFA push timeout. `Port` = `fastrdp_listen_port`.
+**or** web access are enabled, else `false`. `AllowTlsFrom` (`fastrdp_tls_login_sources`)
+limits TLS (non-NLA) logins to the listed peer addresses: comma-separated IPv4/IPv6
+addresses and CIDR ranges, empty = any peer. It is `127.0.0.1,::1` when web access is on
+but TLS logins are not (only guacd on loopback needs TLS then), else empty. The module
+checks the TCP peer address (IPv4-mapped IPv6 counts as IPv4), not the address the
+client claims, before anything reaches the broker, and refuses others with Set Error Info
+`ERRINFO_SERVER_DENIED_CONNECTION` (0x7); an unparsable entry is logged and matches
+nothing. NLA logins are not affected. `Timeout` (`fastrdp_proxy_broker_timeout`)
+must exceed the MFA push timeout; a login whose client disconnects while the broker
+still waits (MFA push) is abandoned at once, and the broker stops waiting.
+`Port` = `fastrdp_listen_port`.
 
 ## 12. Start the services
 
@@ -1288,7 +1316,8 @@ for your values, or use Ansible for this part. In role order:
    local only); `systemctl reload nftables`.
 9. `/etc/nginx/sites-available/fastrdp-web.conf` from `nginx-fastrdp-web.conf.j2`, link
    it into `sites-enabled`, remove `sites-enabled/default`.
-10. `broker.toml` `[web] enabled = true`; `proxy.ini` `ServerTlsSecurity=true`, `AllowTls=true`.
+10. `broker.toml` `[web] enabled = true`; `proxy.ini` `ServerTlsSecurity=true`, `AllowTls=true`,
+    and without TLS logins for RDP clients `AllowTlsFrom=127.0.0.1,::1` (section 11).
 11. `systemctl daemon-reload`; `systemctl start fastrdp-guacd fastrdp-guacamole` (quadlets
     are started, not enabled); `systemctl enable --now fastrdp-webgate nginx`; restart
     `fastrdp-brokerd` and `fastrdp-proxy`.
