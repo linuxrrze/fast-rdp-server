@@ -82,7 +82,7 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
 - **Ticket renewal** (role `identity`): `fastrdp_krb5_renewable_lifetime` (`7d`),
   `fastrdp_krb5_renew_interval` (`1h`), `fastrdp_kcm_tgt_renewal` (`true`, sssd-kcm
   renews every TGT in KCM, also from `kinit`), in `/etc/sssd/conf.d/50-fastrdp.conf`,
-  `sssd.conf` (AD) and `krb5.conf` (`renew_lifetime`).
+  `sssd.conf` (AD) and `/etc/krb5.conf.d/fastrdp` (`renew_lifetime`).
 - **Restricting desktops:** `fastrdp_desktop_groups` (e.g. `{plasma: [rdp-kde]}`)
   renders `groups = [...]` per desktop into `broker.toml`; desktops not listed are open
   to every allowed user. `fastrdp_desktop_labels` sets the names shown in the web

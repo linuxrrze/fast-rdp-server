@@ -1,14 +1,24 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-# {{ ansible_managed }}
 # Checks that a keytab holds an AES key for every given principal at its newest kvno.
 # FreeRDP's Kerberos acceptor cannot use RC4 session keys (docs/windows-clients.md §3.4).
 #   fastrdp-termsrv-check [-k KEYTAB] PRINCIPAL...
 # PRINCIPAL without @REALM matches any realm; names compare case-insensitively (AD SPNs
 # are). Exit 0: all ok, 1: a principal is missing or has no AES key, 2: usage.
+# Default keytab: FASTRDP_TERMSRV_KEYTAB from the environment, else from
+# /etc/fastrdp/termsrv.conf (FASTRDP_TERMSRV_CONF), else /etc/fastrdp/termsrv.keytab.
 set -eu
-KT=/etc/fastrdp/termsrv.keytab
+
+# conf_get KEY: value of KEY=VALUE in the configuration file (last one wins, quotes stripped)
+conf_get() {
+    [ -r "${FASTRDP_TERMSRV_CONF:-/etc/fastrdp/termsrv.conf}" ] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${FASTRDP_TERMSRV_CONF:-/etc/fastrdp/termsrv.conf}" \
+        | tail -n 1 | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/'
+}
+
+KT=${FASTRDP_TERMSRV_KEYTAB:-$(conf_get FASTRDP_TERMSRV_KEYTAB)}
+KT=${KT:-/etc/fastrdp/termsrv.keytab}
 if [ "${1:-}" = -k ]; then
     KT=${2:?keytab}
     shift 2
@@ -47,10 +57,10 @@ if [ $rc -ne 0 ]; then
     cat <<'EOF'
 Fix: the account needs AES keys and msDS-SupportedEncryptionTypes 0x18 (AES128+AES256),
 or 0x1C if RC4 must stay for other services; then re-key it and extract the keytab again
-(AD: adcli update --computer-password-lifetime=0; FreeIPA: ipa-getkeytab -e
-aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96). See docs/windows-clients.md §4.
+(AD: adcli update --computer-password-lifetime=0, then fastrdp-termsrv-keytab; FreeIPA:
+ipa-getkeytab -e aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96). See docs/windows-clients.md §4.
 Missing alias principals (fastrdp_termsrv_aliases) are registered with the join account:
-run the playbook with fastrdp_join_password set.
+run the playbook with fastrdp_join_password set (by hand: docs/manual-setup.md 3.8).
 EOF
 fi
 exit $rc

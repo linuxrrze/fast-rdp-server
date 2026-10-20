@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Active Directory: re-extract the TERMSRV keys whenever sssd/adcli rotates the
+# machine password (new keys in the host keytab). Enable on AD hosts only.
+[Unit]
+Description=Watch the host keytab for TERMSRV key rotation
+Documentation=man:fastrdp-termsrv-keytab(8)
+
+[Path]
+PathChanged=/etc/krb5.keytab
+
+[Install]
+WantedBy=multi-user.target

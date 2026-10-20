@@ -1,0 +1,40 @@
+---
+# FreeIPA: /etc/krb5.conf is the enrolment's (ipa-client-install: includedir lines,
+# PKINIT anchors of the IPA CA, sssd's include directory). fastrdp's settings come from
+# /etc/krb5.conf.d/fastrdp (main.yml), so the file only has to include that directory.
+# Idempotent: the same file after the first and every later run.
+# (fastrdp_krb5_conf, fastrdp_sss_krb5_include_dir: role defaults; tests/ansible sets others.
+# No owner: Ansible runs as root, and /etc/krb5.conf is root's.)
+- name: Kerberos client configuration of the enrolment
+  ansible.builtin.slurp:
+    src: "{{ fastrdp_krb5_conf }}"
+  register: fastrdp_ipa_krb5
+  failed_when: false   # check mode before the enrolment
+
+- name: SSSD's Kerberos include directory
+  ansible.builtin.stat:
+    path: "{{ fastrdp_sss_krb5_include_dir }}"
+  register: fastrdp_sss_krb5_include
+
+# Hosts deployed by an older role, which wrote the AD file over the enrolment's on every
+# run after the first: restore an equivalent of ipa-client-install's file once.
+- name: FreeIPA krb5.conf (restored where an older fastrdp role had replaced it)
+  ansible.builtin.template:
+    src: krb5-ipa.conf.j2
+    dest: "{{ fastrdp_krb5_conf }}"
+    mode: "0644"
+  vars:
+    fastrdp_ipa_krb5_text: "{{ fastrdp_ipa_krb5.content | default('') | b64decode }}"
+    fastrdp_ipa_sss_includedir: "{{ fastrdp_sss_krb5_include.stat.isdir | default(false) }}"
+  when:
+    - "'/var/lib/ipa-client/pki/' not in fastrdp_ipa_krb5_text"
+    - "'File modified by ipa-client-install' not in fastrdp_ipa_krb5_text"
+
+# ipa-client-install adds this line only if /etc/krb5.conf.d existed at enrolment time.
+- name: Krb5.conf reads /etc/krb5.conf.d first (fastrdp snippet)
+  ansible.builtin.lineinfile:
+    path: "{{ fastrdp_krb5_conf }}"
+    regexp: '^\s*includedir\s+/etc/krb5\.conf\.d/?\s*$'
+    line: includedir /etc/krb5.conf.d/
+    insertbefore: BOF
+    mode: "0644"

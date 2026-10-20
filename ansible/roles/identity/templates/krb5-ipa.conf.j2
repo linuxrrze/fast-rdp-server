@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+# FreeIPA client configuration as ipa-client-install writes it for KDCs found through
+# DNS, restored on hosts where an older fastrdp role had replaced the enrolment's file.
+# The role keeps a FreeIPA krb5.conf as it is; fastrdp's settings: /etc/krb5.conf.d/fastrdp.
+includedir /etc/krb5.conf.d/
+{% if fastrdp_ipa_sss_includedir | bool %}
+includedir /var/lib/sss/pubconf/krb5.include.d/
+{% endif %}
+
+[libdefaults]
+  default_realm = {{ fastrdp_realm }}
+  dns_lookup_realm = false
+  dns_lookup_kdc = true
+  rdns = false
+  dns_canonicalize_hostname = false
+  ticket_lifetime = 24h
+  forwardable = true
+  udp_preference_limit = 0
+
+[realms]
+  {{ fastrdp_realm }} = {
+    pkinit_anchors = FILE:/var/lib/ipa-client/pki/kdc-ca-bundle.pem
+    pkinit_pool = FILE:/var/lib/ipa-client/pki/ca-bundle.pem
+  }
+
+[domain_realm]
+  .{{ fastrdp_domain }} = {{ fastrdp_realm }}
+  {{ fastrdp_domain }} = {{ fastrdp_realm }}
+  {{ ansible_fqdn }} = {{ fastrdp_realm }}

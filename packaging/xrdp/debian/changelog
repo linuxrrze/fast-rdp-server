@@ -1,3 +1,13 @@
+fastrdp-xrdp (0.10.6.1+xorgxrdp0.10.5-2) unstable; urgency=medium
+
+  * Site configuration (xrdp.ini, sesman.ini, gfx.toml, startwm.sh,
+    /etc/X11/xrdp/xorg.conf, /etc/pam.d/xrdp-sesman) is no longer shipped as
+    conffiles: fastrdp replaces these files, so dpkg asked on upgrades.
+    Upstream's versions are in /usr/share/fastrdp-xrdp/default-config/;
+    postinst copies them only where a file is missing, purge removes them.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Tue, 20 Oct 2026 12:00:00 +0200
+
 fastrdp-xrdp (0.10.6.1+xorgxrdp0.10.5-1) unstable; urgency=medium
 
   * xrdp 0.10.6.1 and xorgxrdp 0.10.5 for fastrdp.

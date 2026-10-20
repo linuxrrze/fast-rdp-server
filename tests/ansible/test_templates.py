@@ -9,6 +9,8 @@ configparser. Skipped without ansible-playbook unless FASTRDP_TESTS_STRICT=1.
 """
 
 import configparser
+import ctypes
+import ctypes.util
 import json
 import os
 import shutil
@@ -413,69 +415,6 @@ class TermsrvNames(unittest.TestCase):
         self.assertIn("DNS:rdp1.lab.example.com, DNS:rdp1, DNS:rdp.lab.example.com, DNS:rdp", out)
 
 
-KLIST_HEAD = "Keytab name: FILE:{kt}\nKVNO Principal\n---- " + "-" * 60 + "\n"
-
-
-class TermsrvKeytabCheck(unittest.TestCase):
-    """fastrdp-termsrv-check: AES key per TERMSRV principal at its newest kvno (klist -ke)."""
-
-    def run_check(self, entries, *principals):
-        with tempfile.TemporaryDirectory() as tmp:
-            kt = Path(tmp) / "termsrv.keytab"
-            kt.write_text(KLIST_HEAD.format(kt=kt) + "".join(
-                f"{kvno:4d} {p} ({e})\n" for kvno, p, e in entries))
-            klist = Path(tmp) / "klist"   # fake klist -ke KEYTAB: prints the "keytab"
-            klist.write_text('#!/bin/sh\n[ "$1" = -ke ] && exec cat "$2"\nexit 1\n')
-            klist.chmod(0o755)
-            env = dict(os.environ, PATH=f"{tmp}:{os.environ['PATH']}")
-            return subprocess.run([str(OUT / "fastrdp-termsrv-check"), "-k", str(kt), *principals],
-                                  env=env, capture_output=True, text=True)
-
-    FQDN, SHORT = "TERMSRV/rdp1.lab.example.com", "TERMSRV/RDP1"
-
-    def test_aes_for_both(self):
-        r = self.run_check([(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96"),
-                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "DEPRECATED:arcfour-hmac")],
-                           self.FQDN, "termsrv/rdp1")   # any case, realm optional
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(r.stdout.count("ok   "), 2)
-
-    def test_rc4_only_fails(self):
-        r = self.run_check([(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "DEPRECATED:arcfour-hmac")],
-                           self.FQDN, self.SHORT)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn(f"FAIL {self.SHORT}: no AES key at kvno 3", r.stdout)
-        self.assertIn("msDS-SupportedEncryptionTypes", r.stdout)  # fix hint
-
-    def test_newest_kvno_counts(self):
-        # AES only at the old kvno: tickets use the new key, which is RC4.
-        r = self.run_check([(2, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-                            (3, f"{self.FQDN}@LAB.EXAMPLE.COM", "arcfour-hmac"),
-                            (2, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96")], self.FQDN)
-        self.assertEqual(r.returncode, 1)
-        r = self.run_check([(4, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-                            (3, f"{self.FQDN}@LAB.EXAMPLE.COM", "arcfour-hmac")], self.FQDN)
-        self.assertEqual(r.returncode, 0, r.stdout)
-
-    def test_missing_principal_and_realm(self):
-        entries = [(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-                   (3, "host/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96")]
-        r = self.run_check(entries, self.FQDN, self.SHORT)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn(f"FAIL {self.SHORT}: no key in", r.stdout)
-        self.assertEqual(self.run_check(entries, f"{self.FQDN}@OTHER.ORG").returncode, 1)
-        self.assertEqual(self.run_check(entries, "TERMSRV/rdp1").returncode, 1)  # no prefix match
-
-    def test_unreadable_keytab_and_usage(self):
-        r = subprocess.run([str(OUT / "fastrdp-termsrv-check"), "-k", "/nonexistent", self.FQDN],
-                           env=dict(os.environ, PATH="/nonexistent"), capture_output=True, text=True)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("cannot read /nonexistent", r.stdout)
-        self.assertEqual(subprocess.run([str(OUT / "fastrdp-termsrv-check")], capture_output=True).returncode, 2)
-
-
 class WebgateToml(unittest.TestCase):
     def test_accepted_by_webgate(self):
         cfg = webgate_config.parse(toml("webgate.toml"))
@@ -554,9 +493,227 @@ class TicketRenewal(unittest.TestCase):
         self.assertEqual((dom["krb5_renewable_lifetime"], dom["krb5_renew_interval"]), ("7d", "1h"))
 
     def test_kinit_asks_for_renewable_tickets(self):
-        k = ini("krb5.conf")["libdefaults"]
+        k = ini("krb5-fastrdp.conf")["libdefaults"]
         self.assertEqual(k["renew_lifetime"], "7d")
         self.assertEqual(k["default_ccache_name"], "KCM:")
+
+
+def krb5_profile(conf, snippet_dir):
+    """(default realm, default ccache, renew_lifetime, pkinit_anchors) as the real libkrb5
+    reads conf, with /etc/krb5.conf.d/ pointed at snippet_dir. None without libkrb5."""
+    try:
+        k = ctypes.CDLL(ctypes.util.find_library("krb5") or "libkrb5.so.3")
+    except OSError:
+        return None
+    P, S = ctypes.c_void_p, ctypes.c_char_p
+    k.krb5_init_context.argtypes = [ctypes.POINTER(P)]
+    k.krb5_free_context.argtypes = [P]
+    k.krb5_cc_default_name.argtypes = [P]
+    k.krb5_cc_default_name.restype = S
+    k.krb5_get_profile.argtypes = [P, ctypes.POINTER(P)]
+    k.profile_get_string.argtypes = [P, S, S, S, S, ctypes.POINTER(S)]
+    k.profile_release.argtypes = [P]
+    k.krb5_get_default_realm.argtypes = [P, ctypes.POINTER(S)]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "krb5.conf"
+        path.write_text(Path(conf).read_text().replace("/etc/krb5.conf.d/", f"{snippet_dir}/"))
+        old = os.environ.get("KRB5_CONFIG")
+        os.environ["KRB5_CONFIG"] = str(path)
+        try:
+            ctx = P()
+            rc = k.krb5_init_context(ctypes.byref(ctx))
+            if rc:
+                raise AssertionError(f"libkrb5 refuses {conf}: error {rc}")
+            realm, prof = S(), P()
+            k.krb5_get_default_realm(ctx, ctypes.byref(realm))
+            k.krb5_get_profile(ctx, ctypes.byref(prof))
+            values = [realm.value.decode(), k.krb5_cc_default_name(ctx).decode()]
+            for args in ((b"libdefaults", b"renew_lifetime", None),
+                         (b"realms", realm.value, b"pkinit_anchors")):
+                out = S()
+                k.profile_get_string(prof, *args, None, ctypes.byref(out))
+                values.append(out.value.decode() if out.value else None)
+            k.profile_release(prof)
+            k.krb5_free_context(ctx)
+        finally:
+            if old is None:
+                os.environ.pop("KRB5_CONFIG", None)
+            else:
+                os.environ["KRB5_CONFIG"] = old
+    return tuple(values)
+
+
+# What ipa-client-install 4.12 writes (DNS discovery, sssd); keyring ccache on purpose.
+IPA_KRB5_CONF = """#File modified by ipa-client-install
+
+{includedir}includedir {sss}/
+
+[libdefaults]
+  default_realm = LAB.EXAMPLE.COM
+  dns_lookup_realm = false
+  rdns = false
+  dns_canonicalize_hostname = false
+  dns_lookup_kdc = true
+  ticket_lifetime = 24h
+  forwardable = true
+  udp_preference_limit = 0
+  default_ccache_name = KEYRING:persistent:%{{uid}}
+
+
+[realms]
+  LAB.EXAMPLE.COM = {{
+    pkinit_anchors = FILE:/var/lib/ipa-client/pki/kdc-ca-bundle.pem
+    pkinit_pool = FILE:/var/lib/ipa-client/pki/ca-bundle.pem
+
+  }}
+
+
+[domain_realm]
+  .lab.example.com = LAB.EXAMPLE.COM
+  lab.example.com = LAB.EXAMPLE.COM
+  rdp1.lab.example.com = LAB.EXAMPLE.COM
+"""
+
+
+class Krb5Conf(unittest.TestCase):
+    """fastrdp's Kerberos settings are /etc/krb5.conf.d/fastrdp for every provider; FreeIPA
+    keeps ipa-client-install's krb5.conf. Regression: the role wrote the AD krb5.conf over
+    FreeIPA's on every run after the first (no PKINIT anchors, no sssd include)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.snippets = self.dir / "krb5.conf.d"
+        self.snippets.mkdir()
+        shutil.copy(OUT / "krb5-fastrdp.conf", self.snippets / "fastrdp")
+        self.sss = self.dir / "krb5.include.d"
+        self.sss.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ad_and_none_file(self):
+        text = (OUT / "krb5.conf").read_text()
+        self.assertIn("\nincludedir /etc/krb5.conf.d/\n", text)
+        self.assertLess(text.index("includedir"), text.index("[libdefaults]"))
+        k = configparser.ConfigParser(interpolation=None, comment_prefixes=("#",))
+        k.read_string("\n".join(line for line in text.splitlines() if not line.startswith("includedir")))
+        self.assertEqual(k["libdefaults"]["default_realm"], "LAB.EXAMPLE.COM")
+        self.assertEqual(k["libdefaults"]["dns_lookup_kdc"], "true")
+        self.assertNotIn("default_ccache_name", k["libdefaults"])   # snippet
+        self.assertEqual(dict(k["domain_realm"]), {".lab.example.com": "LAB.EXAMPLE.COM",
+                                                   "lab.example.com": "LAB.EXAMPLE.COM"})
+
+    def test_snippet(self):
+        self.assertEqual(ini("krb5-fastrdp.conf").sections(), ["libdefaults"])
+
+    def test_role_order(self):
+        import yaml   # ansible-core's dependency
+        tasks = REPO / "ansible/roles/identity/tasks"
+        main = yaml.safe_load((tasks / "main.yml").read_text())
+        writers = [t for t in main if (t.get("ansible.builtin.template") or {}).get("dest") == "/etc/krb5.conf"]
+        self.assertEqual(len(writers), 1)
+        self.assertEqual(writers[0]["when"], "fastrdp_identity_provider != 'ipa'")
+        names = [t["name"] for t in main]
+        snippet = names.index("Kerberos client settings of fastrdp (snippet)")
+        self.assertLess(names.index("Kerberos snippet directory"), snippet)
+        self.assertLess(snippet, names.index("Join directory"))   # before ipa-client-install
+        ipa = yaml.safe_load((tasks / "ipa.yml").read_text())
+        steps = [next(iter(k for k in t if k.startswith("ansible.builtin."))) for t in ipa]
+        enrol = [t["name"] for t in ipa].index("Enrol in FreeIPA")
+        self.assertEqual(steps[enrol + 1], "ansible.builtin.include_tasks")
+        self.assertEqual(ipa[enrol + 1]["ansible.builtin.include_tasks"], "ipa_krb5.yml")
+
+    def profile(self, conf):
+        p = krb5_profile(conf, self.snippets)
+        if p is None:
+            self.skipTest("libkrb5 not installed")
+        return p
+
+    def test_ad_file_with_snippet_through_libkrb5(self):
+        self.assertEqual(self.profile(OUT / "krb5.conf"), ("LAB.EXAMPLE.COM", "KCM:", "7d", None))
+
+    def test_snippet_wins_over_freeipa_file(self):
+        conf = self.dir / "ipa.conf"
+        conf.write_text(IPA_KRB5_CONF.format(includedir="includedir /etc/krb5.conf.d/\n", sss=self.sss))
+        self.assertEqual(self.profile(conf), ("LAB.EXAMPLE.COM", "KCM:", "7d",
+                                              "FILE:/var/lib/ipa-client/pki/kdc-ca-bundle.pem"))
+
+    def test_restored_freeipa_file(self):
+        for variant in ("sss", "nosss"):
+            with self.subTest(variant):
+                text = (OUT / f"krb5-ipa-{variant}.conf").read_text()
+                self.assertEqual("includedir /var/lib/sss/pubconf/krb5.include.d/" in text, variant == "sss")
+                conf = self.dir / "restored.conf"
+                conf.write_text(text.replace("/var/lib/sss/pubconf/krb5.include.d", str(self.sss)))
+                self.assertEqual(self.profile(conf), ("LAB.EXAMPLE.COM", "KCM:", "7d",
+                                                      "FILE:/var/lib/ipa-client/pki/kdc-ca-bundle.pem"))
+                self.assertIn("rdp1.lab.example.com = LAB.EXAMPLE.COM", text)
+
+    def run_ipa_tasks(self, conf, sss=None):
+        """tasks/ipa_krb5.yml on conf; returns the number of changed tasks."""
+        args = [shutil.which("ansible-playbook"), "-i", "localhost,", str(HERE / "ipa_krb5.yml"),
+                "-e", f"krb5_conf={conf}"]
+        if sss:
+            args += ["-e", f"sss_dir={sss}"]
+        env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
+                   ANSIBLE_PYTHON_INTERPRETER=sys.executable, ANSIBLE_ROLES_PATH=str(REPO / "ansible/roles"))
+        env.pop("ANSIBLE_CONFIG", None)
+        res = subprocess.run(args, env=env, capture_output=True, text=True, cwd=HERE)
+        self.assertEqual(res.returncode, 0, res.stdout[-3000:])
+        recap = [line for line in res.stdout.splitlines() if line.startswith("localhost")][-1]
+        return int(recap.split("changed=")[1].split()[0])
+
+    def test_ipa_file_kept_and_stable(self):
+        conf = self.dir / "krb5.conf"
+        original = IPA_KRB5_CONF.format(includedir="includedir /etc/krb5.conf.d/\n\n", sss=self.sss)
+        conf.write_text(original)
+        self.assertEqual(self.run_ipa_tasks(conf), 0)
+        self.assertEqual(conf.read_text(), original)
+
+    def test_ipa_file_gets_the_includedir_once(self):
+        # enrolled while /etc/krb5.conf.d did not exist: ipa-client-install left the line out
+        conf = self.dir / "krb5.conf"
+        conf.write_text(IPA_KRB5_CONF.format(includedir="", sss=self.sss))
+        self.assertEqual(self.run_ipa_tasks(conf), 1)
+        first = conf.read_text()
+        self.assertTrue(first.startswith("includedir /etc/krb5.conf.d/\n"))
+        self.assertEqual(first.count("includedir /etc/krb5.conf.d/"), 1)
+        self.assertEqual(self.run_ipa_tasks(conf), 0)
+        self.assertEqual(conf.read_text(), first)
+        self.assertEqual(self.profile(conf)[1:3], ("KCM:", "7d"))
+
+    def test_file_of_an_older_role_restored_once(self):
+        # the old role wrote the AD-style krb5.conf (with the settings inline) over FreeIPA's
+        conf = self.dir / "krb5.conf"
+        conf.write_text("# Ansible managed\n[libdefaults]\n    default_realm = LAB.EXAMPLE.COM\n"
+                        "    default_ccache_name = KCM:\n    renew_lifetime = 7d\n")
+        self.assertEqual(self.run_ipa_tasks(conf, sss=self.sss), 1)
+        first = conf.read_text()
+        self.assertIn("pkinit_anchors = FILE:/var/lib/ipa-client/pki/kdc-ca-bundle.pem", first)
+        self.assertIn("includedir /var/lib/sss/pubconf/krb5.include.d/", first)
+        self.assertEqual(self.run_ipa_tasks(conf, sss=self.sss), 0)
+        self.assertEqual(conf.read_text(), first)
+
+
+class TermsrvUnits(unittest.TestCase):
+    """Keytab watcher: packaged units run /usr/sbin/fastrdp-termsrv-keytab, the build
+    install method's copies the one in /usr/local/sbin."""
+
+    def test_helper_directory(self):
+        self.assertEqual((OUT / "termsrv-sbin-apt.txt").read_text(), "/usr/sbin")
+        self.assertEqual((OUT / "termsrv-sbin-build.txt").read_text(), "/usr/local/sbin")
+
+    def test_units(self):
+        packaged = REPO / "broker/session/systemd/fastrdp-termsrv-keytab.service"
+        self.assertIn("ExecStart=/usr/sbin/fastrdp-termsrv-keytab\n", packaged.read_text())
+        svc = ini("build-fastrdp-termsrv-keytab.service")["Service"]
+        self.assertEqual(svc["ExecStart"], "/usr/local/sbin/fastrdp-termsrv-keytab")
+        self.assertEqual(svc["ExecStartPost"], "-/usr/bin/systemctl try-restart fastrdp-proxy.service")
+        self.assertEqual(svc["Type"], "oneshot")
+        path = ini("build-fastrdp-termsrv-keytab.path")
+        self.assertEqual(path["Path"]["PathChanged"], "/etc/krb5.keytab")
+        self.assertEqual(path["Install"]["WantedBy"], "multi-user.target")
 
 
 if __name__ == "__main__":

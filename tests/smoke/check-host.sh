@@ -49,9 +49,18 @@ chk "TERMSRV keys in proxy keytab"    bash -c "klist -k /etc/fastrdp/termsrv.key
 # name (identity role). FreeIPA's short-name alias shares the FQDN principal's keys.
 TERMSRV_SPNS="TERMSRV/$(hostname -f)"
 [ -e /etc/ipa/default.conf ] || TERMSRV_SPNS="$TERMSRV_SPNS TERMSRV/$(hostname -s | tr '[:lower:]' '[:upper:]')"
+# apt (fastrdp-broker package): /usr/sbin; build install method: /usr/local/sbin
+TERMSRV_CHECK=$(command -v /usr/sbin/fastrdp-termsrv-check /usr/local/sbin/fastrdp-termsrv-check | head -1)
 # shellcheck disable=SC2086 # word splitting intended
-chk "AES keys for $TERMSRV_SPNS (fastrdp-termsrv-check)" /usr/local/sbin/fastrdp-termsrv-check $TERMSRV_SPNS
+chk "AES keys for $TERMSRV_SPNS (fastrdp-termsrv-check)" ${TERMSRV_CHECK:-fastrdp-termsrv-check} $TERMSRV_SPNS
 chk "proxy can read its keytab"       runuser -u _fastrdp-proxy -- test -r /etc/fastrdp/termsrv.keytab
+# fastrdp's Kerberos settings are a snippet; FreeIPA keeps the enrolment's krb5.conf.
+chk "krb5.conf includes /etc/krb5.conf.d (fastrdp snippet)" \
+    grep -Eq '^[[:space:]]*includedir[[:space:]]+/etc/krb5\.conf\.d/?[[:space:]]*$' /etc/krb5.conf
+chk "fastrdp Kerberos snippet: KCM ccache" grep -Eq '^[[:space:]]*default_ccache_name[[:space:]]*=[[:space:]]*KCM:' /etc/krb5.conf.d/fastrdp
+if [ -e /etc/ipa/default.conf ]; then
+    chk "FreeIPA krb5.conf (PKINIT anchors of the IPA CA)" grep -q /var/lib/ipa-client/pki/ /etc/krb5.conf
+fi
 chk "fastrdp proxy module installed"  test -f /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
 chk "proxy uses fastrdp's FreeRDP"     bash -c "ldd /opt/fastrdp/bin/freerdp-proxy | grep -q '/opt/fastrdp/.*libfreerdp3.so' && ! ldd /opt/fastrdp/bin/freerdp-proxy | grep -q 'not found'"
 chk "pam_fastrdp_token installed"     bash -c "ls /usr/lib/*/security/pam_fastrdp_token.so"

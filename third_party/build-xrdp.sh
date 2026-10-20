@@ -5,6 +5,8 @@
 #   Build the patched xrdp (FFmpeg hardware H.264 encoder) and xorgxrdp from
 #   third_party/fetch.sh trees. One system-wide instance: packages conflict with the
 #   distribution's xrdp/xorgxrdp. Installs into DESTDIR when given (packaging).
+#   The site configuration (SITE_CONFIG below) is never overwritten: upstream's versions
+#   go to PREFIX/share/fastrdp-xrdp/default-config/.
 #
 # build-xrdp.sh --deps   prints the Debian/Ubuntu build dependencies.
 # Environment:
@@ -37,6 +39,35 @@ ffmpeg=()
 glamor=()
 [ "${FASTRDP_XORGXRDP_GLAMOR:-1}" = 1 ] && glamor=(--enable-glamor)
 
+# Site configuration: files the fastrdp roles (or the admin, docs/manual-setup.md) write.
+# xrdp has no include or drop-in mechanism for them, so they must not be package
+# conffiles (dpkg would ask on every upgrade that changes upstream's version) and a
+# rebuild must not overwrite them. `make install` puts upstream's versions to
+# $prefix/share/fastrdp-xrdp/default-config/<path> instead; existing files stay. The
+# package's postinst copies a default only where the file is missing.
+SITE_CONFIG="/etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini /etc/xrdp/gfx.toml /etc/xrdp/startwm.sh
+/etc/X11/xrdp/xorg.conf /etc/pam.d/xrdp-sesman"
+defaults=$destdir$prefix/share/fastrdp-xrdp/default-config
+keep=$(mktemp -d)
+pcdir=$(mktemp -d)
+restore_site_config() {
+    for f in $SITE_CONFIG; do
+        if [ -e "$keep$f" ]; then cp -p "$keep$f" "$destdir$f"; fi
+    done
+}
+on_exit() {
+    # (a failed `make install` may have overwritten them already)
+    [ "$1" -eq 0 ] || restore_site_config
+    rm -rf "$pcdir" "$keep"
+}
+trap 'on_exit $?' EXIT
+for f in $SITE_CONFIG; do
+    if [ -e "$destdir$f" ]; then
+        mkdir -p "$keep$(dirname "$f")"
+        cp -p "$destdir$f" "$keep$f"
+    fi
+done
+
 cd "$xrdp_src"
 autoreconf -fi
 ./configure --prefix="$prefix" --sysconfdir=/etc --localstatedir=/var \
@@ -47,8 +78,6 @@ make -j"$jobs"
 make install DESTDIR="$destdir"
 
 # xorgxrdp finds xrdp through xrdp.pc; point it at the tree just installed.
-pcdir=$(mktemp -d)
-trap 'rm -rf "$pcdir"' EXIT
 # (Sysroot builds: DESTDIR inside PKG_CONFIG_SYSROOT_DIR, pkg-config prepends the sysroot.)
 staged=$destdir$prefix
 [ -n "${PKG_CONFIG_SYSROOT_DIR:-}" ] && staged=${staged#"$PKG_CONFIG_SYSROOT_DIR"}
@@ -58,6 +87,14 @@ PKG_CONFIG_PATH=$pcdir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH} \
     ./configure --prefix="$prefix" --sysconfdir=/etc "${glamor[@]}"
 make -j"$jobs"
 make install DESTDIR="$destdir"
+
+# Upstream's site configuration -> defaults; restore the files that existed before.
+for f in $SITE_CONFIG; do
+    [ -e "$destdir$f" ] || { echo "build-xrdp.sh: make install did not create $f" >&2; exit 1; }
+    mkdir -p "$defaults$(dirname "$f")"
+    mv -f "$destdir$f" "$defaults$f"
+done
+restore_site_config
 
 # Fail early if a feature went missing. xrdp -v prints these options; read them from the
 # generated header instead of running the binary (works for sysroot/cross builds too).

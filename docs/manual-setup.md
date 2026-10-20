@@ -3,8 +3,9 @@
 **Ansible remains the recommended and tested path** ([quickstart.md](quickstart.md)):
 the roles check the site settings, are idempotent, and `make preflight` and CI test them.
 This guide does the same work by hand on a host that installs the packages from the
-APT repository ([packaging.md](packaging.md)). It mirrors the roles **as of v0.1.0**
-with `fastrdp_install_method: apt`. Every file below was rendered from the role
+APT repository ([packaging.md](packaging.md)). It mirrors the roles **as of 0.2.0**
+(`main`; v0.1.0 differs in the TERMSRV helpers, the `krb5.conf` layout and the xrdp
+configuration files) with `fastrdp_install_method: apt`. Every file below was rendered from the role
 template with the role defaults and the example values in the next table. If you
 update fastrdp, compare the role files in the table below with your host.
 
@@ -12,7 +13,7 @@ update fastrdp, compare the role files in the table below with your host.
 |---|---|
 | [1 Prerequisites](#1-prerequisites) | `ansible/preflight.yml` |
 | [2 Base system and packages](#2-base-system-and-packages) | `roles/base/tasks/main.yml`, `roles/base/tasks/apt_repo.yml`; package tasks of `broker`, `freerdp_proxy`, `xrdp` |
-| [3 Kerberos, SSSD, domain join](#3-kerberos-sssd-domain-join) | `roles/identity/tasks/{main,ad,ipa,none}.yml`, `roles/identity/templates/*`, `roles/identity/defaults/main.yml` |
+| [3 Kerberos, SSSD, domain join](#3-kerberos-sssd-domain-join) | `roles/identity/tasks/{main,ad,ipa,ipa_krb5,none}.yml`, `roles/identity/templates/*`, `roles/identity/defaults/main.yml`; `broker/sbin/*` (TERMSRV helpers) |
 | [4 Front TLS certificate](#4-front-tls-certificate) | `roles/base/tasks/main.yml` (certificate tasks), `roles/base/defaults/main.yml` (`fastrdp_front_cert_san`) |
 | [5 Firewall and kernel settings](#5-firewall-and-kernel-settings) | `roles/base/templates/nftables-fastrdp.nft.j2`, `roles/base/tasks/main.yml`, `roles/freerdp_proxy/tasks/main.yml` (front placeholder) |
 | [6 GPU](#6-gpu) | `roles/gpu/tasks/main.yml`, `roles/gpu/defaults/main.yml` |
@@ -52,12 +53,12 @@ Do not repeat these steps; the rest of this guide covers what the packages leave
 
 | Package | Provides |
 |---|---|
-| `fastrdp-broker` | broker code, `fastrdp-brokerd` and `fastrdpctl` in `/usr/sbin`, `fastrdp-brokerd.service` (disabled), `/etc/pam.d/fastrdp` and `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, group `_fastrdp-broker`, example `broker.toml` in `/usr/share/doc/fastrdp-broker/examples/` |
+| `fastrdp-broker` | broker code, `fastrdp-brokerd` and `fastrdpctl` in `/usr/sbin`, `fastrdp-brokerd.service` (disabled), `/etc/pam.d/fastrdp` and `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, group `_fastrdp-broker`, example `broker.toml` in `/usr/share/doc/fastrdp-broker/examples/`; TERMSRV keytab helpers `fastrdp-termsrv-check` and `fastrdp-termsrv-keytab` in `/usr/sbin`, their settings `/etc/fastrdp/termsrv.conf`, `fastrdp-termsrv-keytab.path`/`.service` (disabled) |
 | `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab`), user `_fastrdp-proxy` |
 | `fastrdp-freerdp3` | FreeRDP in `/opt/fastrdp` (`freerdp-proxy`, `xfreerdp`) |
 | `libpam-fastrdp-token` | `pam_fastrdp_token.so` |
 | `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman` |
-| `fastrdp-xrdp` | xrdp + xorgxrdp (replaces the distribution `xrdp`/`xorgxrdp`), units (disabled), user `xrdp`; `postinst` creates `/etc/xrdp/cert.pem`, `/etc/xrdp/key.pem` (`root:xrdp 0640`) and `rsakeys.ini` |
+| `fastrdp-xrdp` | xrdp + xorgxrdp (replaces the distribution `xrdp`/`xorgxrdp`), units (disabled), user `xrdp`; `postinst` creates `/etc/xrdp/cert.pem`, `/etc/xrdp/key.pem` (`root:xrdp 0640`) and `rsakeys.ini`, and the files of section 10 from upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/` where they are missing (they are not conffiles: replace them, dpkg never asks about them) |
 | `fastrdp-webgate` | web gateway code and unit (disabled), user `_fastrdp-web` |
 
 Every daemon is installed **disabled and stopped**. The stock `/etc/xrdp/xrdp.ini`
@@ -142,8 +143,10 @@ systemctl is-enabled fastrdp-brokerd fastrdp-proxy xrdp xrdp-sesman    # all: di
 ```
 
 `fastrdp-xrdp` removes a distribution `xrdp`/`xorgxrdp`. Switching a host that was
-deployed with `install method: build`: also delete `/etc/systemd/system/{fastrdp-brokerd,fastrdp-proxy,xrdp,xrdp-sesman}.service`
-and `/usr/local/sbin/fastrdpctl`, then `systemctl daemon-reload` (the roles do this).
+deployed with `install method: build`: also delete `/etc/systemd/system/{fastrdp-brokerd,fastrdp-proxy,xrdp,xrdp-sesman}.service`,
+`/usr/local/sbin/fastrdpctl` and `/usr/local/sbin/fastrdp-termsrv-{check,keytab}`; disable
+and delete `/etc/systemd/system/fastrdp-termsrv-keytab.{path,service}` (AD), then
+`systemctl daemon-reload` (the roles do this).
 
 ## 3. Kerberos, SSSD, domain join
 
@@ -155,91 +158,64 @@ Role `identity`. The order matters: the TERMSRV keys come from the join.
 apt install sssd sssd-kcm sssd-tools libnss-sss libpam-sss krb5-user adcli realmd packagekit
 ```
 
-`/etc/krb5.conf` (`root:root 0644`, from `krb5.conf.j2`; realm and domain are **site**):
+fastrdp's own Kerberos client settings are a snippet, the same for every directory
+(`krb5-fastrdp.conf.j2`). Files in `/etc/krb5.conf.d` are read first and win over
+`/etc/krb5.conf`:
+
+```sh
+install -d -o root -g root -m 0755 /etc/krb5.conf.d
+```
+
+`/etc/krb5.conf.d/fastrdp` (`root:root 0644`):
 
 ```ini
+# fastrdp's Kerberos client settings, for every identity provider. /etc/krb5.conf
+# includes this directory before its own [libdefaults], so these values win over it
+# (also over FreeIPA's default_ccache_name = KEYRING:...).
+[libdefaults]
+    # One credential cache per login, shared by all processes of that session.
+    default_ccache_name = KCM:
+    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
+    renew_lifetime = 7d
+```
+
+AD and provider `none`: `/etc/krb5.conf` (`root:root 0644`, from `krb5.conf.j2`; realm
+and domain are **site**). FreeIPA: skip it, `ipa-client-install` writes this file (3.6).
+
+```ini
+# Realm settings (identity provider ad or none). fastrdp's own client settings are in
+# /etc/krb5.conf.d/fastrdp; files there are read first, so their values win.
+includedir /etc/krb5.conf.d/
+
 [libdefaults]
     default_realm = EXAMPLE.COM
     dns_lookup_realm = false
     dns_lookup_kdc = true
     rdns = false
     udp_preference_limit = 0
-    # One credential cache per login, shared by all processes of that session.
-    default_ccache_name = KCM:
-    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
-    renew_lifetime = 7d
 
 [domain_realm]
     .example.com = EXAMPLE.COM
     example.com = EXAMPLE.COM
 ```
 
+The directory must exist: libkrb5 refuses a configuration whose `includedir` is missing.
+
 ### 3.2 TERMSRV keytab check
 
 FreeRDP's Kerberos acceptor needs **AES** keys; RC4 tickets fail
 ([windows-clients.md §3.4](windows-clients.md#34-credssp-version-nonce-pubkeyauth-token-formats-q3)).
-The role installs a checker that the smoke test (section 13) also calls.
-`/usr/local/sbin/fastrdp-termsrv-check` (`root:root 0755`, `fastrdp-termsrv-check.sh.j2`, no variables):
+`fastrdp-broker` installs a checker, `/usr/sbin/fastrdp-termsrv-check` (source
+`broker/sbin/fastrdp-termsrv-check`, `man fastrdp-termsrv-check`), which the role and the
+smoke test (section 13) call:
 
 ```sh
-#!/bin/sh
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-# Checks that a keytab holds an AES key for every given principal at its newest kvno.
-# FreeRDP's Kerberos acceptor cannot use RC4 session keys (docs/windows-clients.md §3.4).
-#   fastrdp-termsrv-check [-k KEYTAB] PRINCIPAL...
-# PRINCIPAL without @REALM matches any realm; names compare case-insensitively (AD SPNs
-# are). Exit 0: all ok, 1: a principal is missing or has no AES key, 2: usage.
-set -eu
-KT=/etc/fastrdp/termsrv.keytab
-if [ "${1:-}" = -k ]; then
-    KT=${2:?keytab}
-    shift 2
-fi
-if [ $# -eq 0 ]; then
-    echo "usage: $0 [-k keytab] principal..." >&2
-    exit 2
-fi
-# AES with HMAC-SHA1, the only AES types Active Directory issues.
-AES="aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96"
-if ! out=$(klist -ke "$KT" 2>&1); then
-    echo "FAIL cannot read $KT: $out"
-    exit 1
-fi
-rc=0
-for p in "$@"; do
-    printf '%s\n' "$out" | awk -v want="$p" -v aes="$AES" -v kt="$KT" '
-        BEGIN { w = tolower(want); n = split(aes, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1; max = -1 }
-        # "  3 TERMSRV/rdp1.example.com@EXAMPLE.COM (aes256-cts-hmac-sha1-96)"
-        $1 ~ /^[0-9]+$/ && NF >= 3 {
-            name = tolower($2)
-            if (w !~ /@/) sub(/@[^@]*$/, "", name)
-            if (name != w) next
-            e = $3; gsub(/[()]/, "", e); sub(/^DEPRECATED:/, "", e)
-            k = $1 + 0
-            if (k > max) { max = k; has = 0; types = "" }
-            if (k == max) { types = types " " e; if (e in ok) has = 1 }
-        }
-        END {
-            if (max < 0) { print "FAIL " want ": no key in " kt; exit 1 }
-            if (!has) { print "FAIL " want ": no AES key at kvno " max " (has:" types ")"; exit 1 }
-            print "ok   " want ": AES key at kvno " max
-        }' || rc=1
-done
-if [ $rc -ne 0 ]; then
-    cat <<'EOF'
-Fix: the account needs AES keys and msDS-SupportedEncryptionTypes 0x18 (AES128+AES256),
-or 0x1C if RC4 must stay for other services; then re-key it and extract the keytab again
-(AD: adcli update --computer-password-lifetime=0; FreeIPA: ipa-getkeytab -e
-aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96). See docs/windows-clients.md §4.
-Missing alias principals (fastrdp_termsrv_aliases) are registered with the join account:
-run the playbook with fastrdp_join_password set.
-EOF
-fi
-exit $rc
+fastrdp-termsrv-check [-k KEYTAB] PRINCIPAL...    # default keytab: /etc/fastrdp/termsrv.keytab
 ```
 
-(For aliases without Ansible see 3.8.)
+It prints `ok`/`FAIL` per principal (an AES key at the newest kvno; without `@REALM` any
+realm, case-insensitive) and a fix hint, and exits 1 if one fails. Nothing to configure:
+the default keytab can be changed in `/etc/fastrdp/termsrv.conf` (3.4).
 
 ### 3.3 Join Active Directory
 
@@ -317,69 +293,29 @@ Services* to the RDP users by GPO, check the log, then switch to `enforcing`.
 ### 3.4 TERMSRV keytab for the proxy (AD)
 
 The proxy runs as `_fastrdp-proxy` and must not read `/etc/krb5.keytab`. It gets a
-copy of the `TERMSRV/*` keys only. `/usr/local/sbin/fastrdp-termsrv-keytab`
-(`root:root 0755`, `fastrdp-termsrv-keytab.sh.j2`, no variables):
-
-```sh
-#!/bin/sh
-# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-# Copy only the TERMSRV/* keys from the host keytab into the proxy's keytab.
-set -eu
-SRC=/etc/krb5.keytab
-DST=/etc/fastrdp/termsrv.keytab
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
-
-# ktutil slot numbers of all non-TERMSRV entries, highest first (deleting shifts later slots).
-slots=$(printf 'rkt %s\nlist\nquit\n' "$SRC" | ktutil \
-    | awk '$1 ~ /^[0-9]+$/ && $3 !~ /^TERMSRV\// {print $1}' | sort -rn)
-{
-    echo "rkt $SRC"
-    for s in $slots; do echo "delent $s"; done
-    echo "wkt $TMP/termsrv.keytab"
-    echo quit
-} | ktutil >/dev/null
-
-if ! klist -k "$TMP/termsrv.keytab" | grep -q 'TERMSRV/'; then
-    echo "no TERMSRV keys in $SRC - run: adcli update --add-service-principal=TERMSRV/$(hostname -f)" >&2
-    exit 1
-fi
-install -o root -g _fastrdp-proxy -m 0640 "$TMP/termsrv.keytab" "$DST.new"
-mv -f "$DST.new" "$DST"
-```
+copy of the `TERMSRV/*` keys only, written by `/usr/sbin/fastrdp-termsrv-keytab` from
+`fastrdp-broker` (`broker/sbin/fastrdp-termsrv-keytab`, `man fastrdp-termsrv-keytab`):
+`root:_fastrdp-proxy 0640`, replaced atomically, and an error if the host keytab has no
+TERMSRV keys.
 
 **Machine-password rotation.** sssd changes the machine password every 30 days
 (`ad_maximum_machine_account_password_age`), which writes new keys to
-`/etc/krb5.keytab`. A path unit copies them again and restarts the proxy.
+`/etc/krb5.keytab`. The packaged `fastrdp-termsrv-keytab.path` watches that file and
+starts `fastrdp-termsrv-keytab.service`, which copies the keys again and restarts the
+proxy if it runs. Both units are installed disabled.
 
-`/etc/systemd/system/fastrdp-termsrv-keytab.path` (`root:root 0644`):
+**Configure** (only if your paths or group differ from the defaults):
+`/etc/fastrdp/termsrv.conf`, a conffile of `fastrdp-broker` with every setting commented
+out: `FASTRDP_HOST_KEYTAB` (`/etc/krb5.keytab`), `FASTRDP_TERMSRV_KEYTAB`
+(`/etc/fastrdp/termsrv.keytab`), `FASTRDP_TERMSRV_KEYTAB_GROUP` (`_fastrdp-proxy`).
+The environment and the options `-s`/`-d`/`-g` override it. Another host keytab also
+needs a drop-in for the path unit (`PathChanged=`).
 
-```ini
-[Unit]
-Description=Watch the host keytab for TERMSRV key rotation
-[Path]
-PathChanged=/etc/krb5.keytab
-[Install]
-WantedBy=multi-user.target
-```
-
-`/etc/systemd/system/fastrdp-termsrv-keytab.service` (`root:root 0644`):
-
-```ini
-[Unit]
-Description=Copy TERMSRV keys for freerdp-proxy
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/fastrdp-termsrv-keytab
-ExecStartPost=-/usr/bin/systemctl try-restart fastrdp-proxy.service
-```
+**Enable** the watcher and extract the keys now:
 
 ```sh
-systemctl daemon-reload
 systemctl enable --now fastrdp-termsrv-keytab.path
-/usr/local/sbin/fastrdp-termsrv-keytab           # extract now
-chown root:_fastrdp-proxy /etc/fastrdp/termsrv.keytab && chmod 0640 /etc/fastrdp/termsrv.keytab
+fastrdp-termsrv-keytab
 ```
 
 ### 3.5 Ticket renewal, final checks, sssd
@@ -426,11 +362,22 @@ apt install freeipa-client
 ipa-client-install --mkhomedir --domain=example.com --realm=EXAMPLE.COM --principal=admin
 ```
 
-`ipa-client-install` writes its own `/etc/krb5.conf` and `/etc/sssd/sssd.conf`. Keep its
-`sssd.conf` (fastrdp only adds `conf.d/50-fastrdp.conf`, 3.5). The role writes
-`krb5.conf` before the enrolment and **writes it again on every later run**, so a
-role-managed IPA host ends up with the file from 3.1. Write the 3.1 file after the
-enrolment to get the same result.
+`ipa-client-install` writes its own `/etc/krb5.conf` and `/etc/sssd/sssd.conf`. Keep
+both: the `krb5.conf` carries FreeIPA's PKINIT anchors and sssd's include directory, and
+fastrdp only adds `/etc/krb5.conf.d/fastrdp` (3.1, written before the enrolment) and
+`conf.d/50-fastrdp.conf` for sssd (3.5). `ipa-client-install` adds
+`includedir /etc/krb5.conf.d/` at the top only if the directory exists when it runs; check
+it afterwards (the role adds the line if it is missing):
+
+```sh
+grep -x 'includedir /etc/krb5.conf.d/' /etc/krb5.conf ||
+    sed -i '1i includedir /etc/krb5.conf.d/' /etc/krb5.conf
+```
+
+FreeIPA hosts deployed with the v0.1.0 role have the AD-style file of 3.1 instead of the
+enrolment's (that role wrote it again on every run), without PKINIT anchors and sssd's
+include directory. The role restores an equivalent of `ipa-client-install`'s file once
+(`krb5-ipa.conf.j2`); by hand, write that template's content for your realm.
 
 TERMSRV service and keytab. FreeIPA keys are separate from the host keys, so there is
 no rotation unit:
@@ -482,7 +429,7 @@ distributed keytab ([windows-clients.md §3.2](windows-clients.md#32-spn-keytab-
       adcli update --domain=example.com --login-ccache="$KRB5CCNAME" \
       --add-service-principal=TERMSRV/rdp.example.com
   kdestroy; rm -rf "$dir"; unset KRB5CCNAME
-  /usr/local/sbin/fastrdp-termsrv-keytab
+  fastrdp-termsrv-keytab
   fastrdp-termsrv-check TERMSRV/rdp1.example.com TERMSRV/RDP1 TERMSRV/rdp.example.com
   ```
 
@@ -849,9 +796,11 @@ chown root:xrdp /etc/xrdp/key.pem /etc/xrdp/cert.pem
 chmod 0640 /etc/xrdp/key.pem && chmod 0644 /etc/xrdp/cert.pem
 ```
 
-The four files below are `root:root 0644`. They replace configuration files that
-`fastrdp-xrdp` ships (as do `startwm.sh` and `/etc/pam.d/xrdp-sesman` further down), so
-dpkg may ask about them on package upgrades: keep your version.
+The four files below are `root:root 0644`. `fastrdp-xrdp` does not ship them as
+conffiles (xrdp has no drop-in directory for them): its `postinst` creates them from
+upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/` only where they are
+missing, so package upgrades never overwrite your versions and dpkg never asks. The same
+holds for `startwm.sh` and `/etc/pam.d/xrdp-sesman` further down.
 
 `/etc/xrdp/xrdp.ini` (`xrdp.ini.j2`; `port` = `fastrdp_xrdp_port`, `h264_frame_interval` = 1000 / `fastrdp_x264_fps`):
 
@@ -1263,12 +1212,13 @@ and `sssd-kcm`.
 ## 13. Verify
 
 `tests/smoke/check-host.sh` from the repository works on a manually set up host. It
-needs root, `/usr/local/sbin/fastrdp-termsrv-check` (3.2) and the tools installed above
+needs root, `fastrdp-termsrv-check` (3.2) and the tools installed above
 (`ss`, `nft`, `klist`, `chronyc`, `runuser`, `ldd`, `python3`). It reads the ports from
 `proxy.ini` and `broker.toml`.
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/linuxrrze/fast-rdp-server/v0.1.0/tests/smoke/check-host.sh
+# the tag of your release instead of main
+curl -fsSLO https://raw.githubusercontent.com/linuxrrze/fast-rdp-server/main/tests/smoke/check-host.sh
 bash check-host.sh alice                         # alice: a directory user who may log in
 ```
 
@@ -1373,8 +1323,13 @@ The role refuses this on AD unless an AD policy guarantees it.
 - `apt upgrade` updates the packages. Then restart the fastrdp daemons
   (`systemctl restart fastrdp-brokerd fastrdp-proxy`, and `xrdp-sesman xrdp` in a
   maintenance window) and check them with `systemctl status`.
-- dpkg asks about the xrdp files you replaced in section 10: keep your version, then
-  compare with the new defaults.
+- The xrdp files of section 10 are yours; upgrades of `fastrdp-xrdp` only update
+  upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/`. Compare them after an
+  xrdp version change:
+
+  ```sh
+  cd /usr/share/fastrdp-xrdp/default-config && for f in $(find . -type f); do diff -u "$f" "/$f"; done
+  ```
 - After a `fastrdp-session` upgrade copy `startwm.sh` and the PAM stack again (section 10).
 - Before upgrading to a new fastrdp release, compare the role files listed at the top
   between the two tags (`git diff v0.1.0 <new tag> -- ansible/roles`) and apply the

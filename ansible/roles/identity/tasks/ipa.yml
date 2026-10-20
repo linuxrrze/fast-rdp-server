@@ -13,6 +13,9 @@
     creates: /etc/ipa/default.conf
   no_log: true
 
+- name: Kerberos client configuration (keep the enrolment's, include the fastrdp snippet)
+  ansible.builtin.include_tasks: ipa_krb5.yml
+
 - name: TERMSRV service and keytab
   ansible.builtin.shell:
     executable: /bin/bash

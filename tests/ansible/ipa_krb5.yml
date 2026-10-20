@@ -1,0 +1,23 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Runs the identity role's FreeIPA krb5.conf tasks (tasks/ipa_krb5.yml) on a file other
+# than /etc/krb5.conf. test_templates.py runs it twice per fixture: the first run gives
+# the end state, the second must change nothing.
+#   ansible-playbook -i localhost, tests/ansible/ipa_krb5.yml -e krb5_conf=FILE [-e sss_dir=DIR]
+- name: FreeIPA krb5.conf (identity role)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    ansible_fqdn: rdp1.lab.example.com
+    fastrdp_realm: LAB.EXAMPLE.COM
+    fastrdp_domain: lab.example.com
+    fastrdp_krb5_conf: "{{ krb5_conf }}"
+    fastrdp_sss_krb5_include_dir: "{{ sss_dir | default('/nonexistent') }}"
+  tasks:
+    - name: Krb5.conf tasks of the identity role
+      ansible.builtin.include_role:
+        name: identity
+        tasks_from: ipa_krb5.yml

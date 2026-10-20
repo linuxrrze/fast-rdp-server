@@ -132,7 +132,8 @@ For a uid other than 0, rpc.gssd (nfs-utils 2.8.x, `utils/gssd/gssd_proc.c:568-6
    syscall per thread, `gssd_proc.c:490-560`),
 2. calls `gss_acquire_cred(GSS_C_NO_NAME, ...)` (`gssd_acquire_user_cred`,
    `krb5_util.c:1500-1540`). This uses **the default ccache from `krb5.conf`**, here
-   `default_ccache_name = KCM:` (`ansible/roles/identity/templates/krb5.conf.j2:9`).
+   `default_ccache_name = KCM:` (`ansible/roles/identity/templates/krb5-fastrdp.conf.j2`,
+   installed as `/etc/krb5.conf.d/fastrdp`).
    sssd-kcm identifies the caller by its socket peer uid, which is the user's after
    step 1. So **KCM works** without any option [verified for gssd; KCM peer-uid
    behaviour inferred]. This path exists since 2013 (nfs-utils commit 302de786,
@@ -158,8 +159,10 @@ Other relevant gssd settings ([verified] in `gssd.c` and `gssd.man`):
 
 What fastrdp configures (role `identity`):
 
-- `krb5.conf.j2`: `default_realm`, `dns_lookup_kdc = true`, `rdns = false`,
-  `default_ccache_name = KCM:`; `sssd-kcm` is installed (`tasks/main.yml:4`).
+- `krb5-fastrdp.conf.j2` → `/etc/krb5.conf.d/fastrdp` (every provider):
+  `default_ccache_name = KCM:`, `renew_lifetime`; `krb5.conf.j2` (AD, none):
+  `default_realm`, `dns_lookup_kdc = true`, `rdns = false`, `includedir /etc/krb5.conf.d/`
+  (FreeIPA keeps the enrolment's `krb5.conf`); `sssd-kcm` is installed (`tasks/main.yml`).
 - `sssd-ad.conf.j2` (AD only; FreeIPA uses the `sssd.conf` written by
   `ipa-client-install`): no `krb5_ccname_template`, so sssd uses `KCM:` from
   `krb5.conf` (sssd-krb5(5): "Default: (from libkrb5)") [verified];
@@ -168,8 +171,8 @@ What fastrdp configures (role `identity`):
 - `/etc/sssd/conf.d/50-fastrdp.conf` (`sssd-fastrdp.conf.j2`, every provider):
   `[kcm] tgt_renewal = true` with the same interval and lifetime
   (`fastrdp_kcm_tgt_renewal`), and on FreeIPA the domain renewal options that
-  `ipa-client-install` does not write. `krb5.conf` has `renew_lifetime`, so `kinit`
-  asks for renewable tickets too.
+  `ipa-client-install` does not write. `/etc/krb5.conf.d/fastrdp` has `renew_lifetime`,
+  so `kinit` asks for renewable tickets too.
 - Before this change fastrdp installed neither `nfs-common` nor `gssproxy`, and did not
   touch `nfs.conf`.
 
@@ -476,7 +479,7 @@ Implemented (see [Changes](#changes-in-this-repository)):
    session and is accepted only on loopback, so this is a minor issue.
 6. **Ticket renewal:** `[kcm] tgt_renewal` in `/etc/sssd/conf.d/50-fastrdp.conf`
    (`fastrdp_kcm_tgt_renewal`, `fastrdp_krb5_renew_interval`,
-   `fastrdp_krb5_renewable_lifetime`), `renew_lifetime` in `krb5.conf`.
+   `fastrdp_krb5_renewable_lifetime`), `renew_lifetime` in `/etc/krb5.conf.d/fastrdp`.
 7. **FreeIPA:** the same snippet adds `krb5_renewable_lifetime`/`krb5_renew_interval`
    to `[domain/<fastrdp_domain>]`, which `ipa-client-install` does not write.
 
@@ -569,5 +572,5 @@ credentials"), xfreerdp, Keycloak web path.
 - `backends/gnome.py`: `systemctl --user --runtime enable` (test in
   `test_gaps.BackendTests.test_gnome_start`).
 - `ansible/roles/identity`: `sssd-fastrdp.conf.j2` → `/etc/sssd/conf.d/50-fastrdp.conf`,
-  `renew_lifetime` in `krb5.conf.j2`, variables in `sssd-ad.conf.j2`, handler
+  `renew_lifetime` in `krb5-fastrdp.conf.j2`, variables in `sssd-ad.conf.j2`, handler
   `Restart sssd-kcm`; rendered and checked in `tests/ansible/` (`TicketRenewal`).

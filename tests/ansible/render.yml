@@ -25,12 +25,6 @@
     ansible_hostname: rdp1
     fastrdp_gpu_effective: none
   tasks:
-    - name: TERMSRV keytab check script (identity role)
-      ansible.builtin.template:
-        src: "{{ roles_dir }}/identity/templates/fastrdp-termsrv-check.sh.j2"
-        dest: "{{ render_out }}/fastrdp-termsrv-check"
-        mode: "0755"
-
     - name: Derived names - TERMSRV principals (identity), front certificate SAN (base)
       ansible.builtin.copy:
         dest: "{{ render_out }}/names-{{ item.name }}.json"
@@ -75,6 +69,37 @@
         - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ad-nokcm.conf, provider: ad, kcm: false}
         - {src: sssd-ad.conf.j2, dest: sssd-ad.conf, provider: ad, kcm: true}
         - {src: krb5.conf.j2, dest: krb5.conf, provider: ad, kcm: true}
+        - {src: krb5-fastrdp.conf.j2, dest: krb5-fastrdp.conf, provider: ipa, kcm: true}
+
+    - name: FreeIPA krb5.conf restored on hosts an older role had changed (with/without sssd's include dir)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/krb5-ipa.conf.j2"
+        dest: "{{ render_out }}/krb5-ipa-{{ item }}.conf"
+        mode: "0644"
+      vars:
+        fastrdp_identity_provider: ipa
+        fastrdp_ipa_sss_includedir: "{{ item == 'sss' }}"
+      loop: [sss, nosss]
+
+    - name: Keytab watcher units as the build install method copies them (identity role)
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.file', roles_dir ~ '/../../broker/session/systemd/' ~ item)
+             | replace('/usr/sbin/', fastrdp_termsrv_sbin ~ '/') }}
+        dest: "{{ render_out }}/build-{{ item }}"
+        mode: "0644"
+      vars:
+        fastrdp_install_method: build
+      loop: [fastrdp-termsrv-keytab.path, fastrdp-termsrv-keytab.service]
+
+    - name: Helper directory per install method (identity role)
+      ansible.builtin.copy:
+        dest: "{{ render_out }}/termsrv-sbin-{{ item }}.txt"
+        content: "{{ fastrdp_termsrv_sbin }}"
+        mode: "0644"
+      vars:
+        fastrdp_install_method: "{{ item }}"
+      loop: [apt, build]
 
     - name: Xrdp gfx.toml per encoder choice
       ansible.builtin.template:

@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# fastrdp's Kerberos client settings, for every identity provider. /etc/krb5.conf
+# includes this directory before its own [libdefaults], so these values win over it
+# (also over FreeIPA's default_ccache_name = KEYRING:...).
+[libdefaults]
+    # One credential cache per login, shared by all processes of that session.
+    default_ccache_name = KCM:
+    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
+    renew_lifetime = {{ fastrdp_krb5_renewable_lifetime }}

@@ -5,19 +5,34 @@ set -e
 
 #DEBHELPER#
 
+DEFAULTS=/usr/share/fastrdp-xrdp/default-config
+
 if [ "$1" = configure ]; then
+    # Site configuration (xrdp.ini, sesman.ini, gfx.toml, startwm.sh, xorg.conf, PAM
+    # stack): not conffiles, because fastrdp (Ansible roles or admin) replaces them and
+    # dpkg would ask on every upgrade. Upstream's versions only where a file is missing;
+    # existing files, also the obsolete conffiles of fastrdp-xrdp before 0.10.6.1+xorgxrdp0.10.5-2,
+    # are left alone.
+    (cd "$DPKG_ROOT$DEFAULTS" && find . -type f) | while read -r f; do
+        f=${f#.}
+        if [ ! -e "$DPKG_ROOT$f" ] && [ ! -L "$DPKG_ROOT$f" ]; then
+            mkdir -p "$DPKG_ROOT$(dirname "$f")"
+            cp -p "$DPKG_ROOT$DEFAULTS$f" "$DPKG_ROOT$f"
+        fi
+    done
+
     # Host-specific secrets, never shipped in the package (same as the Ansible role).
-    if [ ! -e /etc/xrdp/cert.pem ] && [ ! -e /etc/xrdp/key.pem ]; then
+    if [ ! -e "$DPKG_ROOT/etc/xrdp/cert.pem" ] && [ ! -e "$DPKG_ROOT/etc/xrdp/key.pem" ]; then
         openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
             -days 3650 -subj /CN=fastrdp-xrdp-backend \
-            -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem 2>/dev/null
-        chown root:xrdp /etc/xrdp/key.pem
-        chmod 0640 /etc/xrdp/key.pem
-        chmod 0644 /etc/xrdp/cert.pem
+            -keyout "$DPKG_ROOT/etc/xrdp/key.pem" -out "$DPKG_ROOT/etc/xrdp/cert.pem" 2>/dev/null
+        chown root:xrdp "$DPKG_ROOT/etc/xrdp/key.pem"
+        chmod 0640 "$DPKG_ROOT/etc/xrdp/key.pem"
+        chmod 0644 "$DPKG_ROOT/etc/xrdp/cert.pem"
     fi
-    if [ ! -e /etc/xrdp/rsakeys.ini ]; then
-        xrdp-keygen xrdp /etc/xrdp/rsakeys.ini >/dev/null
-        chown root:xrdp /etc/xrdp/rsakeys.ini
-        chmod 0640 /etc/xrdp/rsakeys.ini
+    if [ ! -e "$DPKG_ROOT/etc/xrdp/rsakeys.ini" ]; then
+        xrdp-keygen xrdp "$DPKG_ROOT/etc/xrdp/rsakeys.ini" >/dev/null
+        chown root:xrdp "$DPKG_ROOT/etc/xrdp/rsakeys.ini"
+        chmod 0640 "$DPKG_ROOT/etc/xrdp/rsakeys.ini"
     fi
 fi

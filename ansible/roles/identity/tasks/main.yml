@@ -4,13 +4,36 @@
     name: [sssd, sssd-kcm, sssd-tools, libnss-sss, libpam-sss, krb5-user, adcli, realmd, packagekit]
     state: present
 
-- name: Kerberos client configuration
+# fastrdp's Kerberos client settings (KCM ccache, renewable tickets) are a snippet, for
+# every provider. /etc/krb5.conf belongs to the join: on FreeIPA ipa-client-install
+# writes it (includedir lines, PKINIT anchors; ipa.yml keeps it), for AD and "none" the
+# role writes it below. The directory must exist before ipa-client-install (which only
+# then adds "includedir /etc/krb5.conf.d/") and before a krb5.conf names it (libkrb5
+# fails on a missing includedir).
+- name: Kerberos snippet directory
+  ansible.builtin.file:
+    path: /etc/krb5.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Kerberos client settings of fastrdp (snippet)
+  ansible.builtin.template:
+    src: krb5-fastrdp.conf.j2
+    dest: /etc/krb5.conf.d/fastrdp
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Kerberos client configuration (AD, none; FreeIPA keeps the enrolment's)
   ansible.builtin.template:
     src: krb5.conf.j2
     dest: /etc/krb5.conf
     owner: root
     group: root
     mode: "0644"
+  when: fastrdp_identity_provider != 'ipa'
 
 - name: TERMSRV keys must be AES (FreeRDP cannot use RC4)
   ansible.builtin.assert:
@@ -18,63 +41,86 @@
     fail_msg: fastrdp_termsrv_enctypes needs aes256-cts-hmac-sha1-96 and/or aes128-cts-hmac-sha1-96.
     quiet: true
 
-- name: TERMSRV keytab check script (AES key per principal)
-  ansible.builtin.template:
-    src: fastrdp-termsrv-check.sh.j2
-    dest: /usr/local/sbin/fastrdp-termsrv-check
-    owner: root
-    group: root
-    mode: "0755"
+# fastrdp-termsrv-check, fastrdp-termsrv-keytab and the keytab watcher units: from the
+# fastrdp-broker package (apt) or copied from this checkout (build), docs/packaging.md.
+- name: TERMSRV keytab helpers from the APT repository
+  when: fastrdp_install_method == 'apt'
+  block:
+    - name: Broker package (TERMSRV helpers; the broker role configures the daemon)
+      ansible.builtin.apt:
+        name: fastrdp-broker
+        state: "{{ fastrdp_apt_package_state }}"
+
+    - name: Watcher unit copy from build installs
+      ansible.builtin.stat:
+        path: /etc/systemd/system/fastrdp-termsrv-keytab.path
+      register: fastrdp_keytab_path_copy
+
+    # Disable it first: its enablement link points at the copy.
+    - name: Watcher unit copy disabled
+      ansible.builtin.systemd_service:
+        name: fastrdp-termsrv-keytab.path
+        enabled: false
+      when: fastrdp_keytab_path_copy.stat.exists
+
+    - name: No copies from build installs shadowing the packaged helpers and units
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/local/sbin/fastrdp-termsrv-check
+        - /usr/local/sbin/fastrdp-termsrv-keytab
+        - /etc/systemd/system/fastrdp-termsrv-keytab.path
+        - /etc/systemd/system/fastrdp-termsrv-keytab.service
+      register: fastrdp_keytab_copies_removed
+
+- name: TERMSRV keytab helpers from this checkout
+  when: fastrdp_install_method == 'build'
+  block:
+    - name: TERMSRV keytab helpers (AES check, TERMSRV key extraction)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/sbin/{{ item }}"
+        dest: "/usr/local/sbin/{{ item }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [fastrdp-termsrv-check, fastrdp-termsrv-keytab]
+
+    - name: TERMSRV helper settings (all commented out; an edited file is kept)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/sbin/termsrv.conf"
+        dest: /etc/fastrdp/termsrv.conf
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    # The packaged units, with the helper in /usr/local/sbin.
+    - name: Units that re-extract the TERMSRV keys when sssd/adcli rotates the machine password
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../broker/session/systemd/' ~ item)
+             | replace('/usr/sbin/', fastrdp_termsrv_sbin ~ '/') }}
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [fastrdp-termsrv-keytab.path, fastrdp-termsrv-keytab.service]
+      register: fastrdp_keytab_units
 
 - name: Join directory
   ansible.builtin.include_tasks: "{{ fastrdp_identity_provider }}.yml"
 
-- name: TERMSRV keytab extraction script
-  ansible.builtin.template:
-    src: fastrdp-termsrv-keytab.sh.j2
-    dest: /usr/local/sbin/fastrdp-termsrv-keytab
-    owner: root
-    group: root
-    mode: "0755"
-  when: fastrdp_identity_provider == 'ad'
-
-- name: Re-extract TERMSRV keys whenever sssd/adcli rotates the machine password
-  ansible.builtin.copy:
-    dest: "/etc/systemd/system/{{ item.name }}"
-    content: "{{ item.content }}"
-    owner: root
-    group: root
-    mode: "0644"
-  loop:
-    - name: fastrdp-termsrv-keytab.path
-      content: |
-        [Unit]
-        Description=Watch the host keytab for TERMSRV key rotation
-        [Path]
-        PathChanged=/etc/krb5.keytab
-        [Install]
-        WantedBy=multi-user.target
-    - name: fastrdp-termsrv-keytab.service
-      content: |
-        [Unit]
-        Description=Copy TERMSRV keys for freerdp-proxy
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/local/sbin/fastrdp-termsrv-keytab
-        ExecStartPost=-/usr/bin/systemctl try-restart fastrdp-proxy.service
-  when: fastrdp_identity_provider == 'ad'
-  register: fastrdp_keytab_units
-
-- name: Enable keytab watcher
+- name: Keytab watcher enabled (AD; FreeIPA and "none" have separate TERMSRV keys)
   ansible.builtin.systemd_service:
     name: fastrdp-termsrv-keytab.path
     enabled: true
     state: started
-    daemon_reload: "{{ fastrdp_keytab_units is changed }}"
+    daemon_reload: "{{ fastrdp_keytab_units is changed or fastrdp_keytab_copies_removed is changed }}"
   when: fastrdp_identity_provider == 'ad'
 
 - name: Extract TERMSRV keytab now
-  ansible.builtin.command: /usr/local/sbin/fastrdp-termsrv-keytab
+  ansible.builtin.command: "{{ fastrdp_termsrv_sbin }}/fastrdp-termsrv-keytab"
   changed_when: false
   when: fastrdp_identity_provider == 'ad'
 
@@ -107,7 +153,7 @@
 # Fails with the missing principals and a fix hint (docs/windows-clients.md §4).
 - name: TERMSRV keytab has AES keys for every principal
   ansible.builtin.command:
-    argv: "{{ ['/usr/local/sbin/fastrdp-termsrv-check'] + fastrdp_termsrv_keytab_spns }}"
+    argv: "{{ [fastrdp_termsrv_sbin ~ '/fastrdp-termsrv-check'] + fastrdp_termsrv_keytab_spns }}"
   changed_when: false
 
 - name: SSSD running

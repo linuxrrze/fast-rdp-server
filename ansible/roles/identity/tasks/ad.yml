@@ -30,7 +30,7 @@
 
 - name: Host keytab state (TERMSRV principals with AES keys)
   ansible.builtin.command:
-    argv: "{{ ['/usr/local/sbin/fastrdp-termsrv-check', '-k', '/etc/krb5.keytab'] + item }}"
+    argv: "{{ [fastrdp_termsrv_sbin ~ '/fastrdp-termsrv-check', '-k', '/etc/krb5.keytab'] + item }}"
   loop:
     - "{{ fastrdp_termsrv_spns[:2] }}"    # FQDN and short name: the machine may add them itself
     - "{{ fastrdp_termsrv_spns[2:] or ['TERMSRV/' ~ ansible_fqdn] }}"   # aliases

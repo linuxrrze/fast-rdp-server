@@ -4,3 +4,8 @@ broker/session/pam/fastrdp-tgt etc/pam.d/
 broker/session/systemd/fastrdp-brokerd.service usr/lib/systemd/system/
 debian/bin/fastrdp-brokerd usr/sbin/
 debian/bin/fastrdpctl usr/sbin/
+broker/sbin/fastrdp-termsrv-check usr/sbin/
+broker/sbin/fastrdp-termsrv-keytab usr/sbin/
+broker/sbin/termsrv.conf etc/fastrdp/
+broker/session/systemd/fastrdp-termsrv-keytab.path usr/lib/systemd/system/
+broker/session/systemd/fastrdp-termsrv-keytab.service usr/lib/systemd/system/

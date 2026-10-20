@@ -1,14 +1,14 @@
 # {{ ansible_managed }}
+# Realm settings (identity provider ad or none). fastrdp's own client settings are in
+# /etc/krb5.conf.d/fastrdp; files there are read first, so their values win.
+includedir /etc/krb5.conf.d/
+
 [libdefaults]
     default_realm = {{ fastrdp_realm }}
     dns_lookup_realm = false
     dns_lookup_kdc = true
     rdns = false
     udp_preference_limit = 0
-    # One credential cache per login, shared by all processes of that session.
-    default_ccache_name = KCM:
-    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
-    renew_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
 
 [domain_realm]
     .{{ fastrdp_domain }} = {{ fastrdp_realm }}

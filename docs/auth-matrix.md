@@ -102,8 +102,8 @@ split in the wrong place.
     (`--computer-password-lifetime=0`).
   - FreeIPA: `ipa-getkeytab -e`.
   - The role fails, listing the principals, if `/etc/fastrdp/termsrv.keytab` lacks an
-    AES key at the newest kvno (`/usr/local/sbin/fastrdp-termsrv-check`, also run by
-    `tests/smoke/check-host.sh`).
+    AES key at the newest kvno (`fastrdp-termsrv-check` from `fastrdp-broker`, also run
+    by `tests/smoke/check-host.sh`).
 - The self-signed lab certificate (`fastrdp_front_cert_src: ""`) names the FQDN, the
   short name and the aliases. An existing `/etc/fastrdp/front.crt` is kept: delete it
   to get a new one. In production, use a certificate from your CA with the same names.
@@ -133,8 +133,8 @@ split in the wrong place.
 - Sessions use `KCM:` credential caches. sssd renews TGTs for up to 7 days
   (`krb5_renewable_lifetime`), which is long enough for long-running terminal-server
   sessions. sssd-kcm also renews TGTs that users get with `kinit` in a session
-  (`[kcm] tgt_renewal`, `fastrdp_kcm_tgt_renewal`); `krb5.conf` asks for renewable
-  tickets (`renew_lifetime`).
+  (`[kcm] tgt_renewal`, `fastrdp_kcm_tgt_renewal`); `/etc/krb5.conf.d/fastrdp` asks for
+  renewable tickets (`renew_lifetime`).
 
 ## Account policy
 

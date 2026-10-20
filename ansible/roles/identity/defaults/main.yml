@@ -18,6 +18,12 @@ fastrdp_termsrv_spns: >-
       + (fastrdp_termsrv_aliases | map('regex_replace', '^', 'TERMSRV/') | list)) | unique }}
 fastrdp_termsrv_keytab_spns: >-
   {{ fastrdp_termsrv_spns if fastrdp_identity_provider == 'ad' else ['TERMSRV/' ~ ansible_fqdn] }}
+# Derived: directory of fastrdp-termsrv-check / fastrdp-termsrv-keytab (fastrdp-broker
+# package: /usr/sbin; build: copies in /usr/local/sbin).
+fastrdp_termsrv_sbin: "{{ '/usr/sbin' if fastrdp_install_method == 'apt' else '/usr/local/sbin' }}"
+# FreeIPA krb5.conf handling (tasks/ipa_krb5.yml); other paths only for tests/ansible.
+fastrdp_krb5_conf: /etc/krb5.conf
+fastrdp_sss_krb5_include_dir: /var/lib/sss/pubconf/krb5.include.d
 
 # Ticket renewal for long-running terminal-server sessions. sssd renews the TGTs it
 # obtained at login (domain options); with fastrdp_kcm_tgt_renewal sssd-kcm also renews

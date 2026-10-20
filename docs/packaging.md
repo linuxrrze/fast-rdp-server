@@ -8,13 +8,13 @@ a signed APT repository on GitHub Pages.
 
 | Source package | Binary package | Contents |
 |---|---|---|
-| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, example `broker.toml`; group `_fastrdp-broker` |
+| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, example `broker.toml`; group `_fastrdp-broker`; TERMSRV keytab helpers `/usr/sbin/fastrdp-termsrv-check` and `/usr/sbin/fastrdp-termsrv-keytab` (`broker/sbin/`), their settings `/etc/fastrdp/termsrv.conf` (conffile, all commented out), `fastrdp-termsrv-keytab.path` + `.service` (AD machine-password rotation) |
 | | `fastrdp-proxy-module` | `/opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so`, `fastrdp-proxy.service` (runs `/opt/fastrdp/bin/freerdp-proxy`); user `_fastrdp-proxy` |
 | | `libpam-fastrdp-token` | `/usr/lib/<triplet>/security/pam_fastrdp_token.so` |
 | | `fastrdp-session` | `/usr/libexec/fastrdp/*` (startwm.sh, session-plasma, kwin-wayland-launch, wlroots-in-x, clipboard-bridge), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in in `/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf`, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, and the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman` |
 | | `fastrdp-webgate` | `/usr/lib/fastrdp/python/fastrdp_webgate`, `fastrdp-webgate.service`, example `webgate.toml`; user `_fastrdp-web`; depends on `python3-cryptography` |
 | `fastrdp-freerdp3` (`packaging/freerdp/debian/`) | `fastrdp-freerdp3` | fastrdp's FreeRDP build under `/opt/fastrdp`: libraries, `freerdp-proxy`, the `xfreerdp` client (H.264 via FFmpeg), headers and pkg-config files |
-| `fastrdp-xrdp` (`packaging/xrdp/debian/`) | `fastrdp-xrdp` | patched xrdp + xorgxrdp (prefix `/usr`, config in `/etc/xrdp`); `Conflicts/Replaces/Provides: xrdp, xorgxrdp`; user `xrdp` |
+| `fastrdp-xrdp` (`packaging/xrdp/debian/`) | `fastrdp-xrdp` | patched xrdp + xorgxrdp (prefix `/usr`, config in `/etc/xrdp`); `Conflicts/Replaces/Provides: xrdp, xorgxrdp`; user `xrdp`; upstream's versions of the site configuration in `/usr/share/fastrdp-xrdp/default-config/` (below) |
 
 The paths, users and modes are the ones the Ansible roles create; differences:
 
@@ -35,6 +35,23 @@ The paths, users and modes are the ones the Ansible roles create; differences:
 - `fastrdp-xrdp` creates the loopback TLS key/certificate and `rsakeys.ini` in
   its `postinst` if they are missing (the same commands as the role); they are
   never shipped in the package and are removed on purge.
+- **xrdp site configuration is not a conffile.** The xrdp role (or the admin) writes
+  `/etc/xrdp/{xrdp.ini,sesman.ini,gfx.toml,startwm.sh}`, `/etc/X11/xrdp/xorg.conf`
+  and `/etc/pam.d/xrdp-sesman`. xrdp 0.10 has no include or drop-in directory for
+  them (`gfx.toml` and the `sesman.ini` that xrdp itself reads are fixed to
+  `/etc/xrdp`), so as conffiles every upstream change would make dpkg ask on
+  upgrade (and `unattended-upgrades` skip the package). `third_party/build-xrdp.sh`
+  therefore installs upstream's versions to
+  `/usr/share/fastrdp-xrdp/default-config/<path>` and never overwrites existing
+  files, in the package and in the Ansible `build` path alike; `postinst` copies a
+  default only where the file is missing, and purge removes the files. Upgrading from
+  `0.10.6.1+xorgxrdp0.10.5-1`, where they were conffiles: dpkg keeps them as obsolete
+  conffiles, without asking. The other `/etc/xrdp` files (keymaps, `reconnectwm.sh`,
+  `pulse/`, ...) stay conffiles; fastrdp does not change them.
+- The TERMSRV keytab helpers of `fastrdp-broker` read `/etc/fastrdp/termsrv.conf`
+  (`KEY=VALUE`), the environment and options instead of role variables, so package and
+  `build` copies are the same files (`build`: `/usr/local/sbin`, units in
+  `/etc/systemd/system` pointing there).
 
 The Python code is installed into the private directory `/usr/lib/fastrdp/python`
 (exactly as the roles do; the units set `PYTHONPATH`) and byte-compiled by
@@ -273,11 +290,13 @@ In `apt` mode the roles install `fastrdp-broker` + `libpam-fastrdp-token`
 `fastrdp-webgate` (web_gateway). Configuration templates, certificates, keytabs,
 firewall rules and service enablement are the same in both modes. xrdp's
 `startwm.sh` and the token-only `/etc/pam.d/xrdp-sesman` are copied from the
-installed `fastrdp-session` package.
+installed `fastrdp-session` package. The identity role installs `fastrdp-broker`
+early (before the broker role) for the TERMSRV helpers.
 
 Switching an existing host from `build` to `apt` is supported: package files
-replace the copied ones, and the roles remove unit copies in `/etc/systemd`
-and `/usr/local/sbin/fastrdpctl`. Source-built binaries under `/usr/local`
+replace the copied ones, and the roles remove unit copies in `/etc/systemd`,
+`/usr/local/sbin/fastrdpctl` and `/usr/local/sbin/fastrdp-termsrv-{check,keytab}`
+(the keytab watcher copy is disabled first, then the packaged one is enabled). Source-built binaries under `/usr/local`
 (old xrdp builds) are left in place; remove them by hand.
 
 ## Lintian

@@ -32,6 +32,7 @@ Depends:
  ${misc:Depends},
  ${python3:Depends},
 Recommends:
+ krb5-user,
  libpam-fastrdp-token,
  libpam-sss,
 Suggests:
@@ -46,10 +47,14 @@ Description: session broker for the fastrdp multi-user RDP terminal server
  .
  This package contains fastrdp-brokerd (Python, standard library only),
  the fastrdpctl admin command, the systemd unit, the PAM service used for
- password and account checks, and an example configuration.
+ password and account checks, and an example configuration. It also has
+ the TERMSRV keytab helpers: fastrdp-termsrv-check (AES keys for NLA) and
+ fastrdp-termsrv-keytab with a path unit that copies the TERMSRV keys for
+ the proxy whenever Active Directory rotates the machine password.
  .
- The service is installed disabled; configure /etc/fastrdp/broker.toml,
- then enable fastrdp-brokerd.service.
+ The services are installed disabled; configure /etc/fastrdp/broker.toml,
+ then enable fastrdp-brokerd.service (and on AD hosts
+ fastrdp-termsrv-keytab.path).
 
 Package: fastrdp-proxy-module
 Architecture: any

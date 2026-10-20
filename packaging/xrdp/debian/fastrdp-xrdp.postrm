@@ -4,7 +4,10 @@
 set -e
 
 if [ "$1" = purge ]; then
-    rm -f /etc/xrdp/cert.pem /etc/xrdp/key.pem /etc/xrdp/rsakeys.ini
+    rm -f "$DPKG_ROOT/etc/xrdp/cert.pem" "$DPKG_ROOT/etc/xrdp/key.pem" "$DPKG_ROOT/etc/xrdp/rsakeys.ini"
+    # Site configuration created by postinst (or by fastrdp); see fastrdp-xrdp.postinst.
+    rm -f "$DPKG_ROOT/etc/xrdp/xrdp.ini" "$DPKG_ROOT/etc/xrdp/sesman.ini" "$DPKG_ROOT/etc/xrdp/gfx.toml" \
+        "$DPKG_ROOT/etc/xrdp/startwm.sh" "$DPKG_ROOT/etc/X11/xrdp/xorg.conf" "$DPKG_ROOT/etc/pam.d/xrdp-sesman"
 fi
 
 #DEBHELPER#

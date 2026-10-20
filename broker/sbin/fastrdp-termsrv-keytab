@@ -1,0 +1,67 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Copy only the TERMSRV/* keys from the host keytab into the proxy's keytab (AD: the
+# machine account owns the TERMSRV SPNs; the proxy must not read /etc/krb5.keytab).
+# Run by fastrdp-termsrv-keytab.service whenever the host keytab changes (machine
+# password rotation, fastrdp-termsrv-keytab.path).
+#   fastrdp-termsrv-keytab [-s HOST_KEYTAB] [-d TERMSRV_KEYTAB] [-g GROUP]
+# Settings: options, else the environment, else /etc/fastrdp/termsrv.conf
+# (FASTRDP_TERMSRV_CONF), else the defaults:
+#   FASTRDP_HOST_KEYTAB=/etc/krb5.keytab
+#   FASTRDP_TERMSRV_KEYTAB=/etc/fastrdp/termsrv.keytab
+#   FASTRDP_TERMSRV_KEYTAB_GROUP=_fastrdp-proxy      (owner root, mode 0640)
+# Exit 0: written, 1: no TERMSRV keys or an error, 2: usage.
+set -eu
+
+# conf_get KEY: value of KEY=VALUE in the configuration file (last one wins, quotes stripped)
+conf_get() {
+    [ -r "${FASTRDP_TERMSRV_CONF:-/etc/fastrdp/termsrv.conf}" ] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${FASTRDP_TERMSRV_CONF:-/etc/fastrdp/termsrv.conf}" \
+        | tail -n 1 | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/'
+}
+usage() {
+    echo "usage: $0 [-s host-keytab] [-d termsrv-keytab] [-g group]" >&2
+    exit 2
+}
+
+SRC=${FASTRDP_HOST_KEYTAB:-$(conf_get FASTRDP_HOST_KEYTAB)}
+DST=${FASTRDP_TERMSRV_KEYTAB:-$(conf_get FASTRDP_TERMSRV_KEYTAB)}
+GROUP=${FASTRDP_TERMSRV_KEYTAB_GROUP:-$(conf_get FASTRDP_TERMSRV_KEYTAB_GROUP)}
+while getopts s:d:g:h opt; do
+    case $opt in
+        s) SRC=$OPTARG ;;
+        d) DST=$OPTARG ;;
+        g) GROUP=$OPTARG ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 0 ] || usage
+SRC=${SRC:-/etc/krb5.keytab}
+DST=${DST:-/etc/fastrdp/termsrv.keytab}
+GROUP=${GROUP:-_fastrdp-proxy}
+
+if [ ! -r "$SRC" ]; then
+    echo "cannot read $SRC (join the domain first)" >&2
+    exit 1
+fi
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+# ktutil slot numbers of all non-TERMSRV entries, highest first (deleting shifts later slots).
+slots=$(printf 'rkt %s\nlist\nquit\n' "$SRC" | ktutil \
+    | awk '$1 ~ /^[0-9]+$/ && $3 !~ /^TERMSRV\// {print $1}' | sort -rn)
+{
+    echo "rkt $SRC"
+    for s in $slots; do echo "delent $s"; done
+    echo "wkt $TMP/termsrv.keytab"
+    echo quit
+} | ktutil >/dev/null
+
+if ! klist -k "$TMP/termsrv.keytab" 2>/dev/null | grep -q 'TERMSRV/'; then
+    echo "no TERMSRV keys in $SRC - run: adcli update --add-service-principal=TERMSRV/$(hostname -f)" >&2
+    exit 1
+fi
+install -o root -g "$GROUP" -m 0640 "$TMP/termsrv.keytab" "$DST.new"
+mv -f "$DST.new" "$DST"

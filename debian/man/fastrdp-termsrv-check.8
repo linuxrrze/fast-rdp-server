@@ -1,0 +1,44 @@
+.TH FASTRDP-TERMSRV-CHECK 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-termsrv-check \- check that a keytab has AES keys for the TERMSRV principals
+.SH SYNOPSIS
+.B fastrdp-termsrv-check
+.RB [ \-k
+.IR keytab ]
+.I principal ...
+.SH DESCRIPTION
+FreeRDP's Kerberos acceptor (the fastrdp proxy) cannot use RC4 session keys.
+.B fastrdp-termsrv-check
+reads the keytab with
+.B klist \-ke
+and checks, for every
+.IR principal ,
+that it has an AES key (aes256- or aes128-cts-hmac-sha1-96) at its newest key
+version number. A principal without
+.BI @ REALM
+matches any realm; names compare case-insensitively. It prints one
+.B ok
+or
+.B FAIL
+line per principal and, on failure, how to fix the account.
+.SH OPTIONS
+.TP
+.BI \-k " keytab"
+Keytab to check. Default: FASTRDP_TERMSRV_KEYTAB from the environment or from
+.IR /etc/fastrdp/termsrv.conf ,
+else
+.IR /etc/fastrdp/termsrv.keytab .
+.SH ENVIRONMENT
+.B FASTRDP_TERMSRV_CONF
+names another configuration file.
+.SH EXIT STATUS
+0 all principals ok, 1 a principal is missing or has no AES key (or the
+keytab is unreadable), 2 usage.
+.SH EXAMPLES
+.nf
+fastrdp-termsrv-check TERMSRV/rdp1.example.com TERMSRV/RDP1
+fastrdp-termsrv-check \-k /etc/krb5.keytab TERMSRV/rdp1.example.com
+.fi
+.SH SEE ALSO
+.BR fastrdp-termsrv-keytab (8),
+.BR klist (1)

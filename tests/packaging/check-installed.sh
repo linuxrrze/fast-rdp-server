@@ -4,11 +4,12 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # After installing all fastrdp packages (CI "build" job, or a host installed from the
 # APT repository): users, paths, library resolution, RPATH/RUNPATH, Python imports,
-# the xrdp FFmpeg build. Read-only; run as any user.
+# the xrdp FFmpeg build, the TERMSRV helpers, xrdp site configuration that is no conffile.
+# Read-only; run as any user.
 set -euo pipefail
 # shellcheck source=tests/lib.sh
 . "$(dirname "$0")/../lib.sh"
-need ldd readelf getent python3
+need ldd readelf getent python3 dpkg-query cmp
 
 P=/opt/fastrdp
 PLUGIN=$P/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
@@ -42,7 +43,38 @@ check "fastrdp-brokerd --check accepts the example config" /usr/sbin/fastrdp-bro
 check "fastrdpctl --help" /usr/sbin/fastrdpctl --help
 check "xrdp built with --enable-ffmpeg" bash -c '/usr/sbin/xrdp -v | grep -q -- --enable-ffmpeg'
 check "session launcher installed" test -x /usr/libexec/fastrdp/startwm.sh
-for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman; do
+for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman fastrdp-termsrv-keytab; do
     check "$u.service shipped" test -f "/usr/lib/systemd/system/$u.service"
 done
+check "fastrdp-termsrv-keytab.path shipped" test -f /usr/lib/systemd/system/fastrdp-termsrv-keytab.path
+check "units installed disabled (no enablement links)" \
+    bash -c '! ls /etc/systemd/system/*.wants/ 2>/dev/null | grep -E "^(fastrdp-|xrdp)"'
+
+# TERMSRV keytab helpers (fastrdp-broker): packaged in /usr/sbin, settings in /etc/fastrdp
+for s in fastrdp-termsrv-check fastrdp-termsrv-keytab; do
+    check "$s in /usr/sbin" test -x "/usr/sbin/$s"
+done
+expect_exit 2 "fastrdp-termsrv-check: no principal exits 2" /usr/sbin/fastrdp-termsrv-check
+expect_exit 2 "fastrdp-termsrv-keytab: unknown option exits 2" /usr/sbin/fastrdp-termsrv-keytab -x
+check "termsrv.conf is a conffile of fastrdp-broker" \
+    bash -c 'dpkg-query -W -f="\${Conffiles}\n" fastrdp-broker | grep -q " /etc/fastrdp/termsrv.conf "'
+check "termsrv.conf sets nothing by default" bash -c '! grep -Ev "^[[:space:]]*(#|$)" /etc/fastrdp/termsrv.conf'
+check "units run the packaged helper" grep -qx 'ExecStart=/usr/sbin/fastrdp-termsrv-keytab' \
+    /usr/lib/systemd/system/fastrdp-termsrv-keytab.service
+expect_exit 1 "fastrdp-termsrv-keytab: missing host keytab fails" \
+    env FASTRDP_TERMSRV_CONF=/nonexistent /usr/sbin/fastrdp-termsrv-keytab -s /nonexistent
+output_has "fastrdp-termsrv-keytab: names the missing keytab" "cannot read /nonexistent"
+
+# xrdp site configuration (fastrdp-xrdp): not conffiles (no dpkg prompts on upgrades),
+# created from upstream's defaults by postinst
+XRDP_SITE="/etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini /etc/xrdp/gfx.toml /etc/xrdp/startwm.sh
+/etc/X11/xrdp/xorg.conf /etc/pam.d/xrdp-sesman"
+conffiles=$(dpkg-query -W -f='${Conffiles}\n' fastrdp-xrdp)
+for f in $XRDP_SITE; do
+    check "$f: not a conffile of fastrdp-xrdp" bash -c '! grep -q " $1 " <<<"$2"' _ "$f" "$conffiles"
+    check "$f: default in /usr/share/fastrdp-xrdp/default-config" test -f "/usr/share/fastrdp-xrdp/default-config$f"
+    check "$f: created by postinst" cmp "$f" "/usr/share/fastrdp-xrdp/default-config$f"
+done
+check "startwm.sh executable" test -x /etc/xrdp/startwm.sh
+check "other xrdp files stay conffiles (km-*.ini)" bash -c 'grep -q " /etc/xrdp/km-00000407.ini " <<<"$1"' _ "$conffiles"
 finish

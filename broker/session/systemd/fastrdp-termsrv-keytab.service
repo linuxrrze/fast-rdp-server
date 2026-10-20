@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Started by fastrdp-termsrv-keytab.path. Settings: /etc/fastrdp/termsrv.conf.
+[Unit]
+Description=Copy TERMSRV keys for freerdp-proxy
+Documentation=man:fastrdp-termsrv-keytab(8)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/fastrdp-termsrv-keytab
+ExecStartPost=-/usr/bin/systemctl try-restart fastrdp-proxy.service

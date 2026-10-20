@@ -1,0 +1,64 @@
+.TH FASTRDP-TERMSRV-KEYTAB 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-termsrv-keytab \- copy the TERMSRV keys of the host keytab for the fastrdp proxy
+.SH SYNOPSIS
+.B fastrdp-termsrv-keytab
+.RB [ \-s
+.IR host-keytab ]
+.RB [ \-d
+.IR termsrv-keytab ]
+.RB [ \-g
+.IR group ]
+.SH DESCRIPTION
+On Active Directory hosts the machine account owns the
+.B TERMSRV/*
+service principals, so their keys are in the host keytab, which the unprivileged
+proxy must not read.
+.B fastrdp-termsrv-keytab
+writes a keytab with only the
+.B TERMSRV/*
+entries (owner root, the given group, mode 0640) and replaces the old one
+atomically. It fails if the host keytab has no TERMSRV keys.
+.PP
+sssd changes the machine password regularly, which writes new keys to the host
+keytab.
+.B fastrdp-termsrv-keytab.path
+watches
+.I /etc/krb5.keytab
+and starts
+.BR fastrdp-termsrv-keytab.service ,
+which runs this command and restarts
+.B fastrdp-proxy.service
+if it is running. Both units are installed disabled; on AD hosts run
+.B systemctl enable \-\-now fastrdp-termsrv-keytab.path
+once. FreeIPA and other KDCs have separate TERMSRV keys and need neither.
+.SH OPTIONS
+.TP
+.BI \-s " host-keytab"
+Keytab to copy from (FASTRDP_HOST_KEYTAB, default
+.IR /etc/krb5.keytab ).
+.TP
+.BI \-d " termsrv-keytab"
+Keytab to write (FASTRDP_TERMSRV_KEYTAB, default
+.IR /etc/fastrdp/termsrv.keytab ).
+.TP
+.BI \-g " group"
+Group of the written keytab (FASTRDP_TERMSRV_KEYTAB_GROUP, default
+.IR _fastrdp-proxy ).
+.SH ENVIRONMENT
+Options win over the environment variables named above, which win over
+the configuration file.
+.B FASTRDP_TERMSRV_CONF
+names another configuration file.
+.SH FILES
+.TP
+.I /etc/fastrdp/termsrv.conf
+.IB KEY = VALUE
+settings, shared with
+.BR fastrdp-termsrv-check (8).
+.SH EXIT STATUS
+0 written, 1 no TERMSRV keys or an error, 2 usage.
+.SH SEE ALSO
+.BR fastrdp-termsrv-check (8),
+.BR ktutil (1),
+.BR adcli (8)

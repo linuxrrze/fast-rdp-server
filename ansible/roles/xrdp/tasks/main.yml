@@ -60,6 +60,9 @@
     - {path: /etc/xrdp/key.pem, mode: "0640"}
     - {path: /etc/xrdp/cert.pem, mode: "0644"}
 
+# These files, startwm.sh and /etc/pam.d/xrdp-sesman are not conffiles of fastrdp-xrdp
+# and a rebuild keeps them (third_party/build-xrdp.sh): upgrades never touch or ask about
+# them. Upstream's versions: <prefix>/share/fastrdp-xrdp/default-config/.
 - name: Configure xrdp, sesman, GFX codecs and Xorg
   ansible.builtin.template:
     src: "{{ item.src }}"
