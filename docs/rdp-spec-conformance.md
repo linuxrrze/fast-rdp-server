@@ -125,13 +125,20 @@ Sorted by severity. "Fixed" means fixed in this review.
     - **Effect:** after a network drop, mstsc must reconnect from scratch: Kerberos NLA, then
       a new push.
     - **Recommendation:** an MFA grace period in the broker ([§12](#12-recommended-changes-not-made)).
-11. **WAN clients get LAN encoder settings (risk, open).**
-    - **What happens:** mstsc sends `connectionType` = CONNECTION_TYPE_AUTODETECT (7). The
-      proxy does no connect-time auto-detection ([MS-RDPBCGR] 2.2.14). xrdp has no
-      `[ffmpeg.autodetect]` / `[x264.autodetect]` section, so it falls back to `default`
-      (QP-based, no bitrate cap).
-    - **Effect:** only the GFX frame-ack flow control limits the bitrate.
-    - **Recommendation:** [§12](#12-recommended-changes-not-made).
+11. **WAN clients got LAN encoder settings (fixed, R6).**
+    - **What happened:** mstsc sends `connectionType` = CONNECTION_TYPE_AUTODETECT (7). The
+      proxy does no connect-time auto-detection ([MS-RDPBCGR] 2.2.14) and copied the
+      value to xrdp. xrdp 0.10.6.1 has no slot for type 7: `NUM_CONNECTION_TYPES` is 7
+      (`xrdp/xrdp_tconfig.h:32`), the loaders read `[*.modem]` … `[*.lan]` only
+      (`xrdp/xrdp_tconfig.c:682-708`), and the encoders map 0 and 7 to `lan`
+      (`xrdp/xrdp_encoder_x264.c:133-136`, `xrdp_encoder_openh264.c:156`, `xrdp_encoder_ffmpeg.c:427`).
+      fastrdp's `[*.lan]` is empty, so it inherits `[*.default]`: QP 23, no bitrate cap.
+      An `[x264.autodetect]` section would be parsed and ignored.
+    - **Now:** the broker chooses the type the proxy sends to xrdp for clients that sent
+      7, 0 or an invalid value: `lan` for client addresses in `[network] lan_networks`
+      (`fastrdp_lan_networks`), otherwise `xrdp_autodetect_profile`
+      (`fastrdp_xrdp_autodetect_profile`, default `wan`: 12/15 Mbit/s). A type the client
+      chose (1–6) is kept. gfx.toml also gets `[*.autodetect]` copies of that profile.
 
 ## 1. Security negotiation (X.224, [MS-RDPBCGR] 2.2.1.1–2.2.1.2, 5.4)
 
@@ -164,8 +171,8 @@ Sorted by severity. "Fixed" means fixed in this review.
 | WorkingDir "directory that contains the executable … in AlternateShell" (2.2.1.11.1.1) | Was copied to the back-end; now cleared (module:594) | fixed | Belongs to the dropped shell. |
 | INFO_RAIL (2.2.1.11.1.1, [MS-RDPERP]) | Was forwarded to the back-end while the proxy blocked the RAIL channel. Now refused unless `RemoteApp=true` (module:423-433) and cleared on the back-end hop (module:595) | fixed | mstsc RemoteApp gets an error dialog instead of a hang. ERRINFO_REMOTEAPPSNOTENABLED (0x10F3) means the opposite (server *only* hosts RemoteApps), so 0x7 is used. |
 | INFO_LOGONNOTIFY / INFO_LOGONERRORS and the Save Session Info PDU (2.2.10.1) | Flags are copied to the back-end hop. The back-end's Save Session Info is forwarded to the client (`pf_update.c:301-332`). xrdp sends logon info via `libxrdp_send_session_info` | conforms | The user name in Logon Info is the back-end's (broker user), which is correct. |
-| `clientAddress` (2.2.1.11.1.1.1) | Ignored. The module reports the socket peer to the broker (module:475-478, e2e-tested) | conforms | – |
-| `connectionType` / RNS_UD_CS_VALID_CONNECTION_TYPE (2.2.1.3.2) | Copied to the back-end. mstsc sends AUTODETECT (7). The proxy does no auto-detection (2.2.14). xrdp has no `autodetect` section in `gfx.toml` and uses `default` | risk | WAN clients get LAN encoder settings. See [§12](#12-recommended-changes-not-made) R6. |
+| `clientAddress` (2.2.1.11.1.1.1) | Ignored. The module reports the socket peer to the broker (module:470-473, e2e-tested) | conforms | – |
+| `connectionType` / RNS_UD_CS_VALID_CONNECTION_TYPE (2.2.1.3.2) | mstsc sends AUTODETECT (7); the proxy does no auto-detection (2.2.14), and xrdp 0.10.6.1 encodes 7 (and 0) like `lan` (`xrdp_tconfig.h:32`, `xrdp_encoder_x264.c:133-136`). **Now** the module sends the front's type to the broker, and for xrdp desktops the broker returns `target.connection_type` for clients that sent 7, 0 or an invalid value: `lan` inside `[network] lan_networks` (socket address, IPv4-mapped IPv6 included), else `xrdp_autodetect_profile` (default `wan`). The module sets only `FreeRDP_ConnectionType` on the back-end hop (`apply_connection_type`); performance flags and RNS_UD_CS_SUPPORT_NETCHAR_AUTODETECT stay the client's. Types 1–6 chosen by the client are kept. gnome-remote-desktop 49 and KRdp 6.4 never read `ConnectionType` (they use their own RTT/bandwidth auto-detection), so the broker leaves them alone | fixed | Pick the WAN cap per site (`fastrdp_xrdp_autodetect_profile`), list LAN/VPN client networks in `fastrdp_lan_networks`. Lab S13. |
 
 ## 4. Licensing ([MS-RDPBCGR] 1.3.1.1 phase 7, 2.2.1.12; [MS-RDPELE])
 
@@ -267,6 +274,7 @@ Windows Media Foundation H.264 decoder: Baseline, Main and High, up to level 5.1
 | Refuse INFO_RAIL when `RemoteApp=false` | module `fastrdp_fetch_target` | `run.sh`: `railuser` never reaches the broker; errinfo 0x7 |
 | Back-end hop: clear WorkingDir, RemoteApplicationMode, PasswordIsSmartcardPin, SmartcardLogon, LoadBalanceInfo (routing token) | module `ClientPreConnect` | covered indirectly (back-end hop still logs in; e2e `back-end received the token`) |
 | Refuse a back-end Server Redirection PDU | module `ClientRedirect` hook | not tested here (needs a redirecting fake back-end) |
+| R6: connection type towards xrdp chosen by the broker (`lan_networks`, `xrdp_autodetect_profile`); `[*.autodetect]` in gfx.toml | `broker/brokerd/fastrdp_broker/conntype.py`, `config.py`, `server.py`; module `apply_connection_type`; `gfx.toml.j2`, `broker.toml.j2`, `roles/common` | `broker/brokerd/tests/test_conntype.py`; `run.sh`: front type 7/2 reported, broker's `lan` reaches the back-end as 6, missing/unknown keeps the client's; `tests/ansible/test_templates.py` |
 | Webgate: `rdp_parameters` can no longer override hostname, port, username, password or `security`; a pinned fingerprint removes `ignore-cert` | `broker/webgate/fastrdp_webgate/app.py` | `broker/webgate/tests/test_gaps.py::test_rdp_parameters_cannot_override_security_or_pin` |
 | xrdp patch: IDR after lost output (`force_idr`, `forced-idr`); full-range BT.709 VUI and black | `patches/xrdp/0001-*.patch` (regenerated with `git format-patch` against pristine 0.10.6.1) | `patches/xrdp/test/test_ffmpeg_encoder.c`: no B-frames or mid-GOP IDR, Baseline/Main profile, full-range VUI, SPS+IDR after lost output, then P-frames, full-range black |
 
@@ -283,7 +291,7 @@ libx264, 17/17 each.
 | R3 | `ansible/roles/freerdp_proxy` | When only the web path needs TLS (`fastrdp_web_enabled` and not `fastrdp_allow_tls_logins`), restrict TLS logins in the module to loopback peers (new `[FastRDP] AllowTlsFrom=127.0.0.1,::1`) | Today any network client can open a TLS session up to the broker's refusal; the broker refuses non-web TLS logins, but the protocol surface is larger than needed. |
 | R4 | FreeRDP upstream (`nego.c:1335-1360`) | On REDIRECTED_AUTHENTICATION_MODE_REQUIRED without support, answer RDP_NEG_RSP without the SUPPORTED flag (or a negotiation failure) instead of dropping TCP | Clear mstsc error for `/remoteGuard`. |
 | R5 | FreeRDP upstream / [windows-clients.md](windows-clients.md) §5 #4 | Disable NTLM in the proxy's acceptor | NTLM attempts fail with a CredSSP error instead of a later drop. |
-| R6 | `ansible/roles/xrdp/templates/gfx.toml.j2` | Add `[ffmpeg.autodetect]` / `[x264.autodetect]` with WAN-like caps (or make the default capped), since mstsc sends CONNECTION_TYPE_AUTODETECT and the proxy hop measures loopback | WAN mstsc currently gets uncapped QP streams. A policy decision, so not changed here. |
+| R6 | broker (`conntype.py`, `[network]`), module (`apply_connection_type`), `gfx.toml.j2`, `roles/common` | (done) Options 4 + 5: `fastrdp_xrdp_autodetect_profile` (default `wan`) for auto-detect clients, `fastrdp_lan_networks` for clients that get `lan`; explicit client types kept; xrdp only. Applied as the connection type on the back-end hop, because xrdp 0.10.6.1 ignores `[*.autodetect]` (rendered anyway, equal to the profile). No xrdp patch needed | WAN mstsc got uncapped QP streams. |
 | R7 | xrdp patch | Large monitors: cap the level (`level=51`, or ≤ 30 fps for > 1080p) or fall back to RFX for surfaces wider than 4096 px; flush the encoder (send NULL, drain) on "no output" instead of only forcing an IDR | After lab S12. |
 | R8 | `fastrdp_plugin.c` | Make the broker call abortable when the front client disconnects (watch `pdata->abort_event` in `broker_call`'s poll) | A user who closes mstsc during a push still occupies a proxy thread until the broker answers. |
 | R9 | [performance.md](performance.md) | (done) a note that the proxy is TCP only and does no connect-time auto-detection | Expectation management for WAN users. |
@@ -309,7 +317,7 @@ findings here. The certificate SAN and Kerberos items there are covered in
 | S10 | `proxy.ini` with `AudioInput=false` (drdynvc intercept mode) | Connect with mstsc, use GFX | GFX still works through the intercepting drdynvc path |
 | S11 | mstsc smartcard (PIV) over NLA | Login | Back-end hop Client Info flags without INFO_PASSWORD_IS_SC_PIN (FreeRDP proxy log at core.info DEBUG: "Client Info Packet Flags") |
 | S12 | mstsc, Windows App, FreeRDP 3; GPU host with VA-API or NVENC | 3840×2160@60 single monitor; 5120×1440; 2×2560×1440 | Encoder log `opened for WxH`; level_idc (`ffprobe` on a dumped stream or the patch test with `W=3840`); MF decoder accepts level 5.2 or shows black or corruption; fallback for > 4096 px |
-| S13 | mstsc with `connection type:i:7` (default) vs `:i:2` | Bandwidth-limited link (`tc netem rate 10mbit`) | xrdp log `connection type`; bitrate with `default` vs `[ffmpeg.broadband_low]` (R6) |
+| S13 | mstsc with `connection type:i:7` (default) vs `:i:2` vs `:i:6`; once from an address in `fastrdp_lan_networks`, once from outside | Bandwidth-limited link (`tc netem rate 10mbit`), xrdp session | Proxy log `back-end connection type N (client sent 7)`; broker log `connection type wan towards xrdp`; bitrate: 7 outside the LAN ≈ `[*.wan]` cap (≤ 15 Mbit/s), 7 inside = uncapped, 2 = `[*.broadband_low]` everywhere; picture quality and latency at 10 Mbit/s with `wan` vs `broadband_high` to choose the site default (R6) |
 | S14 | mstsc with a GPU encoder | Force output loss (temporarily lower `XRDP_GFX_MAX_COMPRESSED_BYTES`) | Picture recovers on the next frame (IDR) instead of at the next GOP |
 
 ## Status summary
@@ -318,7 +326,7 @@ findings here. The certificate SAN and Kerberos items there are covered in
 |---|---|---|---|---|---|
 | 1 Security negotiation | 4 | 0 | 1 | 0 | 1 |
 | 2 CredSSP | 4 | 0 | 0 | 0 | 0 |
-| 3 Client Info / swap | 4 | 1 | 1 | 0 | 3 |
+| 3 Client Info / swap | 4 | 1 | 0 | 0 | 4 |
 | 4 Licensing | 2 | 0 | 0 | 0 | 0 |
 | 5 Session end / error info | 2 | 0 | 0 | 1 | 1 |
 | 6 Redirection / reconnect | 1 | 0 | 1 | 0 | 1 |
@@ -326,7 +334,7 @@ findings here. The certificate SAN and Kerberos items there are covered in
 | 8 Channels | 6 | 0 | 0 | 0 | 1 |
 | 9 Display control | 3 | 0 | 0 | 1 | 0 |
 | 10 H.264 / AVC420 | 7 | 0 | 1 | 0 | 2 |
-| **Total (50 rows)** | **33** | **1** | **4** | **2** | **10** |
+| **Total (50 rows)** | **33** | **1** | **3** | **2** | **11** |
 
 The web path rows are in §1 (`security=tls`), §3 (AlternateShell hint via `initial-program`)
 and §9 (`resize-method=display-update`). The webgate fix is listed in §11.

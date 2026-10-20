@@ -119,6 +119,7 @@ class SetupTestCase(unittest.TestCase):
             "desktops": "xfce,gnome,plasma",
             "default_desktop": "gnome",
             "gpu": "nvidia",
+            "lan_networks": "10.0.0.0/8, 2001:db8::/32",
             "mfa_mode": "otp_or_push",
             "privacyidea_url": "https://pi.corp.example.com/",
             "privacyidea_realm": "corp",
@@ -205,6 +206,7 @@ class TestGeneratedInventory(SetupTestCase):
             "fastrdp_desktops": ["xfce", "gnome", "plasma"],
             "fastrdp_default_desktop": "gnome",
             "fastrdp_gpu": "nvidia",
+            "fastrdp_lan_networks": ["10.0.0.0/8", "2001:db8::/32"],
             "fastrdp_mfa_mode": "otp_or_push",
             "fastrdp_privacyidea_url": "https://pi.corp.example.com",
             "fastrdp_privacyidea_realm": "corp",
@@ -440,6 +442,8 @@ class TestValidation(SetupTestCase):
                              "not a PEM certificate")
         self.assert_rejected(dict(LAB, install_method="apt", apt_key_checksum="md5:00"), "sha256:<64 hex digits>")
         self.assert_rejected(dict(LAB, name="lab"), "shipped example")
+        self.assert_rejected(dict(LAB, lan_networks="10.1.2.3/8"), "invalid network '10.1.2.3/8'")
+        self.assert_rejected(dict(LAB, lan_networks=["office"]), "invalid network 'office'")
         self.assert_rejected(dict(LAB, colour="blue"), "unknown answer key(s): colour")
         no_pw = dict(LAB)
         no_pw.pop("join_password")

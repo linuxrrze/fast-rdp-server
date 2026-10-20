@@ -12,7 +12,9 @@
  *                         user's session. The broker returns the back-end target.
  *   ClientPreConnect      replace the credentials and security protocol the proxy
  *                         uses towards the back-end with the broker's values,
- *                         so the user's password never reaches a back-end directly.
+ *                         so the user's password never reaches a back-end directly;
+ *                         set the connection type the broker chose (xrdp encoder
+ *                         profile, see connection_type_from_target()).
  *   ServerSessionEnd      notify the broker and wipe secrets.
  *
  * Refusals after the RDP connection is up carry a Set Error Info PDU
@@ -70,6 +72,7 @@ typedef struct
 	char* target_password;
 	char* target_domain;
 	BOOL target_nla;
+	UINT32 target_connection_type; /* 0 = keep the client's */
 } fastrdpSession;
 
 static void wipe_free(char** s)
@@ -307,6 +310,53 @@ static void set_front_errinfo(proxyData* pdata, UINT32 code)
 	freerdp_set_error_info(ctx->rdp, code);
 }
 
+/* -------------------------------------------------------- connection type */
+
+/* connectionType values ([MS-RDPBCGR] 2.2.1.3.2) by xrdp's gfx.toml section names */
+static const struct
+{
+	const char* name;
+	UINT32 value;
+} connection_types[] = { { "modem", CONNECTION_TYPE_MODEM },
+	                     { "broadband_low", CONNECTION_TYPE_BROADBAND_LOW },
+	                     { "satellite", CONNECTION_TYPE_SATELLITE },
+	                     { "broadband_high", CONNECTION_TYPE_BROADBAND_HIGH },
+	                     { "wan", CONNECTION_TYPE_WAN },
+	                     { "lan", CONNECTION_TYPE_LAN } };
+
+/* The broker's optional target "connection_type" for the back-end hop. xrdp picks its
+ * encoder profile from it, and mstsc's default AUTODETECT would get the uncapped LAN
+ * profile because the proxy measures nothing. The broker decides (client network,
+ * explicit client choice, back-end kind); missing or unknown = 0 = keep the client's. */
+static UINT32 connection_type_from_target(const proxyData* pdata, const cJSON* target)
+{
+	const char* name = json_str(target, "connection_type");
+	if (!name)
+		return 0;
+	for (size_t i = 0; i < ARRAYSIZE(connection_types); i++)
+	{
+		if (strcmp(name, connection_types[i].name) == 0)
+			return connection_types[i].value;
+	}
+	WLog_WARN(TAG, "[%s] unknown connection type from broker ignored", pdata->session_id);
+	return 0;
+}
+
+/* Only connectionType changes. The client's performance flags and its network
+ * auto-detect support (RNS_UD_CS_SUPPORT_NETCHAR_AUTODETECT) stay as they are, so this is
+ * not freerdp_set_connection_type(), which would rewrite the performance flags. */
+static BOOL apply_connection_type(const proxyData* pdata, const fastrdpSession* s,
+                                  rdpSettings* settings)
+{
+	if (s->target_connection_type == 0)
+		return TRUE;
+	WLog_INFO(TAG, "[%s] back-end connection type %" PRIu32 " (client sent %" PRIu32 ")",
+	          pdata->session_id, s->target_connection_type,
+	          freerdp_settings_get_uint32(settings, FreeRDP_ConnectionType));
+	return freerdp_settings_set_uint32(settings, FreeRDP_ConnectionType,
+	                                   s->target_connection_type);
+}
+
 /* ------------------------------------------------------------------ hooks */
 
 static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, void* param)
@@ -481,6 +531,9 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	cJSON_AddNumberToObject(req, "width", freerdp_settings_get_uint32(front, FreeRDP_DesktopWidth));
 	cJSON_AddNumberToObject(req, "height",
 	                        freerdp_settings_get_uint32(front, FreeRDP_DesktopHeight));
+	/* 0 if the client did not set RNS_UD_CS_VALID_CONNECTION_TYPE */
+	cJSON_AddNumberToObject(req, "connection_type",
+	                        freerdp_settings_get_uint32(front, FreeRDP_ConnectionType));
 
 	long timeout = strtol(config_str(pdata, "Timeout", "120"), NULL, 10);
 	if (timeout <= 0 || timeout > 600)
@@ -529,6 +582,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	s->target_password = _strdup(tpass);
 	s->target_domain = _strdup(tdom ? tdom : "");
 	s->target_nla = strcmp(sec, "nla") == 0;
+	s->target_connection_type = connection_type_from_target(pdata, target);
 	ev->target_address = _strdup(host);
 	if (!s->target_user || !s->target_password || !s->target_domain || !ev->target_address)
 		goto out;
@@ -602,7 +656,7 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	if (s->target_nla &&
 	    !freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, "!kerberos"))
 		return FALSE;
-	return TRUE;
+	return apply_connection_type(pdata, s, settings);
 }
 
 /* The back-end connection failed (TLS/NLA/Client Info rejected or unreachable). */

@@ -93,6 +93,21 @@
         - {name: auto-nvidia, encoder: auto, gpu: nvidia}
         - {name: auto-none, encoder: auto, gpu: none}
 
+    - name: Xrdp gfx.toml, other auto-detect profiles
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/xrdp/templates/gfx.toml.j2"
+        dest: "{{ render_out }}/gfx-{{ item.name }}.toml"
+        mode: "0644"
+      vars:
+        fastrdp_xrdp_h264_encoder: "{{ item.encoder }}"
+        fastrdp_gpu_effective: mesa
+        fastrdp_xrdp_autodetect_profile: "{{ item.profile }}"
+      loop:
+        - {name: vaapi-satellite, encoder: vaapi, profile: satellite}
+        - {name: x264-modem, encoder: x264, profile: modem}
+        - {name: vaapi-default, encoder: vaapi, profile: default}
+        - {name: vaapi-lan, encoder: vaapi, profile: lan}
+
     - name: Xrdp xrdp.ini, sesman.ini, xorg.conf
       ansible.builtin.template:
         src: "{{ roles_dir }}/xrdp/templates/{{ item }}.j2"
@@ -143,6 +158,8 @@
         fastrdp_desktop_groups: {plasma: [rdp-kde], gnome: [rdp-gnome, "domain users"]}
         fastrdp_desktop_labels: {sway: "Sway (tiling)", xfce: "XFCE \"light\""}
         fastrdp_default_geometry: 2560x1440
+        fastrdp_lan_networks: [10.0.0.0/8, "2001:db8::/32", 192.0.2.7]
+        fastrdp_xrdp_autodetect_profile: broadband_high
 
     - name: Broker.toml, KDC-enforced MFA for NLA (FreeIPA passkey/PKINIT)
       ansible.builtin.template:

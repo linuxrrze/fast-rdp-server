@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+from . import conntype
 
 DEFAULT_CONFIG_PATH = Path("/etc/fastrdp/broker.toml")
 
@@ -89,6 +91,19 @@ class MfaSection:
 
 
 @dataclass
+class NetworkSection:
+    """Connection type for the xrdp hop (conntype.py, docs/performance.md)."""
+    # Clients whose socket address is in one of these CIDRs get `lan` towards xrdp,
+    # unless they chose a connection type themselves.
+    lan_networks: list[str] = field(default_factory=list)
+    # Profile for all other clients that ask for auto-detection (mstsc's default):
+    # modem | broadband_low | satellite | broadband_high | wan | lan | default (unchanged).
+    xrdp_autodetect_profile: str = "wan"
+    # lan_networks parsed (set by parse(), not a config key)
+    lan: tuple = field(default=(), init=False)
+
+
+@dataclass
 class Desktop:
     name: str
     backend: str  # xrdp | gnome | plasma
@@ -113,6 +128,7 @@ class Config:
     auth: AuthSection
     mfa: MfaSection
     web: WebSection
+    network: NetworkSection
     desktops: dict[str, Desktop]
     backends: dict[str, BackendSection]
     default_desktop: str
@@ -126,7 +142,7 @@ VALID_SESSION_TGT = ("auto", "off", "required")
 
 
 def _section(cls, data: dict, where: str):
-    known = {f for f in cls.__dataclass_fields__}
+    known = {f.name for f in fields(cls) if f.init}
     unknown = set(data) - known
     if unknown:
         raise ConfigError(f"[{where}]: unknown keys: {', '.join(sorted(unknown))}")
@@ -185,6 +201,14 @@ def parse(raw: dict) -> Config:
         # foreign realm's KDC does not apply this realm's authentication indicators.
         raise ConfigError("[mfa] nla_kdc_enforced needs [auth] realms (the realms whose KDC enforces it)")
 
+    network = _section(NetworkSection, dict(raw.pop("network", {})), "network")
+    try:
+        network.lan = conntype.parse_networks(network.lan_networks)
+    except ValueError as exc:
+        raise ConfigError(f"[network] lan_networks: {exc}") from None
+    if network.xrdp_autodetect_profile not in conntype.PROFILES:
+        raise ConfigError(f"[network] xrdp_autodetect_profile must be one of {conntype.PROFILES}")
+
     desktops: dict[str, Desktop] = {}
     for name, d in raw.pop("desktops", {}).items():
         desk = _section(Desktop, {"name": name, **d}, f"desktops.{name}")
@@ -231,6 +255,7 @@ def parse(raw: dict) -> Config:
         auth=auth,
         mfa=mfa,
         web=web,
+        network=network,
         desktops=desktops,
         backends=backends,
         default_desktop=default_desktop,

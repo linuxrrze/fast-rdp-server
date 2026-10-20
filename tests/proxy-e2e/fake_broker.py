@@ -4,7 +4,9 @@
 
 Other passwords: 'deadport' -> accepted but routed to a closed port; a password listed in
 REFUSALS -> that refusal (reasons: broker/brokerd/fastrdp_broker/protocol.py); anything
-else -> "access denied" with reason "denied"."""
+else -> "access denied" with reason "denied".
+Users 'lanuser' / 'bogususer' get target connection_type "lan" / "bogus" (the module
+must apply the first and ignore the second)."""
 import json
 import os
 import socket
@@ -19,6 +21,8 @@ REFUSALS = {
     "nobackend": {"error": "session could not be started", "reason": "backend"},
     "oldbackend": {"error": "session could not be started"},  # broker without "reason"
 }
+
+CONNECTION_TYPES = {"lanuser": "lan", "bogususer": "bogus"}
 
 path, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 if os.path.exists(path):
@@ -40,6 +44,9 @@ while True:
                 "host": "127.0.0.1", "port": 1 if req["password"] == "deadport" else port,
                 "username": req["user"], "password": "fastrdp1:TOKEN", "domain": "",
                 "security": "tls"}}
+            ct = CONNECTION_TYPES.get(req["user"])
+            if ct:
+                rep["target"]["connection_type"] = ct
         else:
             rep = {"ok": False, **REFUSALS.get(req.get("password"), {"error": DENIED, "reason": "denied"})}
         conn.sendall((json.dumps(rep) + "\n").encode())

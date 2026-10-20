@@ -22,6 +22,7 @@ See docs/quickstart.md.
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -108,6 +109,8 @@ VARIABLES = [
     ("performance", "fastrdp_x264_threads", 2, "x264 threads per xrdp session"),
     ("performance", "fastrdp_backend_port_range", [33900, 34899], "loopback ports for back-end sessions"),
     ("performance", "fastrdp_xrdp_port", 3390, "xrdp listens on loopback only"),
+    ("performance", "fastrdp_lan_networks", [],
+     "client networks that get the uncapped LAN video profile (others: capped WAN profile)"),
     ("hardening", "fastrdp_proc_hidepid", False, "hide other users' processes (/proc hidepid)"),
 ]
 VARIABLE_NAMES = [v[1] for v in VARIABLES]
@@ -217,6 +220,16 @@ def v_groups(value, _a=None):
         if not GROUP_RE.match(g):
             raise SetupError(f"invalid group name {g!r}")
     return groups
+
+
+def v_networks(value, _a=None):
+    nets = []
+    for n in _list(value):
+        try:
+            nets.append(str(ipaddress.ip_network(n, strict=True)))
+        except ValueError as e:
+            raise SetupError(f"invalid network {n!r} (CIDR such as 10.0.0.0/8): {e}") from None
+    return nets
 
 
 def v_desktops(value, _a=None):
@@ -400,6 +413,11 @@ QUESTIONS = [
            "wlroots (in xrdp): " + " ".join(WLROOTS_DESKTOPS)),
     Q("default_desktop", "Default desktop", v_default_desktop, lambda a: a["desktops"][0]),
     Q("gpu", "GPU: auto / nvidia / mesa (Intel, AMD) / none", v_choice("auto", "nvidia", "mesa", "none"), "auto"),
+    Q("lan_networks", "Client networks on the LAN (CIDRs, comma-separated, empty = none)", v_networks, [],
+      ask=_is_prod,
+      help="X11 (xrdp) sessions of clients that ask for auto-detection (mstsc's default) get a\n"
+           "bitrate cap for WAN links. Clients from these networks get the uncapped LAN profile.\n"
+           "Use the addresses the server sees (after NAT/VPN), e.g. 10.0.0.0/8, 2001:db8::/32."),
     Q("mfa_mode", "MFA with privacyIDEA: none / push / otp / otp_or_push",
       v_choice("none", "push", "otp", "otp_or_push"), "none",
       help="push: approve on the phone (works with NLA). otp: code appended to the password\n"
@@ -566,6 +584,7 @@ def variables_for(a):
         "fastrdp_x264_threads": 2,
         "fastrdp_backend_port_range": [33900, 34899],
         "fastrdp_xrdp_port": 3390,
+        "fastrdp_lan_networks": a.get("lan_networks", []),
         "fastrdp_proc_hidepid": False,
         "fastrdp_install_method": a["install_method"],
         "fastrdp_web_enabled": a["web_enabled"],

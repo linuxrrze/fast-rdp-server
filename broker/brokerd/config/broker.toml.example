@@ -45,6 +45,13 @@ push_timeout = 60
 service_user = "fastrdp-trigger"  # admin with triggerchallenge policy; "" = use user password
 service_password_file = "/etc/fastrdp/privacyidea-service.secret"
 
+# Connection type the proxy sends to xrdp, which selects gfx.toml's encoder profile
+# ([x264.<type>], [ffmpeg.<type>]). Only for clients that did not choose one themselves
+# (mstsc's default is auto-detect; the proxy does not measure the network).
+[network]
+lan_networks = []                 # client CIDRs that get `lan`, e.g. ["10.0.0.0/8", "2001:db8::/32"]
+xrdp_autodetect_profile = "wan"   # everyone else: modem broadband_low satellite broadband_high wan lan default
+
 [defaults]
 desktop = "xfce"
 geometry = "1920x1080"

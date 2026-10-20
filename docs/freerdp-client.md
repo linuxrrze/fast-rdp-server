@@ -44,6 +44,16 @@ All commands use the server's FQDN; `rdp1.lab.example.com`, realm `LAB.EXAMPLE.C
 Append the display options you want, e.g. `/gfx:avc444 /network:auto /dynamic-resolution
 +clipboard` ([client-guide.md](client-guide.md), [performance.md](performance.md)).
 
+**Video bitrate of X11 (xrdp) sessions.** `/network:auto`, or no `/network:` at all,
+sends "auto-detect". The proxy does not measure the link; the server uses `lan`
+(uncapped) for client addresses in `fastrdp_lan_networks` and
+`fastrdp_xrdp_autodetect_profile` (default `wan`, 12–15 Mbit/s) for all others. An
+explicit `/network:lan`, `/network:wan`, `/network:broadband-high`,
+`/network:broadband-low` or `/network:modem` is always kept. `/network:` also sets
+FreeRDP's own performance flags (wallpaper, themes, font smoothing) for the session.
+GNOME and Plasma sessions ignore the connection type
+([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)).
+
 ## 0. Parts every Kerberos login shares
 
 **Server name.**

@@ -90,6 +90,11 @@ timeout 20 ./client 127.0.0.1 23389 deadport deadport "" > deadport.out 2>&1 || 
 # RemoteApp (INFO_RAIL) is not offered; a smartcard PIN on the TLS path is never forwarded
 E2E_RAIL=1 timeout 20 ./client 127.0.0.1 23389 railuser good "" > rail.out 2>&1 || true
 E2E_SC_PIN=1 timeout 20 ./client 127.0.0.1 23389 pinuser 1234 "" > pin.out 2>&1 || true
+# connection type towards the back-end (xrdp's encoder profile): the broker's choice, or
+# the client's when the broker sends none or an unknown one
+timeout 20 ./client 127.0.0.1 23389 lanuser good "" >/dev/null 2>&1 || true
+timeout 20 ./client 127.0.0.1 23389 bogususer good "" >/dev/null 2>&1 || true
+E2E_CONNECTION_TYPE=2 timeout 20 ./client 127.0.0.1 23389 slowuser good "" >/dev/null 2>&1 || true
 sleep 1
 
 fail=0
@@ -100,19 +105,23 @@ load = lambda f: [json.loads(l) for l in open(f)] if __import__("os").path.exist
 a, b = load("a.log"), load("b.log")
 la = [r for r in a if r["op"] == "login"]
 lb = [r for r in b if r["op"] == "login"]
+ct = lambda logins, user: [r.get("connection_type") for r in logins if r["user"] == user]
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 10'
+expect "front broker saw the expected logins"         'len(la) == 13'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
-expect "back-end received the token, not the password" 'len(lb) == 2 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 5 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
-expect "session end reported to the broker"            'any(r["op"] == "end" and r["session_id"] == la[0]["session_id"] for r in a)'
+expect "front login carries the client's connection type" 'ct(la, "alice") == [7] and ct(la, "slowuser") == [2]'
+expect "connection type from the broker reaches the back-end" 'ct(lb, "lanuser") == [6]'
+expect "no or unknown broker connection type: client's kept" 'ct(lb, "alice") == [7] and ct(lb, "bogususer") == [7] and ct(lb, "slowuser") == [2]'
+expect "session end reported to the broker"           'any(r["op"] == "end" and r["session_id"] == la[0]["session_id"] for r in a)'
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }

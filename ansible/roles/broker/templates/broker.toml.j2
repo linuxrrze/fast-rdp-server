@@ -27,8 +27,14 @@ verify_tls = {{ fastrdp_privacyidea_verify_tls | default(true) | bool | lower }}
 service_user = "{{ fastrdp_privacyidea_service_user }}"
 service_password_file = "/etc/fastrdp/privacyidea-service.secret"
 
+[network]
+# Connection type the proxy sends to xrdp (encoder profile) for clients that ask for
+# auto-detection or send none: lan inside lan_networks, else xrdp_autodetect_profile.
+lan_networks = {{ fastrdp_lan_networks | map('string') | list | to_json }}
+xrdp_autodetect_profile = "{{ fastrdp_xrdp_autodetect_profile }}"
+
 [defaults]
-desktop = "{{ fastrdp_default_desktop }}"
+desktop ="{{ fastrdp_default_desktop }}"
 geometry = "{{ fastrdp_default_geometry }}"
 
 [defaults.groups]

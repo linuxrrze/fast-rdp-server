@@ -12,7 +12,7 @@ import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import identity, pamauth, tgt
+from . import conntype, identity, pamauth, tgt
 from .backends import BACKENDS, Backend, BackendError, LoginRequest
 from .config import Config
 from .identity import IdentityError, LocalUser
@@ -243,7 +243,25 @@ class Broker:
             "login %s session=%s desktop=%s -> %s:%d (%s)",
             user.name, session_id, desktop.name, target.host, target.port, target.security,
         )
-        return {"ok": True, "user": user.name, "desktop": desktop.name, "target": target.as_dict()}
+        reply = {"ok": True, "user": user.name, "desktop": desktop.name, "target": target.as_dict()}
+        self.add_connection_type(reply["target"], msg, backend, user)
+        return reply
+
+    # ---------------------------------------------------------------- network
+    def add_connection_type(self, target: dict, msg: dict, backend: Backend, user: LocalUser) -> None:
+        """xrdp only: the connection type the module sends to the back-end instead of the
+        client's AUTODETECT/unset one (conntype.py). gnome-remote-desktop and KRdp never
+        read connectionType (they measure the link with their own auto-detection)."""
+        if backend.name != "xrdp":
+            return
+        client_type = msg.get("connection_type")
+        ct = conntype.for_backend(
+            client_type, str_field(msg, "client_address"),
+            self.cfg.network.lan, self.cfg.network.xrdp_autodetect_profile,
+        )
+        if ct:
+            target["connection_type"] = ct
+            log.info("%s: connection type %s towards xrdp (client sent %r)", user.name, ct, client_type)
 
     async def _web_user(self, msg: dict) -> tuple[identity.LocalUser, list[dict]]:
         """User named by fastrdp-webgate (OIDC-authenticated) and the desktops it may use."""

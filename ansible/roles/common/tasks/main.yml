@@ -22,6 +22,10 @@
             and fastrdp_mfa_nla_kdc_auth_indicators | difference(['passkey', 'pkinit', 'otp', 'radius', 'idp']) | length == 0)
       - not fastrdp_mfa_nla_kdc_enforced | bool or fastrdp_identity_provider != 'ad'
         or fastrdp_mfa_nla_kdc_enforced_by_ad_policy | bool
+      - fastrdp_xrdp_autodetect_profile in ['lan', 'wan', 'broadband_high', 'satellite', 'broadband_low', 'modem', 'default']
+      - fastrdp_lan_networks is sequence and fastrdp_lan_networks is not string
+      # shape only; the broker parses them strictly (host bits set, prefix range) at start-up
+      - fastrdp_lan_networks | map('string') | reject('match', '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)(/[0-9]{1,3})?$') | list | length == 0
     fail_msg: >-
       Check the site settings (docs/quickstart.md, roles/common/defaults/main.yml):
       fastrdp_realm and fastrdp_domain are required; fastrdp_default_desktop,
@@ -30,5 +34,7 @@
       fastrdp_session_tgt is auto, off or required;
       fastrdp_termsrv_aliases are plain DNS names; fastrdp_mfa_nla_kdc_enforced needs
       fastrdp_mfa_nla_kdc_auth_indicators from passkey, pkinit, otp, radius, idp (never
-      hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md).
+      hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md);
+      fastrdp_xrdp_autodetect_profile is lan, wan, broadband_high, satellite, broadband_low,
+      modem or default; fastrdp_lan_networks is a list of CIDRs (docs/performance.md).
     quiet: true

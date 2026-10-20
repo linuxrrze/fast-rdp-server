@@ -36,6 +36,12 @@ xfreerdp3 ... /kerberos:kdc-url:kdcproxy.lab.example.com
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /sec:tls /gfx:avc444
 ```
 
+`/network:auto` lets the server choose the video bitrate profile of X11 (xrdp) sessions:
+uncapped from the networks the administrator listed as LAN, capped (default: WAN,
+15 Mbit/s) from everywhere else. Force a profile with `/network:lan` (uncapped),
+`/network:wan`, `/network:broadband-high`, `/network:broadband-low` or `/network:modem`
+([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)).
+
 `sdl-freerdp3` and `wlfreerdp3` take the same options. Ubuntu 26.04 names the client
 `xfreerdp`. Every login method with the exact switches, what the session gets, MFA and
 error messages: [freerdp-client.md](freerdp-client.md).
@@ -70,6 +76,19 @@ connection type:i:7
     back to NTLM (refused); use the UPN there.
   - If the typed name is clearly another account than the ticket's, the server
     ignores the typed password (the session then has no Kerberos TGT).
+- **Video bitrate (X11/xrdp desktops).** With `connection type:i:7` (auto-detect, the
+  default) the server picks the profile: uncapped from the networks the administrator
+  listed as LAN, capped (default: WAN, 15 Mbit/s) from everywhere else. To force one,
+  turn auto-detection off and choose the type, in the GUI under Show Options →
+  Experience, or in the `.rdp` file:
+  ```
+  networkautodetect:i:0
+  connection type:i:6
+  ```
+  `6` = LAN (uncapped), `5` = WAN, `4` = broadband high, `3` = satellite,
+  `2` = broadband low, `1` = modem
+  ([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)). GNOME and
+  Plasma desktops adapt by themselves and ignore it.
 - Approve the push on the phone while mstsc shows "Configuring remote session…".
 - Outside the network the KDC must be reachable (VPN), or set a KDC proxy in group
   policy ([windows-clients.md](windows-clients.md) §3.10).

@@ -136,6 +136,8 @@ Role `xrdp` (`ansible/roles/xrdp/defaults/main.yml`) unless noted.
 | `fastrdp_x264_preset` | `ultrafast` | `[x264.default] preset` |
 | `fastrdp_x264_fps` | `60` | `fps_num` for x264 and FFmpeg; `xrdp.ini` `h264_frame_interval = 1000/fps` |
 | `fastrdp_x264_threads` | `2` (inventory `group_vars`) | `[x264.default] threads` |
+| `fastrdp_xrdp_autodetect_profile` | `wan` (role `common`) | profile for clients that send connection type "auto-detect" (mstsc's default): broker `[network] xrdp_autodetect_profile`, gfx.toml `[x264.autodetect]` / `[ffmpeg.autodetect]` |
+| `fastrdp_lan_networks` | `[]` (role `common`) | client CIDRs whose auto-detect sessions get `lan` (uncapped): broker `[network] lan_networks` |
 | `fastrdp_xrdp_max_sessions` | `100` | `sesman.ini` `MaxSessions` |
 | `fastrdp_xrdp_disconnected_time_limit` | `0` | minutes until disconnected sessions are killed; 0 = never |
 | `fastrdp_xorgxrdp_glamor` | `true` if GPU stack is `mesa` or `fastrdp_xorgxrdp_nvidia_glamor` | build with `--enable-glamor` (build method) and write `DRMDevice`/`DRI3`/`DRMAllowList` into `xorg.conf` |
@@ -196,7 +198,18 @@ Behaviour of the FFmpeg encoder (`patches/xrdp/README.md`):
 Rate control per RDP connection type (client `network:` setting or autodetect):
 `[ffmpeg.lan]` uses `qp`; `wan` 12/15 Mbit/s, `broadband_high` 6/8,
 `satellite` 4/5, `broadband_low` 1.4/1.6, `modem` 1.0/1.2 (bitrate/max). x264 has
-matching `vbv_max_bitrate` caps and slower presets on slow links.
+matching `vbv_max_bitrate` caps and slower presets on slow links. The values live in
+one table in `gfx.toml.j2`.
+
+**Auto-detect.** xrdp 0.10.6.1 keeps parameters for types 1–6 only
+(`NUM_CONNECTION_TYPES` 7 in `xrdp/xrdp_tconfig.h`) and encodes type 7 (auto-detect,
+mstsc's default) and 0 (none sent) like `lan`. An `[x264.autodetect]` section is parsed
+but never used. fastrdp therefore changes the type on the proxy's back-end hop: the
+broker returns `connection_type` with the login target, `lan` for clients in
+`fastrdp_lan_networks`, otherwise `fastrdp_xrdp_autodetect_profile` (default `wan`), and
+the proxy module sends that to xrdp. Types 1–6 chosen by the client are kept. gfx.toml
+still gets `[x264.autodetect]` / `[ffmpeg.autodetect]` equal to the chosen profile, for
+an xrdp that reads them. Details: [performance.md](../performance.md#bitrate-profile-of-x11-xrdp-sessions).
 
 **Status:** the FFmpeg path is tested with libx264 through the same code and with
 VA-API/NVENC falling back in a GPU-less sandbox. It is **not yet tested on real
@@ -230,6 +243,9 @@ lists each; `xrdp.log` (`xrdp_encoder_ffmpeg: using ...`) is the authoritative a
 
 - `fastrdp_xrdp_h264_encoder`, `fastrdp_ffmpeg_qp`, `fastrdp_ffmpeg_gop`,
   `fastrdp_x264_*` (above).
+- `fastrdp_xrdp_autodetect_profile` (default `wan`) and `fastrdp_lan_networks`: the
+  bitrate cap for mstsc's default "auto-detect" connections, and the client networks
+  that get the uncapped `lan` profile.
 - Role `tuning`: `fastrdp_tcp_tuning` (BBR + fq), `fastrdp_user_cpu_quota`,
   `fastrdp_user_memory_max`, `fastrdp_user_tasks_max` on `user-.slice`.
   The per-user slice limits cover Xorg and the desktop, **not** the H.264 encoder,

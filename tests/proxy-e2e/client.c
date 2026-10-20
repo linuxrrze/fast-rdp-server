@@ -8,6 +8,7 @@
  *   PKCS#11 token; PASSWORD is the PIN.
  * E2E_RAIL=1: request RemoteApp (INFO_RAIL). E2E_SC_PIN=1: flag the password as a smartcard
  *   PIN (INFO_PASSWORD_IS_SC_PIN). E2E_WORKDIR: Client Info WorkingDir.
+ * E2E_CONNECTION_TYPE=N: connectionType 1..7 in the Client Core Data (FreeRDP default 7).
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."). */
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
@@ -40,6 +41,9 @@ int main(int argc, char** argv)
 		freerdp_settings_set_bool(s, FreeRDP_PasswordIsSmartcardPin, TRUE);
 	if (getenv("E2E_WORKDIR"))
 		freerdp_settings_set_string(s, FreeRDP_ShellWorkingDirectory, getenv("E2E_WORKDIR"));
+	if (getenv("E2E_CONNECTION_TYPE")) /* Client Core Data connectionType; default AUTODETECT */
+		freerdp_settings_set_uint32(s, FreeRDP_ConnectionType,
+		                            (UINT32)atoi(getenv("E2E_CONNECTION_TYPE")));
 	const BOOL nla = getenv("E2E_NLA") && strcmp(getenv("E2E_NLA"), "1") == 0;
 	freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, nla);
 	freerdp_settings_set_bool(s, FreeRDP_RdpSecurity, FALSE);

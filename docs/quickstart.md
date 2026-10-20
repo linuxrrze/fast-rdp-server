@@ -209,6 +209,11 @@ defaults to a provided certificate. Work through the list before `make deploy`;
 - [ ] NVIDIA: the playbook installs the driver; **reboot** afterwards. With Secure Boot,
       enrol the module signing key (P warns). Debian: enable `non-free` (P warns).
 
+**Client networks** ([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions))
+- [ ] `lan_networks`: the CIDRs of office LANs and VPN pools as the server sees them
+      (after NAT). X11 sessions from there get uncapped video; all others get the WAN
+      cap (`fastrdp_xrdp_autodetect_profile`) unless the client chose a connection type.
+
 **Web access** ([web-access.md](web-access.md))
 - [ ] Keycloak client (confidential, standard flow), redirect URI
       `https://<fqdn>/web/callback`, ACR mapping `mfa`.
@@ -249,6 +254,7 @@ on missing or invalid answers instead of asking.
   "desktops": ["xfce", "gnome", "plasma"],
   "default_desktop": "gnome",
   "gpu": "auto",
+  "lan_networks": ["10.0.0.0/8", "2001:db8:100::/48"],
   "mfa_mode": "otp_or_push",
   "privacyidea_url": "https://pi.corp.example.com",
   "privacyidea_realm": "corp",

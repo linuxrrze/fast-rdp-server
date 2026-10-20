@@ -104,6 +104,46 @@ class GfxToml(unittest.TestCase):
                 self.assertNotIn("ffmpeg", g)
                 self.check_x264(g)
 
+    def check_autodetect(self, g, profile, encoders):
+        """[<enc>.autodetect] equals the chosen profile ({} for default and lan)."""
+        for enc in encoders:
+            with self.subTest(enc=enc, profile=profile):
+                expect = {} if profile == "default" else g[enc][profile]
+                self.assertEqual(g[enc]["autodetect"], expect)
+
+    def test_autodetect_is_wan_by_default(self):
+        for name in ("gfx-vaapi.toml", "gfx-nvenc.toml", "gfx-auto-mesa.toml"):
+            g = toml(name)
+            self.check_autodetect(g, "wan", ("ffmpeg", "x264"))
+            self.assertEqual(g["ffmpeg"]["autodetect"], {"bitrate": 12000, "max_bitrate": 15000})
+            self.assertEqual(g["x264"]["autodetect"], {"vbv_max_bitrate": 15000, "vbv_buffer_size": 1500})
+        for name in ("gfx-x264.toml", "gfx-auto-none.toml", "gfx-minimal.toml"):
+            self.check_autodetect(toml(name), "wan", ("x264",))
+
+    def test_autodetect_other_profiles(self):
+        g = toml("gfx-vaapi-satellite.toml")
+        self.check_autodetect(g, "satellite", ("ffmpeg", "x264"))
+        self.assertEqual(g["x264"]["autodetect"]["preset"], "superfast")
+        self.assertEqual(g["ffmpeg"]["autodetect"]["bitrate"], 4000)
+        g = toml("gfx-x264-modem.toml")
+        self.check_autodetect(g, "modem", ("x264",))
+        self.assertEqual(g["x264"]["autodetect"]["vbv_max_bitrate"], 1200)
+        self.check_autodetect(toml("gfx-vaapi-default.toml"), "default", ("ffmpeg", "x264"))
+        self.check_autodetect(toml("gfx-vaapi-lan.toml"), "lan", ("ffmpeg", "x264"))
+
+    def test_profiles_unchanged_by_autodetect_choice(self):
+        # the per-type sections come from one table; the choice only fills autodetect
+        base = toml("gfx-vaapi.toml")
+        for name in ("gfx-vaapi-satellite.toml", "gfx-vaapi-default.toml", "gfx-vaapi-lan.toml"):
+            g = toml(name)
+            for enc in ("ffmpeg", "x264"):
+                self.assertEqual({k: v for k, v in g[enc].items() if k != "autodetect"},
+                                 {k: v for k, v in base[enc].items() if k != "autodetect"})
+        self.assertEqual(base["x264"]["broadband_low"],
+                         {"preset": "veryfast", "vbv_max_bitrate": 1600, "vbv_buffer_size": 66})
+        self.assertEqual(base["ffmpeg"]["lan"], {})
+        self.assertEqual(base["x264"]["lan"], {})
+
 
 class XrdpIni(unittest.TestCase):
     def test_xrdp_ini(self):
@@ -202,6 +242,14 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual(cfg.group_defaults, {"rdp-kde": "plasma", 'grp "quoted"': "gnome"})
         self.assertTrue(cfg.web.enabled)
 
+    def test_network(self):
+        for name in ("broker-lab.toml", "broker-minimal.toml"):
+            net = broker_config.parse(toml(name)).network
+            self.assertEqual((net.lan, net.xrdp_autodetect_profile), ((), "wan"))
+        net = broker_config.parse(toml("broker-mfa.toml")).network
+        self.assertEqual([str(n) for n in net.lan], ["10.0.0.0/8", "2001:db8::/32", "192.0.2.7/32"])
+        self.assertEqual(net.xrdp_autodetect_profile, "broadband_high")
+
     def test_desktop_groups_and_labels(self):
         # Regression: per-desktop groups/labels could not be set through Ansible.
         cfg = broker_config.parse(toml("broker-mfa.toml"))
@@ -297,6 +345,11 @@ class CommonChecks(unittest.TestCase):
                 ok, fastrdp_identity_provider="ipa", fastrdp_mfa_nla_kdc_enforced=True,
                 fastrdp_mfa_nla_kdc_auth_indicators=[]),
             "kdc-enforced on AD without a policy": dict(ok, fastrdp_mfa_nla_kdc_enforced=True),
+            "unknown autodetect profile": dict(ok, fastrdp_xrdp_autodetect_profile="autodetect"),
+            "autodetect profile upper case": dict(ok, fastrdp_xrdp_autodetect_profile="WAN"),
+            "lan networks as a string": dict(ok, fastrdp_lan_networks="10.0.0.0/8"),
+            "lan network not a CIDR": dict(ok, fastrdp_lan_networks=["10.0.0.0/8", "office"]),
+            "lan network with a shell character": dict(ok, fastrdp_lan_networks=["10.0.0.0/8;x"]),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -306,6 +359,14 @@ class CommonChecks(unittest.TestCase):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_mfa_nla_kdc_enforced": True}
         self.assertEqual(self.run_checks(**ok, fastrdp_identity_provider="ipa"), 0)
         self.assertEqual(self.run_checks(**ok, fastrdp_mfa_nla_kdc_enforced_by_ad_policy=True), 0)
+
+    def test_network_settings_pass(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for profile in ("lan", "wan", "broadband_high", "satellite", "broadband_low", "modem", "default"):
+            with self.subTest(profile):
+                self.assertEqual(self.run_checks(**ok, fastrdp_xrdp_autodetect_profile=profile), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_lan_networks=[
+            "10.0.0.0/8", "192.0.2.7", "2001:db8::/32", "::ffff:10.0.0.0/104"]), 0)
 
     def test_aliases_pass(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",

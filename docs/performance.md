@@ -58,10 +58,50 @@ Size proxy CPU for the RFX case if you have clients without H.264.
 (MS-RDPEMT/MS-RDPEUDP), so the fastrdp module does not offer multitransport: every
 session runs over TCP. On lossy or high-latency WAN links that means no FEC-based loss
 recovery and higher latency than a Windows host with UDP. The proxy also does no
-connect-time network auto-detection. mstsc's default `connection type:i:7` (autodetect)
-therefore reaches xrdp unchanged, and xrdp uses the `default` encoder settings, not a
-WAN profile. Details and recommendations: [rdp-spec-conformance.md](rdp-spec-conformance.md)
-§7 and §12 (R6).
+connect-time network auto-detection, so it cannot tell a LAN client from a WAN client
+the way a Windows host does. See the next section for how X11 sessions choose their
+bitrate cap instead. Details: [rdp-spec-conformance.md](rdp-spec-conformance.md) §3, §7
+and §12 (R6).
+
+### Bitrate profile of X11 (xrdp) sessions
+
+xrdp chooses its H.264 rate control (`gfx.toml` `[x264.<type>]`, `[ffmpeg.<type>]`) from
+the connection type the client sends ([MS-RDPBCGR] 2.2.1.3.2):
+
+| Profile (type) | FFmpeg bitrate / max (Mbit/s) | x264 VBV max (Mbit/s), preset |
+|---|---|---|
+| `lan` (6) | constant quality (QP 23), no cap | no cap, `ultrafast` |
+| `wan` (5) | 12 / 15 | 15, `ultrafast` |
+| `broadband_high` (4) | 6 / 8 | 8, `superfast` |
+| `satellite` (3) | 4 / 5 | 5, `superfast` |
+| `broadband_low` (2) | 1.4 / 1.6 | 1.6, `veryfast` |
+| `modem` (1) | 1.0 / 1.2 | 1.2, `fast` |
+
+mstsc and the Windows App send "auto-detect" (7) by default; FreeRDP sends it unless
+`/network:` is given. xrdp 0.10.6.1 would
+encode 7 like `lan`, uncapped, so the broker picks the type the proxy sends to xrdp:
+
+1. The client chose a type itself (1–6: `.rdp` `connection type:i:N`, FreeRDP
+   `/network:<type>`): kept. See [client-guide.md](client-guide.md).
+2. The client's TCP address (as the proxy sees it, not the client-supplied
+   `clientAddress`) is in `fastrdp_lan_networks`: `lan`.
+3. Otherwise: `fastrdp_xrdp_autodetect_profile`, default `wan`.
+
+| Variable (role `common`) | Default | Effect |
+|---|---|---|
+| `fastrdp_xrdp_autodetect_profile` | `wan` | Profile for auto-detect clients outside the LAN networks: `lan`, `wan`, `broadband_high`, `satellite`, `broadband_low`, `modem`, or `default` (send nothing different: xrdp's uncapped behaviour). Broker `[network] xrdp_autodetect_profile`, gfx.toml `[*.autodetect]` |
+| `fastrdp_lan_networks` | `[]` | Client CIDRs (IPv4/IPv6) that get `lan`, e.g. `[10.0.0.0/8, "2001:db8::/32"]`. Use the addresses the server sees after NAT or VPN. Broker `[network] lan_networks`; the broker refuses to start on an invalid entry |
+
+Notes:
+- **xrdp only.** gnome-remote-desktop and KRdp never read the connection type; they
+  measure the link with their own auto-detection and rate control.
+- **Web logins** reach the proxy from guacd on loopback (`127.0.0.1`). They get the
+  auto-detect profile unless loopback is in `fastrdp_lan_networks`. guacd re-encodes
+  for the browser, so its own link is not governed by this setting.
+- **Logs.** Broker: `alice: connection type wan towards xrdp (client sent 7)`. Proxy:
+  `back-end connection type 5 (client sent 7)`.
+- The caps are upper bounds. GFX frame acknowledgements still slow the encoder down
+  on links that are slower than the cap.
 
 ## Ubuntu's FreeRDP has no H.264 (clients!)
 
@@ -120,6 +160,7 @@ and `libx264`, so KPipeWire's VA-API and x264 paths are available.
 | `fastrdp_krdp_quality` | KRdp default | `krdpserver --quality` (upper bound with adaptive quality) |
 | `fastrdp_xrdp_h264_encoder` | `auto` | xrdp encoder: `auto` (nvenc/vaapi/x264 by GPU), `vaapi`, `nvenc`, `qsv`, `x264` |
 | `fastrdp_ffmpeg_qp`, `fastrdp_ffmpeg_gop` | 23 / 300 | Hardware encoder quality (LAN) and IDR interval; WAN profiles cap the bitrate |
+| `fastrdp_xrdp_autodetect_profile`, `fastrdp_lan_networks` (role `common`) | `wan` / `[]` | Bitrate profile of X11 sessions for clients that ask for auto-detection (mstsc's default), and the client networks that get `lan` instead (see above) |
 | `fastrdp_x264_threads`, `fastrdp_x264_preset`, `fastrdp_x264_fps` | 2 / ultrafast / 60 | x264 cost vs. quality per session (software path and fallback) |
 
 ## Runbook for a GPU host
