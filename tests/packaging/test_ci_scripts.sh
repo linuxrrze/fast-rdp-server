@@ -12,6 +12,8 @@ set -euo pipefail
 # shellcheck source=tests/lib.sh
 . "$(dirname "$0")/../lib.sh"
 need dpkg-parsechangelog dpkg curl tar xz sha256sum patch
+# hermetic: a tag run's GITHUB_REF_TYPE=tag would turn every main-build case into a tag build
+unset GITHUB_REF_TYPE GITHUB_REF_NAME GITHUB_SHA
 
 # --- a copy of the repository parts the scripts use, with a fake sources.yml
 C=$T/repo
