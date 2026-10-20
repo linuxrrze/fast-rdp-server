@@ -172,7 +172,7 @@ APT::Sandbox::User "root";
 APT::Architecture "amd64";
 APT::Architectures { "amd64"; };
 EOF
-    printf 'Types: deb\nURIs: file:%s\nSuites: trixie-stable trixie-testing\nComponents: main\nSigned-By: %s\n' \
+    printf 'Types: deb\nURIs: file:%s\nSuites: trixie-stable trixie-testing\nComponents: main\nArchitectures: amd64\nSigned-By: %s\n' \
         "$S3" "$2" > "$a/sources/fast-rdp-server.sources"
     echo "$a/apt.conf"
 }

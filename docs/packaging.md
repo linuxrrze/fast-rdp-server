@@ -237,6 +237,7 @@ Types: deb
 URIs: https://linuxrrze.github.io/fast-rdp-server
 Suites: resolute-stable
 Components: main
+Architectures: amd64
 Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
 ```
 

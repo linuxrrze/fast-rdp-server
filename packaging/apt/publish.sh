@@ -128,6 +128,7 @@ Types: deb
 URIs: $url
 Suites: &lt;codename&gt;-stable
 Components: main
+Architectures: amd64
 Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
 </pre>
 <h2>Suites</h2>
