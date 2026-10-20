@@ -159,6 +159,9 @@ jobs:
     steps:
       - name: Tools
         run: |
+          # The ubuntu image's dpkg excludes drop /usr/share/doc (the install test
+          # reads the shipped broker.toml example from there): install like a real host.
+          rm -f /etc/dpkg/dpkg.cfg.d/excludes
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
       - uses: actions/checkout@v5
