@@ -119,6 +119,25 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
 Newline-delimited JSON over Unix sockets. See the docstring in
 `broker/brokerd/fastrdp_broker/protocol.py`.
 
+A refusal is `{"ok": false, "error": TEXT, "reason": REASON}`. TEXT stays generic
+("access denied", "session could not be started"); details go only to the broker log.
+REASON is machine-readable, and the proxy module turns it into the Set Error Info code
+the RDP client sees:
+
+| REASON | When | Error info |
+|---|---|---|
+| `denied` | bad or unknown credentials (never told apart), invalid web token, realm, policy (`session_tgt = required`), anything else | 0x7 SERVER_DENIED_CONNECTION |
+| `not_allowed` | identity proven, but not in `allow_groups`, PAM account check failed, or no permitted desktop | 0x9 SERVER_INSUFFICIENT_PRIVILEGES |
+| `mfa_failed` | second factor rejected or missing, no push-capable token, MFA service unreachable | 0x7 |
+| `mfa_timeout` | push not approved in time | 0x409 CB_CONNECTION_CANCELLED |
+| `backend` | the session could not be started | 0x400 CB_DESTINATION_NOT_FOUND |
+
+`not_allowed` confirms that the credentials are valid. The broker therefore sends it only
+when the client knows that already (NLA: CredSSP succeeded; web: the IdP signed the user
+in) or no second factor is due. A TLS password login that still owes its second factor
+gets `denied`. Unknown reasons count as `denied`. The webgate uses the same reasons for its
+error pages.
+
 ## Files on a deployed host
 
 | Path | Content |

@@ -17,7 +17,11 @@ YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}$")
 
 
 class MfaDenied(Exception):
-    pass
+    """`reason`: "mfa_failed", or "mfa_timeout" for a push not approved in time."""
+
+    def __init__(self, message: str, reason: str = "mfa_failed"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def split_otp(secret: str, cfg: MfaSection) -> tuple[str, str] | None:
@@ -62,7 +66,7 @@ class SecondFactor:
                 log.info("push challenge sent to %s (transaction %s)", user, txid)
                 if await asyncio.to_thread(self.pi.wait_for_push, user, txid):
                     return "push"
-                raise MfaDenied("push not confirmed in time")
+                raise MfaDenied("push not confirmed in time", "mfa_timeout")
             raise MfaDenied("OTP required: append it to the password")
         except PrivacyIdeaError as exc:
             log.error("privacyIDEA error for %s: %s", user, exc)

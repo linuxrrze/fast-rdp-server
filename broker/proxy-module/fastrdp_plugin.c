@@ -270,8 +270,10 @@ static void add_str(cJSON* obj, const char* key, const char* value)
 /* ------------------------------------------------------------ error info */
 
 /* Set Error Info code ([MS-RDPBCGR] 2.2.5.1.1) for a refused broker login. The broker
- * keeps its error text generic on purpose ("access denied"); an optional "reason" field
- * lets it be more specific without exposing details in the text. */
+ * keeps its error text generic on purpose ("access denied"); the "reason" field
+ * (broker/brokerd/fastrdp_broker/protocol.py) lets it be more specific without exposing
+ * details in the text. "denied" and "mfa_failed" (a distinct code would confirm the
+ * password to somebody without the second factor) and unknown reasons give 0x7. */
 static UINT32 errinfo_for_reply(const cJSON* reply)
 {
 	const cJSON* r = cJSON_GetObjectItemCaseSensitive(reply, "reason");
@@ -281,8 +283,11 @@ static UINT32 errinfo_for_reply(const cJSON* reply)
 
 	if (reason && strcmp(reason, "not_allowed") == 0)
 		return ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES;
-	if (reason && strcmp(reason, "timeout") == 0)
+	/* No logon-timeout code exists: ERRINFO_LOGON_TIMEOUT (0x4) is the active session
+	 * limit. A push not approved in time cancels the connection, as a broker timeout does. */
+	if (reason && strcmp(reason, "mfa_timeout") == 0)
 		return ERRINFO_CB_CONNECTION_CANCELLED;
+	/* the error text covers brokers from before "reason" */
 	if ((reason && strcmp(reason, "backend") == 0) ||
 	    (error && strcmp(error, "session could not be started") == 0))
 		return ERRINFO_CB_DESTINATION_NOT_FOUND;

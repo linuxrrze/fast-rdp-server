@@ -25,7 +25,12 @@ log = logging.getLogger("fastrdp.broker")
 
 
 class Denied(Exception):
-    """Login refused. The message is logged; the client only sees a generic error."""
+    """Login refused. The message is logged; the client only sees a generic error and
+    `reason`, one of the refusal reasons in protocol.py."""
+
+    def __init__(self, message: str, reason: str = "denied"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class Broker:
@@ -79,6 +84,14 @@ class Broker:
             return hinted
         pref = await self.read_desktop_pref(user)
         return identity.choose_desktop(self.cfg, user, None, pref=pref)
+
+    def authz_reason(self, user: LocalUser, proven: bool) -> str:
+        """Reason for refusing a user whose first factor checked out (allowed groups,
+        account check). "not_allowed" confirms the credentials, so it is given only if the
+        client knows that already (NLA: CredSSP succeeded; web: the IdP signed the user in)
+        or no second factor is due. A TLS password login that still owes its second factor
+        gets "denied": the refusal must not confirm a password to somebody without it."""
+        return "not_allowed" if proven or self.mfa.exempt(user.groups) else "denied"
 
     # ---------------------------------------------------------------- kerberos
     def require_credential(self, user: LocalUser, password: str | None) -> None:
@@ -134,7 +147,7 @@ class Broker:
             try:
                 await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, rhost)
             except pamauth.PamError as exc:
-                raise Denied(f"account check failed for {user.name}: {exc}") from None
+                raise Denied(f"account check failed for {user.name}: {exc}", "not_allowed") from None
             if msg.get("smartcard") is True:
                 # Smartcard logon (PKINIT): whatever came as "password" is the card PIN and must
                 # never reach pam_sss or the MFA server. The flag itself is client-supplied, so
@@ -164,7 +177,7 @@ class Broker:
             try:
                 await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, rhost)
             except pamauth.PamError as exc:
-                raise Denied(f"account check failed for {user.name}: {exc}") from None
+                raise Denied(f"account check failed for {user.name}: {exc}", "not_allowed") from None
             return user, None, None, "idp"
 
         if method == "tls":
@@ -179,13 +192,15 @@ class Broker:
                 if split:
                     secret, otp = split
                 elif self.cfg.mfa.mode == "otp":
-                    raise Denied(f"{user.name}: no OTP appended to password")
+                    raise Denied(f"{user.name}: no OTP appended to password", "mfa_failed")
             try:
                 await asyncio.to_thread(
                     pamauth.authenticate, self.cfg.auth.pam_service, user.name, secret, rhost
                 )
             except pamauth.PamError as exc:
-                raise Denied(f"password check failed for {user.name}: {exc}") from None
+                # A failed account check (expired, locked) follows a correct password.
+                reason = self.authz_reason(user, False) if exc.step == "account" else "denied"
+                raise Denied(f"password check failed for {user.name}: {exc}", reason) from None
             return user, secret, otp, None
 
         raise Denied(f"unknown method {method!r}")
@@ -195,7 +210,8 @@ class Broker:
         user, password, otp, mfa_done = await self.first_factor(msg)
 
         if not identity.user_allowed(user, self.cfg.auth):
-            raise Denied(f"{user.name} is not in an allowed group")
+            proven = msg.get("method") == "nla" or mfa_done is not None
+            raise Denied(f"{user.name} is not in an allowed group", self.authz_reason(user, proven))
         self.require_credential(user, password)
 
         if mfa_done:
@@ -204,13 +220,13 @@ class Broker:
             try:
                 factor = await self.mfa.verify(user.name, otp, password)
             except MfaDenied as exc:
-                raise Denied(f"MFA failed for {user.name}: {exc}") from None
+                raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
             log.info("second factor ok for %s via %s", user.name, factor)
 
         try:
             desktop_name = await self.choose_desktop(user, str_field(msg, "desktop_hint"))
         except IdentityError as exc:
-            raise Denied(str(exc)) from None
+            raise Denied(str(exc), exc.reason) from None
         desktop = self.cfg.desktops[desktop_name]
         width = int_field(msg, "width", 320, 8192)
         height = int_field(msg, "height", 200, 8192)
@@ -234,12 +250,12 @@ class Broker:
         name = identity.normalize_rdp_user(str_field(msg, "user", required=True))
         user = identity.resolve(name, None, self.cfg.auth)
         if not identity.user_allowed(user, self.cfg.auth):
-            raise Denied(f"{user.name} is not in an allowed group")
+            raise Denied(f"{user.name} is not in an allowed group", "not_allowed")
         self.require_credential(user, None)  # web logins never carry a password
         try:
             await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, None)
         except pamauth.PamError as exc:
-            raise Denied(f"account check failed for {user.name}: {exc}") from None
+            raise Denied(f"account check failed for {user.name}: {exc}", "not_allowed") from None
         desktops = [
             {"name": d.name, "label": d.label or d.name}
             for d in self.cfg.desktops.values()
@@ -314,13 +330,15 @@ class Broker:
                         reply = await self.logout(msg)
                     else:
                         log.warning("op %r not permitted for uid %d", op, uid)
-                        reply = {"ok": False, "error": "not permitted"}
+                        reply = {"ok": False, "error": "not permitted", "reason": "denied"}
                 except (Denied, IdentityError) as exc:
-                    log.warning("denied: %s", exc)
-                    reply = {"ok": False, "error": "access denied"}
+                    # The error text stays generic; `reason` lets the proxy pick the RDP
+                    # error info (protocol.py).
+                    log.warning("denied (%s): %s", exc.reason, exc)
+                    reply = {"ok": False, "error": "access denied", "reason": exc.reason}
                 except BackendError as exc:
                     log.error("backend error: %s", exc)
-                    reply = {"ok": False, "error": "session could not be started"}
+                    reply = {"ok": False, "error": "session could not be started", "reason": "backend"}
                 await write_message(writer, reply)
         except ProtocolError as exc:
             log.warning("protocol error from uid %d: %s", uid, exc)

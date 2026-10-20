@@ -171,9 +171,9 @@ Broker log lines to look for (`journalctl -u fastrdp-brokerd`):
 | Message | Meaning |
 |---|---|
 | `login USER session=… desktop=D -> 127.0.0.1:PORT (tls\|nla)` | routed |
-| `denied: …` | account, group, realm, MFA or desktop refusal, or `session_tgt = required` without a TGT; the client sees only "access denied" |
+| `denied (REASON): …` | account, group, realm, MFA or desktop refusal, or `session_tgt = required` without a TGT. The proxy gets "access denied" plus REASON and sends the RDP client an error code: `not_allowed` 0x9, `mfa_timeout` 0x409, `denied` / `mfa_failed` 0x7 (table in [client-guide.md](../client-guide.md#when-the-server-refuses-the-login), reasons in `protocol.py`) |
 | `USER: no Kerberos TGT for the gnome\|plasma session …` | `session_tgt = auto`: the TGT request failed (sssd offline, wrong delegated password, local account); the session starts without one |
-| `backend error: …` | the back-end driver failed; the client sees "session could not be started" |
+| `backend error: …` | the back-end driver failed; the proxy gets "session could not be started" (reason `backend`), the client error code 0x400 |
 | `op 'login' not permitted for uid N` | something other than the proxy uid used `broker.sock` |
 
 ## Automated tests per area

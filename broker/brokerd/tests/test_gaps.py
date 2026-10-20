@@ -627,7 +627,12 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
 class _BrokerHarness:
     """Broker on temporary sockets; identity, PAM and back-ends mocked."""
     web = True
-    DENIED = {"ok": False, "error": "access denied"}
+    DENIED = {"ok": False, "error": "access denied", "reason": "denied"}
+
+    @staticmethod
+    def refused(reason):
+        """Refusal reply: the error text is always generic, only `reason` differs."""
+        return {"ok": False, "error": "access denied", "reason": reason}
 
     async def asyncSetUp(self):
         from fastrdp_broker import pamauth
@@ -693,13 +698,13 @@ class ServerPolicyTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_otp_mode_requires_otp(self):
         self.set_mfa("otp")
-        self.assertEqual(await self.login(password="password"), self.DENIED)
+        self.assertEqual(await self.login(password="password"), self.refused("mfa_failed"))
         self.pam.authenticate.assert_not_called()
 
     async def test_otp_rejected(self):
         pi = self.set_mfa("otp")
         pi.check_otp.return_value = False
-        self.assertEqual(await self.login(password="pw123456"), self.DENIED)
+        self.assertEqual(await self.login(password="pw123456"), self.refused("mfa_failed"))
         self.ensure.assert_not_called()
 
     async def test_otp_or_push_falls_back_to_push(self):
@@ -713,18 +718,59 @@ class ServerPolicyTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         pi = self.set_mfa("push")
         pi.trigger_challenge.return_value = "tx"
         pi.wait_for_push.return_value = False
-        self.assertEqual(await self.nla(), self.DENIED)
+        self.assertEqual(await self.nla(), self.refused("mfa_timeout"))
+        self.ensure.assert_not_called()
+
+    async def test_mfa_failures(self):
+        pi = self.set_mfa("push")
+        pi.trigger_challenge.return_value = None  # no push-capable token
+        self.assertEqual(await self.nla(), self.refused("mfa_failed"))
+        pi.trigger_challenge.side_effect = PrivacyIdeaError("down")
+        self.assertEqual(await self.nla(), self.refused("mfa_failed"))
         self.ensure.assert_not_called()
 
     async def test_allow_groups(self):
         self.cfg.auth.allow_groups = ["rdp-users"]
-        self.assertEqual(await self.login(user="eve"), self.DENIED)
-        self.assertEqual(await self.nla(user="eve"), self.DENIED)
-        self.assertFalse((await request(self.cfg.broker.socket, {"op": "web_token", "user": "eve"}))["ok"])
+        self.assertEqual(await self.login(user="eve"), self.refused("not_allowed"))
+        self.assertEqual(await self.nla(user="eve"), self.refused("not_allowed"))
+        for op in ("web_token", "web_desktops"):
+            reply = await request(self.cfg.broker.socket, {"op": op, "user": "eve"})
+            self.assertEqual(reply, self.refused("not_allowed"))
         self.ensure.assert_not_called()
+
+    async def test_not_allowed_only_once_no_factor_is_owed(self):
+        # A TLS password alone must not be confirmed while the second factor is still due;
+        # NLA (CredSSP) and the web path (IdP) have confirmed the credentials already.
+        self.cfg.auth.allow_groups = ["rdp-users"]
+        self.users["eve"] = user("eve", ("other",))
+        pi = self.set_mfa("otp_or_push")
+        self.assertEqual(await self.login(user="eve"), self.DENIED)
+        self.assertEqual(await self.nla(user="eve"), self.refused("not_allowed"))
+        self.set_mfa("otp_or_push", exempt=["other"])
+        self.assertEqual(await self.login(user="eve"), self.refused("not_allowed"))
+        pi.trigger_challenge.assert_not_called()
 
     async def test_unknown_user(self):
         self.assertEqual(await self.login(user="mallory"), self.DENIED)
+
+    async def test_unknown_user_and_wrong_password_look_the_same(self):
+        for mode in ("none", "otp_or_push"):
+            with self.subTest(mfa=mode):
+                self.set_mfa(mode)
+                self.pam.authenticate.side_effect = self.pam.PamError("authenticate", 7, "Authentication failure")
+                wrong_password = await self.login(password="wrong")
+                self.pam.authenticate.side_effect = None
+                unknown = await self.login(user="mallory", password="wrong")
+                self.assertEqual(wrong_password, unknown)
+                self.assertEqual(unknown, self.DENIED)
+                self.assertEqual(await self.nla(user="mallory"), self.DENIED)
+
+    async def test_tls_account_check_failure(self):
+        # pam_acct_mgmt after a correct password (expired, locked, pam_access)
+        self.pam.authenticate.side_effect = self.pam.PamError("account", 13, "expired")
+        self.assertEqual(await self.login(), self.refused("not_allowed"))
+        self.set_mfa("push")
+        self.assertEqual(await self.login(), self.DENIED)  # second factor still owed
 
     async def test_tls_policy(self):
         self.assertEqual(await self.login(password=None), self.DENIED)
@@ -735,12 +781,14 @@ class ServerPolicyTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
 
     async def test_nla_account_check_failure(self):
         self.pam.account_ok.side_effect = self.pam.PamError("account", 13, "expired")
-        self.assertEqual(await self.nla(), self.DENIED)
-        self.assertFalse((await request(self.cfg.broker.socket, {"op": "web_token", "user": "alice"}))["ok"])
+        self.assertEqual(await self.nla(), self.refused("not_allowed"))
+        reply = await request(self.cfg.broker.socket, {"op": "web_token", "user": "alice"})
+        self.assertEqual(reply, self.refused("not_allowed"))
 
     async def test_backend_error_reported(self):
         self.ensure.side_effect = BackendError("xrdp down")
-        self.assertEqual(await self.nla(), {"ok": False, "error": "session could not be started"})
+        self.assertEqual(await self.nla(),
+                         {"ok": False, "error": "session could not be started", "reason": "backend"})
 
     async def test_geometry_default_and_invalid(self):
         self.assertTrue((await self.nla())["ok"])
@@ -757,7 +805,9 @@ class ServerPolicyTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gnome", reply["desktops"])
         for d in self.cfg.desktops.values():
             d.groups = ["gnome-pilot"]
-        self.assertEqual(await self.nla(), self.DENIED)
+        self.assertEqual(await self.nla(), self.refused("not_allowed"))
+        reply = await request(self.cfg.broker.socket, {"op": "web_desktops", "user": "alice"})
+        self.assertEqual(reply, self.refused("not_allowed"))
 
     async def test_session_end(self):
         await self.nla(session_id="abc")

@@ -71,6 +71,7 @@ def _pam():
 class PamError(Exception):
     def __init__(self, step: str, code: int, text: str):
         super().__init__(f"{step}: {text} ({code})")
+        self.step = step
         self.code = code
 
 

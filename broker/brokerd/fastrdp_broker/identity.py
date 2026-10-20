@@ -24,7 +24,11 @@ DESKTOP_PREF = ".config/fastrdp/desktop"
 
 
 class IdentityError(Exception):
-    pass
+    """`reason`: the refusal reason the broker reports (protocol.py)."""
+
+    def __init__(self, message: str, reason: str = "denied"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class UnknownUser(IdentityError):
@@ -247,4 +251,4 @@ def choose_desktop(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PR
             return desk
     if desktop_allowed(cfg, cfg.default_desktop, user):
         return cfg.default_desktop
-    raise IdentityError("no desktop is permitted for this user")
+    raise IdentityError("no desktop is permitted for this user", "not_allowed")

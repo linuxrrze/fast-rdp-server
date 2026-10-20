@@ -74,6 +74,20 @@ connection type:i:7
 - Outside the network the KDC must be reachable (VPN), or set a KDC proxy in group
   policy ([windows-clients.md](windows-clients.md) §3.10).
 
+## When the server refuses the login
+
+A refusal after the connection is up comes with an RDP error code ([MS-RDPBCGR]
+2.2.5.1.1). FreeRDP prints the code and the text below; mstsc shows its own dialog
+(texts not yet recorded, lab test S4 in [rdp-spec-conformance.md](rdp-spec-conformance.md)).
+The exact cause is only in the server log.
+
+| Code | FreeRDP text | Cause |
+|---|---|---|
+| 0x7 ERRINFO_SERVER_DENIED_CONNECTION | The server denied the connection. | wrong password or unknown user (never told apart), second factor rejected or missing, policy (e.g. no password but the server needs one for a Kerberos TGT), RemoteApp requested, smartcard PIN without NLA |
+| 0x9 ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES | The user cannot connect to the server due to insufficient access privileges. | signed in, but not allowed: not in an allowed group, account expired or locked, or no desktop permitted. A password login (TLS) that still needs its second factor gets 0x7 instead |
+| 0x409 ERRINFO_CB_CONNECTION_CANCELLED | Processing of the connection has been cancelled. | push not approved in time, or the server did not answer in time |
+| 0x400 ERRINFO_CB_DESTINATION_NOT_FOUND | The target endpoint could not be found. | the desktop session could not be started or reached; try again later or tell the administrators |
+
 ## Remmina
 
 - Protocol: RDP.

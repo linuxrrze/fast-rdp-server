@@ -83,8 +83,9 @@ FP="sha256:$(openssl x509 -in cert.pem -noout -fingerprint -sha256 | sed 's/^.*=
 E2E_CERT_FP="$FP" timeout 20 ./client 127.0.0.1 23389 pinned good "" >/dev/null 2>&1 || true
 E2E_CERT_FP="sha256:00:11:22" timeout 20 ./client 127.0.0.1 23389 wrongpin good "" >/dev/null 2>&1 || true
 # refusals: Set Error Info codes ([MS-RDPBCGR] 2.2.5.1.1) the client receives
-timeout 20 ./client 127.0.0.1 23389 nogroup nogroup "" > nogroup.out 2>&1 || true
-timeout 20 ./client 127.0.0.1 23389 nobackend nobackend "" > nobackend.out 2>&1 || true
+for r in nogroup mfafail mfatimeout newreason nobackend oldbackend; do
+    timeout 20 ./client 127.0.0.1 23389 "$r" "$r" "" > "$r.out" 2>&1 || true
+done
 timeout 20 ./client 127.0.0.1 23389 deadport deadport "" > deadport.out 2>&1 || true
 # RemoteApp (INFO_RAIL) is not offered; a smartcard PIN on the TLS path is never forwarded
 E2E_RAIL=1 timeout 20 ./client 127.0.0.1 23389 railuser good "" > rail.out 2>&1 || true
@@ -103,7 +104,7 @@ sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 6'
+expect "front broker saw the expected logins"         'len(la) == 10'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
@@ -115,12 +116,16 @@ expect "session end reported to the broker"            'any(r["op"] == "end" and
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }
-errinfo "refused password: ERRINFO_SERVER_DENIED_CONNECTION"             mallory.out   0x00000007
-errinfo "not in an allowed group: ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES" nogroup.out  0x00000009
-errinfo "back-end not started: ERRINFO_CB_DESTINATION_NOT_FOUND"         nobackend.out 0x00000400
-errinfo "back-end unreachable: ERRINFO_CB_DESTINATION_NOT_FOUND"         deadport.out  0x00000400
-errinfo "RemoteApp request refused: ERRINFO_SERVER_DENIED_CONNECTION"    rail.out      0x00000007
-errinfo "smartcard PIN without NLA refused"                              pin.out       0x00000007
+errinfo "refused password: ERRINFO_SERVER_DENIED_CONNECTION"                     mallory.out    0x00000007
+errinfo "not in an allowed group: ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES"        nogroup.out    0x00000009
+errinfo "second factor failed: ERRINFO_SERVER_DENIED_CONNECTION"                 mfafail.out    0x00000007
+errinfo "push not approved in time: ERRINFO_CB_CONNECTION_CANCELLED"             mfatimeout.out 0x00000409
+errinfo "unknown reason: ERRINFO_SERVER_DENIED_CONNECTION"                       newreason.out  0x00000007
+errinfo "back-end not started: ERRINFO_CB_DESTINATION_NOT_FOUND"                 nobackend.out  0x00000400
+errinfo "back-end not started (broker without reason): 0x400"                    oldbackend.out 0x00000400
+errinfo "back-end unreachable: ERRINFO_CB_DESTINATION_NOT_FOUND"                 deadport.out   0x00000400
+errinfo "RemoteApp request refused: ERRINFO_SERVER_DENIED_CONNECTION"            rail.out       0x00000007
+errinfo "smartcard PIN without NLA refused"                                      pin.out        0x00000007
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
    ! grep -q -- "--> CONNECTION_STATE_MULTITRANSPORT_BOOTSTRAPPING_RESPONSE" proxy-a.log; then
     echo "ok   no multitransport offered (no UDP listener): no Initiate Multitransport Request"

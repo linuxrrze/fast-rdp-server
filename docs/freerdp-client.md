@@ -147,7 +147,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 | `Cannot find KDC for realm` / `Cannot contact any KDC for realm` | realm unknown or KDC unreachable: VPN, DNS SRV records, `krb5.conf`, or a KDC proxy (§7) |
 | `krb5_get_credentials (Server not found in Kerberos database ...)` | no `TERMSRV/<name>` principal: IP address or unregistered alias (§0) |
 | `Clock skew too great` | client clock more than 5 minutes off |
-| window opens, then closes | refused after authentication (MFA denied or timed out, account policy, desktop not allowed). The reason is in `journalctl -u fastrdp-proxy -u fastrdp-brokerd`, e.g. `broker refused ...` |
+| window opens, then closes | refused after authentication. The error code says roughly why: `ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES` (0x9) not allowed (group, account policy, desktop); `ERRINFO_SERVER_DENIED_CONNECTION` (0x7) MFA rejected or policy; `ERRINFO_CB_CONNECTION_CANCELLED` (0x409) push not approved in time; `ERRINFO_CB_DESTINATION_NOT_FOUND` (0x400) session could not be started ([client-guide.md](client-guide.md#when-the-server-refuses-the-login)). The exact reason is in `journalctl -u fastrdp-proxy -u fastrdp-brokerd`, e.g. `denied (not_allowed): ...` |
 
 ## 2. Kerberos NLA single sign-on (existing ticket, no password)
 

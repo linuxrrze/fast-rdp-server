@@ -35,7 +35,12 @@ SAFE_DESKTOP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class BrokerError(Exception):
-    pass
+    """`reason`: the broker's refusal reason (fastrdp_broker/protocol.py), or
+    "unavailable" if the broker gave no valid answer."""
+
+    def __init__(self, message: str, reason: str = "denied"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def broker_request(path: str, op: str, user: str, timeout: float = 15) -> dict:
@@ -47,9 +52,10 @@ def broker_request(path: str, op: str, user: str, timeout: float = 15) -> dict:
     try:
         reply = json.loads(line)
     except ValueError:
-        raise BrokerError("no answer from broker") from None
+        raise BrokerError("no answer from broker", "unavailable") from None
     if not reply.get("ok"):
-        raise BrokerError(reply.get("error", "refused"))
+        reason = reply.get("reason")
+        raise BrokerError(reply.get("error", "refused"), reason if isinstance(reason, str) else "denied")
     return reply
 
 
@@ -179,6 +185,16 @@ def make_handler(app: Webgate):
             self.send(status, page("Remote desktop", f"<p>{html.escape(message)}</p>"
                                    f'<p><a href="{app.prefix}/">Try again</a></p>'))
 
+        def broker_refused(self, what: str, user: str, exc: Exception):
+            log.warning("broker refused %s for %s: %s", what, user, exc)
+            reason = exc.reason if isinstance(exc, BrokerError) else "unavailable"  # OSError
+            if reason == "unavailable":
+                return self.error_page(503, "Remote desktops are not available right now. "
+                                            "Please try again later.")
+            if reason == "not_allowed":
+                return self.error_page(403, "You are not allowed to use remote desktops.")
+            return self.error_page(403, "Remote desktop access was refused for your account.")
+
         # ----------------------------------------------------------- GET
         def do_GET(self):
             path, query = self.route()
@@ -231,8 +247,7 @@ def make_handler(app: Webgate):
             try:
                 reply = broker_web_desktops(app.cfg.webgate.broker_socket, user)
             except (OSError, BrokerError) as exc:
-                log.warning("broker refused desktop list for %s: %s", user, exc)
-                return self.error_page(403, "You are not allowed to use remote desktops.")
+                return self.broker_refused("desktop list", user, exc)
             allowed = [d for d in reply.get("desktops", []) if app.offers(d.get("name", ""))]
             default = reply.get("default", "")
             options = "".join(
@@ -281,8 +296,7 @@ def make_handler(app: Webgate):
             try:
                 reply = broker_web_token(app.cfg.webgate.broker_socket, sess["user"])
             except (OSError, BrokerError) as exc:
-                log.warning("broker refused web token for %s: %s", sess["user"], exc)
-                return self.error_page(403, "You are not allowed to use remote desktops.")
+                return self.broker_refused("web token", sess["user"], exc)
             if desktop and desktop not in reply.get("desktops", []):
                 # The broker would silently start the user's default desktop instead.
                 log.warning("%s asked for desktop %s, which is not allowed", sess["user"], desktop)

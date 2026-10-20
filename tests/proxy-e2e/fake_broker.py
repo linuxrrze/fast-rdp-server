@@ -2,12 +2,23 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 """Records broker requests; accepts password 'good' and routes to 127.0.0.1:<port>.
 
-Other passwords: 'nogroup' -> refused with reason not_allowed, 'nobackend' -> "session
-could not be started", 'deadport' -> accepted but routed to a closed port."""
+Other passwords: 'deadport' -> accepted but routed to a closed port; a password listed in
+REFUSALS -> that refusal (reasons: broker/brokerd/fastrdp_broker/protocol.py); anything
+else -> "access denied" with reason "denied"."""
 import json
 import os
 import socket
 import sys
+
+DENIED = "access denied"
+REFUSALS = {
+    "nogroup": {"error": DENIED, "reason": "not_allowed"},
+    "mfafail": {"error": DENIED, "reason": "mfa_failed"},
+    "mfatimeout": {"error": DENIED, "reason": "mfa_timeout"},
+    "newreason": {"error": DENIED, "reason": "from_a_newer_broker"},
+    "nobackend": {"error": "session could not be started", "reason": "backend"},
+    "oldbackend": {"error": "session could not be started"},  # broker without "reason"
+}
 
 path, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 if os.path.exists(path):
@@ -29,11 +40,7 @@ while True:
                 "host": "127.0.0.1", "port": 1 if req["password"] == "deadport" else port,
                 "username": req["user"], "password": "fastrdp1:TOKEN", "domain": "",
                 "security": "tls"}}
-        elif req.get("password") == "nogroup":
-            rep = {"ok": False, "error": "access denied", "reason": "not_allowed"}
-        elif req.get("password") == "nobackend":
-            rep = {"ok": False, "error": "session could not be started"}
         else:
-            rep = {"ok": False, "error": "access denied"}
+            rep = {"ok": False, **REFUSALS.get(req.get("password"), {"error": DENIED, "reason": "denied"})}
         conn.sendall((json.dumps(rep) + "\n").encode())
     conn.close()

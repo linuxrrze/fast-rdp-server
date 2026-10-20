@@ -9,13 +9,30 @@ Proxy module -> broker.sock:
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
                  "domain": str, "security": "tls"|"nla"}}
-  -> {"ok": false, "error": str}
+  -> {"ok": false, "error": str, "reason": str}
 
   {"op": "end", "session_id": str}  -> {"ok": true}
 
 fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}
   -> {"ok": true, "user": str, "token": "fastrdp-web1:...", "desktops": [str]}
+  {"op": "web_desktops", "user": str}
+  -> {"ok": true, "user": str, "default": str, "desktops": [{"name": str, "label": str}]}
+  Refusals as for "login".
+
+Refusals: "error" stays generic ("access denied", "session could not be started",
+"not permitted"); details go to the broker log only. "reason" is machine-readable; the
+proxy module maps it to an RDP Set Error Info code ([MS-RDPBCGR] 2.2.5.1.1):
+  "denied"       bad or unknown credentials (never told apart), invalid web token, realm,
+                 policy (session_tgt = required), anything else              -> 0x7
+  "not_allowed"  identity proven, but not in allow_groups, account check failed
+                 (expired, locked, pam_access) or no permitted desktop        -> 0x9
+  "mfa_failed"   second factor rejected, missing or MFA service unavailable  -> 0x7
+  "mfa_timeout"  push not approved in time                                   -> 0x409
+  "backend"      session could not be started                                -> 0x400
+"not_allowed" confirms the credentials, so a TLS password login that still owes its
+second factor gets "denied" instead (Broker.authz_reason). Receivers treat unknown
+reasons like "denied".
 
 PAM module -> token.sock (root only):
   {"op": "redeem", "user": str, "token": str} -> {"ok": true, "password": str|null}

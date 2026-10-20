@@ -361,12 +361,19 @@ class HttpGapTests(unittest.TestCase):
     def test_broker_refusal_and_outage(self):
         self.login()
         csrf = self.csrf()
-        self.broker.reply = {"ok": False, "error": "access denied"}
-        self.assertEqual(self.post("/web/connect", csrf=csrf, desktop="")[0], 403)
+        self.broker.reply = {"ok": False, "error": "access denied", "reason": "denied"}
+        status, _, body = self.post("/web/connect", csrf=csrf, desktop="")
+        self.assertEqual(status, 403)
+        self.assertIn("refused for your account", body)
+        self.broker.reply = {"ok": False, "error": "access denied", "reason": "not_allowed"}
+        status, _, body = self.post("/web/connect", csrf=csrf, desktop="")
+        self.assertEqual(status, 403)
+        self.assertIn("not allowed", body)
         self.broker.reply = b"garbage\n"
-        self.assertEqual(self.post("/web/connect", csrf=csrf, desktop="")[0], 403)
+        self.assertEqual(self.post("/web/connect", csrf=csrf, desktop="")[0], 503)
         os.unlink(f"{self.tmp}/b.sock")
-        self.assertEqual(self.post("/web/connect", csrf=csrf, desktop="")[0], 403)
+        self.assertEqual(self.post("/web/connect", csrf=csrf, desktop="")[0], 503)
+        self.assertEqual(self.fetch("/web/")[0], 503)  # chooser
 
     def test_default_desktop(self):
         self.login()
@@ -430,11 +437,17 @@ class BrokerClientTests(unittest.TestCase):
             b = Broker(f"{tmp}/b.sock")
             self.assertEqual(broker_web_token(f"{tmp}/b.sock", "alice")["token"], "fastrdp-web1:TOK")
             b.reply = {"ok": False, "error": "nope"}
-            with self.assertRaisesRegex(BrokerError, "nope"):
+            with self.assertRaisesRegex(BrokerError, "nope") as cm:
                 broker_web_token(f"{tmp}/b.sock", "alice")
+            self.assertEqual(cm.exception.reason, "denied")  # broker without "reason"
+            b.reply = {"ok": False, "error": "access denied", "reason": "not_allowed"}
+            with self.assertRaises(BrokerError) as cm:
+                broker_web_token(f"{tmp}/b.sock", "alice")
+            self.assertEqual(cm.exception.reason, "not_allowed")
             b.reply = b"\n"
-            with self.assertRaisesRegex(BrokerError, "no answer"):
+            with self.assertRaisesRegex(BrokerError, "no answer") as cm:
                 broker_web_token(f"{tmp}/b.sock", "alice")
+            self.assertEqual(cm.exception.reason, "unavailable")
             self.assertEqual(b.seen[0], {"op": "web_token", "user": "alice"})
             b.srv.close()
         finally:

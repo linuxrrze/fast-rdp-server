@@ -178,7 +178,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_requires_root(self):
         reply = await request(self.cfg.broker.socket, {"op": "status"})
         if os.getuid() != 0:
-            self.assertEqual(reply, {"ok": False, "error": "not permitted"})
+            self.assertEqual(reply, {"ok": False, "error": "not permitted", "reason": "denied"})
 
     async def test_garbage_is_dropped(self):
         reader, writer = await asyncio.open_unix_connection(self.cfg.broker.socket)
@@ -262,7 +262,7 @@ class WebDisabledTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.02)
             reply = await request(cfg.broker.socket, {"op": "web_token", "user": "alice"})
-            self.assertEqual(reply, {"ok": False, "error": "not permitted"})
+            self.assertEqual(reply, {"ok": False, "error": "not permitted", "reason": "denied"})
             task.cancel()
 
 
