@@ -19,8 +19,8 @@ A Windows-RDS-style terminal server for Linux, built from maintained parts:
   - VirtualGL on NVIDIA.
 
 **Start here:** [docs/quickstart.md](docs/quickstart.md) (guided setup, preflight,
-first connection) · Back-ends: [docs/backends/](docs/backends/README.md) · Tests:
-[tests/README.md](tests/README.md)
+first connection), without Ansible: [docs/manual-setup.md](docs/manual-setup.md) ·
+Back-ends: [docs/backends/](docs/backends/README.md) · Tests: [tests/README.md](tests/README.md)
 
 Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/architecture.md) ·
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:

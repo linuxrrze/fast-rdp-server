@@ -9,6 +9,9 @@ scripts/fastrdp-setup   ->  make preflight  ->  make deploy  ->  smoke test + fi
  inventory + vault)         on the target)
 ```
 
+Without Ansible: [manual-setup.md](manual-setup.md) does the same by hand on a host
+that installs the packages; the playbook remains the tested path.
+
 **Admin machine:** `ansible-core` (2.16 or newer, it includes `ansible-vault`),
 Python 3 and SSH key access to the target as root or as a user who can `sudo`.
 `scripts/fastrdp-setup` only needs the Python standard library.

@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # test_freerdp_switches.sh [DOC...]
-#   Checks every FreeRDP command-line switch in the docs (default: docs/freerdp-client.md
-#   and docs/client-guide.md) against FreeRDP itself; see check_freerdp_switches.py.
+#   Checks every FreeRDP command-line switch in the docs (default: docs/freerdp-client.md,
+#   docs/client-guide.md and docs/manual-setup.md) against FreeRDP itself; see
+#   check_freerdp_switches.py.
 #   Switch table from, in this order:
 #     FREERDP_SRC=<tree>          an unpacked FreeRDP source tree;
 #     FREERDP_HELP_CMD=xfreerdp3  the /help output of an installed client (checks what
@@ -18,7 +19,7 @@ HERE=$ROOT/tests/docs
 need python3
 
 if [ $# -eq 0 ]; then
-    set -- "$ROOT/docs/freerdp-client.md" "$ROOT/docs/client-guide.md"
+    set -- "$ROOT/docs/freerdp-client.md" "$ROOT/docs/client-guide.md" "$ROOT/docs/manual-setup.md"
 fi
 
 W=$T    # scratch directory from tests/lib.sh, removed on exit

@@ -28,7 +28,8 @@ The paths, users and modes are the ones the Ansible roles create; differences:
   `xrdp-sesman`) are installed **disabled and stopped**: they need a site
   configuration first (`/etc/fastrdp/*.toml`, `proxy.ini`, `/etc/xrdp`; stock
   `xrdp.ini` would listen on 3389 on all addresses). The roles write the
-  configuration and enable them; without Ansible, do the same by hand.
+  configuration and enable them; without Ansible, do the same by hand
+  ([manual-setup.md](manual-setup.md)).
 - The X session entries of all three wlroots desktops are installed (the role
   installs only the selected ones).
 - `fastrdp-xrdp` creates the loopback TLS key/certificate and `rsakeys.ini` in

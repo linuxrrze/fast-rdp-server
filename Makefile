@@ -37,8 +37,8 @@ test-ansible:   # ansible-core; syntax check + role templates rendered and parse
 	python3 -m unittest -v tests/ansible/test_templates.py
 	python3 -m unittest -v tests/keycloak/test_keycloak_passkeys.py
 
-# FreeRDP switches in docs/freerdp-client.md and docs/client-guide.md vs. FreeRDP's own
-# switch table. Downloads the vendored FreeRDP source (network, or FASTRDP_SOURCES_CACHE);
+# FreeRDP switches in docs/freerdp-client.md, docs/client-guide.md and docs/manual-setup.md
+# vs. FreeRDP's own switch table. Downloads the vendored FreeRDP source (network, or FASTRDP_SOURCES_CACHE);
 # FREERDP_SRC=<tree> or FREERDP_HELP_CMD=xfreerdp3 instead. Not in test-all (network).
 test-docs:   # python3; curl patch for the download
 	tests/docs/test_freerdp_switches.sh
