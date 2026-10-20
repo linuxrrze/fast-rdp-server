@@ -78,7 +78,7 @@ A login goes like this:
 
 1. The client (mstsc, xfreerdp3, Remmina) gets a Kerberos service ticket for `TERMSRV/<fqdn>` and connects to the proxy with **NLA**. The proxy accepts only Kerberos. NTLM is refused, because the proxy has no way to check domain passwords that way.
 2. The module reads the authenticated principal and sends a `login` request to the broker over a Unix socket.
-3. The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs **MFA**. NLA has no field for an OTP, so NLA logins use a **privacyIDEA push**; the client shows "connecting…" until it is confirmed. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP).
+3. The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs **MFA**. NLA has no field for an OTP, so NLA logins use a **privacyIDEA push**; the client shows "connecting…" until it is confirmed. Because the broker never sees a password with Kerberos single sign-on, it triggers that push through a privacyIDEA service account with the `triggerchallenge` right. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP).
 4. The broker picks the desktop: the client hint `fastrdp:<desktop>` in the RDP *alternate shell* field, then `~/.config/fastrdp/desktop`, then a group default, then the global default.
 5. It starts or reuses the session and returns a loopback target plus credentials:
    - **xrdp:** a **one-time token** (60 s, single use, bound to the user). xrdp-sesman's PAM stack accepts nothing else, so xrdp can't bypass MFA. If the proxy learned the real password, the token module passes it to `pam_sss` and X11 sessions get a Kerberos TGT.
@@ -186,7 +186,7 @@ fastrdp's own code is **Apache-2.0**. The vendored FreeRDP and xrdp binaries lin
 
 - **GPU encoding on real Intel, AMD and NVIDIA hardware**, for all back-ends, including my xrdp patch. Until then, size CPUs for x264.
 - **The GNOME and Plasma headless back-ends on a lab host.** Headless KRdp is unofficial, and no real GNOME or Plasma session has been started yet. Full xrdp sessions through the proxy also need a lab run.
-- **Windows mstsc with Kerberos** against fastrdp, as well as real smartcards with an AD PKI. Smartcard logon so far works with a software token.
+- **Windows mstsc with Kerberos** against fastrdp, as well as real smartcards with an AD PKI. Smartcard logon so far works with a software token. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses. The details still need a lab test.
 - **The guided setup assistant** (`make setup`, `make preflight`) against a real target.
 
 To try it in a lab, the [quick start](https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/quickstart.md) walks through four steps: answer about 15 questions, run the read-only preflight, deploy, then run the smoke test and connect:

@@ -50,13 +50,14 @@
       when: fastrdp_pam_src is changed
       changed_when: true
 
-    - name: Broker PAM service (password + account checks)
+    - name: Broker PAM services (fastrdp - password + account checks; fastrdp-tgt - session TGT)
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../broker/session/pam/fastrdp"
-        dest: /etc/pam.d/fastrdp
+        src: "{{ playbook_dir }}/../broker/session/pam/{{ item }}"
+        dest: "/etc/pam.d/{{ item }}"
         owner: root
         group: root
         mode: "0644"
+      loop: [fastrdp, fastrdp-tgt]
 
 - name: Install from the APT repository
   when: fastrdp_install_method == 'apt'

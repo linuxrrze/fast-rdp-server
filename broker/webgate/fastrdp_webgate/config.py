@@ -15,6 +15,15 @@ class ConfigError(Exception):
     pass
 
 
+# RFC 8176 "amr" values that never prove a second factor on their own. required_amr_any
+# accepts a token if *any* listed value is present, so listing one of these would let a
+# password-only (or presence-only) login through. Passkeys: use "mfa", "hwk" or "swk"
+# (see docs/passkeys.md), never "user" or "pin" alone.
+SINGLE_FACTOR_AMR = frozenset({"pwd", "kba", "pin", "user", "wia", "rba", "geo"})
+# OpenID Connect Core 2: acr "0" does not meet ISO/IEC 29115 level 1.
+NO_ASSURANCE_ACR = frozenset({"0"})
+
+
 @dataclass
 class WebgateSection:
     listen: str = "127.0.0.1:8090"
@@ -92,6 +101,13 @@ def parse(raw: dict) -> Config:
     if not (cfg.oidc.required_acr or cfg.oidc.required_amr_any or cfg.oidc.allow_without_mfa_proof):
         raise ConfigError("set oidc.required_acr or oidc.required_amr_any: web logins skip the "
                           "broker's MFA, so the IdP must prove it (or set allow_without_mfa_proof)")
+    weak_amr = sorted(set(map(str, cfg.oidc.required_amr_any)) & SINGLE_FACTOR_AMR)
+    if weak_amr:
+        raise ConfigError(f"oidc.required_amr_any: {', '.join(weak_amr)} alone does not prove MFA "
+                          "(any listed value is accepted); use e.g. otp, hwk, swk, mfa")
+    weak_acr = sorted(set(map(str, cfg.oidc.required_acr)) & NO_ASSURANCE_ACR)
+    if weak_acr:
+        raise ConfigError(f"oidc.required_acr: {', '.join(weak_acr)} means no assurance")
     cfg.oidc.strip_domains = [d.lower() for d in cfg.oidc.strip_domains]
     cfg.webgate.path_prefix = "/" + cfg.webgate.path_prefix.strip("/")
     cfg.guacamole.rdp_parameters = {str(k): str(v) for k, v in cfg.guacamole.rdp_parameters.items()}

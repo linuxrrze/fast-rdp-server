@@ -189,3 +189,11 @@
     enabled: "{{ omit if item.startswith('fastrdp-guac') else true }}"
     daemon_reload: true
   loop: [fastrdp-guacd.service, fastrdp-guacamole.service, fastrdp-webgate.service, nginx.service]
+
+- name: Keycloak configured for passkeys (opt-in, fastrdp_web_passkeys)
+  ansible.builtin.include_tasks:
+    file: keycloak_passkeys.yml
+    apply:
+      tags: [keycloak]
+  when: fastrdp_web_passkeys | bool
+  tags: [keycloak]

@@ -5,7 +5,8 @@
 Per user:
   1. configure g-r-d *headless* mode inside the user's systemd manager
      (port, per-user TLS cert, random per-session RDP credentials),
-  2. enable gnome-remote-desktop-headless.service (WantedBy=gnome-session.target),
+  2. enable gnome-remote-desktop-headless.service (WantedBy=gnome-session.target)
+     for the runtime of the user manager (/run/user/<uid>, not $HOME),
   3. start GDM's gnome-headless-session@<user>.service, which creates a real
      logind session running gnome-shell headless,
   4. wait until g-r-d listens on the port as that user.
@@ -67,7 +68,10 @@ class GnomeBackend(Backend):
             await sysutil.run_as_user(user, *grdctl, "disable-port-negotiation")
             await sysutil.run_as_user(user, *grdctl, "set-credentials", RDP_USER, input=secret + "\n")
             await sysutil.run_as_user(user, *grdctl, "enable")
-            await sysutil.run_as_user(user, "systemctl", "--user", "enable", GRD_USER_UNIT)
+            # --runtime: the link goes to $XDG_RUNTIME_DIR/systemd/user (tmpfs), part of the
+            # user unit search path, not to ~/.config/systemd/user, which the user manager
+            # cannot read when $HOME is Kerberized NFS and it starts without a TGT.
+            await sysutil.run_as_user(user, "systemctl", "--user", "--runtime", "enable", GRD_USER_UNIT)
             if await sysutil.unit_active(self.unit(user)):
                 # Session alive but g-r-d gone or on another port: restart only g-r-d.
                 await sysutil.run_as_user(user, "systemctl", "--user", "restart", GRD_USER_UNIT)

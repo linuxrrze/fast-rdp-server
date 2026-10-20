@@ -30,6 +30,9 @@ done
 check "proxy module: RUNPATH \$ORIGIN/../.." bash -c 'readelf -d "$1" | grep -E "\((RUNPATH|RPATH)\)" | grep -qF "[\$ORIGIN/../..]"' _ "$PLUGIN"
 check "proxy module exports the entry point" bash -c 'readelf --dyn-syms -W "$1" | grep -q " proxy_module_entry_point$"' _ "$PLUGIN"
 check "PAM module installed" bash -c 'ls /usr/lib/*/security/pam_fastrdp_token.so'
+for s in fastrdp fastrdp-tgt fastrdp-session; do
+    check "PAM service /etc/pam.d/$s installed" test -f "/etc/pam.d/$s"
+done
 check "broker and webgate import" env PYTHONPATH=/usr/lib/fastrdp/python python3 -c 'import fastrdp_broker.server, fastrdp_webgate.app'
 ex=$(find /usr/share/doc/fastrdp-broker/examples -name 'broker.toml.example*' 2>/dev/null | head -1)
 case $ex in *.gz) zcat "$ex" > "$T/broker.toml" ;; ?*) cp "$ex" "$T/broker.toml" ;; esac

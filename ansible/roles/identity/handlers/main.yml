@@ -4,6 +4,12 @@
     name: sssd
     state: restarted
 
+# KCM keeps its caches in /var/lib/sss/secrets; a restart loses no tickets.
+- name: Restart sssd-kcm
+  ansible.builtin.systemd_service:
+    name: sssd-kcm.service
+    state: restarted
+
 # gssproxy before rpc.gssd (handlers run in this order): rpc.gssd talks to gssproxy.
 - name: Restart gssproxy
   ansible.builtin.systemd_service:

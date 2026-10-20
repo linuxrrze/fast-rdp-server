@@ -142,7 +142,7 @@
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li>The module reads the authenticated principal and sends a <code>login</code> request to the broker over a Unix socket.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li>The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs <strong>MFA</strong>. NLA has no field for an OTP, so NLA logins use a <strong>privacyIDEA push</strong>; the client shows "connecting…" until it is confirmed. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP).</li>
+<li>The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs <strong>MFA</strong>. NLA has no field for an OTP, so NLA logins use a <strong>privacyIDEA push</strong>; the client shows "connecting…" until it is confirmed. Because the broker never sees a password with Kerberos single sign-on, it triggers that push through a privacyIDEA service account with the <code>triggerchallenge</code> right. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP).</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li>The broker picks the desktop: the client hint <code>fastrdp:&lt;desktop&gt;</code> in the RDP <em>alternate shell</em> field, then <code>~/.config/fastrdp/desktop</code>, then a group default, then the global default.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
@@ -356,7 +356,7 @@
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>The GNOME and Plasma headless back-ends on a lab host.</strong> Headless KRdp is unofficial, and no real GNOME or Plasma session has been started yet. Full xrdp sessions through the proxy also need a lab run.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Windows mstsc with Kerberos</strong> against fastrdp, as well as real smartcards with an AD PKI. Smartcard logon so far works with a software token.</li>
+<li><strong>Windows mstsc with Kerberos</strong> against fastrdp, as well as real smartcards with an AD PKI. Smartcard logon so far works with a software token. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses. The details still need a lab test.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>The guided setup assistant</strong> (<code>make setup</code>, <code>make preflight</code>) against a real target.</li>
 <!-- /wp:list-item --></ul>

@@ -12,7 +12,7 @@ import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import identity, pamauth
+from . import identity, pamauth, tgt
 from .backends import BACKENDS, Backend, BackendError, LoginRequest
 from .config import Config
 from .identity import IdentityError, LocalUser
@@ -39,6 +39,13 @@ class Broker:
         if cfg.web.enabled:
             self.web_uid = pwd.getpwnam(cfg.web.gateway_user).pw_uid
         self.mfa = SecondFactor(cfg.mfa)
+        if cfg.mfa.nla_kdc_enforced and cfg.mfa.mode != "none":
+            log.warning(
+                "[mfa] nla_kdc_enforced: Kerberos NLA logins from %s skip the %s second factor; "
+                "the KDC must require passkey/PKINIT pre-authentication for TERMSRV tickets "
+                "(FreeIPA: ipa service-mod TERMSRV/<host> --auth-ind=passkey --auth-ind=pkinit)",
+                ", ".join(cfg.auth.realms), cfg.mfa.mode,
+            )
         self.backends: dict[str, Backend] = {
             name: cls(cfg, self.state, self.tokens) for name, cls in BACKENDS.items()
         }
@@ -73,6 +80,32 @@ class Broker:
         pref = await self.read_desktop_pref(user)
         return identity.choose_desktop(self.cfg, user, None, pref=pref)
 
+    # ---------------------------------------------------------------- kerberos
+    def require_credential(self, user: LocalUser, password: str | None) -> None:
+        """[broker] session_tgt = required: refuse, before MFA, logins that cannot give
+        the session a TGT (no password: Kerberos SSO without delegation, smartcard, web)."""
+        if self.cfg.broker.session_tgt == "required" and not password:
+            raise Denied(
+                f"{user.name}: login without a password, but [broker] session_tgt = required "
+                "(Kerberized home?); log in with NLA and a typed/delegated password, or TLS"
+            )
+
+    async def session_tgt(self, user: LocalUser, password: str | None, backend: Backend) -> None:
+        """TGT for back-ends that never see the password (GNOME, Plasma), before they
+        start, on every login: a reconnect with a password refreshes an expiring TGT."""
+        mode = self.cfg.broker.session_tgt
+        if mode == "off" or backend.obtains_tgt or not password:
+            return  # without a password "required" already refused the login
+        try:
+            await tgt.obtain(user, password)
+        except tgt.TgtError as exc:
+            if mode == "required":
+                raise Denied(f"{user.name}: no Kerberos TGT for the {backend.name} session: {exc}") from None
+            log.warning("%s: no Kerberos TGT for the %s session (Kerberos/NFS access will fail): %s",
+                        user.name, backend.name, exc)
+            return
+        log.info("%s: Kerberos TGT stored for the %s session", user.name, backend.name)
+
     # ---------------------------------------------------------------- login
     async def first_factor(
         self, msg: dict
@@ -84,15 +117,20 @@ class Broker:
         secret = str_field(msg, "password")
 
         if method == "nla":
-            # The proxy module already compared the CredSSP user with the Kerberos
-            # principal; check again here so neither side can be bypassed alone.
+            # The Kerberos principal (from the KDC's ticket, via the proxy module) is the
+            # identity. The CredSSP user name is informational: a UPN or DOMAIN\user may
+            # differ from the account name (docs/windows-clients.md §3.6).
             principal = str_field(msg, "principal", required=True)
             name, realm = identity.split_principal(principal)
             if self.cfg.auth.realms and realm not in self.cfg.auth.realms:
                 raise Denied(f"realm {realm} not accepted")
-            if name.lower() != rdp_user.lower():
-                raise Denied(f"principal {principal} does not match user {rdp_user}")
-            user = identity.resolve(name, realm, self.cfg.auth)
+            user = identity.resolve_principal(name, realm, self.cfg.auth)
+            raw_user = str_field(msg, "user", required=True)
+            if secret and identity.names_other_account(raw_user, user):
+                # A password delegated for somebody else must not reach pam_sss or MFA.
+                log.warning("principal %s: CredSSP user %r is another account; "
+                            "delegated password not used", principal, raw_user)
+                secret = None
             try:
                 await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, rhost)
             except pamauth.PamError as exc:
@@ -103,6 +141,14 @@ class Broker:
                 # it does not replace MFA; exempt groups whose accounts *require* smartcards.
                 log.info("smartcard logon for %s", user.name)
                 secret = None
+            if self.cfg.mfa.nla_kdc_enforced and self.cfg.mfa.mode != "none" and realm in self.cfg.auth.realms:
+                # The ticket for TERMSRV came from this realm's KDC, which (operator
+                # assertion, checked by preflight for FreeIPA) only issues it after
+                # passkey/PKINIT pre-authentication. Only this branch: TLS and web never.
+                log.info("%s: Kerberos NLA login (principal %s); second factor skipped: "
+                         "[mfa] nla_kdc_enforced (KDC-enforced strong pre-authentication)",
+                         user.name, principal)
+                return user, secret, None, "kdc"
             return user, secret, None, None
 
         if method == "tls" and secret and secret.startswith(WEB_TOKEN_PREFIX):
@@ -150,6 +196,7 @@ class Broker:
 
         if not identity.user_allowed(user, self.cfg.auth):
             raise Denied(f"{user.name} is not in an allowed group")
+        self.require_credential(user, password)
 
         if mfa_done:
             log.info("second factor for %s already verified by %s", user.name, mfa_done)
@@ -173,6 +220,7 @@ class Broker:
 
         backend = self.backends[desktop.backend]
         async with self.user_locks[user.name]:
+            await self.session_tgt(user, password, backend)
             target = await backend.ensure(LoginRequest(user, desktop, password, width, height))
         self.active[session_id] = user.name
         log.info(
@@ -187,6 +235,7 @@ class Broker:
         user = identity.resolve(name, None, self.cfg.auth)
         if not identity.user_allowed(user, self.cfg.auth):
             raise Denied(f"{user.name} is not in an allowed group")
+        self.require_credential(user, None)  # web logins never carry a password
         try:
             await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, None)
         except pamauth.PamError as exc:

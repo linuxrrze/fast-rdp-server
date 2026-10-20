@@ -17,6 +17,9 @@ username_claim = "preferred_username"
 strip_domains = ["lab.example.com"]       # alice@lab.example.com -> alice; other domains refused
 # Prove MFA: Keycloak puts the step-up level into "acr" (Authentication flow
 # "Condition - Level of Authentication"); configure the client's ACR to LoA mapping.
+# With passkeys, let a client policy force an MFA-only flow for acr "mfa" instead
+# (docs/passkeys.md). required_amr_any: any listed value proves MFA, e.g.
+# ["otp", "hwk", "swk", "mfa"]; single-factor values (pwd, pin, user, ...) are refused.
 required_acr = ["mfa"]
 required_amr_any = []
 

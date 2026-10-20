@@ -13,7 +13,12 @@
 #
 # build-freerdp.sh --deps   prints the Debian/Ubuntu build dependencies.
 # Environment: FASTRDP_PREFIX (/opt/fastrdp), BUILD_DIR (SRCDIR/build), JOBS,
-#   FASTRDP_CMAKE_ARGS (extra cmake arguments, e.g. for sysroot builds).
+#   FASTRDP_CMAKE_ARGS (extra cmake arguments, e.g. for sysroot builds),
+#   FASTRDP_FREERDP_WEBAUTHN=1: also build the WebAuthn redirection client channel
+#   ([MS-RDPEWA], "rdpewa", CHANNEL_RDPEWA) with libfido2 + libcbor, so xfreerdp can
+#   hand a Windows host's WebAuthn requests to local FIDO2 security keys
+#   (docs/passkeys.md). Off by default and in the packages: no fastrdp back-end
+#   implements the server side. --deps then lists libfido2-dev and libcbor-dev too.
 set -euo pipefail
 
 DEPS="build-essential cmake ninja-build pkg-config libssl-dev libkrb5-dev zlib1g-dev
@@ -21,6 +26,11 @@ libcjson-dev libicu-dev libsystemd-dev libpcsclite-dev
 libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
 libx11-dev libxext-dev libxinerama-dev libxcursor-dev libxdamage-dev libxv-dev
 libxkbfile-dev libxrandr-dev libxi-dev libxrender-dev libxfixes-dev"
+webauthn=()
+if [ "${FASTRDP_FREERDP_WEBAUTHN:-0}" = 1 ]; then
+    DEPS="$DEPS libfido2-dev libcbor-dev"   # FreeRDP 3.32: libfido2 >= 1.14, libcbor >= 0.10.2
+    webauthn=(-DCHANNEL_RDPEWA=ON -DCHANNEL_RDPEWA_CLIENT=ON)
+fi
 if [ "${1:-}" = --deps ]; then
     echo "$DEPS" | tr '\n' ' '; echo
     exit 0
@@ -57,7 +67,7 @@ cmake -S "$src" -B "$build" "${generator[@]}" \
     -DWITH_SOXR=OFF -DWITH_LAME=OFF -DWITH_OPUS=OFF -DCHANNEL_URBDRC=OFF \
     -DWITH_INTERNAL_RC4=ON -DWITH_INTERNAL_MD4=ON -DWITH_INTERNAL_MD5=ON \
     -DWITH_LIBSYSTEMD=ON -DWITH_TIMEZONE_ICU=OFF -DWITH_UNICODE_BUILTIN=OFF \
-    ${FASTRDP_CMAKE_ARGS:-}
+    "${webauthn[@]}" ${FASTRDP_CMAKE_ARGS:-}
 cmake --build "$build" -j"${JOBS:-$(nproc)}"
 DESTDIR=$destdir cmake --install "$build"
 
@@ -75,4 +85,8 @@ done
 # WITH_GFX_H264 is derived from WITH_VIDEO_FFMPEG; check what the build really did
 grep -q '^#define WITH_GFX_H264' "$build/include/freerdp/config.h" \
     || { echo "build-freerdp.sh: H.264 (WITH_GFX_H264) is not enabled" >&2; exit 1; }
+if [ ${#webauthn[@]} -gt 0 ]; then
+    grep -q '^#define CHANNEL_RDPEWA_CLIENT' "$build/include/freerdp/config.h" \
+        || { echo "build-freerdp.sh: WebAuthn channel (CHANNEL_RDPEWA_CLIENT) is not enabled" >&2; exit 1; }
+fi
 echo "FreeRDP $(PKG_CONFIG_PATH=$root/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR='' pkg-config --modversion freerdp3) installed in $destdir$prefix"

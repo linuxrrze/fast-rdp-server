@@ -32,6 +32,12 @@ class BrokerSection:
     # directories on NFS can hang (server down) or refuse root (sec=krb5*); the login
     # then falls back to the group/global default. 0 = never read users' homes.
     home_read_timeout: float = 3.0
+    # Kerberos TGT for back-ends that never see the user's password (GNOME, Plasma):
+    # "auto" = with a known password (NLA delegated, TLS), get one through PAM service
+    # fastrdp-tgt (pam_sss) before the session starts; failure is only logged.
+    # "required" = refuse logins without a password, and logins whose TGT step fails.
+    # "off" = never. See docs/nfs-kerberos-homes.md.
+    session_tgt: str = "auto"
 
 
 @dataclass
@@ -73,6 +79,12 @@ class MfaSection:
     exempt_groups: list[str] = field(default_factory=list)
     otp_lengths: list[int] = field(default_factory=lambda: [6])
     yubikey_otp: bool = True
+    # Kerberos NLA logins skip privacyIDEA: the operator asserts that the KDC issues
+    # TERMSRV tickets only after strong pre-authentication (FreeIPA: auth indicators
+    # passkey/pkinit on the TERMSRV service; docs/passkeys.md). Only for principals of
+    # [auth] realms; TLS and web logins are unaffected. Never for AD without a policy
+    # that guarantees it (AD has no authentication indicators).
+    nla_kdc_enforced: bool = False
     privacyidea: PrivacyIdeaSection = field(default_factory=PrivacyIdeaSection)
 
 
@@ -110,6 +122,7 @@ class Config:
 
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
 VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push")
+VALID_SESSION_TGT = ("auto", "off", "required")
 
 
 def _section(cls, data: dict, where: str):
@@ -150,6 +163,8 @@ def parse(raw: dict) -> Config:
         or not 0 <= broker.home_read_timeout <= 60
     ):
         raise ConfigError("[broker] home_read_timeout must be a number of seconds in 0..60")
+    if broker.session_tgt not in VALID_SESSION_TGT:
+        raise ConfigError(f"[broker] session_tgt must be one of {VALID_SESSION_TGT}")
 
     auth = _section(AuthSection, dict(raw.pop("auth", {})), "auth")
     auth.realms = [r.upper() for r in auth.realms]
@@ -163,6 +178,12 @@ def parse(raw: dict) -> Config:
         raise ConfigError(f"[mfa] mode must be one of {VALID_MFA_MODES}")
     if mfa.mode != "none" and not pi.url:
         raise ConfigError("[mfa.privacyidea] url is required when MFA is enabled")
+    if not isinstance(mfa.nla_kdc_enforced, bool):
+        raise ConfigError("[mfa] nla_kdc_enforced must be true or false")
+    if mfa.nla_kdc_enforced and not auth.realms:
+        # Only tickets from KDCs whose TERMSRV policy is known may skip MFA; a trusted
+        # foreign realm's KDC does not apply this realm's authentication indicators.
+        raise ConfigError("[mfa] nla_kdc_enforced needs [auth] realms (the realms whose KDC enforces it)")
 
     desktops: dict[str, Desktop] = {}
     for name, d in raw.pop("desktops", {}).items():

@@ -13,6 +13,11 @@ session_start_timeout = 90
 # Max. seconds to read ~/.config/fastrdp/desktop as root (NFS homes may hang or refuse
 # root, e.g. sec=krb5); then the group/global default is used. 0 = never read homes.
 #home_read_timeout = 3
+# Kerberos TGT for GNOME/Plasma sessions (xrdp gets one through its own PAM stack):
+# auto = when the login carries the password (NLA with delegated password, TLS),
+# failure only logged; required = also refuse logins without a password (SSO without
+# delegation, smartcard, web) and failed TGT requests; off. docs/nfs-kerberos-homes.md
+#session_tgt = "auto"
 
 [auth]
 realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA
@@ -26,6 +31,10 @@ mode = "otp_or_push"              # none | otp | push | otp_or_push
 exempt_groups = []
 otp_lengths = [6]                 # keep one TOTP length; see docs/auth-matrix.md
 yubikey_otp = true
+# true: Kerberos NLA logins from [auth] realms skip privacyIDEA because the KDC only
+# issues TERMSRV tickets after passkey/PKINIT pre-authentication (FreeIPA auth
+# indicators; docs/passkeys.md). TLS and web logins are unaffected. Not for AD.
+#nla_kdc_enforced = false
 
 [mfa.privacyidea]
 url = "https://privacyidea.example.com"

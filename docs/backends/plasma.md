@@ -7,6 +7,13 @@ mode**. Fallback: `plasma-x11` through [xrdp](xrdp.md).
 
 ## How it works
 
+Before `PlasmaBackend.ensure()`, under the same lock, the broker gets the user a
+**Kerberos TGT** when the login carried the password (`[broker] session_tgt`), on every
+login including reconnects; same mechanism as for
+[GNOME](gnome.md#kerberos-ticket-tgt). The TGT is in the user's KCM cache before
+`fastrdp-plasma@<user>` starts, so Plasma can use a Kerberized NFS home from its first
+access.
+
 `PlasmaBackend.ensure()` (under the broker's per-user lock):
 
 1. **Reuse:** if `sessions.json` has a `plasma` session for the user,
@@ -49,7 +56,8 @@ TimeoutStopSec=20
   only account (`pam_sss`) and session modules (`pam_limits`, `pam_loginuid`,
   `pam_env` with `/etc/default/locale`, `pam_keyinit`, `pam_systemd class=user
   type=wayland desktop=KDE`, `pam_mkhomedir`, `pam_sss`, optional `pam_kwallet5`).
-  There is no auth phase; systemd does not call it.
+  There is no auth phase; systemd does not call it. The session's TGT comes from the
+  broker (PAM service `fastrdp-tgt`), not from this stack.
 
 `/usr/libexec/fastrdp/session-plasma` (as the user):
 
@@ -133,6 +141,7 @@ without `FASTRDP_HEADLESS=1` it runs the stock command.
 | `fastrdp_default_geometry` | `1920x1080` (inventory) | fallback size if the client sent none |
 | `fastrdp_backend_port_range` | `[33900, 34899]` | port pool |
 | `[backends.plasma] unit` / `security` | `fastrdp-plasma@{user}.service` / `nla` | `config.py` defaults, not rendered by Ansible |
+| `fastrdp_session_tgt` | `auto` (role `common`) | broker `[broker] session_tgt`: TGT before the session starts when the login carries the password; `required` refuses logins without one; `off` |
 
 ## GPU and performance path
 
@@ -164,8 +173,9 @@ Tuning: `fastrdp_krdp_encoder`, `fastrdp_krdp_quality`; steer NVIDIA users to `g
   `/proc/<pid>/cmdline` unless `fastrdp_proc_hidepid: true`. It is useless to them:
   nftables allows only the proxy and root to connect, and it changes with every
   session start.
-- The user's password never reaches the session: **no Kerberos TGT**, and
-  `pam_kwallet5` cannot unlock the wallet with a password.
+- The user's password never reaches the session, so `pam_kwallet5` cannot unlock
+  the wallet with it. The broker uses the password, when the login carried it, only
+  for the TGT (PAM conversation of `fastrdp-tgt`, never argv, environment or files).
 - PAM `fastrdp-session` is in sssd's `ad_gpo_map_remote_interactive`, so GPO logon
   rights apply to the session as well as to the broker's `fastrdp` check.
 
@@ -200,6 +210,6 @@ Tuning: `fastrdp_krdp_encoder`, `fastrdp_krdp_quality`; steer NVIDIA users to `g
 |---|---|
 | `make test-gpu` | `session_report.py` verdict "Plasma on NVIDIA falls back to x264" (fake `/proc`) |
 | `make lint` | shellcheck of `session-plasma` and the other session scripts, ansible-lint |
-| `make test-broker` | config defaults for `[backends.plasma]` (via the example config) |
+| `make test-broker` | config defaults for `[backends.plasma]` (via the example config); TGT before the start, never without a password, `auto`/`required`/`off` (`test_session_tgt.py`) |
 
 `PlasmaBackend.ensure()`, the unit and `session-plasma` have no functional test.

@@ -19,6 +19,7 @@ PAM_TEXT_INFO = 4
 PAM_SILENT = 0x8000
 PAM_DISALLOW_NULL_AUTHTOK = 0x0001
 PAM_RHOST = 4
+PAM_ESTABLISH_CRED = 0x0002
 
 
 class PamMessage(Structure):
@@ -58,6 +59,9 @@ def _pam():
         lib.pam_authenticate.argtypes = [c_void_p, c_int]
         lib.pam_acct_mgmt.argtypes = [c_void_p, c_int]
         lib.pam_set_item.argtypes = [c_void_p, c_int, c_void_p]
+        lib.pam_setcred.argtypes = [c_void_p, c_int]
+        lib.pam_getenv.restype = c_char_p
+        lib.pam_getenv.argtypes = [c_void_p, c_char_p]
         lib.pam_strerror.restype = c_char_p
         lib.pam_strerror.argtypes = [c_void_p, c_int]
         _libpam = lib
@@ -70,9 +74,9 @@ class PamError(Exception):
         self.code = code
 
 
-def _run(service: str, user: str, password: str | None, rhost: str | None, authenticate: bool):
-    lib = _pam()
-    secret = (password or "").encode()
+def _conversation(user: str, secret: bytes):
+    """PAM conversation answering every hidden prompt with `secret` (copied with strdup
+    into memory that libpam frees; never written anywhere else)."""
 
     @CONV_FUNC
     def conv(n_messages, messages, p_response, _appdata):
@@ -89,6 +93,12 @@ def _run(service: str, user: str, password: str | None, rhost: str | None, authe
         p_response[0] = responses
         return PAM_SUCCESS
 
+    return conv
+
+
+def _run(service: str, user: str, password: str | None, rhost: str | None, authenticate: bool):
+    lib = _pam()
+    conv = _conversation(user, (password or "").encode())
     handle = c_void_p()
     conv_struct = PamConv(conv, None)
     rc = lib.pam_start(service.encode(), user.encode(), byref(conv_struct), byref(handle))
@@ -116,3 +126,34 @@ def authenticate(service: str, user: str, password: str, rhost: str | None = Non
 def account_ok(service: str, user: str, rhost: str | None = None) -> None:
     """Account check only (expiry, lock, access rules). Raises PamError on failure."""
     _run(service, user, None, rhost, authenticate=False)
+
+
+def establish_credentials(service: str, user: str, password: str) -> str | None:
+    """pam_authenticate + pam_setcred(PAM_ESTABLISH_CRED) for `user`, run by root.
+
+    Used for the session TGT (server.Broker.session_tgt): with pam_sss, sssd's
+    krb5_child gets the TGT and stores it in the user's credential cache as the user
+    (uid taken from sssd's cache, not from the caller), so the caller being root does
+    not matter. No account phase: the login already passed it (PAM service fastrdp).
+    The password goes only through the PAM conversation, never to argv/env/files.
+    Returns KRB5CCNAME as set by pam_sss in the PAM environment, or None.
+    Raises PamError on failure.
+    """
+    lib = _pam()
+    conv = _conversation(user, password.encode())
+    handle = c_void_p()
+    conv_struct = PamConv(conv, None)
+    rc = lib.pam_start(service.encode(), user.encode(), byref(conv_struct), byref(handle))
+    if rc != PAM_SUCCESS:
+        raise PamError("pam_start", rc, "cannot start PAM transaction")
+    try:
+        rc = lib.pam_authenticate(handle, PAM_SILENT | PAM_DISALLOW_NULL_AUTHTOK)
+        if rc != PAM_SUCCESS:
+            raise PamError("authenticate", rc, lib.pam_strerror(handle, rc).decode())
+        rc = lib.pam_setcred(handle, PAM_ESTABLISH_CRED | PAM_SILENT)
+        if rc != PAM_SUCCESS:
+            raise PamError("setcred", rc, lib.pam_strerror(handle, rc).decode())
+        ccname = lib.pam_getenv(handle, b"KRB5CCNAME")
+        return ccname.decode(errors="replace") if ccname else None
+    finally:
+        lib.pam_end(handle, rc)

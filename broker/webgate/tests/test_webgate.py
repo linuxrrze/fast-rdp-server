@@ -118,6 +118,29 @@ class ConfigTests(unittest.TestCase):
         config.parse({**self.base, "oidc": {**self.base["oidc"], "required_acr": ["mfa"]}})
         config.parse({**self.base, "oidc": {**self.base["oidc"], "allow_without_mfa_proof": True}})
 
+    def oidc(self, **kw):
+        return {**self.base, "oidc": {**self.base["oidc"], **kw}}
+
+    def test_single_factor_amr_refused(self):
+        # required_amr_any accepts any listed value, so "pwd" would admit password-only logins
+        # and "user"/"pin" a passkey without any proof of possession beyond presence.
+        for weak in ("pwd", "kba", "pin", "user", "wia", "rba", "geo"):
+            with self.subTest(weak=weak), self.assertRaises(config.ConfigError):
+                config.parse(self.oidc(required_amr_any=["otp", weak]))
+
+    def test_passkey_amr_values_accepted(self):
+        cfg = config.parse(self.oidc(required_amr_any=["otp", "hwk", "swk", "mfa"]))
+        p = Provider(cfg.oidc, "s")
+        for amr in (["mfa"], ["hwk"], ["swk", "user"], ["pwd", "otp"]):
+            p.check_mfa({"amr": amr})
+        for amr in (["pwd"], ["user", "pin"], []):
+            with self.subTest(amr=amr), self.assertRaises(OidcError):
+                p.check_mfa({"amr": amr})
+
+    def test_acr_zero_refused(self):
+        with self.assertRaises(config.ConfigError):
+            config.parse(self.oidc(required_acr=["mfa", "0"]))
+
 
 class UsernameTests(unittest.TestCase):
     def app(self):

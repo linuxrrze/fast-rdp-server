@@ -54,6 +54,15 @@ Input-to-frame latency (`perfload latency`, key every 500 ms, ~48 samples per ru
 
 Size proxy CPU for the RFX case if you have clients without H.264.
 
+**TCP only, no auto-detection.** freerdp-proxy has no RDP-UDP transport
+(MS-RDPEMT/MS-RDPEUDP), so the fastrdp module does not offer multitransport: every
+session runs over TCP. On lossy or high-latency WAN links that means no FEC-based loss
+recovery and higher latency than a Windows host with UDP. The proxy also does no
+connect-time network auto-detection. mstsc's default `connection type:i:7` (autodetect)
+therefore reaches xrdp unchanged, and xrdp uses the `default` encoder settings, not a
+WAN profile. Details and recommendations: [rdp-spec-conformance.md](rdp-spec-conformance.md)
+§7 and §12 (R6).
+
 ## Ubuntu's FreeRDP has no H.264 (clients!)
 
 `freerdp-shadow-cli /buildconfig` on Ubuntu 26.04 (FreeRDP 3.32.1) shows:

@@ -1,0 +1,66 @@
+---
+# Keycloak for passkeys on the web path (docs/passkeys.md, recipe A). Included only with
+# fastrdp_web_passkeys: true. Runs once, on the controller, against the admin REST API;
+# files/fastrdp_keycloak_passkeys.py does the idempotent read-merge-write and honours
+# check mode (--check lists what would change).
+- name: Passkey settings are consistent
+  ansible.builtin.assert:
+    that:
+      - fastrdp_keycloak_admin_client_secret | length > 0
+        or (fastrdp_keycloak_admin_user | length > 0 and fastrdp_keycloak_admin_password | length > 0)
+      - fastrdp_keycloak_mfa_acr in fastrdp_web_required_acr
+      - not fastrdp_web_passkeys_hardware_only | bool or fastrdp_web_passkeys_aaguids | length > 0
+      - fastrdp_keycloak_admin_url is match('^https://') or fastrdp_keycloak_admin_url is match('^http://(localhost|127\.0\.0\.1)[:/]')
+    fail_msg: >-
+      fastrdp_web_passkeys needs Keycloak admin credentials (vault_fastrdp_keycloak_admin_client_secret,
+      or fastrdp_keycloak_admin_user + vault_fastrdp_keycloak_admin_password), fastrdp_keycloak_mfa_acr
+      ({{ fastrdp_keycloak_mfa_acr }}) in fastrdp_web_required_acr ({{ fastrdp_web_required_acr }}),
+      fastrdp_web_passkeys_aaguids when fastrdp_web_passkeys_hardware_only is on, and an https
+      fastrdp_keycloak_admin_url.
+    quiet: true
+  run_once: true
+
+- name: Configure Keycloak (WebAuthn passwordless policy, MFA flow, client policy, ACR map)
+  ansible.builtin.command:
+    argv: [python3, "{{ role_path }}/files/fastrdp_keycloak_passkeys.py"]
+    stdin: "{{ settings | to_json }}"
+  vars:
+    settings:
+      admin_url: "{{ fastrdp_keycloak_admin_url }}"
+      realm: "{{ fastrdp_keycloak_realm }}"
+      client_id: "{{ fastrdp_keycloak_client_id }}"
+      admin_realm: "{{ fastrdp_keycloak_admin_realm }}"
+      admin_client_id: "{{ fastrdp_keycloak_admin_client_id }}"
+      admin_client_secret: "{{ fastrdp_keycloak_admin_client_secret }}"
+      admin_user: "{{ fastrdp_keycloak_admin_user }}"
+      admin_password: "{{ fastrdp_keycloak_admin_password }}"
+      ca_file: "{{ fastrdp_keycloak_ca_src }}"
+      flow_alias: "{{ fastrdp_keycloak_mfa_flow }}"
+      acr: "{{ fastrdp_keycloak_mfa_acr }}"
+      loa: "{{ fastrdp_keycloak_mfa_loa | int }}"
+      second_factors: "{{ fastrdp_keycloak_second_factors }}"
+      mediation: "{{ fastrdp_web_passkeys_mediation }}"
+      hardware_only: "{{ fastrdp_web_passkeys_hardware_only | bool }}"
+      aaguids: "{{ fastrdp_web_passkeys_aaguids }}"
+      check: "{{ ansible_check_mode }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false   # the script itself only reads in check mode
+  register: fastrdp_keycloak_passkeys
+  changed_when: (fastrdp_keycloak_passkeys.stdout | default('{}') | from_json).changed | default(false)
+  failed_when: false
+  no_log: true        # stdin carries the admin secret; the result is shown below
+
+- name: Keycloak passkey configuration result
+  vars:
+    out: "{{ fastrdp_keycloak_passkeys.stdout | default('') }}"
+    result: "{{ out | from_json if out is match('^\\{') else {} }}"
+  ansible.builtin.assert:
+    that: fastrdp_keycloak_passkeys.rc | default(1) == 0
+    fail_msg: "Keycloak passkey configuration failed: {{ result.msg | default(fastrdp_keycloak_passkeys.stderr | default('no output')) }}"
+    success_msg: >-
+      {{ ('would change: ' if ansible_check_mode else 'changed: ') ~ (result.changes | join('; '))
+         if result.changes | default([]) else 'Keycloak already configured' }}
+    quiet: false
+  run_once: true

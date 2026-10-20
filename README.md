@@ -26,7 +26,7 @@ Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/archit
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
 [docs/desktop-matrix.md](docs/desktop-matrix.md) · Performance: [docs/performance.md](docs/performance.md) ·
 Clients: [docs/client-guide.md](docs/client-guide.md), Windows/Kerberos: [docs/windows-clients.md](docs/windows-clients.md) · Web: [docs/web-access.md](docs/web-access.md) ·
-Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md) · Kerberized NFS homes: [docs/nfs-kerberos-homes.md](docs/nfs-kerberos-homes.md) · Upstream reports: [docs/upstream.md](docs/upstream.md) · Packages/APT repository: [docs/packaging.md](docs/packaging.md) · Vendored dependencies: [docs/vendoring.md](docs/vendoring.md)
+Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md) · Passkeys/FIDO2: [docs/passkeys.md](docs/passkeys.md), WebAuthn redirection (research): [docs/webauthn-redirection.md](docs/webauthn-redirection.md) · Kerberized NFS homes: [docs/nfs-kerberos-homes.md](docs/nfs-kerberos-homes.md) · Upstream reports: [docs/upstream.md](docs/upstream.md) · Packages/APT repository: [docs/packaging.md](docs/packaging.md) · Vendored dependencies: [docs/vendoring.md](docs/vendoring.md)
 
 ## Layout
 

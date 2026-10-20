@@ -83,6 +83,17 @@ max_bitrate = 15_000
 - Latency: no B-frames, async depth 1 (VA-API, QSV), NVENC
   `preset=p1 tune=ull zerolatency delay=0`. Every input produces one access unit
   immediately, and SPS/PPS are repeated with each IDR. Options can be overridden.
+- MS-RDPEGFX AVC420 (§2.2.4.4): one access unit per WIRE_TO_SURFACE_PDU_1, Annex B,
+  coded size aligned to 16 without SPS cropping (the client crops by `regionRects`),
+  `profile=main` (x264 `ultrafast` signals Constrained Baseline), no AVC444. The VUI
+  says full-range BT.709, which is what xorgxrdp delivers (`XRDP_nv12_709fr`, §3.3.8.3.1).
+  The level is left to the encoder: 4K at 60 fps gets level 5.2, above the 5.1 the
+  Windows Media Foundation decoder documents (lab test). Details:
+  [docs/rdp-spec-conformance.md](../../docs/rdp-spec-conformance.md).
+- Lost output (encoder error, output larger than the buffer) forces the next frame
+  to an IDR with SPS/PPS (`forced-idr` for NVENC/QSV/x264). RDPEGFX has no
+  picture-loss feedback, so the client would otherwise decode against a missing
+  reference until the next GOP.
 - Start-up probe: `create()` encodes one 256×256 frame. If the GPU, driver or
   library is unusable, xrdp logs it once and uses `fallback` instead of failing
   on every frame.
@@ -96,7 +107,9 @@ max_bitrate = 15_000
 **Tested** (sandbox without a GPU, `test/run_test.sh`):
 - libx264 through the identical code path: one decodable picture per input
   (30/30), SPS+IDR at start and after resize, luma PSNR 56 dB at QP 20, coded
-  size 1376×768 for 1366×768, partial updates, buffer overflow refused;
+  size 1376×768 for 1366×768, partial updates, buffer overflow refused and
+  followed by SPS+IDR, no B-frames and no IDR inside the GOP, Baseline/Main
+  profile, full-range BT.709 VUI, full-range black for undamaged areas;
 - h264_vaapi and h264_nvenc falling back to libx264, and failing cleanly when
   `fallback = ""`.
 

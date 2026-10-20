@@ -28,6 +28,9 @@
     preflight_desktops: "{{ fastrdp_desktops | default([]) }}"
     preflight_gpu: "{{ fastrdp_gpu | default('auto') }}"
     preflight_mfa_mode: "{{ fastrdp_mfa_mode | default('none') }}"
+    preflight_kdc_enforced: >-
+      {{ (fastrdp_mfa_nla_kdc_enforced | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_enforced) | bool)
+         and preflight_mfa_mode != 'none' }}
     preflight_listen_port: "{{ fastrdp_listen_port | default(3389) | int }}"
     preflight_xrdp_port: "{{ fastrdp_xrdp_port | default(3390) | int }}"
     preflight_port_range: "{{ fastrdp_backend_port_range | default([33900, 34899]) }}"
@@ -478,6 +481,72 @@
              'detail': problems | join('; ') if problems else preflight_web_issuer ~ ' discovery ok',
              'fix': 'fastrdp_web_oidc_issuer must be the realm URL exactly as Keycloak reports it; see docs/web-access.md'}] }}
       when: preflight_web_enabled
+
+    # ------------------------------------------------------------------ KDC-enforced NLA MFA
+    # fastrdp_mfa_nla_kdc_enforced: the broker skips privacyIDEA for Kerberos NLA logins, so
+    # TERMSRV/<fqdn> must carry FreeIPA authentication indicators (passkey/pkinit). Read
+    # with the join account into a throw-away ccache; needs an enrolled host (ipa CLI).
+    - name: Read the TERMSRV authentication indicators (FreeIPA)
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          if ! command -v ipa >/dev/null 2>&1 || [ ! -r /etc/ipa/default.conf ]; then echo NOTENROLLED; exit 0; fi
+          if [ -z "$JOIN_PW" ]; then echo NOPASSWORD; exit 0; fi
+          dir=$(mktemp -d)
+          export KRB5CCNAME="FILE:$dir/cc"
+          trap 'kdestroy -q 2>/dev/null; rm -rf "$dir"' EXIT
+          if ! echo "$JOIN_PW" | kinit "$JOIN_USER" >/dev/null 2>&1; then echo NOKINIT; exit 0; fi
+          if ! out=$(ipa service-show "TERMSRV/$FQDN" --raw 2>/dev/null); then echo NOSERVICE; exit 0; fi
+          awk 'tolower($1) == "krbprincipalauthind:" {print "IND " tolower($2)}' <<<"$out"
+          echo DONE
+      environment:
+        JOIN_USER: "{{ fastrdp_join_user | default(preflight_role_defaults.fastrdp_join_user) }}"
+        JOIN_PW: "{{ fastrdp_join_password | default('') }}"
+        FQDN: "{{ ansible_facts.fqdn }}"
+      register: preflight_authind
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: preflight_kdc_enforced and preflight_idp == 'ipa'
+
+    - name: Result - KDC-enforced MFA for NLA
+      vars:
+        out: "{{ preflight_authind.stdout_lines | default([]) }}"
+        have: "{{ out | select('match', '^IND ') | map('regex_replace', '^IND ', '') | list }}"
+        allowed: "{{ fastrdp_mfa_nla_kdc_auth_indicators | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_auth_indicators) }}"
+        by_ad_policy: "{{ fastrdp_mfa_nla_kdc_enforced_by_ad_policy | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_enforced_by_ad_policy) | bool }}"
+        set_by_role: "{{ fastrdp_mfa_nla_kdc_set_auth_ind | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_set_auth_ind) | bool }}"
+        state: >-
+          {{ 'AD' if preflight_idp == 'ad' else ('NONE' if preflight_idp != 'ipa'
+             else (out | select('match', '^(NOTENROLLED|NOPASSWORD|NOKINIT|NOSERVICE)$') | first | default('DONE'))) }}
+        problems: >-
+          {{ (['AD has no authentication indicators; set fastrdp_mfa_nla_kdc_enforced_by_ad_policy only if an AD policy '
+               ~ 'guarantees strong logon for every account that may log in'] if state == 'AD' and not by_ad_policy else [])
+             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' has no authentication indicators: any password TGT gets a ticket'
+                 ~ (' (the identity role sets them)' if set_by_role else '')] if state == 'DONE' and not have else [])
+             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' also accepts ' ~ have | difference(allowed) | join(', ')
+                 ~ ' (not in fastrdp_mfa_nla_kdc_auth_indicators)'] if state == 'DONE' and have | difference(allowed) else []) }}
+        warnings: >-
+          {{ (['host not enrolled in FreeIPA yet: the identity role sets and checks the indicators at deploy']
+              if state == 'NOTENROLLED' else [])
+             + (['no join password (vault loaded?): indicators not read'] if state == 'NOPASSWORD' else [])
+             + (['kinit as the join account failed: indicators not read'] if state == 'NOKINIT' else [])
+             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' does not exist yet: the identity role creates it'] if state == 'NOSERVICE' else [])
+             + (['AD: not verifiable here; you assert an AD policy enforces strong logon'] if state == 'AD' and by_ad_policy else [])
+             + (['provider none: not verifiable here; your KDC must require passkey/PKINIT for TERMSRV '
+                 ~ '(MIT: kadmin set_string TERMSRV/' ~ ansible_facts.fqdn ~ ' require_auth "pkinit")'] if state == 'NONE' else []) }}
+        fixable: "{{ set_by_role and fastrdp_join_password | default('') | length > 0 }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'KDC-enforced NLA MFA',
+             'status': ('WARN' if fixable and state == 'DONE' else 'FAIL') if problems else ('WARN' if warnings else 'PASS'),
+             'detail': (problems + warnings) | join('; ') if (problems + warnings)
+                       else 'TERMSRV/' ~ ansible_facts.fqdn ~ ' requires ' ~ have | join(' or '),
+             'fix': 'ipa service-mod TERMSRV/' ~ ansible_facts.fqdn ~ ' '
+                    ~ allowed | map('regex_replace', '^', '--auth-ind=') | join(' ')
+                    ~ ' (or let the identity role do it), or set fastrdp_mfa_nla_kdc_enforced: false; docs/passkeys.md'}] }}
+      when: preflight_kdc_enforced
 
     - name: Probe the APT repository from the host
       ansible.builtin.uri:

@@ -76,6 +76,12 @@ cp "$REPO/packaging/xrdp/debian/control" "$C/packaging/xrdp/debian/control"
 sed -i 's/^DEPS="build-essential /DEPS="libnewthing-dev build-essential /' "$C/third_party/build-freerdp.sh"
 expect_exit 1 "check-build-deps: a new --deps entry must reach the control file" "$CB"
 cp "$REPO/third_party/build-freerdp.sh" "$C/third_party/build-freerdp.sh"
+# FASTRDP_FREERDP_WEBAUTHN=1 (opt-in rdpewa client channel): extra deps only when asked
+check "build-freerdp --deps: no libfido2 by default" bash -c '! "$0" --deps | grep -qw libfido2-dev' \
+    "$REPO/third_party/build-freerdp.sh"
+check "build-freerdp --deps: libfido2/libcbor with FASTRDP_FREERDP_WEBAUTHN=1" bash -c \
+    'FASTRDP_FREERDP_WEBAUTHN=1 "$0" --deps | grep -w libfido2-dev | grep -qw libcbor-dev' \
+    "$REPO/third_party/build-freerdp.sh"
 
 # --- prepare-vendored.sh
 PV=$C/packaging/ci/prepare-vendored.sh

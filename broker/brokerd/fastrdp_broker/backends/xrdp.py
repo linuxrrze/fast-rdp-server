@@ -32,6 +32,7 @@ PAM_SERVICE = "xrdp-sesman"
 
 class XrdpBackend(Backend):
     name = "xrdp"
+    obtains_tgt = True  # the token carries the password to pam_sss in xrdp-sesman
 
     async def live_sessions(self, user_name: str) -> list[str]:
         """logind session ids of the user's running xrdp sessions."""

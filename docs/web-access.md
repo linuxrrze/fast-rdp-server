@@ -84,7 +84,51 @@ Residual risks:
    - The webgate sends `acr_values=mfa` and requires `acr == "mfa"` in the ID token
      (`fastrdp_web_required_acr`).
    - Alternatively use `fastrdp_web_required_amr_any` (e.g. `[otp, hwk]`) if your
-     IdP sets `amr`.
+     IdP sets `amr`. Single-factor values (`pwd`, `pin`, `user`, …) are refused.
+   - **Passkeys** (passwordless): a level-2 sub-flow cannot be satisfied by a passkey
+     used at level 1. Use a client policy that forces an MFA-only flow for `acr=mfa`
+     instead: [passkeys.md](passkeys.md#recipe-a-acrmfa-via-a-forced-flow-recommended).
+     Ansible can set this up (next section).
+
+### Passkeys through Ansible (opt-in)
+
+`fastrdp_web_passkeys: true` makes the web_gateway role configure Keycloak itself
+(recipe A of [passkeys.md](passkeys.md)), once per run, from the controller, through
+the admin REST API (`roles/web_gateway/files/fastrdp_keycloak_passkeys.py`). With the
+default `false` Keycloak is never contacted.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `fastrdp_web_passkeys` | `false` | switch |
+| `fastrdp_keycloak_admin_url`, `fastrdp_keycloak_realm` | from `fastrdp_web_oidc_issuer` | Keycloak base URL and realm |
+| `fastrdp_keycloak_client_id` | `fastrdp_web_oidc_client_id` | client that gets the ACR map |
+| `vault_fastrdp_keycloak_admin_client_secret` | – | preferred: service-account client (`fastrdp_keycloak_admin_client_id`, realm `fastrdp_keycloak_admin_realm`) with *manage-realm* + *manage-clients* |
+| `fastrdp_keycloak_admin_user` + `vault_fastrdp_keycloak_admin_password` | – | alternative: admin user (password grant via `admin-cli`) |
+| `fastrdp_keycloak_mfa_flow`, `_acr`, `_loa` | `fastrdp-mfa`, `mfa`, `2` | forced flow, ACR value (must be in `fastrdp_web_required_acr`), level |
+| `fastrdp_keycloak_second_factors` | `[auth-otp-form, webauthn-authenticator]` | alternatives after a password (add the privacyIDEA provider's id) |
+| `fastrdp_web_passkeys_mediation` | `conditional` | passkey autofill |
+| `fastrdp_web_passkeys_hardware_only`, `fastrdp_web_passkeys_aaguids` | `false`, `[]` | attestation `direct` + AAGUID allow-list |
+
+What it writes, and nothing else:
+- the realm's WebAuthn **passwordless** policy (UV required, discoverable credential
+  required, passkeys enabled, mediation; attestation `none` or, hardware-only,
+  `direct` + AAGUIDs) and the required action *Webauthn Register Passwordless*;
+- the flow `fastrdp-mfa` without a *Cookie* step (rebuilt when it differs, e.g. when
+  someone added a Cookie step; a built-in flow of that name is refused);
+- client profile `fastrdp-mfa-flow` (`auth-flow-enforcer`) and policy `fastrdp-mfa`
+  (`acr-condition: mfa`). Keycloak's PUT replaces all client profiles/policies, so the
+  role reads, merges and writes back: other profiles and policies stay;
+- the client's ACR-to-LoA map entry `mfa → 2`, other entries kept.
+
+`--check` lists what would change and writes nothing; a second run reports
+`changed=0`. Hardware-only also needs the vendors' attestation roots in Keycloak's
+truststore (server option `truststore-paths`, not settable over REST): without them
+every registration fails with `invalid cert path`. Run only this part:
+`ansible-playbook site.yml --tags keycloak`.
+
+Tested end to end against Keycloak 26.8.1 with headless Chromium and a virtual
+authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
+[passkeys.md](passkeys.md#stage-1-results-keycloak-2681)).
 3. User names: the `preferred_username` claim must equal the Linux account name (as
    SSSD resolves it). A `@realm` suffix is stripped. Use `fastrdp_web_username_claim`
    for a different claim.

@@ -18,11 +18,35 @@
     - ../../ansible/roles/web_gateway/defaults/main.yml
     - ../../ansible/roles/tuning/defaults/main.yml
     - ../../ansible/roles/identity/defaults/main.yml
+    - ../../ansible/roles/base/defaults/main.yml
   vars:
     roles_dir: "{{ playbook_dir }}/../../ansible/roles"
     ansible_fqdn: rdp1.lab.example.com
+    ansible_hostname: rdp1
     fastrdp_gpu_effective: none
   tasks:
+    - name: TERMSRV keytab check script (identity role)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/fastrdp-termsrv-check.sh.j2"
+        dest: "{{ render_out }}/fastrdp-termsrv-check"
+        mode: "0755"
+
+    - name: Derived names - TERMSRV principals (identity), front certificate SAN (base)
+      ansible.builtin.copy:
+        dest: "{{ render_out }}/names-{{ item.name }}.json"
+        content: >-
+          {{ {'spns': fastrdp_termsrv_spns, 'keytab_spns': fastrdp_termsrv_keytab_spns,
+              'san': fastrdp_front_cert_san} | to_json }}
+        mode: "0644"
+      vars:
+        fastrdp_identity_provider: "{{ item.provider }}"
+        fastrdp_termsrv_aliases: "{{ item.aliases }}"
+      loop:
+        - {name: ad, provider: ad, aliases: []}
+        - {name: ad-aliases, provider: ad, aliases: [rdp.lab.example.com, rdp1.lab.example.com, rdp]}
+        - {name: ipa-aliases, provider: ipa, aliases: [rdp.lab.example.com]}
+        - {name: none, provider: none, aliases: []}
+
     - name: Kerberized NFS homes (gssproxy impersonation for rpc.gssd)
       ansible.builtin.template:
         src: "{{ roles_dir }}/identity/templates/{{ item.src }}"
@@ -35,6 +59,22 @@
         - {src: gssproxy-nfs-client.conf.j2, dest: gssproxy-nfs-client.conf, keytab: /etc/krb5.keytab}
         - {src: gssproxy-nfs-client.conf.j2, dest: gssproxy-nfs-client-own.conf, keytab: /etc/gssproxy/nfs.keytab}
         - {src: nfs-gssd.conf.j2, dest: nfs-gssd.conf, keytab: /etc/krb5.keytab}
+
+    - name: Kerberos client and sssd renewal settings per identity provider
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_identity_provider: "{{ item.provider }}"
+        fastrdp_kcm_tgt_renewal: "{{ item.kcm }}"
+      loop:
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ad.conf, provider: ad, kcm: true}
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ipa.conf, provider: ipa, kcm: true}
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-none.conf, provider: none, kcm: true}
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ad-nokcm.conf, provider: ad, kcm: false}
+        - {src: sssd-ad.conf.j2, dest: sssd-ad.conf, provider: ad, kcm: true}
+        - {src: krb5.conf.j2, dest: krb5.conf, provider: ad, kcm: true}
 
     - name: Xrdp gfx.toml per encoder choice
       ansible.builtin.template:
@@ -103,6 +143,24 @@
         fastrdp_desktop_groups: {plasma: [rdp-kde], gnome: [rdp-gnome, "domain users"]}
         fastrdp_desktop_labels: {sway: "Sway (tiling)", xfce: "XFCE \"light\""}
         fastrdp_default_geometry: 2560x1440
+
+    - name: Broker.toml, KDC-enforced MFA for NLA (FreeIPA passkey/PKINIT)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-kdc.toml"
+        mode: "0644"
+      vars:
+        fastrdp_identity_provider: ipa
+        fastrdp_mfa_mode: push
+        fastrdp_mfa_nla_kdc_enforced: true
+
+    - name: Broker.toml, session TGT required
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-tgt-required.toml"
+        mode: "0644"
+      vars:
+        fastrdp_session_tgt: required
 
     - name: Proxy.ini and broker.toml with non-default ports (smoke test parser)
       ansible.builtin.template:

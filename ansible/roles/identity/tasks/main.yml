@@ -12,6 +12,20 @@
     group: root
     mode: "0644"
 
+- name: TERMSRV keys must be AES (FreeRDP cannot use RC4)
+  ansible.builtin.assert:
+    that: fastrdp_termsrv_enctypes | select('match', '^aes(128|256)-cts-hmac-sha1-96$') | list | length > 0
+    fail_msg: fastrdp_termsrv_enctypes needs aes256-cts-hmac-sha1-96 and/or aes128-cts-hmac-sha1-96.
+    quiet: true
+
+- name: TERMSRV keytab check script (AES key per principal)
+  ansible.builtin.template:
+    src: fastrdp-termsrv-check.sh.j2
+    dest: /usr/local/sbin/fastrdp-termsrv-check
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Join directory
   ansible.builtin.include_tasks: "{{ fastrdp_identity_provider }}.yml"
 
@@ -70,6 +84,31 @@
     owner: root
     group: _fastrdp-proxy
     mode: "0640"
+
+# A snippet, not sssd.conf: on FreeIPA, ipa-client-install owns sssd.conf. sssd reads
+# conf.d only when sssd.conf exists (written by the join, or provided for "none").
+- name: SSSD configuration snippet directory
+  ansible.builtin.file:
+    path: /etc/sssd/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+
+- name: SSSD ticket renewal (sssd-kcm; FreeIPA domain options)
+  ansible.builtin.template:
+    src: sssd-fastrdp.conf.j2
+    dest: /etc/sssd/conf.d/50-fastrdp.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: [Restart sssd, Restart sssd-kcm]
+
+# Fails with the missing principals and a fix hint (docs/windows-clients.md §4).
+- name: TERMSRV keytab has AES keys for every principal
+  ansible.builtin.command:
+    argv: "{{ ['/usr/local/sbin/fastrdp-termsrv-check'] + fastrdp_termsrv_keytab_spns }}"
+  changed_when: false
 
 - name: SSSD running
   ansible.builtin.service:

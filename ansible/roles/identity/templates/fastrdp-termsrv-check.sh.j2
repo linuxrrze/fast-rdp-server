@@ -1,0 +1,56 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# {{ ansible_managed }}
+# Checks that a keytab holds an AES key for every given principal at its newest kvno.
+# FreeRDP's Kerberos acceptor cannot use RC4 session keys (docs/windows-clients.md §3.4).
+#   fastrdp-termsrv-check [-k KEYTAB] PRINCIPAL...
+# PRINCIPAL without @REALM matches any realm; names compare case-insensitively (AD SPNs
+# are). Exit 0: all ok, 1: a principal is missing or has no AES key, 2: usage.
+set -eu
+KT=/etc/fastrdp/termsrv.keytab
+if [ "${1:-}" = -k ]; then
+    KT=${2:?keytab}
+    shift 2
+fi
+if [ $# -eq 0 ]; then
+    echo "usage: $0 [-k keytab] principal..." >&2
+    exit 2
+fi
+# AES with HMAC-SHA1, the only AES types Active Directory issues.
+AES="aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96"
+if ! out=$(klist -ke "$KT" 2>&1); then
+    echo "FAIL cannot read $KT: $out"
+    exit 1
+fi
+rc=0
+for p in "$@"; do
+    printf '%s\n' "$out" | awk -v want="$p" -v aes="$AES" -v kt="$KT" '
+        BEGIN { w = tolower(want); n = split(aes, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1; max = -1 }
+        # "  3 TERMSRV/rdp1.example.com@EXAMPLE.COM (aes256-cts-hmac-sha1-96)"
+        $1 ~ /^[0-9]+$/ && NF >= 3 {
+            name = tolower($2)
+            if (w !~ /@/) sub(/@[^@]*$/, "", name)
+            if (name != w) next
+            e = $3; gsub(/[()]/, "", e); sub(/^DEPRECATED:/, "", e)
+            k = $1 + 0
+            if (k > max) { max = k; has = 0; types = "" }
+            if (k == max) { types = types " " e; if (e in ok) has = 1 }
+        }
+        END {
+            if (max < 0) { print "FAIL " want ": no key in " kt; exit 1 }
+            if (!has) { print "FAIL " want ": no AES key at kvno " max " (has:" types ")"; exit 1 }
+            print "ok   " want ": AES key at kvno " max
+        }' || rc=1
+done
+if [ $rc -ne 0 ]; then
+    cat <<'EOF'
+Fix: the account needs AES keys and msDS-SupportedEncryptionTypes 0x18 (AES128+AES256),
+or 0x1C if RC4 must stay for other services; then re-key it and extract the keytab again
+(AD: adcli update --computer-password-lifetime=0; FreeIPA: ipa-getkeytab -e
+aes256-cts-hmac-sha1-96,aes128-cts-hmac-sha1-96). See docs/windows-clients.md §4.
+Missing alias principals (fastrdp_termsrv_aliases) are registered with the join account:
+run the playbook with fastrdp_join_password set.
+EOF
+fi
+exit $rc

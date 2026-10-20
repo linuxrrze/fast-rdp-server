@@ -102,13 +102,15 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply["ok"], reply)
         self.assertIsNone(self.ensure.call_args.args[0].password)
 
-    async def test_nla_principal_mismatch_denied(self):
+    async def test_nla_principal_is_the_identity(self):
+        # The CredSSP user name never selects the account (tests/test_principal.py).
         reply = await request(self.cfg.broker.socket, {
             "op": "login", "session_id": "s2", "method": "nla", "user": "bob",
             "principal": "alice@EXAMPLE.COM",
         })
-        self.assertEqual(reply, {"ok": False, "error": "access denied"})
-        self.ensure.assert_not_called()
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(reply["user"], "alice")
+        self.assertEqual(self.ensure.call_args.args[0].user.name, "alice")
 
     async def test_foreign_realm_denied(self):
         reply = await request(self.cfg.broker.socket, {

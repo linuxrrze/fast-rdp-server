@@ -102,17 +102,21 @@ class Webgate:
     def connection_payload(self, user: str, token: str, desktop: str | None) -> dict:
         g = self.cfg.guacamole
         params = {
+            "resize-method": "display-update",  # MS-RDPEDISP monitor layout on resize
+            **g.rdp_parameters,
+            # Not overridable by rdp_parameters: the proxy accepts web tokens only as a
+            # TLS login (PROTOCOL_SSL, credentials in the Client Info PDU); guacd has no
+            # Kerberos for NLA.
             "hostname": g.connection_host,
             "port": str(g.connection_port),
             "username": user,
             "password": token,
             "security": "tls",
-            "resize-method": "display-update",
-            **g.rdp_parameters,
         }
         if self.cert_fingerprint:
             # Pin the proxy's certificate: a local user binding the port while the proxy
             # restarts must not receive web tokens.
+            params.pop("ignore-cert", None)
             params["cert-fingerprints"] = self.cert_fingerprint
         else:
             params["ignore-cert"] = "true"

@@ -3,6 +3,7 @@
 proxy_user = "_fastrdp-proxy"
 socket_group = "_fastrdp-broker"
 port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range[1] }}]
+session_tgt = "{{ fastrdp_session_tgt }}"
 
 [auth]
 realms = ["{{ fastrdp_realm | upper }}"]
@@ -16,6 +17,7 @@ mode = "{{ fastrdp_mfa_mode }}"
 exempt_groups = {{ fastrdp_mfa_exempt_groups | to_json }}
 otp_lengths = {{ fastrdp_otp_lengths | to_json }}
 yubikey_otp = true
+nla_kdc_enforced = {{ fastrdp_mfa_nla_kdc_enforced | bool | lower }}
 
 [mfa.privacyidea]
 url = "{{ fastrdp_privacyidea_url if fastrdp_mfa_mode != 'none' else '' }}"

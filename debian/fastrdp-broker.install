@@ -1,5 +1,6 @@
 broker/brokerd/fastrdp_broker usr/lib/fastrdp/python/
 broker/session/pam/fastrdp etc/pam.d/
+broker/session/pam/fastrdp-tgt etc/pam.d/
 broker/session/systemd/fastrdp-brokerd.service usr/lib/systemd/system/
 debian/bin/fastrdp-brokerd usr/sbin/
 debian/bin/fastrdpctl usr/sbin/

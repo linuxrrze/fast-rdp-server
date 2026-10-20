@@ -84,6 +84,37 @@ async def run_as_user(user: LocalUser, *argv: str, input: str | None = None, tim
     )
 
 
+# Environment for commands run with the user's ids outside the user's manager: no
+# variable of the broker leaks in (KRB5CCNAME, KRB5_CONFIG, ...), and HOME=/ so that
+# nothing reads the (possibly Kerberized NFS) home, like rpc.gssd's set-home.
+DROPPED_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/", "LANG": "C.UTF-8"}
+
+
+async def run_dropped(user: LocalUser, *argv: str, env: dict[str, str] | None = None,
+                      timeout: float = 15) -> Result:
+    """Run a short command as the user (uid, gid, no supplementary groups) without the
+    user's systemd manager, in "/" and with a clean environment. For checks that must
+    not start user@UID.service (e.g. klist before the session exists)."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        user=user.uid,
+        group=user.gid,
+        extra_groups=[],
+        cwd="/",
+        env={**DROPPED_ENV, **(env or {})},
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise CommandError(f"timeout: {argv[0]}") from None
+    return Result(proc.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
+
+
 def _root_dir(path: str, mode: int) -> None:
     """Root-owned directory with exactly `mode` (the broker runs with umask 077)."""
     os.makedirs(path, exist_ok=True)

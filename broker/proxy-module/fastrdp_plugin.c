@@ -15,6 +15,10 @@
  *                         so the user's password never reaches a back-end directly.
  *   ServerSessionEnd      notify the broker and wipe secrets.
  *
+ * Refusals after the RDP connection is up carry a Set Error Info PDU
+ * ([MS-RDPBCGR] 2.2.5.1.1) so that clients such as mstsc can show a reason instead of a
+ * bare disconnect; see errinfo_for_reply().
+ *
  * Configuration (proxy ini):
  *   [FastRDP]
  *   BrokerSocket = /run/fastrdp/broker.sock
@@ -37,6 +41,7 @@
 #include <winpr/wlog.h>
 #include <winpr/sspi.h>
 
+#include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
 #include <freerdp/server/proxy/proxy_config.h>
@@ -161,8 +166,9 @@ static BOOL write_all(int fd, const char* buf, size_t len)
 	return TRUE;
 }
 
-/* Sends one JSON line, returns the parsed reply (caller frees) or NULL. */
-static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s)
+/* Sends one JSON line, returns the parsed reply (caller frees) or NULL.
+ * *timed_out (optional) tells a broker that did not answer in time from other failures. */
+static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s, BOOL* timed_out)
 {
 	cJSON* reply = NULL;
 	char* text = cJSON_PrintUnformatted(request);
@@ -200,6 +206,8 @@ static cJSON* broker_call(const char* path, const cJSON* request, int timeout_s)
 		if (left_ms <= 0)
 		{
 			WLog_ERR(TAG, "broker did not answer within %d s", timeout_s);
+			if (timed_out)
+				*timed_out = TRUE;
 			goto out;
 		}
 		struct pollfd pfd = { .fd = fd, .events = POLLIN };
@@ -259,6 +267,41 @@ static void add_str(cJSON* obj, const char* key, const char* value)
 		cJSON_AddNullToObject(obj, key);
 }
 
+/* ------------------------------------------------------------ error info */
+
+/* Set Error Info code ([MS-RDPBCGR] 2.2.5.1.1) for a refused broker login. The broker
+ * keeps its error text generic on purpose ("access denied"); an optional "reason" field
+ * lets it be more specific without exposing details in the text. */
+static UINT32 errinfo_for_reply(const cJSON* reply)
+{
+	const cJSON* r = cJSON_GetObjectItemCaseSensitive(reply, "reason");
+	const char* reason = cJSON_IsString(r) ? r->valuestring : NULL;
+	const cJSON* e = cJSON_GetObjectItemCaseSensitive(reply, "error");
+	const char* error = cJSON_IsString(e) ? e->valuestring : NULL;
+
+	if (reason && strcmp(reason, "not_allowed") == 0)
+		return ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES;
+	if (reason && strcmp(reason, "timeout") == 0)
+		return ERRINFO_CB_CONNECTION_CANCELLED;
+	if ((reason && strcmp(reason, "backend") == 0) ||
+	    (error && strcmp(error, "session could not be started") == 0))
+		return ERRINFO_CB_DESTINATION_NOT_FOUND;
+	return ERRINFO_SERVER_DENIED_CONNECTION;
+}
+
+/* Queue the code for the front connection. freerdp_peer_close() sends it as a Set Error
+ * Info PDU before the Disconnect Provider Ultimatum (if the client announced
+ * RNS_UD_CS_SUPPORT_ERRINFO_PDU). An error info already forwarded from the back-end wins. */
+static void set_front_errinfo(proxyData* pdata, UINT32 code)
+{
+	if (!pdata || !pdata->ps)
+		return;
+	rdpContext* ctx = pdata->ps;
+	if (freerdp_get_last_error(ctx) != FREERDP_ERROR_SUCCESS)
+		return;
+	freerdp_set_error_info(ctx->rdp, code);
+}
+
 /* ------------------------------------------------------------------ hooks */
 
 static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, void* param)
@@ -310,7 +353,9 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 
 		/* The delegated TSCredentials (user, domain, password typed by the user) land in
 		 * the front settings, not in the logon identity. They are client-supplied: the
-		 * broker only accepts them when the user matches the Kerberos principal. */
+		 * broker logs in the Kerberos principal's account and treats the user name as
+		 * informational (a UPN or DOMAIN\user may differ from the account name); it
+		 * drops the password if the name is clearly another account. */
 		const rdpSettings* front = pdata->ps->settings;
 		const char* tu = freerdp_settings_get_string(front, FreeRDP_Username);
 		const char* td = freerdp_settings_get_string(front, FreeRDP_Domain);
@@ -361,20 +406,43 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	proxyFetchTargetEventInfo* ev = (proxyFetchTargetEventInfo*)param;
 	WINPR_ASSERT(ev);
 
+	rdpSettings* front = pdata->ps->settings;
+	cJSON* reply = NULL;
+	UINT32 errinfo = ERRINFO_SERVER_DENIED_CONNECTION;
+	BOOL rc = FALSE;
+
 	fastrdpSession* s = get_session(plugin, pdata);
 	if (!s)
 	{
 		WLog_ERR(TAG, "[%s] no logon state, refusing", pdata->session_id);
-		return FALSE;
+		goto out;
 	}
 
-	rdpSettings* front = pdata->ps->settings;
+	/* INFO_RAIL ([MS-RDPBCGR] 2.2.1.11.1.1): the client wants RemoteApp. The broker only
+	 * hands out full desktops and the proxy blocks the RAIL channel unless RemoteApp=true,
+	 * so the client would wait forever for its application window. */
+	if (freerdp_settings_get_bool(front, FreeRDP_RemoteApplicationMode) &&
+	    !pdata->config->RemoteApp)
+	{
+		WLog_WARN(TAG, "[%s] RemoteApp (INFO_RAIL) requested but not offered, refusing",
+		          pdata->session_id);
+		goto out;
+	}
+
 	if (!s->nla)
 	{
 		/* TLS/RDP security: credentials arrive in the Client Info PDU. */
 		wipe_free(&s->user);
 		wipe_free(&s->domain);
 		wipe_free(&s->password);
+		/* INFO_PASSWORD_IS_SC_PIN: the "password" is a smartcard PIN. There is no
+		 * smartcard logon without NLA here, and a PIN must never reach PAM or MFA. */
+		if (freerdp_settings_get_bool(front, FreeRDP_PasswordIsSmartcardPin))
+		{
+			WLog_WARN(TAG, "[%s] TLS login with a smartcard PIN, refusing (use NLA)",
+			          pdata->session_id);
+			goto out;
+		}
 		const char* u = freerdp_settings_get_string(front, FreeRDP_Username);
 		const char* d = freerdp_settings_get_string(front, FreeRDP_Domain);
 		const char* p = freerdp_settings_get_string(front, FreeRDP_Password);
@@ -385,13 +453,13 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		{
 			WLog_WARN(TAG, "[%s] TLS login without credentials, refusing (no login screen at proxy)",
 			          pdata->session_id);
-			return FALSE;
+			goto out;
 		}
 	}
 
 	cJSON* req = cJSON_CreateObject();
 	if (!req)
-		return FALSE;
+		goto out;
 	cJSON_AddStringToObject(req, "op", "login");
 	cJSON_AddStringToObject(req, "session_id", pdata->session_id);
 	cJSON_AddStringToObject(req, "method", s->nla ? "nla" : "tls");
@@ -412,7 +480,9 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	long timeout = strtol(config_str(pdata, "Timeout", "120"), NULL, 10);
 	if (timeout <= 0 || timeout > 600)
 		timeout = DEFAULT_TIMEOUT_S;
-	cJSON* reply = broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout);
+	BOOL timed_out = FALSE;
+	reply = broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout,
+	                    &timed_out);
 
 	/* the request held the user's password */
 	cJSON* pw = cJSON_GetObjectItemCaseSensitive(req, "password");
@@ -420,11 +490,16 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		memset(pw->valuestring, 0, strlen(pw->valuestring));
 	cJSON_Delete(req);
 
-	BOOL rc = FALSE;
+	errinfo = ERRINFO_CB_DESTINATION_NOT_FOUND; /* broker down or malformed reply */
 	if (!reply)
+	{
+		if (timed_out)
+			errinfo = ERRINFO_CB_CONNECTION_CANCELLED;
 		goto out;
+	}
 	if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(reply, "ok")))
 	{
+		errinfo = errinfo_for_reply(reply);
 		const char* err = json_str(reply, "error");
 		WLog_WARN(TAG, "[%s] broker refused %s: %s", pdata->session_id,
 		          s->user ? s->user : "(none)", err ? err : "?");
@@ -464,6 +539,7 @@ out:
 	{
 		free(ev->target_address);
 		ev->target_address = NULL;
+		set_front_errinfo(pdata, errinfo);
 	}
 	if (reply)
 	{
@@ -475,7 +551,8 @@ out:
 	}
 	/* The front password is no longer needed once the broker has it. The back-end
 	 * client context copied it too; ClientPreConnect replaces that copy. */
-	wipe_free(&s->password);
+	if (s)
+		wipe_free(&s->password);
 	const char* fp = freerdp_settings_get_string(front, FreeRDP_Password);
 	if (fp)
 		memset((void*)fp, 0, strlen(fp));
@@ -505,12 +582,61 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	    !freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, FALSE) ||
 	    /* the desktop is chosen by the broker; do not forward a client shell request */
-	    !freerdp_settings_set_string(settings, FreeRDP_AlternateShell, NULL))
+	    !freerdp_settings_set_string(settings, FreeRDP_AlternateShell, NULL) ||
+	    /* The back-end settings start as a copy of the front client's. Client Info and
+	     * X.224 fields that are client-controlled or describe the front credentials must
+	     * not reach the back-end: WorkingDir belongs to the dropped shell, INFO_RAIL and
+	     * INFO_PASSWORD_IS_SC_PIN would mislabel the broker's credentials, and the
+	     * routingToken is meant for the proxy, not for a loopback back-end. */
+	    !freerdp_settings_set_string(settings, FreeRDP_ShellWorkingDirectory, NULL) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, FALSE) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_PasswordIsSmartcardPin, FALSE) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_SmartcardLogon, FALSE) ||
+	    !freerdp_settings_set_pointer_len(settings, FreeRDP_LoadBalanceInfo, NULL, 0))
 		return FALSE;
 	if (s->target_nla &&
 	    !freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, "!kerberos"))
 		return FALSE;
 	return TRUE;
+}
+
+/* The back-end connection failed (TLS/NLA/Client Info rejected or unreachable). */
+static BOOL fastrdp_client_login_failure(proxyPlugin* plugin, proxyData* pdata, void* custom)
+{
+	WINPR_UNUSED(plugin);
+	WINPR_UNUSED(custom);
+	WLog_WARN(TAG, "[%s] back-end connection failed", pdata->session_id);
+	set_front_errinfo(pdata, ERRINFO_CB_DESTINATION_NOT_FOUND);
+	return TRUE;
+}
+
+/* A Server Redirection PDU ([MS-RDPBCGR] 2.2.13) from a back-end would make the proxy
+ * reconnect elsewhere with the broker's one-time credentials. Back-ends are chosen by
+ * the broker only; refuse. */
+static BOOL fastrdp_client_redirect(proxyPlugin* plugin, proxyData* pdata, void* custom)
+{
+	WINPR_UNUSED(plugin);
+	WINPR_UNUSED(custom);
+	WLog_WARN(TAG, "[%s] back-end sent a Server Redirection PDU, refusing", pdata->session_id);
+	set_front_errinfo(pdata, ERRINFO_SERVER_DENIED_CONNECTION);
+	return FALSE;
+}
+
+/* Before the front connection sequence starts. freerdp-proxy has no RDP-UDP listener
+ * ([MS-RDPEMT]/[MS-RDPEUDP]), but FreeRDP's server defaults would still advertise
+ * multitransport (TS_UD_SC_MULTITRANSPORT) and send an Initiate Multitransport Request
+ * ([MS-RDPBCGR] 2.2.15.1), then wait until the client gives up on UDP and answers
+ * E_ABORT. Not offering it keeps the connection on TCP from the start; the back-end
+ * connection inherits this setting. */
+static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, void* custom)
+{
+	WINPR_UNUSED(plugin);
+	WINPR_UNUSED(custom);
+	if (!pdata || !pdata->ps)
+		return FALSE;
+	rdpSettings* front = pdata->ps->settings;
+	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
+	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0);
 }
 
 static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* custom)
@@ -524,7 +650,8 @@ static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* cus
 		{
 			cJSON_AddStringToObject(req, "op", "end");
 			cJSON_AddStringToObject(req, "session_id", pdata->session_id);
-			cJSON* reply = broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, 5);
+			cJSON* reply =
+			    broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, 5, NULL);
 			cJSON_Delete(reply);
 			cJSON_Delete(req);
 		}
@@ -550,6 +677,9 @@ FREERDP_API FREERDP_ENTRY_POINT(BOOL proxy_module_entry_point(proxyPluginsManage
 	plugin.ServerPeerLogon = fastrdp_server_peer_logon;
 	plugin.ServerFetchTargetAddr = fastrdp_fetch_target;
 	plugin.ClientPreConnect = fastrdp_client_pre_connect;
+	plugin.ClientLoginFailure = fastrdp_client_login_failure;
+	plugin.ClientRedirect = fastrdp_client_redirect;
+	plugin.ServerSessionInitialize = fastrdp_server_session_init;
 	plugin.ServerSessionEnd = fastrdp_session_end;
 	plugin.userdata = userdata;
 	return mgr->RegisterPlugin(mgr, &plugin);

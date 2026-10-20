@@ -1,0 +1,13 @@
+#%PAM-1.0
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Used by fastrdp-brokerd only to get a Kerberos TGT for GNOME/Plasma sessions
+# ([broker] session_tgt). The login was already authenticated and authorised (PAM
+# service fastrdp, MFA); this stack only hands the known password to pam_sss, whose
+# krb5_child stores the TGT in the user's credential cache (KCM:).
+# No pam_faillock: a stale delegated password must not lock the account for fastrdp.
+# The broker never calls the account, password or session phases here.
+auth     required  pam_sss.so
+account  required  pam_deny.so
+password required  pam_deny.so
+session  required  pam_deny.so

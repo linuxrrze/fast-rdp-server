@@ -16,3 +16,10 @@ fastrdp_apt_key_url: "{{ fastrdp_apt_repo_url }}/fast-rdp-server-archive-keyring
 fastrdp_apt_key_checksum: ""
 # present | latest (latest also upgrades the fastrdp packages on every run)
 fastrdp_apt_package_state: present
+
+# Derived, normally not set: subjectAltName of the self-signed front certificate
+# (fastrdp_front_cert_src: ""): every name clients may type, i.e. the FQDN, the short
+# name and fastrdp_termsrv_aliases. An existing /etc/fastrdp/front.crt is kept.
+fastrdp_front_cert_san: >-
+  {{ ([ansible_fqdn, ansible_hostname] + fastrdp_termsrv_aliases) | unique
+     | map('regex_replace', '^', 'DNS:') | join(',') }}

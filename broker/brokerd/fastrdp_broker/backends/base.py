@@ -41,6 +41,10 @@ class LoginRequest:
 
 class Backend:
     name = ""
+    # True when the back-end's own PAM stack receives the user's password and so gets
+    # the Kerberos TGT itself (xrdp: pam_fastrdp_token -> pam_sss). Otherwise the broker
+    # obtains it before the session starts ([broker] session_tgt, Broker.session_tgt).
+    obtains_tgt = False
 
     def __init__(self, cfg: Config, state: StateStore, tokens: TokenStore):
         self.cfg = cfg

@@ -3,12 +3,15 @@
 Can users log in to fastrdp when `$HOME` is an NFS mount that requires Kerberos?
 
 **Short answer:** only when a usable Kerberos credential exists for the user's uid
-*before* the session first touches `$HOME`. Out of the box, that holds only for logins
-where the user typed a password and the X11 back-end (xrdp) receives it. Everything
-else (Kerberos SSO without password delegation, smartcard, web, and the GNOME and
-Plasma back-ends) fails, unless the host gets NFS tickets by **gssproxy
-impersonation** (S4U2Self + S4U2Proxy). fastrdp now ships that as an opt-in Ansible
-option, `fastrdp_nfs_krb5_homes`.
+*before* the session first touches `$HOME`. Out of the box, that holds for logins
+that carry the user's password (NLA with a delegated password, TLS): xrdp gets the
+TGT through its PAM stack, and for GNOME and Plasma the broker now gets it before the
+session starts (`fastrdp_session_tgt`, default `auto`). Everything else (Kerberos SSO
+without password delegation, smartcard, web) fails, unless the host gets NFS tickets
+by **gssproxy impersonation** (S4U2Self + S4U2Proxy). fastrdp ships that as an opt-in
+Ansible option, `fastrdp_nfs_krb5_homes`. Sites without impersonation can refuse the
+logins that cannot work, early and with a clear log message:
+`fastrdp_session_tgt: required`.
 
 This page is based on reading the code. It has **not** been tested against a real
 Kerberized NFS server; see [Lab test plan](#lab-test-plan). Statements are marked
@@ -27,12 +30,17 @@ distributions) with the Debian packaging, sssd 2.12.0 (Ubuntu 26.04) and 2.10.1
 
 | Login method | xrdp (X11, incl. wlroots-in-X) | GNOME | Plasma |
 |---|---|---|---|
-| NLA, password typed and delegated (mstsc, xfreerdp `/p`, Windows "Allow delegating default credentials") | **works** [verified order, inferred result] | **fails** | **fails** |
+| NLA, password typed and delegated (mstsc, xfreerdp `/p`, Windows "Allow delegating default credentials") | **works** [verified order, inferred result] | **works** with `fastrdp_session_tgt: auto`/`required` [inferred, see Q3] | **works** (as GNOME) [inferred] |
 | NLA, Kerberos SSO, no password delegation | **fails** | **fails** | **fails** |
 | NLA, smartcard / PKINIT (PIN never forwarded) | **fails** | **fails** | **fails** |
-| TLS, password (+OTP) | **works** | **probably works** [inferred, see Q3] | **probably works** [inferred] |
+| TLS, password (+OTP) | **works** | **works** (as above) [inferred] | **works** [inferred] |
 | Web (Keycloak, Guacamole) | **fails** | **fails** | **fails** |
 | **Any of the above with `fastrdp_nfs_krb5_homes: true`** (gssproxy impersonation, KDC delegation configured) | works [inferred] | works [inferred] | works [inferred] |
+
+With `fastrdp_session_tgt: required` (no impersonation), the "fails" rows are refused
+by the broker before MFA, with `login without a password, but [broker] session_tgt =
+required` in the broker log, instead of failing after the client connected; GNOME and
+Plasma logins whose TGT request fails are refused too.
 
 Exceptions to "fails":
 
@@ -49,10 +57,11 @@ How the failures show:
 - **xrdp:** the broker accepts the login, xrdp authenticates the token, then sesman
   cannot create `~/.Xauthority` and does not start the X server
   (xrdp `sesman/sesexec/session.c:516-532`). The client connects and is disconnected.
-- **GNOME:** `grdctl` and `systemctl --user enable` run as the user before the
-  session starts (`backends/gnome.py:64-70`) and need `$HOME` (dconf, the
-  gnome-remote-desktop credentials file). They fail, so the broker returns
-  "session could not be started".
+- **GNOME:** `grdctl` runs as the user before the session starts
+  (`backends/gnome.py`) and needs `$HOME` (dconf, the gnome-remote-desktop
+  credentials file). It fails, so the broker returns "session could not be started".
+  (The unit link of `systemctl --user --runtime enable` is in `/run/user/<uid>`, not
+  in `$HOME`, see Q6.)
 - **Plasma:** `fastrdp-plasma@USER` starts, but Plasma cannot read or write
   `~/.config`, `~/.local/share` and `~/.cache`; the session is expected to fail or
   stay unusable, and the broker times out waiting for KRdp [inferred].
@@ -92,8 +101,9 @@ Both problems are fixed now (see [Changes](#changes-in-this-repository)).
 - Everything started by the user manager (D-Bus activated services, dconf,
   gnome-session, pipewire, portals, indexers) touches `$HOME`.
 - **GNOME:** the broker starts `user@UID.service` itself (`sysutil.py:65-66`) and
-  runs `grdctl ... set-credentials/set-tls-*/enable` and `systemctl --user enable`
-  (`backends/gnome.py:64-70`) before GDM opens the session. `grdctl` writes GSettings
+  runs `grdctl ... set-credentials/set-tls-*/enable` and `systemctl --user --runtime enable`
+  (`backends/gnome.py`) before GDM opens the session; with a password, only after
+  the broker stored the user's TGT (Q3). `grdctl` writes GSettings
   (dconf, `~/.config/dconf/user`) and the credentials file in the user data
   directory (gnome-remote-desktop `src/grd-credentials-file.c:143-170`:
   `$XDG_DATA_HOME/gnome-remote-desktop/credentials.ini`, when the file backend is
@@ -153,7 +163,13 @@ What fastrdp configures (role `identity`):
 - `sssd-ad.conf.j2` (AD only; FreeIPA uses the `sssd.conf` written by
   `ipa-client-install`): no `krb5_ccname_template`, so sssd uses `KCM:` from
   `krb5.conf` (sssd-krb5(5): "Default: (from libkrb5)") [verified];
-  `krb5_renewable_lifetime = 7d`, `krb5_renew_interval = 1h`; no `[kcm]` renewal.
+  `krb5_renewable_lifetime = 7d`, `krb5_renew_interval = 1h`
+  (`fastrdp_krb5_renewable_lifetime`, `fastrdp_krb5_renew_interval`).
+- `/etc/sssd/conf.d/50-fastrdp.conf` (`sssd-fastrdp.conf.j2`, every provider):
+  `[kcm] tgt_renewal = true` with the same interval and lifetime
+  (`fastrdp_kcm_tgt_renewal`), and on FreeIPA the domain renewal options that
+  `ipa-client-install` does not write. `krb5.conf` has `renew_lifetime`, so `kinit`
+  asks for renewable tickets too.
 - Before this change fastrdp installed neither `nfs-common` nor `gssproxy`, and did not
   touch `nfs.conf`.
 
@@ -193,14 +209,51 @@ cannot read `$HOME`. CredSSP cannot carry a TGT (Q5b).
 ### GNOME and Plasma
 
 These back-ends never receive the password (`backends/gnome.py`,
-`backends/plasma.py`; only a random per-session secret). For **NLA** logins the broker
-does not run `pam_authenticate` either (only the account phase, `server.py:97`), so no
-TGT exists: fails.
+`backends/plasma.py`; only a random per-session secret). Before this change, NLA
+logins got no TGT (the broker ran only the PAM account phase), and TLS logins only
+as a side effect of the password check through PAM service `fastrdp`.
 
-For **TLS** logins the broker itself runs `pam_authenticate` with the user's password
-through PAM service `fastrdp` (`server.py:139`, `pam_sss`). The sssd code path that
-stores the TGT does not depend on the PAM service, so this should leave a TGT in the
-user's KCM collection before the back-end starts [inferred, lab check needed].
+Now the broker obtains the TGT itself, for every login that carries the password
+(NLA with delegated password, TLS), after MFA and before `backend.ensure()`
+(`Broker.session_tgt`, `fastrdp_broker/tgt.py`):
+
+1. `pam_authenticate` + `pam_setcred(PAM_ESTABLISH_CRED)` for the user with PAM
+   service `fastrdp-tgt` (`broker/session/pam/fastrdp-tgt`: `auth required pam_sss.so`
+   only). The password goes only through the PAM conversation.
+2. `klist -s` with the user's uid/gid (no supplementary groups, clean environment,
+   `HOME=/`, cwd `/`, `KRB5CCNAME` as reported by `pam_sss`) checks that a valid TGT
+   is now in the cache.
+3. `[broker] session_tgt`: `auto` logs a failure and starts the session anyway,
+   `required` refuses the login, `off` skips both steps.
+
+Why PAM (option a) and not `kinit` in the user's manager (option b), from sssd
+2.12.0 sources [verified]:
+
+- The ccache is written by `krb5_child`, not by the PAM caller. `krb5_auth.c:714`
+  takes the uid from sssd's cache (`SYSDB_UIDNUM`), `krb5_child_handler.c:201` sends
+  it to `krb5_child`, and `krb5_child.c:2541-2562` calls `switch_to_user()`
+  (`krb5_ccache.c:45`) before `create_ccache()`. So the broker running as root makes
+  no difference; KCM sees the user's peer uid. For collections (`KCM:`)
+  `create_ccache()` reuses the cache of the same principal or creates one and makes
+  it primary (`krb5_child.c:1662-1707`, `krb5_cc_switch`), so `klist -s` sees it.
+- The cache template is sssd's (`krb5_auth.c:299`, `krb5_ccname_template`, default
+  from libkrb5), the principal is the user's real UPN from the directory (no
+  `user@REALM` guess as with `kinit`), KDC discovery and failover are sssd's, and
+  the TGT is registered for sssd's own renewal (`krb5_auth.c:1199-1207`,
+  `add_tgt_to_renew_table`).
+- `pam_sss` reports the cache in the PAM environment (`krb5_child.c:1848-1871`
+  `k5c_attach_ccname_msg`, `pam_sss.c:1121-1136` `pam_putenv`), which the check in
+  step 2 uses.
+- `kinit` inside the user's systemd manager (`sysutil.run_as_user`) would start
+  `user@UID.service` *before* the TGT exists, which is the failure described in Q1,
+  and its ticket would only be renewed by sssd-kcm.
+
+Limits [inferred, lab check needed]: when sssd is offline (KDC unreachable) or uses
+`cached_auth_timeout`, authentication succeeds from the cache without a TGT; the
+`klist -s` check catches that (with `auto`: warning only). The extra authentication
+is one more AS exchange per GNOME/Plasma login (for TLS logins the second one); a
+wrong delegated password counts at the KDC (AD `badPwdCount`) but not in
+`pam_faillock` (`fastrdp-tgt` has none on purpose).
 
 ## Q4: Ticket lifetime and renewal
 
@@ -214,10 +267,15 @@ user's KCM collection before the back-end starts [inferred, lab check needed].
   should work [inferred]. Limits: TGTs from `kinit` inside the session are not
   registered; while sssd is offline the renewal timer is removed
   (`krb5_renew_tgt.c`, `renew_tgt_offline_callback`).
-- sssd-kcm can renew every TGT in KCM itself (`[kcm] tgt_renewal = true`,
-  `tgt_renewal_inherit = <domain>`; sssd-kcm(8) "RENEWALS"; built by default when
-  libkrb5 has `krb5_unmarshal_credentials`, `src/external/krb5.m4:114-130`). fastrdp
-  does not configure this; it is a cheap addition for `kinit` users.
+- sssd-kcm can renew every TGT in KCM itself (`[kcm] tgt_renewal = true`;
+  sssd-kcm(8) "RENEWALS"; built by default when libkrb5 has
+  `krb5_unmarshal_credentials`, `src/external/krb5.m4:114-130`). fastrdp now
+  configures it in `/etc/sssd/conf.d/50-fastrdp.conf` with `krb5_renew_interval` and
+  `krb5_renewable_lifetime` in the `[kcm]` section itself rather than
+  `tgt_renewal_inherit`, so it works for every identity provider
+  (`kcm_renew.c:300-370`: without `tgt_renewal_inherit` the `[kcm]` options are
+  read). Renewals start at half the ticket lifetime. `krb5.conf` `renew_lifetime`
+  makes `kinit` ask for renewable tickets.
 - **After `renew_till` (7 days)** nothing can renew without a password. Once the
   kernel's GSS context for that user expires (at the end of the `nfs/` service
   ticket, at most the TGT's lifetime), the next upcall fails and every process of
@@ -226,9 +284,10 @@ user's KCM collection before the back-end starts [inferred, lab check needed].
   xrdp session lives on (`fastrdp_xrdp_disconnected_time_limit: 0` = forever), so a
   session left alone for more than a week loses its home.
 - **Reconnect:** xrdp with a password runs PAM authentication again and gets a fresh
-  TGT, and all processes of the uid can use NFS again (KCM is per uid). Reconnects
-  without a password (SSO, smartcard, web), and GNOME/Plasma reconnects, do not
-  refresh anything; the user must run `kinit` in the session.
+  TGT, and all processes of the uid can use NFS again (KCM is per uid). GNOME/Plasma
+  reconnects with a password do the same through the broker (`session_tgt`), also
+  when the running session is reused. Reconnects without a password (SSO,
+  smartcard, web) do not refresh anything; the user must run `kinit` in the session.
 - **With gssproxy impersonation** none of this applies. gssproxy gets new tickets with
   the host keytab whenever rpc.gssd needs a context, so access does not expire with
   the user's TGT (gssproxy `docs/NFS.md`: access is "always on") [inferred].
@@ -357,9 +416,10 @@ Security implications:
 
 ### c) Require a typed password for users with Kerberized homes
 
-Works today for xrdp (NLA with password, or TLS). Smartcard, SSO without delegation
-and web users cannot use the server; GNOME/Plasma need the broker change below. Users
-must reconnect with a password at least once per renewal period (7 days).
+Works for every RDP back-end (NLA with password, or TLS). Smartcard, SSO without
+delegation and web users cannot use the server; `fastrdp_session_tgt: required`
+refuses them early. Users must reconnect with a password at least once per renewal
+period (7 days).
 
 ### d) Local or cached home directories
 
@@ -385,34 +445,40 @@ Implemented (see [Changes](#changes-in-this-repository)):
 2. **Ansible option `fastrdp_nfs_krb5_homes`** (default `false`, role `identity`):
    installs `nfs-common` and `gssproxy`, writes the two files from Q5a, restarts
    gssproxy and rpc-gssd. The directory side (delegation) stays manual.
-
-Described, not implemented:
-
-3. **GNOME/Plasma without impersonation, NLA with password:** the broker could run
-   `pamauth.authenticate(pam_service, user, password)` before `backend.ensure()` when
-   the back-end does not consume the password, so that sssd stores a TGT in the user's
-   KCM (as for TLS logins). Failure should only be logged. Trade-offs: an extra
-   authentication (counted by `pam_faillock` if the delegated password is wrong), and it
-   changes the GNOME/Plasma rows of [auth-matrix.md](auth-matrix.md). Default off,
-   e.g. `[auth] tgt_for_passwordless_backends = true`.
-4. **Fail early with a clear message:** a broker option listing NFS-krb5 home
-   prefixes could refuse logins that cannot get credentials (no password and no
-   impersonation) instead of letting xrdp fail after connecting.
-5. **GNOME per-user state in `$HOME`:** `systemctl --user enable` writes into
-   `~/.config/systemd/user`; when the user manager starts without credentials the
-   link is invisible (Q1). Prefer a global enablement of
-   `gnome-remote-desktop-headless.service` for `gnome-session.target` (all GNOME
-   sessions on a fastrdp host are remote) or an explicit `systemctl --user start`
-   after the session is up. `grdctl` settings and the per-session RDP secret are stored
-   in `$HOME` (dconf, `credentials.ini`); with `sec=krb5` or `krb5i` the secret travels
-   unencrypted to the NFS server. It changes every session and is accepted only on
-   loopback, so this is a minor issue.
-6. **KCM renewal:** add `[kcm] tgt_renewal = true` and `tgt_renewal_inherit =
-   <domain>` (e.g. `/etc/sssd/conf.d/`) so that TGTs from `kinit` in the session are
-   renewed too.
-7. **FreeIPA:** `ipa-client-install` writes its own `sssd.conf` without the renewal
-   settings of `sssd-ad.conf.j2`; add `krb5_renewable_lifetime`/`krb5_renew_interval`
-   there as well.
+3. **GNOME/Plasma TGT with a password** (`[broker] session_tgt`,
+   `fastrdp_session_tgt`, default `auto`): see Q3. Runs on every login with a
+   password, so reconnects refresh the TGT.
+4. **Early refusal** (`fastrdp_session_tgt: required`, default off): logins without a
+   password are refused before MFA, for every back-end and on the web path
+   (`web_token`/`web_desktops`); failed TGT requests for GNOME/Plasma refuse the
+   login. It is a site decision, not derived from `fastrdp_nfs_krb5_homes` (with
+   impersonation, password-less logins work and `required` is not needed). The
+   client sees "access denied" like every refusal; the reason is in the broker log.
+   xrdp's own TGT (pam_sss is `optional` in `xrdp-sesman`) cannot be checked by the
+   broker before the session starts.
+5. **GNOME unit link outside `$HOME`:** the broker enables
+   `gnome-remote-desktop-headless.service` with `systemctl --user --runtime enable`.
+   The link goes to `$XDG_RUNTIME_DIR/systemd/user` (systemd `path-lookup.c`,
+   `runtime_config`; in the user unit search path), a tmpfs that exists while the
+   user manager runs, so a manager started without NFS credentials still sees it.
+   Not changed: a global enable (`/etc/systemd/user/gnome-session.target.wants/`)
+   would start the headless daemon in every GNOME session on the host, and the unit
+   `Conflicts=gnome-remote-desktop.service` (desktop sharing of a local session).
+   `grdctl` settings stay in `$HOME`: they are GSettings in the user's dconf
+   database (`~/.config/dconf/user`, shared with gnome-shell), and the headless
+   credentials are TPM-sealed or in `$XDG_DATA_HOME/gnome-remote-desktop/credentials.ini`
+   (g-r-d `grd-settings.c` `create_headless_credentials`,
+   `grd-credentials-file.c:144-170`). Moving them would need the same
+   `XDG_DATA_HOME`/dconf profile for `grdctl` and the g-r-d unit (a drop-in), a change
+   to the whole session's dconf, which is not low-risk. With a TGT (3) or
+   impersonation, the home is readable when `grdctl` runs. With `sec=krb5`/`krb5i`
+   the per-session RDP secret travels unencrypted to the NFS server; it changes every
+   session and is accepted only on loopback, so this is a minor issue.
+6. **Ticket renewal:** `[kcm] tgt_renewal` in `/etc/sssd/conf.d/50-fastrdp.conf`
+   (`fastrdp_kcm_tgt_renewal`, `fastrdp_krb5_renew_interval`,
+   `fastrdp_krb5_renewable_lifetime`), `renew_lifetime` in `krb5.conf`.
+7. **FreeIPA:** the same snippet adds `krb5_renewable_lifetime`/`krb5_renew_interval`
+   to `[domain/<fastrdp_domain>]`, which `ipa-client-install` does not write.
 
 ## NFS server and client checklist
 
@@ -451,10 +517,17 @@ credentials"), xfreerdp, Keycloak web path.
    within `home_read_timeout` with the default desktop, other users' logins must not
    stall. With the server up, check that root gets `EACCES` on
    `~/.config/fastrdp/desktop` and that a desktop preference is ignored.
-3. **TLS + GNOME/Plasma:** confirm that the broker's `pam_authenticate` leaves a TGT in
-   the user's KCM (`sudo -u pw1 klist`).
+3. **GNOME/Plasma TGT:** for NLA with delegated password and for TLS, confirm the
+   broker log `Kerberos TGT stored for the gnome session` and a TGT in the user's
+   KCM (`sudo -u pw1 klist -l`), present before the session's first home access
+   (`journalctl -u rpc-gssd`). Repeat with sssd offline (`auto`: warning, `required`:
+   refused), with a wrong delegated password (no `pam_faillock` entry:
+   `faillock --user pw1`), and on a reconnect after `kdestroy -A` (new TGT). With
+   `required`: SSO, smartcard and web logins refused before the push. GNOME: the
+   g-r-d link in `/run/user/<uid>/systemd/user/gnome-session.target.wants/`.
 4. **Renewal:** shorten the TGT lifetime (KDC policy, e.g. 15 min, renewable 1 h);
-   disconnect; check renewals (`klist` times, sssd_be log), then the failure after
+   disconnect; check renewals (`klist` times, sssd_be log; for a `kinit` TGT the
+   sssd_kcm log, `debug_level` in `[kcm]`), then the failure after
    `renew_till` (errno seen by `cat ~/x`), then recovery on reconnect with and without
    password.
 5. **gssproxy:** enable `fastrdp_nfs_krb5_homes`, configure delegation; repeat 1 and 4
@@ -487,3 +560,14 @@ credentials"), xfreerdp, Keycloak web path.
 - `ansible/roles/identity`: `fastrdp_nfs_krb5_homes`, `fastrdp_nfs_gssproxy_keytab`,
   `tasks/nfs_krb5.yml`, templates `gssproxy-nfs-client.conf.j2`, `nfs-gssd.conf.j2`,
   handlers; rendered and checked in `tests/ansible/` (`NfsKrb5Homes`).
+- `broker/brokerd/fastrdp_broker/tgt.py`, `server.py` (`Broker.require_credential`,
+  `Broker.session_tgt`), `pamauth.py` (`establish_credentials`), `sysutil.py`
+  (`run_dropped`), `backends/base.py`/`xrdp.py` (`obtains_tgt`), `config.py`
+  (`[broker] session_tgt`), `broker/session/pam/fastrdp-tgt` (installed by role
+  `broker` and package `fastrdp-broker`); Ansible `fastrdp_session_tgt` (role
+  `common`). Tests: `broker/brokerd/tests/test_session_tgt.py`.
+- `backends/gnome.py`: `systemctl --user --runtime enable` (test in
+  `test_gaps.BackendTests.test_gnome_start`).
+- `ansible/roles/identity`: `sssd-fastrdp.conf.j2` → `/etc/sssd/conf.d/50-fastrdp.conf`,
+  `renew_lifetime` in `krb5.conf.j2`, variables in `sssd-ad.conf.j2`, handler
+  `Restart sssd-kcm`; rendered and checked in `tests/ansible/` (`TicketRenewal`).

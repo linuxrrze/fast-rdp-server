@@ -67,7 +67,7 @@
   ansible.builtin.command:
     cmd: >-
       openssl req -x509 -newkey rsa:3072 -nodes -days 825
-      -subj "/CN={{ ansible_fqdn }}" -addext "subjectAltName=DNS:{{ ansible_fqdn }}"
+      -subj "/CN={{ ansible_fqdn }}" -addext "subjectAltName={{ fastrdp_front_cert_san }}"
       -addext "extendedKeyUsage=serverAuth"
       -keyout /etc/fastrdp/front.key -out /etc/fastrdp/front.crt
     creates: /etc/fastrdp/front.crt

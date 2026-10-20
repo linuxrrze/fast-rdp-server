@@ -543,6 +543,11 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             t = await b.ensure(self.req("gnome"))
         self.assertEqual((t.port, t.username, t.security), (41000, "fastrdp", "nla"))
         m["start_unit"].assert_awaited_with("gnome-headless-session@alice.service")
+        # g-r-d is enabled in $XDG_RUNTIME_DIR, not ~/.config/systemd/user: a user manager
+        # started without NFS credentials cannot read unit links in the home.
+        argvs = [c.args[1:] for c in m["run_as_user"].await_args_list]
+        self.assertIn(("systemctl", "--user", "--runtime", "enable", "gnome-remote-desktop-headless.service"), argvs)
+        self.assertNotIn(("systemctl", "--user", "enable", "gnome-remote-desktop-headless.service"), argvs)
         cred = [c for c in m["run_as_user"].await_args_list if "set-credentials" in c.args]
         self.assertEqual(cred[0].kwargs["input"], t.password + "\n")  # secret via stdin, not argv
         self.assertNotIn(t.password, " ".join(str(a) for c in m["run_as_user"].await_args_list for a in c.args))

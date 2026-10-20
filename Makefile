@@ -2,9 +2,10 @@
 # Overview of every test, what it guards and where CI runs it: tests/README.md.
 .PHONY: deb test-xrdp-encoder test-wlroots test test-all test-broker test-webgate test-pam test-gpu \
 	test-scripts test-publish test-ansible test-e2e test-e2e-nla test-e2e-smartcard \
-	test-e2e-smartcard-softhsm check-krb5-spnego perf-tools perf-proxy lint lint-ci
+	test-e2e-smartcard-softhsm check-krb5-spnego perf-tools perf-proxy lint lint-ci test-docs \
+	test-keycloak test-prototypes
 
-test: test-broker test-webgate test-pam test-gpu lint
+test: test-broker test-webgate test-pam test-gpu test-prototypes lint
 
 # Everything that runs locally without root (missing tools: SKIP, or FAIL with
 # FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, python3-cryptography, ansible-core,
@@ -31,9 +32,16 @@ test-scripts:   # fetch.sh, build-key.sh, packaging/ci/*.sh; dpkg-dev curl patch
 test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg-dev apt
 	tests/packaging/test_publish.sh
 
-test-ansible:   # ansible-core; syntax check + role templates rendered and parsed
+test-ansible:   # ansible-core; syntax check + role templates rendered and parsed; Keycloak script (offline)
 	cd ansible && ansible-playbook --syntax-check site.yml
 	python3 -m unittest -v tests/ansible/test_templates.py
+	python3 -m unittest -v tests/keycloak/test_keycloak_passkeys.py
+
+# FreeRDP switches in docs/freerdp-client.md and docs/client-guide.md vs. FreeRDP's own
+# switch table. Downloads the vendored FreeRDP source (network, or FASTRDP_SOURCES_CACHE);
+# FREERDP_SRC=<tree> or FREERDP_HELP_CMD=xfreerdp3 instead. Not in test-all (network).
+test-docs:   # python3; curl patch for the download
+	tests/docs/test_freerdp_switches.sh
 
 perf-tools:
 	$(MAKE) -C tests/perf/rdpbench
@@ -65,6 +73,14 @@ test-e2e-smartcard:   # + krb5-pkinit softhsm2 opensc p11-kit-modules
 test-e2e-smartcard-softhsm:
 	SC_MODULE=softhsm tests/proxy-e2e/run_smartcard.sh
 
+# Manual (JDK + Keycloak + Chromium): passkeys on the web path, Keycloak role + webgate.
+test-keycloak:   # CHROME=<chromium>, optional KEYCLOAK_HOME/JAVA_HOME; see tests/keycloak/run.sh
+	tests/keycloak/run.sh
+
+# Prototype (docs/webauthn-redirection.md): RDPEWA/CTAPHID codecs, stdlib only, not shipped.
+test-prototypes:
+	cd prototypes/webauthn-redirection && python3 -m unittest discover -s tests
+
 check-krb5-spnego:   # libwinpr3-dev libkrb5-dev krb5-kdc krb5-admin-server; exit 1 = affected
 	tests/krb5-spnego/run.sh
 
@@ -73,7 +89,7 @@ lint:
 	shellcheck -x broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
 		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
 		tests/proxy-e2e/*.sh tests/krb5-spnego/run.sh tests/smoke/*.sh tests/perf/*.sh patches/xrdp/test/run_test.sh \
-		third_party/*.sh tests/lib.sh tests/packaging/*.sh
+		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh
 	shellcheck -e SC1090,SC2015 tests/wlroots/run.sh
 	shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/*
 	packaging/ci/check-build-deps.sh

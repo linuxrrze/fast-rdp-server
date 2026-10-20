@@ -1,0 +1,21 @@
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> #}
+# {{ ansible_managed }}
+# Ticket renewal for terminal-server sessions (docs/nfs-kerberos-homes.md, Q4).
+{% if fastrdp_kcm_tgt_renewal | bool %}
+
+# sssd-kcm renews every renewable TGT in KCM, including those from `kinit` in a
+# session, which sssd's domain renewal does not know (sssd-kcm(8), RENEWALS).
+# Options here, not tgt_renewal_inherit: they work for every identity provider.
+[kcm]
+tgt_renewal = true
+krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
+krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
+{% endif %}
+{% if fastrdp_identity_provider == 'ipa' %}
+
+# ipa-client-install writes sssd.conf without these (AD: sssd-ad.conf.j2 has them).
+[domain/{{ fastrdp_domain }}]
+krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
+krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
+{% endif %}

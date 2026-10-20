@@ -9,6 +9,7 @@ configparser. Skipped without ansible-playbook unless FASTRDP_TESTS_STRICT=1.
 """
 
 import configparser
+import json
 import os
 import shutil
 import subprocess
@@ -168,6 +169,18 @@ class BrokerToml(unittest.TestCase):
         self.assertFalse(cfg.web.enabled)
         self.assertEqual(cfg.backends["xrdp"].port, 3390)
         self.assertEqual(cfg.backends["xrdp"].listener_user, "root")
+        self.assertEqual(cfg.broker.session_tgt, "auto")
+
+    def test_nla_kdc_enforced(self):
+        self.assertFalse(broker_config.parse(toml("broker-lab.toml")).mfa.nla_kdc_enforced)
+        self.assertFalse(broker_config.parse(toml("broker-minimal.toml")).mfa.nla_kdc_enforced)
+        cfg = broker_config.parse(toml("broker-kdc.toml"))
+        self.assertTrue(cfg.mfa.nla_kdc_enforced)
+        self.assertEqual(cfg.mfa.mode, "push")
+        self.assertEqual(cfg.auth.realms, ["LAB.EXAMPLE.COM"])
+
+    def test_session_tgt_required(self):
+        self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")
 
     def test_mfa_variant_accepted_by_broker(self):
         cfg = broker_config.parse(toml("broker-mfa.toml"))
@@ -206,6 +219,7 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual(list(cfg.desktops), ["xfce"])
         self.assertEqual(cfg.default_desktop, "xfce")
         self.assertEqual(cfg.mfa.mode, "none")
+        self.assertEqual(cfg.broker.session_tgt, "auto")
         self.assertEqual(cfg.backends["xrdp"].port, 3390)
         self.assertEqual(ini("proxy-minimal.ini")["Server"]["Port"], "3389")
         self.assertEqual(toml("gfx-minimal.toml")["codec"]["h264_encoder"], "x264")
@@ -253,7 +267,7 @@ class CommonChecks(unittest.TestCase):
     def run_checks(self, **extra):
         args = [shutil.which("ansible-playbook"), "-i", "localhost,", str(HERE / "check_common.yml")]
         for k, v in extra.items():
-            args += ["-e", f"{k}={v}"]
+            args += ["-e", f"{k}={v}" if isinstance(v, (str, int)) else json.dumps({k: v})]
         env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
                    ANSIBLE_PYTHON_INTERPRETER=sys.executable)
         env.pop("ANSIBLE_CONFIG", None)
@@ -273,10 +287,132 @@ class CommonChecks(unittest.TestCase):
             "unknown mfa mode": dict(ok, fastrdp_mfa_mode="sms", fastrdp_privacyidea_url="https://pi"),
             "unknown identity provider": dict(ok, fastrdp_identity_provider="ldap"),
             "xrdp port = front port": dict(ok, fastrdp_xrdp_port=3389),
+            "unknown session_tgt": dict(ok, fastrdp_session_tgt="yes"),
+            "alias not a DNS name": dict(ok, fastrdp_termsrv_aliases=["rdp;reboot"]),
+            "alias list given as a string": dict(ok, fastrdp_termsrv_aliases="rdp.example.com"),
+            "kdc-enforced with hardened (password) indicator": dict(
+                ok, fastrdp_identity_provider="ipa", fastrdp_mfa_nla_kdc_enforced=True,
+                fastrdp_mfa_nla_kdc_auth_indicators=["passkey", "hardened"]),
+            "kdc-enforced without indicators": dict(
+                ok, fastrdp_identity_provider="ipa", fastrdp_mfa_nla_kdc_enforced=True,
+                fastrdp_mfa_nla_kdc_auth_indicators=[]),
+            "kdc-enforced on AD without a policy": dict(ok, fastrdp_mfa_nla_kdc_enforced=True),
         }
         for name, extra in cases.items():
             with self.subTest(name):
                 self.assertNotEqual(self.run_checks(**extra), 0)
+
+    def test_kdc_enforced_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_mfa_nla_kdc_enforced": True}
+        self.assertEqual(self.run_checks(**ok, fastrdp_identity_provider="ipa"), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_nla_kdc_enforced_by_ad_policy=True), 0)
+
+    def test_aliases_pass(self):
+        self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",
+                                         fastrdp_termsrv_aliases=["rdp.example.com", "rdp"]), 0)
+
+
+def names(variant):
+    return json.loads((OUT / f"names-{variant}.json").read_text())
+
+
+class TermsrvNames(unittest.TestCase):
+    """TERMSRV principals (identity role) and front certificate SAN (base role)."""
+
+    def test_default_principals(self):
+        n = names("ad")
+        self.assertEqual(n["spns"], ["TERMSRV/rdp1.lab.example.com", "TERMSRV/RDP1"])
+        self.assertEqual(n["keytab_spns"], n["spns"])  # adcli writes an entry per SPN
+        # Regression: the self-signed certificate named only the FQDN.
+        self.assertEqual(n["san"], "DNS:rdp1.lab.example.com,DNS:rdp1")
+
+    def test_aliases(self):
+        n = names("ad-aliases")
+        self.assertEqual(n["spns"], ["TERMSRV/rdp1.lab.example.com", "TERMSRV/RDP1",
+                                     "TERMSRV/rdp.lab.example.com", "TERMSRV/rdp"])  # FQDN not twice
+        self.assertEqual(n["keytab_spns"], n["spns"])
+        self.assertEqual(n["san"], "DNS:rdp1.lab.example.com,DNS:rdp1,DNS:rdp.lab.example.com,DNS:rdp")
+
+    def test_ipa_and_none_keytabs_carry_the_fqdn_principal(self):
+        # FreeIPA aliases share the canonical principal's keys; "none" keytabs are provided.
+        self.assertEqual(names("ipa-aliases")["keytab_spns"], ["TERMSRV/rdp1.lab.example.com"])
+        self.assertEqual(names("none")["keytab_spns"], ["TERMSRV/rdp1.lab.example.com"])
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl not installed")
+    def test_san_accepted_by_openssl(self):
+        # Same openssl options as roles/base/tasks/main.yml (self-signed certificate).
+        san = names("ad-aliases")["san"]
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                            "-subj", "/CN=rdp1.lab.example.com", "-addext", f"subjectAltName={san}",
+                            "-addext", "extendedKeyUsage=serverAuth",
+                            "-keyout", f"{tmp}/k", "-out", f"{tmp}/c"], check=True, capture_output=True)
+            out = subprocess.run(["openssl", "x509", "-in", f"{tmp}/c", "-noout", "-ext", "subjectAltName"],
+                                 check=True, capture_output=True, text=True).stdout
+        self.assertIn("DNS:rdp1.lab.example.com, DNS:rdp1, DNS:rdp.lab.example.com, DNS:rdp", out)
+
+
+KLIST_HEAD = "Keytab name: FILE:{kt}\nKVNO Principal\n---- " + "-" * 60 + "\n"
+
+
+class TermsrvKeytabCheck(unittest.TestCase):
+    """fastrdp-termsrv-check: AES key per TERMSRV principal at its newest kvno (klist -ke)."""
+
+    def run_check(self, entries, *principals):
+        with tempfile.TemporaryDirectory() as tmp:
+            kt = Path(tmp) / "termsrv.keytab"
+            kt.write_text(KLIST_HEAD.format(kt=kt) + "".join(
+                f"{kvno:4d} {p} ({e})\n" for kvno, p, e in entries))
+            klist = Path(tmp) / "klist"   # fake klist -ke KEYTAB: prints the "keytab"
+            klist.write_text('#!/bin/sh\n[ "$1" = -ke ] && exec cat "$2"\nexit 1\n')
+            klist.chmod(0o755)
+            env = dict(os.environ, PATH=f"{tmp}:{os.environ['PATH']}")
+            return subprocess.run([str(OUT / "fastrdp-termsrv-check"), "-k", str(kt), *principals],
+                                  env=env, capture_output=True, text=True)
+
+    FQDN, SHORT = "TERMSRV/rdp1.lab.example.com", "TERMSRV/RDP1"
+
+    def test_aes_for_both(self):
+        r = self.run_check([(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
+                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96"),
+                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "DEPRECATED:arcfour-hmac")],
+                           self.FQDN, "termsrv/rdp1")   # any case, realm optional
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(r.stdout.count("ok   "), 2)
+
+    def test_rc4_only_fails(self):
+        r = self.run_check([(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
+                            (3, f"{self.SHORT}@LAB.EXAMPLE.COM", "DEPRECATED:arcfour-hmac")],
+                           self.FQDN, self.SHORT)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"FAIL {self.SHORT}: no AES key at kvno 3", r.stdout)
+        self.assertIn("msDS-SupportedEncryptionTypes", r.stdout)  # fix hint
+
+    def test_newest_kvno_counts(self):
+        # AES only at the old kvno: tickets use the new key, which is RC4.
+        r = self.run_check([(2, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
+                            (3, f"{self.FQDN}@LAB.EXAMPLE.COM", "arcfour-hmac"),
+                            (2, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96")], self.FQDN)
+        self.assertEqual(r.returncode, 1)
+        r = self.run_check([(4, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
+                            (3, f"{self.FQDN}@LAB.EXAMPLE.COM", "arcfour-hmac")], self.FQDN)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_missing_principal_and_realm(self):
+        entries = [(3, f"{self.FQDN}@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
+                   (3, "host/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96")]
+        r = self.run_check(entries, self.FQDN, self.SHORT)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"FAIL {self.SHORT}: no key in", r.stdout)
+        self.assertEqual(self.run_check(entries, f"{self.FQDN}@OTHER.ORG").returncode, 1)
+        self.assertEqual(self.run_check(entries, "TERMSRV/rdp1").returncode, 1)  # no prefix match
+
+    def test_unreadable_keytab_and_usage(self):
+        r = subprocess.run([str(OUT / "fastrdp-termsrv-check"), "-k", "/nonexistent", self.FQDN],
+                           env=dict(os.environ, PATH="/nonexistent"), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cannot read /nonexistent", r.stdout)
+        self.assertEqual(subprocess.run([str(OUT / "fastrdp-termsrv-check")], capture_output=True).returncode, 2)
 
 
 class WebgateToml(unittest.TestCase):
@@ -327,6 +463,39 @@ class NfsKrb5Homes(unittest.TestCase):
         cp = ini("nfs-gssd.conf")
         self.assertEqual(cp.sections(), ["gssd"])
         self.assertEqual(dict(cp["gssd"]), {"use-gss-proxy": "1"})
+
+
+class TicketRenewal(unittest.TestCase):
+    """sssd-kcm renews every TGT in KCM (kinit in sessions too); FreeIPA's sssd.conf
+    (written by ipa-client-install) gets the domain renewal options AD already has."""
+
+    def test_kcm_renewal_for_every_provider(self):
+        for provider in ("ad", "ipa", "none"):
+            with self.subTest(provider):
+                kcm = ini(f"sssd-fastrdp-{provider}.conf")["kcm"]
+                self.assertEqual(dict(kcm), {"tgt_renewal": "true", "krb5_renew_interval": "1h",
+                                             "krb5_renewable_lifetime": "7d"})
+
+    def test_ipa_domain_renewal(self):
+        cp = ini("sssd-fastrdp-ipa.conf")
+        self.assertEqual(cp.sections(), ["kcm", "domain/lab.example.com"])
+        self.assertEqual(dict(cp["domain/lab.example.com"]),
+                         {"krb5_renewable_lifetime": "7d", "krb5_renew_interval": "1h"})
+        # AD and "none": no domain section (AD has the options in its own sssd.conf)
+        self.assertEqual(ini("sssd-fastrdp-ad.conf").sections(), ["kcm"])
+        self.assertEqual(ini("sssd-fastrdp-none.conf").sections(), ["kcm"])
+
+    def test_kcm_renewal_off(self):
+        self.assertEqual(ini("sssd-fastrdp-ad-nokcm.conf").sections(), [])
+
+    def test_ad_domain_renewal(self):
+        dom = ini("sssd-ad.conf")["domain/lab.example.com"]
+        self.assertEqual((dom["krb5_renewable_lifetime"], dom["krb5_renew_interval"]), ("7d", "1h"))
+
+    def test_kinit_asks_for_renewable_tickets(self):
+        k = ini("krb5.conf")["libdefaults"]
+        self.assertEqual(k["renew_lifetime"], "7d")
+        self.assertEqual(k["default_ccache_name"], "KCM:")
 
 
 if __name__ == "__main__":

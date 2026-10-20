@@ -141,6 +141,18 @@ class AppHelperTests(unittest.TestCase):
         self.assertEqual((params["port"], params["color-depth"], params["security"]), ("3390", "24", "tls"))
         self.assertLessEqual(data["expires"], (time.time() + 31) * 1000)
 
+    def test_rdp_parameters_cannot_override_security_or_pin(self):
+        a = self.app(guacamole={"rdp_parameters": {
+            "security": "nla", "username": "mallory", "hostname": "evil", "ignore-cert": "true",
+            "resize-method": "reconnect"}})
+        a.cert_fingerprint = "sha256:aa:bb"
+        params = a.connection_payload("alice", "tok", None)["connections"]["Desktop (default)"]["parameters"]
+        self.assertEqual((params["security"], params["username"], params["password"]), ("tls", "alice", "tok"))
+        self.assertNotEqual(params["hostname"], "evil")
+        self.assertNotIn("ignore-cert", params)
+        self.assertEqual(params["cert-fingerprints"], "sha256:aa:bb")
+        self.assertEqual(params["resize-method"], "reconnect")  # a tuning knob stays overridable
+
     def test_cookie_flags(self):
         c = self.app().cookie("n", "v", 60)
         for part in ("Path=/web", "HttpOnly", "SameSite=Lax", "Max-Age=60", "Secure"):

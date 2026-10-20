@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-"""Records broker requests; accepts password 'good' and routes to 127.0.0.1:<port>."""
+"""Records broker requests; accepts password 'good' and routes to 127.0.0.1:<port>.
+
+Other passwords: 'nogroup' -> refused with reason not_allowed, 'nobackend' -> "session
+could not be started", 'deadport' -> accepted but routed to a closed port."""
 import json
 import os
 import socket
@@ -21,10 +24,15 @@ while True:
             fh.write(json.dumps(req) + "\n")
         if req["op"] != "login":
             rep = {"ok": True}
-        elif req.get("password") in ("good", "fastrdp1:TOKEN"):
+        elif req.get("password") in ("good", "fastrdp1:TOKEN", "deadport"):
             rep = {"ok": True, "user": req["user"], "desktop": "xfce", "target": {
-                "host": "127.0.0.1", "port": port, "username": req["user"],
-                "password": "fastrdp1:TOKEN", "domain": "", "security": "tls"}}
+                "host": "127.0.0.1", "port": 1 if req["password"] == "deadport" else port,
+                "username": req["user"], "password": "fastrdp1:TOKEN", "domain": "",
+                "security": "tls"}}
+        elif req.get("password") == "nogroup":
+            rep = {"ok": False, "error": "access denied", "reason": "not_allowed"}
+        elif req.get("password") == "nobackend":
+            rep = {"ok": False, "error": "session could not be started"}
         else:
             rep = {"ok": False, "error": "access denied"}
         conn.sendall((json.dumps(rep) + "\n").encode())

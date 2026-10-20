@@ -45,6 +45,12 @@ chk "broker socket present"           test -S /run/fastrdp/broker.sock
 chk "token socket root-only"          bash -c "[ \"\$(stat -c %a /run/fastrdp/token.sock)\" = 600 ]"
 chk "nftables fastrdp table loaded"   nft list table inet fastrdp
 chk "TERMSRV keys in proxy keytab"    bash -c "klist -k /etc/fastrdp/termsrv.keytab | grep -q TERMSRV/"
+# NLA needs AES keys (RC4 tickets fail) at the newest kvno for the FQDN and the short
+# name (identity role). FreeIPA's short-name alias shares the FQDN principal's keys.
+TERMSRV_SPNS="TERMSRV/$(hostname -f)"
+[ -e /etc/ipa/default.conf ] || TERMSRV_SPNS="$TERMSRV_SPNS TERMSRV/$(hostname -s | tr '[:lower:]' '[:upper:]')"
+# shellcheck disable=SC2086 # word splitting intended
+chk "AES keys for $TERMSRV_SPNS (fastrdp-termsrv-check)" /usr/local/sbin/fastrdp-termsrv-check $TERMSRV_SPNS
 chk "proxy can read its keytab"       runuser -u _fastrdp-proxy -- test -r /etc/fastrdp/termsrv.keytab
 chk "fastrdp proxy module installed"  test -f /opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
 chk "proxy uses fastrdp's FreeRDP"     bash -c "ldd /opt/fastrdp/bin/freerdp-proxy | grep -q '/opt/fastrdp/.*libfreerdp3.so' && ! ldd /opt/fastrdp/bin/freerdp-proxy | grep -q 'not found'"

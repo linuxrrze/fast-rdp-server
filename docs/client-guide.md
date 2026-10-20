@@ -1,6 +1,8 @@
 # Client guide
 
 Always connect to the server's **FQDN** (Kerberos needs it), e.g. `rdp1.lab.example.com`.
+With NLA, you are logged in as the owner of your Kerberos ticket, whatever user name
+the client sends.
 
 ## FreeRDP 3 (Linux, macOS) – reference client
 
@@ -15,17 +17,28 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM \
     /sec:nla /auth-pkg-list:'kerberos,!ntlm' \
     /gfx:avc444 /network:auto /dynamic-resolution +clipboard
 
+# single sign-on with the ticket from kinit or your desktop login: empty /p, no prompt
+xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /p \
+    /sec:nla /auth-pkg-list:'kerberos,!ntlm'
+
+# smartcard / YubiKey PIV (asks for the PIN; no /u, /d: taken from the certificate)
+xfreerdp3 /v:rdp1.lab.example.com /sec:nla /auth-pkg-list:'kerberos,!ntlm' \
+    /smartcard-logon /kerberos:pkcs11-module:/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so
+
 # pick a desktop for this session
 xfreerdp3 ... /shell:fastrdp:gnome
 
-# outside the VPN: reach the KDC through a KDC proxy (MS-KKDCP)
-xfreerdp3 ... /kerberos:kdc-url:https://kdcproxy.lab.example.com/KdcProxy
+# outside the VPN: KDC proxy (MS-KKDCP). Give the host; FreeRDP adds https://.../KdcProxy.
+# It only covers the first ticket: also put the proxy into krb5.conf (freerdp-client.md §7)
+xfreerdp3 ... /kerberos:kdc-url:kdcproxy.lab.example.com
 
-# password + OTP in one field (server must allow TLS logins)
-xfreerdp3 /v:rdp1.lab.example.com /u:alice /p:'Secret123456' /sec:tls /gfx:avc444
+# password + OTP in one field (server must allow TLS logins); type "Secret123456" at the prompt
+xfreerdp3 /v:rdp1.lab.example.com /u:alice /sec:tls /gfx:avc444
 ```
 
-`sdl-freerdp3` and `wlfreerdp3` take the same options.
+`sdl-freerdp3` and `wlfreerdp3` take the same options. Ubuntu 26.04 names the client
+`xfreerdp`. Every login method with the exact switches, what the session gets, MFA and
+error messages: [freerdp-client.md](freerdp-client.md).
 
 ## Windows Remote Desktop Connection (mstsc)
 
@@ -42,15 +55,34 @@ bandwidthautodetect:i:1
 connection type:i:7
 ```
 
+- **Computer name:** the FQDN (`rdp1.lab.example.com`). The short name works on AD
+  (`TERMSRV/RDP1`) and on FreeIPA (principal alias); DNS aliases only if they are in
+  `fastrdp_termsrv_aliases`. An IP address never works: Windows falls back to NTLM,
+  which the server refuses.
+- **User name:** use the **UPN**, `alice@lab.example.com` (or your UPN suffix,
+  e.g. `marcel.ritter@corp.example.com`). Windows finds the KDC from it, also on
+  machines that are not domain members.
+  - The server logs in the account of the **Kerberos principal** that the domain
+    controller puts in the ticket (the sAMAccountName), not the typed name.
+    `marcel.ritter@corp.example.com` therefore logs in as `mritter`.
+  - `LAB\alice` and `LAB.EXAMPLE.COM\alice` are accepted as well. On a non-member
+    machine, Windows usually cannot find a KDC from the NetBIOS name `LAB` and falls
+    back to NTLM (refused); use the UPN there.
+  - If the typed name is clearly another account than the ticket's, the server
+    ignores the typed password (the session then has no Kerberos TGT).
 - Approve the push on the phone while mstsc shows "Configuring remote session…".
-- Non-domain Windows: enter `LAB\alice`. The KDC must be reachable, or set a KDC
-  proxy in group policy.
+- Outside the network the KDC must be reachable (VPN), or set a KDC proxy in group
+  policy ([windows-clients.md](windows-clients.md) §3.10).
 
 ## Remmina
 
 - Protocol: RDP.
 - Server: the FQDN; User: alice; Domain: `LAB.EXAMPLE.COM`.
 - Security protocol: NLA.
+- Preferences → RDP → "FreeRDP auth-pkg-list": `kerberos,!ntlm`.
+- Single sign-on with your ticket: leave the password empty and tick Advanced → "Allow
+  sending empty password". Smartcard: Basic → "Use a smartcard for logon". More:
+  [freerdp-client.md](freerdp-client.md) §13.
 - Colour depth: GFX AVC444 (32 bpp).
 - Advanced → "Start-up program": `fastrdp:gnome` sets the desktop.
 

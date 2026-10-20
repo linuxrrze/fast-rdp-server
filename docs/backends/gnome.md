@@ -11,6 +11,10 @@ The user never sees a GDM greeter; authentication and MFA happened at the proxy.
 
 ## How it works
 
+Before `GnomeBackend.ensure()`, under the broker's per-user lock, the broker gets the
+user a **Kerberos TGT** when the login carried the password (`[broker] session_tgt`,
+see [Kerberos ticket](#kerberos-ticket-tgt)); on every login, so also on a reconnect.
+
 `GnomeBackend.ensure()` (under the broker's per-user lock):
 
 1. **Reuse:** if `sessions.json` has a `gnome` session for the user,
@@ -35,8 +39,16 @@ The user never sees a GDM greeter; authentication and MFA happened at the proxy.
       grdctl --headless rdp disable-port-negotiation
       grdctl --headless rdp set-credentials fastrdp      # secret on stdin
       grdctl --headless rdp enable
-      systemctl --user enable gnome-remote-desktop-headless.service
+      systemctl --user --runtime enable gnome-remote-desktop-headless.service
       ```
+      `--runtime` puts the `gnome-session.target.wants` link into
+      `$XDG_RUNTIME_DIR/systemd/user` (`/run/user/<uid>`, tmpfs), which is in the user
+      unit search path (systemd `src/libsystemd/sd-path/path-lookup.c`, `runtime_config`),
+      instead of `~/.config/systemd/user`. A user manager that starts while the home is
+      unreadable (Kerberized NFS without a TGT) ignores unit links in the home
+      ([nfs-kerberos-homes.md](../nfs-kerberos-homes.md), Q1). The link lives as long as
+      the user manager, and the broker writes it on every session start. Hosts upgraded
+      from older fastrdp versions keep a harmless persistent link in the home.
    5. if `gnome-headless-session@<user>.service` is already active (session alive,
       g-r-d gone or on another port): `systemctl --user restart
       gnome-remote-desktop-headless.service`; else `systemctl start --no-block
@@ -93,11 +105,12 @@ implements; **none of these is tested through fastrdp**.
 | `/usr/lib/systemd/system/gnome-headless-session@.service` | GDM 50+ (the role asserts it exists) |
 | `gdm.service` | enabled and started by the role |
 | `gnome-remote-desktop.service` (system) | disabled and stopped by the role |
-| `gnome-remote-desktop-headless.service` (user unit) | g-r-d package; enabled per user by the broker |
+| `gnome-remote-desktop-headless.service` (user unit) | g-r-d package; enabled per user by the broker in `/run/user/<uid>/systemd/user` (`--runtime`) |
 | `/etc/dconf/db/local.d/50-fastrdp` | role: `lock-enabled=false`, `idle-delay=uint32 0`, `enable-animations=false`; compiled by `dconf update` |
 | `/var/lib/fastrdp/users/<user>/tls.{crt,key}` | broker |
 | `/var/lib/fastrdp/sessions.json` (0600 root) | broker: port, `rdp_user`, `rdp_password` |
-| g-r-d's own headless settings and credentials | written by `grdctl` in the user's account; location is g-r-d's choice, not set by fastrdp |
+| g-r-d's headless settings (port, TLS paths, enable) | written by `grdctl` as GSettings `org.gnome.desktop.remote-desktop.rdp` into the user's dconf database, `~/.config/dconf/user` |
+| g-r-d's headless RDP credentials (`fastrdp` + secret) | TPM-sealed if a TPM is usable, else `$XDG_DATA_HOME/gnome-remote-desktop/credentials.ini` = `~/.local/share/…` (g-r-d `grd-settings.c` `create_headless_credentials`, `grd-credentials-file.c`) |
 
 The role `gnome_rd` runs only when `gnome` is in `fastrdp_desktops` (`site.yml`).
 
@@ -112,6 +125,7 @@ The role `gnome_rd` runs only when `gnome` is in `fastrdp_desktops` (`site.yml`)
 | `[backends.gnome] unit` | `gnome-headless-session@{user}.service` | `config.py` default |
 | `[backends.gnome] security` | `nla` | `config.py` default |
 | `fastrdp_group_desktops` | `{}` | e.g. `{rdp-gnome: gnome}` |
+| `fastrdp_session_tgt` | `auto` | broker `[broker] session_tgt`: TGT before the session starts (`auto`, `required`, `off`); see below |
 
 There are no GNOME-specific encoder or quality variables in the Ansible roles.
 
@@ -154,12 +168,39 @@ places them; not checked.
   `sessions.json`. The user can read their own g-r-d credentials (they are in the
   user's account), which gains nothing: the port is unreachable for the user's own
   processes (nftables), and it is the user's own session.
-- The user's password never reaches GNOME, so **no Kerberos TGT** exists in the
-  session. Users run `kinit` if they need one. (Keyring unlocking: not handled by
-  fastrdp; upstream behaviour unknown.)
+- The user's password never reaches GNOME. The broker uses it, when the login
+  carried it, only to get a Kerberos TGT through PAM (next section). (Keyring
+  unlocking: not handled by fastrdp; upstream behaviour unknown.)
 - AD GPO logon rights: the broker checks PAM service `fastrdp` (mapped in
   `ad_gpo_map_remote_interactive`). GDM's own PAM service for headless sessions is
   **not** in that mapping; whether sssd denies or needs it is to validate.
+
+## Kerberos ticket (TGT)
+
+Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.py`):
+
+- **When:** the login carries the user's password: NLA with a delegated password
+  (mstsc, xfreerdp `/p`, Windows "Allow delegating default credentials"), or a TLS
+  password login. Kerberos SSO without delegation, smartcard and web logins carry
+  none: no TGT (`kinit` in the session, or gssproxy impersonation for NFS homes,
+  `fastrdp_nfs_krb5_homes`).
+- **How:** after MFA and before the session starts, the broker (root) runs
+  `pam_authenticate` + `pam_setcred` for the user with PAM service **`fastrdp-tgt`**
+  (`/etc/pam.d/fastrdp-tgt`: `pam_sss` only, no `pam_faillock`, so a stale
+  delegated password cannot lock the account for fastrdp). sssd's `krb5_child`
+  switches to the user's uid and stores the TGT in the user's ccache (`KCM:`) and
+  registers it for renewal (`krb5_renew_interval`). The password passes only
+  through the PAM conversation, never argv, environment, files or logs. Then
+  `klist -s` runs with the user's uid/gid (no supplementary groups, `HOME=/`, cwd
+  `/`) to check that a valid TGT is really there (sssd authenticates offline from
+  its cache without a TGT).
+- **Reconnect:** runs on every login with a password, also when the running session
+  is reused, so a reconnect renews an expiring TGT for all processes of the uid.
+- **`[broker] session_tgt`** (`fastrdp_session_tgt`): `auto` (default) = failures
+  are logged (`no Kerberos TGT for the gnome session: …`), the login continues;
+  `required` = such failures refuse the login, and logins **without** a password are
+  refused early, before MFA (`login without a password, but [broker] session_tgt =
+  required`), for every back-end, also on the web path; `off` = never.
 
 ## Limitations and known issues
 
@@ -189,7 +230,7 @@ places them; not checked.
 
 | Test | What |
 |---|---|
-| `make test-broker` | port allocation/reservation (`BackendHelperTests` uses `GnomeBackend`), listener parsing, config defaults |
+| `make test-broker` | port allocation/reservation (`BackendHelperTests` uses `GnomeBackend`), listener parsing, config defaults; `--runtime` enable (`test_gaps.BackendTests.test_gnome_start`); TGT step before the start, on reconnect, never without a password, password only in the PAM conversation, `auto`/`required`/`off` (`test_session_tgt.py`) |
 | `make test-gpu` | `session_report.py` verdicts for GNOME with VA-API and NVENC (fake `/proc`) |
 | `tests/perf/compare-host.sh` | manual, on a deployed host |
 

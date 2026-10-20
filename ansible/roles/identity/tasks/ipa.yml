@@ -20,9 +20,126 @@
       set -eo pipefail
       echo "$JOIN_PW" | kinit "{{ fastrdp_join_user }}" >/dev/null
       ipa service-show "TERMSRV/{{ ansible_fqdn }}" >/dev/null 2>&1 || ipa service-add "TERMSRV/{{ ansible_fqdn }}"
-      ipa-getkeytab -p "TERMSRV/{{ ansible_fqdn }}" -k /etc/fastrdp/termsrv.keytab
+      ipa-getkeytab -p "TERMSRV/{{ ansible_fqdn }}" -k /etc/fastrdp/termsrv.keytab \
+        -e "{{ fastrdp_termsrv_enctypes | join(',') }}"
       kdestroy
     creates: /etc/fastrdp/termsrv.keytab
   environment:
     JOIN_PW: "{{ fastrdp_join_password }}"
   no_log: true
+
+# Short name and fastrdp_termsrv_aliases as principal aliases of TERMSRV/<fqdn>
+# (FreeIPA 4.6+, ipa service-add-principal). Aliases share the canonical keys, so the
+# keytab needs no new entries. Runs when the list changes; needs the join account then.
+- name: TERMSRV aliases wanted (FreeIPA principal names are case-insensitive)
+  ansible.builtin.set_fact:
+    fastrdp_ipa_termsrv_aliases: "{{ ['TERMSRV/' ~ ansible_hostname] + fastrdp_termsrv_spns[2:] }}"
+
+- name: Registered TERMSRV aliases
+  ansible.builtin.slurp:
+    src: /etc/fastrdp/.termsrv-aliases
+  register: fastrdp_ipa_alias_marker
+  failed_when: false
+
+- name: TERMSRV principal aliases (short name, fastrdp_termsrv_aliases)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -eo pipefail
+      dir=$(mktemp -d)
+      export KRB5CCNAME="FILE:$dir/cc"
+      trap 'kdestroy -q 2>/dev/null; rm -rf "$dir"' EXIT
+      echo "$JOIN_PW" | kinit "{{ fastrdp_join_user }}" >/dev/null
+      have=$(ipa service-show "TERMSRV/{{ ansible_fqdn }}" --raw \
+        | awk 'tolower($1) == "krbprincipalname:" {print tolower($2)}')
+      for alias in {{ fastrdp_ipa_termsrv_aliases | join(' ') }}; do
+        if ! grep -qixF "$alias@{{ fastrdp_realm }}" <<<"$have"; then
+          ipa service-add-principal "TERMSRV/{{ ansible_fqdn }}" "$alias"
+          echo "added $alias"
+        fi
+      done
+  environment:
+    JOIN_PW: "{{ fastrdp_join_password }}"
+  when:
+    - (fastrdp_ipa_alias_marker.content | default('') | b64decode) != fastrdp_ipa_termsrv_aliases | join(' ')
+    - fastrdp_join_password | length > 0   # later runs may have no join password: retried then
+  register: fastrdp_ipa_aliases
+  changed_when: "'added ' in fastrdp_ipa_aliases.stdout"
+  no_log: true
+
+- name: Remember registered TERMSRV aliases
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/.termsrv-aliases
+    content: "{{ fastrdp_ipa_termsrv_aliases | join(' ') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_ipa_aliases is not skipped
+
+# [mfa] nla_kdc_enforced (docs/passkeys.md): the broker skips privacyIDEA for Kerberos NLA
+# logins only because the KDC issues TERMSRV tickets to strongly pre-authenticated TGTs
+# alone. Set the indicators (join account), then verify them with the host keytab on
+# every run: a deployment whose KDC does not enforce them must not go ahead.
+- name: TERMSRV authentication indicators (KDC-enforced passkey/PKINIT)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -eo pipefail
+      dir=$(mktemp -d)
+      export KRB5CCNAME="FILE:$dir/cc"
+      trap 'kdestroy -q 2>/dev/null; rm -rf "$dir"' EXIT
+      echo "$JOIN_PW" | kinit "$JOIN_USER" >/dev/null
+      have=$(ipa service-show "TERMSRV/$FQDN" --raw \
+        | awk 'tolower($1) == "krbprincipalauthind:" {print tolower($2)}' | sort -u | xargs)
+      want=$(printf '%s\n' $WANT | sort -u | xargs)
+      if [ "$have" != "$want" ]; then
+        args=()
+        for ind in $want; do args+=("--auth-ind=$ind"); done
+        ipa service-mod "TERMSRV/$FQDN" "${args[@]}" >/dev/null
+        echo "set auth indicators: $want (were: ${have:-none})"
+      fi
+  environment:
+    JOIN_USER: "{{ fastrdp_join_user }}"
+    JOIN_PW: "{{ fastrdp_join_password }}"
+    FQDN: "{{ ansible_fqdn }}"
+    WANT: "{{ fastrdp_mfa_nla_kdc_auth_indicators | join(' ') }}"
+  when:
+    - fastrdp_mfa_nla_kdc_enforced | bool
+    - fastrdp_mfa_nla_kdc_set_auth_ind | bool
+    - fastrdp_join_password | length > 0   # later runs may have no join password: verified below
+  register: fastrdp_ipa_authind
+  changed_when: "'set auth indicators' in fastrdp_ipa_authind.stdout"
+  no_log: true
+
+- name: Read the TERMSRV authentication indicators (host keytab)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -eo pipefail
+      dir=$(mktemp -d)
+      export KRB5CCNAME="FILE:$dir/cc"
+      trap 'kdestroy -q 2>/dev/null; rm -rf "$dir"' EXIT
+      kinit -k -t /etc/krb5.keytab "host/$FQDN" >/dev/null
+      ipa service-show "TERMSRV/$FQDN" --raw | awk 'tolower($1) == "krbprincipalauthind:" {print tolower($2)}'
+  environment:
+    FQDN: "{{ ansible_fqdn }}"
+  when: fastrdp_mfa_nla_kdc_enforced | bool
+  register: fastrdp_ipa_authind_now
+  changed_when: false
+  check_mode: false   # read-only; the check below must also work with --check
+
+- name: The KDC enforces strong pre-authentication for TERMSRV
+  vars:
+    have: "{{ fastrdp_ipa_authind_now.stdout_lines }}"
+  ansible.builtin.assert:
+    that:
+      - have | length > 0
+      - have | difference(fastrdp_mfa_nla_kdc_auth_indicators) | length == 0
+    fail_msg: >-
+      fastrdp_mfa_nla_kdc_enforced is on, but TERMSRV/{{ ansible_fqdn }} has the authentication
+      indicators [{{ have | join(', ') }}]; needed: one or more of {{ fastrdp_mfa_nla_kdc_auth_indicators | join(', ') }}
+      and nothing else. Without them the broker would skip MFA for password-only Kerberos logins.
+      Fix: ipa service-mod TERMSRV/{{ ansible_fqdn }} {{ fastrdp_mfa_nla_kdc_auth_indicators | map('regex_replace', '^', '--auth-ind=') | join(' ') }}
+    success_msg: "TERMSRV/{{ ansible_fqdn }} authentication indicators: {{ have | join(', ') }}"
+    quiet: true
+  when: fastrdp_mfa_nla_kdc_enforced | bool

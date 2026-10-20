@@ -11,6 +11,19 @@ fastrdp_join_user: Administrator     # account used for the domain join
 fastrdp_join_password: "{{ vault_fastrdp_join_password | default('') }}"    # secret: vault.yml
 # Who may log in: members of these groups; [] = every user who can authenticate.
 fastrdp_allow_groups: []
+# Kerberos TGT for GNOME/Plasma sessions (broker [broker] session_tgt; xrdp sessions get
+# one through their own PAM stack): auto = when the login carries the password (NLA
+# with delegated password, TLS), failures only logged; required = also refuse logins
+# without a password (Kerberos SSO without delegation, smartcard, web), e.g. for
+# Kerberized NFS homes without gssproxy impersonation; off. docs/nfs-kerberos-homes.md
+fastrdp_session_tgt: auto
+
+# Other DNS names clients type for THIS host (DNS aliases), e.g. [rdp.example.com].
+# Each gets a TERMSRV/<alias> Kerberos principal (identity role; registering it needs
+# the join account) and goes into the self-signed front certificate (base role).
+# An alias belongs to one host: farms behind a shared name need a service account and
+# a distributed keytab instead (docs/windows-clients.md §3.2).
+fastrdp_termsrv_aliases: []
 
 # ---------------------------------------------------------------- front end
 fastrdp_listen_port: 3389
@@ -28,6 +41,18 @@ fastrdp_privacyidea_service_user: "" # admin with triggerchallenge right ("" = u
 fastrdp_privacyidea_service_password: "{{ vault_fastrdp_privacyidea_service_password | default('') }}"  # vault.yml
 fastrdp_mfa_exempt_groups: []
 fastrdp_otp_lengths: [6]
+# KDC-enforced strong authentication for NLA (broker [mfa] nla_kdc_enforced; docs/passkeys.md):
+# Kerberos NLA logins skip privacyIDEA because the KDC issues TERMSRV/<host> tickets only
+# to TGTs with one of fastrdp_mfa_nla_kdc_auth_indicators (passkey or smartcard
+# pre-authentication). FreeIPA: the identity role sets them on the TERMSRV service
+# (ipa service-mod --auth-ind, needs the join account) and checks them at every run;
+# password-only TGTs can then no longer use NLA (TLS + OTP/push still works). TLS and web
+# logins keep their MFA. AD has no authentication indicators: refused there unless
+# fastrdp_mfa_nla_kdc_enforced_by_ad_policy says an AD policy guarantees it (see the doc).
+fastrdp_mfa_nla_kdc_enforced: false
+fastrdp_mfa_nla_kdc_auth_indicators: [passkey, pkinit]   # FreeIPA; also otp, radius, idp; never hardened
+fastrdp_mfa_nla_kdc_set_auth_ind: true                    # FreeIPA: let the identity role set them
+fastrdp_mfa_nla_kdc_enforced_by_ad_policy: false          # AD: you guarantee it by policy (no check possible)
 
 # ---------------------------------------------------------------- web access
 # Browser path (Keycloak + Guacamole, role web_gateway). Read by the broker and proxy

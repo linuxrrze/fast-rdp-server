@@ -19,8 +19,8 @@ ldap_id_mapping = true
 use_fully_qualified_names = false
 fallback_homedir = /home/%u
 # Terminal-server sessions run for days: keep session TGTs renewed.
-krb5_renewable_lifetime = 7d
-krb5_renew_interval = 1h
+krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
+krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
 # Treat the RDP PAM services like Windows RDS ("Allow log on through Remote Desktop Services").
 ad_gpo_access_control = {{ fastrdp_ad_gpo_access_control }}
 ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session

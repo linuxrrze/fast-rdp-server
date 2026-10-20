@@ -10,13 +10,25 @@
       - fastrdp_desktop_groups.keys() | difference(fastrdp_desktops) | length == 0
       - fastrdp_identity_provider in ['ad', 'ipa', 'none']
       - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push']
+      - fastrdp_session_tgt in ['auto', 'off', 'required']
       - fastrdp_mfa_mode == 'none' or fastrdp_privacyidea_url | length > 0
       - fastrdp_backend_port_range | length == 2
       - fastrdp_backend_port_range[0] | int < fastrdp_backend_port_range[1] | int
       - fastrdp_xrdp_port | int != fastrdp_listen_port | int
+      - fastrdp_termsrv_aliases is sequence and fastrdp_termsrv_aliases is not string
+      - fastrdp_termsrv_aliases | reject('match', '^[A-Za-z0-9][A-Za-z0-9.-]*$') | list | length == 0
+      - not fastrdp_mfa_nla_kdc_enforced | bool
+        or (fastrdp_mfa_nla_kdc_auth_indicators | length > 0
+            and fastrdp_mfa_nla_kdc_auth_indicators | difference(['passkey', 'pkinit', 'otp', 'radius', 'idp']) | length == 0)
+      - not fastrdp_mfa_nla_kdc_enforced | bool or fastrdp_identity_provider != 'ad'
+        or fastrdp_mfa_nla_kdc_enforced_by_ad_policy | bool
     fail_msg: >-
       Check the site settings (docs/quickstart.md, roles/common/defaults/main.yml):
       fastrdp_realm and fastrdp_domain are required; fastrdp_default_desktop,
       fastrdp_group_desktops and fastrdp_desktop_groups may only name desktops from
-      fastrdp_desktops; MFA modes other than none need fastrdp_privacyidea_url.
+      fastrdp_desktops; MFA modes other than none need fastrdp_privacyidea_url;
+      fastrdp_session_tgt is auto, off or required;
+      fastrdp_termsrv_aliases are plain DNS names; fastrdp_mfa_nla_kdc_enforced needs
+      fastrdp_mfa_nla_kdc_auth_indicators from passkey, pkinit, otp, radius, idp (never
+      hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md).
     quiet: true

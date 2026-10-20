@@ -8,6 +8,11 @@ Everything below is one of three kinds of evidence:
 - **documented**: stated in Microsoft or RFC documents, with a link;
 - **inference**: reasoning that a Windows lab test still has to confirm (§6, §7).
 
+Follow-up fixes (2026-10-20, see §5): the broker takes the Kerberos principal as the
+identity (UPN ≠ sAMAccountName, §3.6); the identity role enforces and checks AES keys,
+registers the FreeIPA short name and optional alias SPNs (§3.2); the self-signed
+certificate names the short name and aliases (§3.7).
+
 ## 1. Short answer
 
 **Yes, with conditions.** A Windows 10/11 mstsc should be able to log in to fastrdp with
@@ -51,7 +56,7 @@ default on Windows 11 22H2+ Enterprise) Windows does not delegate the logon pass
 | Smartcard / PIV / YubiKey PIV (mstsc PKINIT) | works like the FreeRDP smartcard path; PIN is not forwarded | no / no | medium |
 | Windows Hello for Business, certificate trust | as smartcard | no / no | inference |
 | Ticket/session key RC4-HMAC only | **fails** (pubKeyAuth/MIC format) | – | verified with MIT, §3.4 |
-| User whose UPN prefix ≠ sAMAccountName, typed as UPN | **refused by broker** (principal/user mismatch, §3.6) | – | inference |
+| User whose UPN prefix ≠ sAMAccountName, typed as UPN | works: the principal's account is logged in (fixed, §3.6) | yes / no | high (code), lab pending |
 
 "Session TGT" means the X11 back-ends (xrdp, `pam_sss` through the one-time token) get a
 TGT when a password was delegated. GNOME and Plasma never do (see
@@ -113,20 +118,23 @@ safe). Still worth a robustness fix upstream (§5).
 - **AD** (`ansible/roles/identity/tasks/ad.yml:17-24`):
   - registers `TERMSRV/<ansible_fqdn>` and `TERMSRV/<SHORTNAME>` via `adcli update`;
   - `fastrdp-termsrv-keytab` copies all `TERMSRV/*` entries from `/etc/krb5.keytab`;
-  - `tests/smoke/check-host.sh:47` checks that some exist.
-  - **Gap:** nothing checks that *both* SPNs and AES keys of the current kvno are in the
-    keytab. Lab item: `klist -ke /etc/fastrdp/termsrv.keytab`.
-- **FreeIPA** (`ipa.yml`): only `TERMSRV/<fqdn>`. No short name. FreeIPA clients are not
-  Windows anyway.
+  - **Fixed:** the role checks that both SPNs (and the aliases) have an AES key at the
+    newest kvno (`fastrdp-termsrv-check`, `klist -ke`) and fails otherwise;
+    `tests/smoke/check-host.sh` runs the same check.
+- **FreeIPA** (`ipa.yml`): `TERMSRV/<fqdn>`, and (**fixed**) the short name plus
+  `fastrdp_termsrv_aliases` as principal aliases (`ipa service-add-principal`). Aliases
+  share the canonical keys, so the keytab only holds `TERMSRV/<fqdn>`.
 - **Key selection:**
   - The acceptor calls `krb5_rd_req(..., server=NULL, keytab)` (`kerberos.c:1639`), so MIT
     tries every keytab entry.
   - All SPNs of a computer account share the account's keys, so `TERMSRV/rdp1`,
     `TERMSRV/RDP1` and `TERMSRV/rdp1.lab.example.com` tickets all decrypt with any
     TERMSRV entry. SPN case does not matter.
-- **Enctypes:** fastrdp does not set `msDS-SupportedEncryptionTypes`. AES is mandatory
-  (§3.4): set the computer account to `0x18` (AES128+AES256), or `0x1C` if RC4 must remain
-  for other services, and make sure AES keys are in the keytab.
+- **Enctypes:** AES is mandatory (§3.4). **Fixed:** the role runs `adcli` with only
+  `fastrdp_termsrv_enctypes` permitted (default AES256+AES128), so adcli writes AES keys
+  and `msDS-SupportedEncryptionTypes` `0x18` (`0x1C` with `arcfour-hmac` in the list).
+  adcli never widens an existing value: an account set to RC4 only (`0x4`) must be
+  changed in AD first; the keytab check then fails with that hint.
 - **IP address:**
   - Windows asks for `TERMSRV/<ip>`, which does not exist, and falls back to NTLM.
   - The WinPR NTLM acceptor has no SAM/hash callback in the proxy, so NTLM fails at
@@ -142,7 +150,8 @@ safe). Still worth a robustness fix upstream (§5).
 - **Aliases / farms:** a shared name in front of several fastrdp hosts (DNS round robin,
   load balancer) needs one SPN `TERMSRV/<alias>`. An SPN can only belong to one account,
   so all hosts need the same keys: a dedicated service account plus a distributed keytab,
-  not the computer accounts. Not covered by the identity role (gap).
+  not the computer accounts. Not covered by the identity role (gap). DNS aliases of a
+  single host: `fastrdp_termsrv_aliases` (registered with the join account).
 - **Cross-domain users:** a user from a child domain gets a ticket whose client realm
   is the child realm. The broker refuses realms not in `[auth] realms`
   (`server.py:63-64`).
@@ -257,16 +266,17 @@ negoToken together with the server's pubKeyAuth.
 
 ### 3.6 User-name matching
 
-The broker requires `principal name == normalize(TSCredentials user)`
-(`server.py:61-66`, case-insensitive; `DOMAIN\user` and `user@x` are stripped).
+**Fixed (2026-10-20).** The broker used to require `principal name ==
+normalize(TSCredentials user)`. AD canonicalises the client name in tickets to the
+sAMAccountName, so a UPN whose prefix differs (`alice.smith@example.com`, sAMAccountName
+`asmith`) was refused.
 
-AD canonicalises the client name in tickets to the sAMAccountName. If a user types a
-UPN whose prefix differs (`alice.smith@example.com`, sAMAccountName `asmith`), the
-comparison fails and the login is refused (inference).
-
-Proposed: for NLA, treat the Kerberos principal as authoritative and accept a
-TSCredentials user that resolves (NSS/sssd) to the same account, or ignore the
-TSCredentials name when it is a UPN.
+Now the Kerberos principal is the identity for NLA (`identity.resolve_principal`): plain
+principals resolve like before, enterprise principals by their UPN (never by its local
+part), then `krb5_aname_to_localname()`. Realms outside `[auth] realms`, principals
+without an account, root and multi-component principals are refused. The TSCredentials
+user name is informational; when it resolves to a *different* account, the delegated
+password is dropped. Details: [auth-matrix.md](auth-matrix.md), Kerberos specifics.
 
 ### 3.7 Server certificate and TLS (Q5)
 
@@ -280,7 +290,8 @@ TSCredentials name when it is a UPN.
   TLS 1.3. Both are in OpenSSL 3's default list. Compatible (inference, high).
 - **Certificate** (`ansible/roles/base/tasks/main.yml:53-74`): either provided
   (`fastrdp_front_cert_src`), or a lab self-signed RSA-3072 certificate with
-  CN=SAN=`<fqdn>` and EKU serverAuth. Not covered: the short name, aliases, an internal CA.
+  CN=`<fqdn>`, EKU serverAuth and (**fixed**) SAN = FQDN, short name and
+  `fastrdp_termsrv_aliases`. Not covered: an internal CA (use `fastrdp_front_cert_src`).
 - **mstsc behaviour:** mstsc checks the name (as typed), the chain to a trusted root, EKU
   and revocation.
   - Expected (inference): when Kerberos mutual authentication succeeds, mstsc treats the
@@ -298,8 +309,11 @@ TSCredentials name when it is a UPN.
 
 ### 3.8 MFA with mstsc (Q6)
 
-- **Push** works without interaction on any NLA login; mstsc shows "Configuring remote
-  session…" while the broker waits (Timeout 120 s, `proxy.ini.j2`).
+- **Push** works without interaction on any NLA login. The broker call runs in the
+  proxy's PostConnect, i.e. after the front connection sequence has finished
+  (Font Map sent), so mstsc probably shows an empty session window rather than
+  "Configuring remote session…" while the broker waits (Timeout 120 s,
+  `proxy.ini.j2`; lab test S3 in [rdp-spec-conformance.md](rdp-spec-conformance.md)).
 - **OTP appended to the password does not work with NLA at all, not even when typed.**
   - With CredSSP+Kerberos the client uses the typed string as the Kerberos password for
     its AS-REQ. A password with an OTP suffix makes the KDC fail pre-authentication (and
@@ -371,11 +385,12 @@ mstsc Kerberos.
 
 **AD / server:**
 - SPNs: `TERMSRV/<fqdn>` and `TERMSRV/<SHORT>` on the computer account (identity role).
-  Add `TERMSRV/<alias>` for every other name users type, on one account only.
-- Keys: AES. Set `msDS-SupportedEncryptionTypes` = `0x18` on the computer account and
-  re-extract (`adcli update`, then `/usr/local/sbin/fastrdp-termsrv-keytab`). Check that
-  `klist -ke /etc/fastrdp/termsrv.keytab` shows aes256/aes128 for both SPNs and the
-  current kvno.
+  Every other name users type for this host: `fastrdp_termsrv_aliases` (on one account
+  only).
+- Keys: AES (`fastrdp_termsrv_enctypes`; the role sets `msDS-SupportedEncryptionTypes`
+  through adcli and re-keys once if needed). `fastrdp-termsrv-check TERMSRV/<fqdn>
+  TERMSRV/<SHORT>` (or `klist -ke /etc/fastrdp/termsrv.keytab`) must show aes256/aes128
+  at the current kvno.
 - Front certificate from the internal CA with SAN FQDN + short name (+ aliases).
 - *Allow log on through Remote Desktop Services* for the RDP users, then
   `fastrdp_ad_gpo_access_control: enforcing`.
@@ -402,8 +417,9 @@ use redirection server name:i:0
 prompt for credentials:i:0
 ```
 `prompt for credentials:i:1` forces the fresh-credentials prompt, which delegates a
-password (useful with Credential Guard). Non-joined clients should use the UPN or
-`LAB.EXAMPLE.COM\alice`, not `LAB\alice`.
+password (useful with Credential Guard). Clients should use the UPN (also
+`marcel.ritter@corp.example.com` for account `mritter`) or `LAB.EXAMPLE.COM\alice`;
+non-joined clients not `LAB\alice`.
 
 ## 5. Bugs and gaps (summary)
 
@@ -412,12 +428,12 @@ password (useful with Credential Guard). Non-joined clients should use the UPN o
 | 1 | WinPR negotiate acceptor: second mechListMIC (§3.3) | bug (upstream FreeRDP) | Appendix A patch; if lab L3 shows mstsc affected, carry it in `patches/freerdp/` and report upstream |
 | 2 | WinPR Kerberos acceptor rejects MS-KRB5 framing OID, Negotiate then silently picks NTLM (§3.1) | robustness (upstream) | accept `1.2.840.48018.1.2.2` in `kerberos_AcceptSecurityContext()` like MIT does; echo it in the AP-REP |
 | 3 | No RC4 (RFC 4757) Wrap/MIC (§3.4) | limitation (upstream) | document AES requirement (done here); optionally fail early with a clear log message when the session key is RC4 |
-| 4 | NTLM is offered by the acceptor although the module always refuses it | UX | optionally disable NTLM in the server's Negotiate (`AuthenticationPackageList` / WinPR `Negotiate` registry key `ntlm=0`) so failures are immediate and logged as "no Kerberos" |
-| 5 | Identity role: no AES enctype setting/check, no alias SPNs, FreeIPA without short name | gap | add `fastrdp_termsrv_aliases`, set/check `msDS-SupportedEncryptionTypes`, extend `check-host.sh` to check both SPNs with AES keys |
-| 6 | Base role: self-signed cert covers only the FQDN | gap | add the short name/aliases to the SAN; document the internal-CA path |
-| 7 | Broker principal/user match fails for UPN ≠ sAMAccountName (§3.6) | probable bug | treat the principal as authoritative for NLA |
+| 4 | NTLM is offered by the acceptor although the module always refuses it | UX | **open, documented.** No configuration-only fix: `proxy.ini` has no package option. The server's Negotiate honours `AuthenticationPackageList=!ntlm` only when its auth data is set, i.e. with `KerberosKeytab` (or an NTLM SAM file/hash callback) in the front settings (`credssp_auth_setup_server()`), while fastrdp passes the keytab as `KRB5_KTNAME`. A module hook (`ServerSessionInitialize`) setting both is possible without FreeRDP changes, but it changes the acceptor's keytab handling and needs the e2e suites. The WinPR registry key `ntlm=0` is process-wide and would also break the proxy's NTLM hop to GNOME/Plasma |
+| 5 | Identity role: no AES enctype setting/check, no alias SPNs, FreeIPA without short name | gap | **fixed:** `fastrdp_termsrv_enctypes`, `fastrdp_termsrv_aliases`, FreeIPA short-name alias, `fastrdp-termsrv-check` in the role and in `check-host.sh` |
+| 6 | Base role: self-signed cert covers only the FQDN | gap | **fixed:** SAN = FQDN, short name, aliases; internal CA via `fastrdp_front_cert_src` |
+| 7 | Broker principal/user match fails for UPN ≠ sAMAccountName (§3.6) | probable bug | **fixed:** the principal is authoritative for NLA |
 | 8 | No KDC proxy offering (§3.10) | gap | optional `kdcproxy` role |
-| 9 | auth-matrix.md / client-guide.md: SSO row lacks Credential Guard/Restricted Admin; `LAB\alice` advice for non-joined clients | docs | update after the lab confirms |
+| 9 | auth-matrix.md / client-guide.md: SSO row lacks Credential Guard/Restricted Admin; `LAB\alice` advice for non-joined clients | docs | **done** (UPN and FQDN recommended); revisit after the lab |
 
 ## 6. What only a Windows lab can settle
 

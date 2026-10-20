@@ -32,7 +32,7 @@ sequenceDiagram
     C->>P: TLS + NLA (Kerberos) or TLS + password[+OTP] / web token
     Note over P: ServerPeerLogon: NLA must be Kerberos,<br/>principal read via SECPKG_ATTR_AUTH_IDENTITY
     P->>B: {"op":"login", method, user, principal, password, desktop_hint, width, height, client_address}
-    Note over B: PAM account (service "fastrdp"), allow_groups,<br/>MFA (privacyIDEA) unless exempt / web token,<br/>desktop choice → backend.ensure()
+    Note over B: PAM account (service "fastrdp"), allow_groups,<br/>MFA (privacyIDEA) unless exempt / web token,<br/>desktop choice, TGT (GNOME/Plasma, PAM "fastrdp-tgt")<br/>→ backend.ensure()
     B->>X: xrdp: write /run/fastrdp/desktop/<user>, issue token<br/>gnome: grdctl + start gnome-headless-session@<user><br/>plasma: env file + restart fastrdp-plasma@<user>
     B-->>P: target {host 127.0.0.1, port, username, password, security tls|nla}
     Note over P: ClientPreConnect: swap credentials,<br/>drop client alternate shell
@@ -58,6 +58,12 @@ client ──RDP :3389──▶ freerdp-proxy + fastrdp module ──JSON──�
 
 Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy module):
 
+- **Identity (NLA):** the account of the Kerberos principal (`identity.resolve_principal`),
+  never the typed CredSSP user name, so UPNs that differ from the account name and
+  `DOMAIN\user` work ([auth-matrix.md](../auth-matrix.md), Kerberos specifics). The
+  host's TERMSRV names and keys come from the `identity` role: `fastrdp_termsrv_aliases`
+  (role `common`, default `[]`) and `fastrdp_termsrv_enctypes` (default AES256 +
+  AES128; the role fails without AES keys).
 - **Desktop choice:** client hint `fastrdp:<desktop>` in the alternate-shell field,
   then `~/.config/fastrdp/desktop`, then `[defaults.groups]`, then `[defaults] desktop`
   (`identity.choose_desktop`). A hint for a desktop the user may not use is ignored
@@ -66,6 +72,17 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
   (default 3, `0` = never); an unreadable or hanging home (NFS with `sec=krb5*`,
   server down) means "no preference" ([nfs-kerberos-homes.md](../nfs-kerberos-homes.md)). The web chooser offers only the
   desktops the user may use and refuses others ([web.md](web.md)).
+- **Kerberos TGT** (`[broker] session_tgt`, Ansible `fastrdp_session_tgt`, role
+  `common`, default `auto`): for GNOME and Plasma the broker obtains the user's TGT
+  through PAM service `fastrdp-tgt` before the session starts, on every login that
+  carries the password (also reconnects); xrdp gets it through its own PAM stack.
+  `auto` logs failures, `required` refuses failed TGT requests and logins without a
+  password (before MFA), `off` disables it. See [gnome.md](gnome.md#kerberos-ticket-tgt)
+  and [nfs-kerberos-homes.md](../nfs-kerberos-homes.md).
+- **Ticket renewal** (role `identity`): `fastrdp_krb5_renewable_lifetime` (`7d`),
+  `fastrdp_krb5_renew_interval` (`1h`), `fastrdp_kcm_tgt_renewal` (`true`, sssd-kcm
+  renews every TGT in KCM, also from `kinit`), in `/etc/sssd/conf.d/50-fastrdp.conf`,
+  `sssd.conf` (AD) and `krb5.conf` (`renew_lifetime`).
 - **Restricting desktops:** `fastrdp_desktop_groups` (e.g. `{plasma: [rdp-kde]}`)
   renders `groups = [...]` per desktop into `broker.toml`; desktops not listed are open
   to every allowed user. `fastrdp_desktop_labels` sets the names shown in the web
@@ -110,7 +127,7 @@ it does not mean the back-end implements it.
 | Clipboard | xrdp `cliprdr` + chansrv | text only, via `clipboard-bridge` (verified on Xvfb) | g-r-d upstream, not tested here | KRdp upstream, not tested here | Guacamole capabilities |
 | Audio | proxy passes; needs a PulseAudio/PipeWire xrdp module that **no role installs** (unknown) | as xrdp | not tested here | not tested here | Guacamole capabilities |
 | Drive redirection | xrdp `rdpdr` + FUSE (`thinclient_drives`) | as xrdp | not tested here | not tested here | Guacamole capabilities |
-| Kerberos TGT in session | yes if the proxy learned the password (token module hands it to `pam_sss`) | as xrdp | **no** (password never reaches the back-end) | **no** | no |
+| Kerberos TGT in session | yes if the proxy learned the password (token module hands it to `pam_sss`) | as xrdp | yes if the proxy learned the password: the broker gets it through PAM `fastrdp-tgt` before the start (`fastrdp_session_tgt`) | as GNOME | no |
 | Maturity | to validate (build, configs, token PAM, proxy e2e verified) | launcher verified on Xvfb; full xrdp session to validate | to validate | to validate; headless KRdp is **unofficial** | unit tests + proxy e2e for the token path; real deployment to validate |
 | Main limits | x264 on the CPU without a working GPU encoder; encoder runs in the shared `xrdp` daemon | Sway `$mod` key, text-only clipboard, keymap fixed at start | no H.264 without a GPU; GDM PAM/GPO mapping unknown | NVIDIA → CPU x264; fixed size; one Plasma session per user | low frame rate, no TGT |
 
@@ -119,7 +136,7 @@ it does not mean the back-end implements it.
 | Situation | Use | Why |
 |---|---|---|
 | Default for most users, many sessions per host | xrdp with `xfce` or `mate` | Lightest desktops; the most tested handoff (token PAM, proxy e2e); xrdp handles reconnects itself |
-| Sessions need a Kerberos ticket (NFS `sec=krb5` homes, SSO to web apps) | xrdp or wlroots | Only the xrdp token path hands the user's password to `pam_sss`. GNOME/Plasma/web sessions need `kinit` |
+| Sessions need a Kerberos ticket (NFS `sec=krb5` homes, SSO to web apps) | any RDP back-end, with logins that carry the password (NLA with delegated password, TLS) | xrdp gets the TGT through its PAM stack, GNOME/Plasma from the broker (`fastrdp_session_tgt`). SSO without delegation, smartcard and web logins get none: gssproxy impersonation (`fastrdp_nfs_krb5_homes`) or `kinit`. `fastrdp_session_tgt: required` refuses logins without a password |
 | Users want GNOME | `gnome` | Only route to GNOME 50+ (Wayland-only). Needs a GPU with VA-API (Intel/AMD) or NVENC (NVIDIA) for H.264; without one, g-r-d sends RFX progressive at much higher bandwidth |
 | Users want KDE on Intel/AMD | `plasma` | VA-API encoding; but headless KRdp is unofficial, validate first |
 | Users want KDE on NVIDIA, or Plasma Wayland fails validation | `plasma-x11` (xrdp) | KPipeWire never uses NVENC, so `plasma` encodes with libx264 on the CPU there |
@@ -154,7 +171,8 @@ Broker log lines to look for (`journalctl -u fastrdp-brokerd`):
 | Message | Meaning |
 |---|---|
 | `login USER session=… desktop=D -> 127.0.0.1:PORT (tls\|nla)` | routed |
-| `denied: …` | account, group, realm, MFA or desktop refusal; the client sees only "access denied" |
+| `denied: …` | account, group, realm, MFA or desktop refusal, or `session_tgt = required` without a TGT; the client sees only "access denied" |
+| `USER: no Kerberos TGT for the gnome\|plasma session …` | `session_tgt = auto`: the TGT request failed (sssd offline, wrong delegated password, local account); the session starts without one |
 | `backend error: …` | the back-end driver failed; the client sees "session could not be started" |
 | `op 'login' not permitted for uid N` | something other than the proxy uid used `broker.sock` |
 

@@ -11,6 +11,9 @@
  *   - picture quality (Y PSNR) incl. a size that is not macroblock aligned
  *   - partial updates: only damaged rectangles change
  *   - an unavailable hardware encoder fails cleanly
+ *   - MS-RDPEGFX 2.2.4.4 / MF decoder limits: no B-frames, no IDR inside the GOP,
+ *     Baseline/Main profile, full-range BT.709 VUI (3.3.8.3.1), full-range black
+ *   - lost output (buffer too small) is followed by SPS + IDR
  * Build/run: see run_test.sh. The encoder name comes from argv[1] (default libx264).
  */
 #if defined(HAVE_CONFIG_H)
@@ -114,6 +117,7 @@ int main(int argc, char **argv)
     char *out = malloc(4 << 20);
     short full[4] = { 0, 0, W, H };
     int decoded = 0, frames = 30, flags = 0, idr_first = 0, sps_first = 0;
+    int b_frames = 0, idr_later = 0;
     double min_psnr = 99;
 
     for (int t = 0; t < frames; t++)
@@ -129,9 +133,13 @@ int main(int argc, char **argv)
             sps_first = has_nal((unsigned char *)out, n, 7);
             idr_first = has_nal((unsigned char *)out, n, 5);
         }
+        else if (has_nal((unsigned char *)out, n, 5))
+            idr_later++;
         if (decode(&d, (unsigned char *)out, n) == 0)
         {
             decoded++;
+            if (d.frm->pict_type == AV_PICTURE_TYPE_B)
+                b_frames++;
             double p = psnr_y(src, W, d.frm->data[0], d.frm->linesize[0], 0, 0, W, H);
             if (p < min_psnr) min_psnr = p;
         }
@@ -142,6 +150,17 @@ int main(int argc, char **argv)
     CHECK(d.frm->width >= W && d.frm->height >= H && d.frm->width <= W + 15,
           "coded size %dx%d covers %dx%d", d.frm->width, d.frm->height, W, H);
     CHECK(min_psnr > 30.0, "luma PSNR >= 30 dB (min %.1f dB)", min_psnr);
+    CHECK(b_frames == 0 && idr_later == 0, "no B-frames (%d), no IDR inside the GOP (%d)",
+          b_frames, idr_later);
+    /* Baseline (66), Constrained Baseline (66|512) or Main (77): what the patch asks for
+     * (profile=main; x264 ultrafast signals Constrained Baseline) and what every RDP
+     * client decoder accepts. High (100) would also work with mstsc, but is not intended. */
+    const int prof = d.ctx->profile & ~AV_PROFILE_H264_CONSTRAINED;
+    CHECK(prof == AV_PROFILE_H264_BASELINE || prof == AV_PROFILE_H264_MAIN,
+          "profile_idc %d is Baseline or Main, level_idc %d", prof, d.ctx->level);
+    CHECK(d.frm->color_range == AVCOL_RANGE_JPEG && d.frm->colorspace == AVCOL_SPC_BT709,
+          "VUI signals full-range BT.709 like the xorgxrdp input (range %d, matrix %d)",
+          (int)d.frm->color_range, (int)d.frm->colorspace);
 
     /* partial update: only a 64x64 rect at (640,320) changes */
     memcpy(src + 0, src, 0);
@@ -176,6 +195,42 @@ int main(int argc, char **argv)
     rv = xrdp_encoder_ffmpeg_encode(h, 0, 0, 0, W2, H2, W2, H2, 0, (char *)src, full2, 1,
                                     out, &small, 0, &flags);
     CHECK(rv == 4, "too small output buffer reported (rv=%d)", rv);
+
+    /* the client never got that frame: the next one must restart the reference chain */
+    make_frame(src, W2, H2, 101);
+    n = 4 << 20;
+    rv = xrdp_encoder_ffmpeg_encode(h, 0, 0, 0, W2, H2, W2, H2, 0, (char *)src, full2, 1,
+                                    out, &n, 0, &flags);
+    CHECK(rv == 0 && flags == 0 && has_nal((unsigned char *)out, n, 7) &&
+              has_nal((unsigned char *)out, n, 5),
+          "frame after a lost output carries SPS+IDR (rv=%d flags=%d)", rv, flags);
+    CHECK(decode(&d, (unsigned char *)out, n) == 0, "and decodes");
+    n = 4 << 20;
+    make_frame(src, W2, H2, 102);
+    rv = xrdp_encoder_ffmpeg_encode(h, 0, 0, 0, W2, H2, W2, H2, 0, (char *)src, full2, 1,
+                                    out, &n, 0, &flags);
+    CHECK(rv == 0 && !has_nal((unsigned char *)out, n, 5), "then P-frames again");
+
+    /* new encoder, only a small rect damaged: the rest is the encoder's initial
+     * frame, which must be black in the full-range signal (Y=0), not Y=16 grey */
+    const int W3 = 640, H3 = 480;
+    memset(src, 0, (size_t)W3 * H3 * 3 / 2);
+    for (int y = 0; y < 64; y++)
+        memset(src + y * W3, 200, 64);
+    memset(src + W3 * H3, 128, (size_t)W3 * H3 / 2);
+    short small_rect[4] = { 0, 0, 64, 64 };
+    n = 4 << 20;
+    rv = xrdp_encoder_ffmpeg_encode(h, 0, 0, 0, W3, H3, W3, H3, 0, (char *)src, small_rect, 1,
+                                    out, &n, 0, &flags);
+    avcodec_flush_buffers(d.ctx);
+    got = rv == 0 && decode(&d, (unsigned char *)out, n) == 0;
+    double ysum = 0;
+    for (int y = 200; got && y < 400; y++)
+        for (int x = 200; x < 600; x++)
+            ysum += d.frm->data[0][y * d.frm->linesize[0] + x];
+    CHECK(got && ysum / (200.0 * 400.0) < 4.0,
+          "undamaged area of a new encoder decodes as full-range black (mean Y %.1f)",
+          got ? ysum / (200.0 * 400.0) : -1.0);
 
     xrdp_encoder_ffmpeg_delete(h);
     log_end();

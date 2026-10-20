@@ -8,7 +8,7 @@ a signed APT repository on GitHub Pages.
 
 | Source package | Binary package | Contents |
 |---|---|---|
-| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/fastrdp/`, example `broker.toml`; group `_fastrdp-broker` |
+| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, example `broker.toml`; group `_fastrdp-broker` |
 | | `fastrdp-proxy-module` | `/opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so`, `fastrdp-proxy.service` (runs `/opt/fastrdp/bin/freerdp-proxy`); user `_fastrdp-proxy` |
 | | `libpam-fastrdp-token` | `/usr/lib/<triplet>/security/pam_fastrdp_token.so` |
 | | `fastrdp-session` | `/usr/libexec/fastrdp/*` (startwm.sh, session-plasma, kwin-wayland-launch, wlroots-in-x, clipboard-bridge), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in in `/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf`, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, and the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman` |

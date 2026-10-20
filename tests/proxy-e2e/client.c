@@ -5,9 +5,13 @@
  * Default: TLS security, credentials in the Client Info PDU.
  * E2E_NLA=1: NLA with Kerberos only (E2E_DOMAIN = realm), credentials via CredSSP.
  * E2E_PKCS11=/path/module.so (with E2E_NLA=1): smartcard logon, PKINIT through the
- *   PKCS#11 token; PASSWORD is the PIN. */
+ *   PKCS#11 token; PASSWORD is the PIN.
+ * E2E_RAIL=1: request RemoteApp (INFO_RAIL). E2E_SC_PIN=1: flag the password as a smartcard
+ *   PIN (INFO_PASSWORD_IS_SC_PIN). E2E_WORKDIR: Client Info WorkingDir.
+ * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."). */
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,8 +27,19 @@ int main(int argc, char** argv)
 	freerdp_settings_set_string(s, FreeRDP_Password, argv[4]);
 	freerdp_settings_set_string(s, FreeRDP_AlternateShell, argv[5]);
 	freerdp_settings_set_bool(s, FreeRDP_AutoLogonEnabled, TRUE);
+	/* RNS_UD_CS_SUPPORT_ERRINFO_PDU like mstsc; the library default for clients is off */
+	freerdp_settings_set_bool(s, FreeRDP_SupportErrorInfoPdu, TRUE);
 	if (getenv("E2E_CLIENT_ADDRESS")) /* claimed address in the Client Info PDU */
 		freerdp_settings_set_string(s, FreeRDP_ClientAddress, getenv("E2E_CLIENT_ADDRESS"));
+	if (getenv("E2E_RAIL"))
+	{
+		freerdp_settings_set_bool(s, FreeRDP_RemoteApplicationMode, TRUE);
+		freerdp_settings_set_string(s, FreeRDP_RemoteApplicationProgram, "||notepad");
+	}
+	if (getenv("E2E_SC_PIN"))
+		freerdp_settings_set_bool(s, FreeRDP_PasswordIsSmartcardPin, TRUE);
+	if (getenv("E2E_WORKDIR"))
+		freerdp_settings_set_string(s, FreeRDP_ShellWorkingDirectory, getenv("E2E_WORKDIR"));
 	const BOOL nla = getenv("E2E_NLA") && strcmp(getenv("E2E_NLA"), "1") == 0;
 	freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, nla);
 	freerdp_settings_set_bool(s, FreeRDP_RdpSecurity, FALSE);
@@ -60,6 +75,7 @@ int main(int argc, char** argv)
 			break;
 		}
 	}
+	printf("client: errinfo=0x%08" PRIX32 "\n", freerdp_error_info(inst));
 	freerdp_disconnect(inst);
 	freerdp_context_free(inst);
 	freerdp_free(inst);

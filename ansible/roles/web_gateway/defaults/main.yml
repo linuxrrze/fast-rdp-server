@@ -8,7 +8,9 @@ fastrdp_web_oidc_ca_src: ""
 fastrdp_web_username_claim: preferred_username
 # user@<domain> claims are accepted only for these domains; anything else is refused
 fastrdp_web_strip_domains: ["{{ fastrdp_domain | lower }}"]
-# MFA proof required from the IdP (see docs/web-access.md)
+# MFA proof required from the IdP (see docs/web-access.md; passkeys: docs/passkeys.md).
+# required_amr_any: any one listed value proves MFA, e.g. [otp, hwk, swk, mfa]; the
+# webgate refuses single-factor values (pwd, kba, pin, user, wia, rba, geo).
 fastrdp_web_required_acr: [mfa]
 fastrdp_web_required_amr_any: []
 fastrdp_web_desktops: "{{ fastrdp_desktops }}"
@@ -19,3 +21,41 @@ fastrdp_guacd_image: "docker.io/guacamole/guacd:{{ fastrdp_guacamole_version }}"
 fastrdp_web_rdp_parameters:
   enable-font-smoothing: "true"
   color-depth: "32"
+
+# ---------------------------------------------------------------- passkeys (Keycloak)
+# Opt-in: configure Keycloak for passkeys on the web path (docs/passkeys.md, recipe A)
+# through its admin REST API, from the controller (tasks/keycloak_passkeys.yml). false =
+# Keycloak is never contacted. true sets, idempotently and without touching anything else:
+# the realm's WebAuthn passwordless policy (UV + discoverable credential required,
+# passkeys enabled), flow fastrdp_keycloak_mfa_flow WITHOUT a Cookie step, a client
+# profile + policy (acr-condition -> auth-flow-enforcer, merged into the existing
+# lists) and the client's ACR-to-LoA map. Run alone: site.yml --tags keycloak.
+fastrdp_web_passkeys: false
+# Keycloak base URL (no /realms/...) and realm; default: taken from the OIDC issuer.
+fastrdp_keycloak_admin_url: "{{ fastrdp_web_oidc_issuer | regex_replace('/realms/[^/]+/?$', '') }}"
+fastrdp_keycloak_realm: "{{ fastrdp_web_oidc_issuer | regex_replace('^.*/realms/([^/]+)/?$', '\\1') }}"
+fastrdp_keycloak_client_id: "{{ fastrdp_web_oidc_client_id }}"
+# Admin credentials. Preferred: a confidential client in fastrdp_keycloak_admin_realm with
+# a service account holding realm-management roles manage-realm + manage-clients
+# (client_credentials grant). Otherwise an admin user (password grant via admin-cli).
+fastrdp_keycloak_admin_realm: master
+fastrdp_keycloak_admin_client_id: admin-cli
+fastrdp_keycloak_admin_client_secret: "{{ vault_fastrdp_keycloak_admin_client_secret | default('') }}"   # vault.yml
+fastrdp_keycloak_admin_user: ""
+fastrdp_keycloak_admin_password: "{{ vault_fastrdp_keycloak_admin_password | default('') }}"            # vault.yml
+fastrdp_keycloak_ca_src: "{{ fastrdp_web_oidc_ca_src }}"   # PEM on the controller; "" = system trust store
+# The forced flow and the level it proves. The acr value must be in fastrdp_web_required_acr.
+fastrdp_keycloak_mfa_flow: fastrdp-mfa
+fastrdp_keycloak_mfa_acr: mfa
+fastrdp_keycloak_mfa_loa: 2
+# Second factor after a password (ALTERNATIVEs): Keycloak authenticator ids, e.g. add the
+# privacyIDEA provider's id. Never auth-cookie or conditional-user-configured.
+fastrdp_keycloak_second_factors: [auth-otp-form, webauthn-authenticator]
+fastrdp_web_passkeys_mediation: conditional   # conditional (autofill) | optional | required | silent | none
+# Hardware-only passkeys: attestation "direct" and only these AAGUIDs (e.g. the YubiKey
+# models in use; FIDO MDS or Yubico's list). Software/synced passkeys (iCloud, Google,
+# Bitwarden, KeePassXC) are then refused at registration. Also import the vendors'
+# attestation roots into Keycloak's truststore (server option truststore-paths), and
+# delete passkeys registered earlier: the list is only checked at registration.
+fastrdp_web_passkeys_hardware_only: false
+fastrdp_web_passkeys_aaguids: []

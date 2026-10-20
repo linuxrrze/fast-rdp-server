@@ -1,0 +1,20 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+#
+# Applies the web_gateway role's Keycloak passkey tasks (exactly as site.yml would with
+# fastrdp_web_passkeys: true) to the throwaway Keycloak of tests/keycloak/run.sh.
+#   ansible-playbook -i localhost, -c local tests/keycloak/apply.yml -e @vars.json
+- name: Keycloak passkey configuration (test)
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    # roles/common checks these; the Keycloak tasks do not use them
+    fastrdp_realm: EXAMPLE.TEST
+    fastrdp_domain: example.test
+  tasks:
+    - name: Keycloak tasks of the web_gateway role
+      ansible.builtin.include_role:
+        name: web_gateway
+        tasks_from: keycloak_passkeys

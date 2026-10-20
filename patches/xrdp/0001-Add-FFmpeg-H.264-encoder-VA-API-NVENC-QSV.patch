@@ -1,4 +1,4 @@
-From bafd4545a02aba8b93f40ca167249906d32a9922 Mon Sep 17 00:00:00 2001
+From 04108540aabf8acaff1054b12ab480854a39805f Mon Sep 17 00:00:00 2001
 From: Marcel Ritter <marcel@linux-ng.de>
 Date: Mon, 19 Oct 2026 19:28:16 +0200
 Subject: [PATCH] Add FFmpeg H.264 encoder (VA-API, NVENC, QSV)
@@ -15,6 +15,11 @@ already produces for the x264 module.
 - start-up probe: an unusable hardware encoder (no GPU, driver or
   library) is detected once and replaced by the fallback (default
   libx264) instead of failing on every frame
+- after lost output (send/receive error, output buffer too small) the
+  next frame is forced to an IDR (forced-idr for NVENC/QSV/x264):
+  MS-RDPEGFX has no picture-loss feedback
+- VUI signals full-range BT.709, matching the XRDP_nv12_709fr input
+  (MS-RDPEGFX 3.3.8.3.1); the initial frame is full-range black
 - built with --enable-ffmpeg (libavcodec >= 60, libavutil >= 58)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -23,11 +28,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  xrdp/Makefile.am           |   7 +
  xrdp/xrdp.h                |   2 +-
  xrdp/xrdp_encoder.c        |  27 +-
- xrdp/xrdp_encoder_ffmpeg.c | 516 +++++++++++++++++++++++++++++++++++++
+ xrdp/xrdp_encoder_ffmpeg.c | 529 +++++++++++++++++++++++++++++++++++++
  xrdp/xrdp_encoder_ffmpeg.h |  36 +++
- xrdp/xrdp_tconfig.c        | 116 +++++++++
+ xrdp/xrdp_tconfig.c        | 116 ++++++++
  xrdp/xrdp_tconfig.h        |  26 +-
- 8 files changed, 731 insertions(+), 7 deletions(-)
+ 8 files changed, 744 insertions(+), 7 deletions(-)
  create mode 100644 xrdp/xrdp_encoder_ffmpeg.c
  create mode 100644 xrdp/xrdp_encoder_ffmpeg.h
 
@@ -177,10 +182,10 @@ index 9178647..2de7d2a 100644
      int codec_id;
 diff --git a/xrdp/xrdp_encoder_ffmpeg.c b/xrdp/xrdp_encoder_ffmpeg.c
 new file mode 100644
-index 0000000..2ac73a1
+index 0000000..316d967
 --- /dev/null
 +++ b/xrdp/xrdp_encoder_ffmpeg.c
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,529 @@
 +/**
 + * xrdp: A Remote Desktop Protocol server.
 + *
@@ -233,6 +238,7 @@ index 0000000..2ac73a1
 +    int width;              /* requested size */
 +    int height;
 +    int64_t pts;
++    int force_idr;          /* output was lost: the next frame must be an IDR */
 +};
 +
 +struct ffmpeg_global
@@ -252,9 +258,9 @@ index 0000000..2ac73a1
 +} g_defaults[] =
 +{
 +    { "h264_vaapi", "async_depth=1:profile=main" },
-+    { "h264_nvenc", "preset=p1:tune=ull:zerolatency=1:delay=0:profile=main" },
-+    { "h264_qsv", "async_depth=1:preset=veryfast:look_ahead=0:profile=main" },
-+    { "libx264", "preset=ultrafast:tune=zerolatency:profile=main" },
++    { "h264_nvenc", "preset=p1:tune=ull:zerolatency=1:delay=0:profile=main:forced-idr=1" },
++    { "h264_qsv", "async_depth=1:preset=veryfast:look_ahead=0:profile=main:forced_idr=1" },
++    { "libx264", "preset=ultrafast:tune=zerolatency:profile=main:forced-idr=1" },
 +};
 +
 +/*****************************************************************************/
@@ -275,6 +281,7 @@ index 0000000..2ac73a1
 +    av_frame_free(&fe->sw);
 +    av_packet_free(&fe->pkt);
 +    fe->pts = 0;
++    fe->force_idr = 0;
 +}
 +
 +/*****************************************************************************/
@@ -341,8 +348,12 @@ index 0000000..2ac73a1
 +    fe->ctx->gop_size = p->gop;
 +    fe->ctx->max_b_frames = 0;
 +    fe->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-+    fe->ctx->color_range = AVCOL_RANGE_MPEG;
++    /* xorgxrdp delivers full-range BT.709 NV12 (XRDP_nv12_709fr), the colour
++     * conversion MS-RDPEGFX 3.3.8.3.1 prescribes; say so in the VUI */
++    fe->ctx->color_range = AVCOL_RANGE_JPEG;
 +    fe->ctx->colorspace = AVCOL_SPC_BT709;
++    fe->ctx->color_primaries = AVCOL_PRI_BT709;
++    fe->ctx->color_trc = AVCOL_TRC_BT709;
 +    if (p->bitrate > 0)
 +    {
 +        fe->ctx->bit_rate = (int64_t)p->bitrate * 1000;
@@ -419,10 +430,10 @@ index 0000000..2ac73a1
 +        ffmpeg_log_error("av_frame_get_buffer", err);
 +        return 2;
 +    }
-+    /* black: Y=16, UV=128 (limited range) */
++    /* black: Y=0, UV=128 (full range) */
 +    for (int y = 0; y < fe->sw->height; y++)
 +    {
-+        g_memset(fe->sw->data[0] + y * fe->sw->linesize[0], 16, fe->sw->width);
++        g_memset(fe->sw->data[0] + y * fe->sw->linesize[0], 0, fe->sw->width);
 +    }
 +    for (int y = 0; y < fe->sw->height / 2; y++)
 +    {
@@ -678,18 +689,25 @@ index 0000000..2ac73a1
 +            in = hw;
 +        }
 +        in->pts = fe->pts++;
-+        in->pict_type = (flags & 1) ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
++        /* An IDR (with SPS/PPS) after a new encoder or after lost output: there is
++         * no picture-loss feedback in MS-RDPEGFX, so a dropped frame would otherwise
++         * leave the client decoding against a missing reference until the next GOP. */
++        in->pict_type = ((flags & 1) || fe->force_idr) ?
++                        AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
 +        err = avcodec_send_frame(fe->ctx, in);
 +        av_frame_free(&hw);
 +        if (err < 0)
 +        {
 +            ffmpeg_log_error("avcodec_send_frame", err);
++            fe->force_idr = 1;
 +            return 3;
 +        }
 +        if ((rv = ffmpeg_drain(fe, cdata, cdata_bytes)) != 0)
 +        {
++            fe->force_idr = 1;
 +            return rv;
 +        }
++        fe->force_idr = 0;
 +    }
 +    if (flags_ptr != NULL)
 +    {

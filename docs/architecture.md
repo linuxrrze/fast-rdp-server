@@ -73,9 +73,16 @@ troubleshooting): [backends/](backends/README.md).
 6. **Back-end connection** (module, `ClientPreConnect`): the proxy connects with the
    broker's credentials and protocol (TLS for xrdp, NLA for g-r-d/KRdp; on this
    loopback hop NLA uses NTLM, `AuthenticationPackageList=!kerberos`). The
-   client's alternate-shell request is dropped.
+   client's alternate shell and working directory, its routing token and the
+   INFO_RAIL / smartcard-PIN flags are not forwarded. A Server Redirection PDU from a
+   back-end is refused.
 7. On disconnect the module reports `end`. Sessions keep running, and the next
    login of the same user reconnects to them.
+
+Refusals after the RDP connection is up (broker says no, back-end not startable or
+unreachable, RemoteApp requested) end with a Set Error Info PDU, so mstsc shows a
+reason instead of a bare disconnect. The proxy does not offer UDP multitransport.
+Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
 
 ## Trust boundaries and hardening
 
@@ -119,7 +126,7 @@ Newline-delimited JSON over Unix sockets. See the docstring in
 | `/etc/fastrdp/proxy.ini` | proxy configuration (`[FastRDP]` section for the module) |
 | `/etc/fastrdp/broker.toml` | broker configuration (example: `broker/brokerd/config/broker.toml.example`) |
 | `/etc/fastrdp/termsrv.keytab` | `TERMSRV/*` keys only; re-extracted when sssd rotates the machine password |
-| `/etc/pam.d/{fastrdp,fastrdp-session,xrdp-sesman}` | PAM stacks (`broker/session/pam/`) |
+| `/etc/pam.d/{fastrdp,fastrdp-tgt,fastrdp-session,xrdp-sesman}` | PAM stacks (`broker/session/pam/`; `fastrdp-tgt`: session TGT for GNOME/Plasma) |
 | `/run/fastrdp/` | sockets, desktop choice per user, Plasma session env files |
 | `/var/lib/fastrdp/` | session state, per-user back-end certificates |
 | `/usr/lib/fastrdp/python/` | broker package; admin CLI `fastrdpctl status|logout USER` |

@@ -14,23 +14,64 @@
   no_log: true
   changed_when: true
 
-- name: Register TERMSRV service principal (NLA)
+# TERMSRV principals (NLA). adcli writes keytab entries and msDS-SupportedEncryptionTypes
+# for the permitted enctypes of its Kerberos configuration; this file, read before
+# /etc/krb5.conf by the adcli runs below only, makes those fastrdp_termsrv_enctypes.
+- name: Encryption types for adcli (TERMSRV keys)
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/krb5-termsrv-enctypes.conf
+    content: |
+      # {{ ansible_managed }}
+      [libdefaults]
+          permitted_enctypes = {{ fastrdp_termsrv_enctypes | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Host keytab state (TERMSRV principals with AES keys)
+  ansible.builtin.command:
+    argv: "{{ ['/usr/local/sbin/fastrdp-termsrv-check', '-k', '/etc/krb5.keytab'] + item }}"
+  loop:
+    - "{{ fastrdp_termsrv_spns[:2] }}"    # FQDN and short name: the machine may add them itself
+    - "{{ fastrdp_termsrv_spns[2:] or ['TERMSRV/' ~ ansible_fqdn] }}"   # aliases
+  register: fastrdp_termsrv_hostkeys
+  changed_when: false
+  failed_when: false
+
+# Only when a principal or its AES key is missing (first run, RC4-only keys): a new
+# machine password re-keys the account with AES and sets msDS-SupportedEncryptionTypes.
+- name: Register TERMSRV/<fqdn> and TERMSRV/<SHORT>, re-key with AES
   ansible.builtin.command:
     cmd: >-
-      adcli update --domain={{ fastrdp_domain }}
+      adcli update --domain={{ fastrdp_domain }} --computer-password-lifetime=0
       --add-service-principal=TERMSRV/{{ ansible_fqdn }}
       --add-service-principal=TERMSRV/{{ ansible_hostname | upper }}
-    creates: /etc/fastrdp/.termsrv-spn-registered
-  register: fastrdp_spn
+  environment:
+    KRB5_CONFIG: /etc/fastrdp/krb5-termsrv-enctypes.conf:/etc/krb5.conf
+  when: fastrdp_termsrv_hostkeys.results[0].rc != 0
+  changed_when: true
 
-- name: Remember SPN registration  # noqa: no-handler - marker belongs to this exact step
-  ansible.builtin.file:
-    path: /etc/fastrdp/.termsrv-spn-registered
-    state: touch
-    mode: "0600"
-    modification_time: preserve
-    access_time: preserve
-  when: fastrdp_spn is changed
+# The machine account may only add SPNs of its own host names; aliases need the join
+# account. adcli copies the current keys to the new principals.
+- name: Register TERMSRV/<alias> (fastrdp_termsrv_aliases)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -eo pipefail
+      dir=$(mktemp -d)
+      trap 'kdestroy -q -c "FILE:$dir/cc" 2>/dev/null; rm -rf "$dir"' EXIT
+      echo "$JOIN_PW" | kinit -c "FILE:$dir/cc" "{{ fastrdp_join_user }}@{{ fastrdp_realm }}" >/dev/null
+      KRB5_CONFIG=/etc/fastrdp/krb5-termsrv-enctypes.conf:/etc/krb5.conf \
+        adcli update --domain={{ fastrdp_domain }} --login-ccache="FILE:$dir/cc" \
+        {% for spn in fastrdp_termsrv_spns[2:] %} --add-service-principal={{ spn }}{% endfor %}
+  environment:
+    JOIN_PW: "{{ fastrdp_join_password }}"
+  when:
+    - fastrdp_termsrv_spns[2:] | length > 0
+    - fastrdp_termsrv_hostkeys.results[1].rc != 0
+    - fastrdp_join_password | length > 0   # else the keytab check below names the aliases
+  no_log: true
+  changed_when: true
 
 - name: SSSD configuration for terminal-server use
   ansible.builtin.template:
