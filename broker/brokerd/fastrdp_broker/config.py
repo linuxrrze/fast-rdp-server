@@ -87,6 +87,12 @@ class MfaSection:
     # [auth] realms; TLS and web logins are unaffected. Never for AD without a policy
     # that guarantees it (AD has no authentication indicators).
     nla_kdc_enforced: bool = False
+    # Seconds after a login with a real second factor (OTP/push) during which reconnects
+    # of the same account, login method (nla/tls), Kerberos principal and, with
+    # reconnect_grace_same_address, client address skip it. Counted from that second
+    # factor, never extended; memory only. 0 = off. docs/auth-matrix.md#reconnect-grace
+    reconnect_grace: int = 0
+    reconnect_grace_same_address: bool = True
     privacyidea: PrivacyIdeaSection = field(default_factory=PrivacyIdeaSection)
 
 
@@ -139,6 +145,7 @@ class Config:
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
 VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push")
 VALID_SESSION_TGT = ("auto", "off", "required")
+MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
 
 
 def _section(cls, data: dict, where: str):
@@ -200,6 +207,14 @@ def parse(raw: dict) -> Config:
         # Only tickets from KDCs whose TERMSRV policy is known may skip MFA; a trusted
         # foreign realm's KDC does not apply this realm's authentication indicators.
         raise ConfigError("[mfa] nla_kdc_enforced needs [auth] realms (the realms whose KDC enforces it)")
+    if (
+        isinstance(mfa.reconnect_grace, bool)
+        or not isinstance(mfa.reconnect_grace, int)
+        or not 0 <= mfa.reconnect_grace <= MAX_RECONNECT_GRACE
+    ):
+        raise ConfigError(f"[mfa] reconnect_grace must be whole seconds in 0..{MAX_RECONNECT_GRACE}")
+    if not isinstance(mfa.reconnect_grace_same_address, bool):
+        raise ConfigError("[mfa] reconnect_grace_same_address must be true or false")
 
     network = _section(NetworkSection, dict(raw.pop("network", {})), "network")
     try:

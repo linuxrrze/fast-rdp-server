@@ -117,14 +117,15 @@ Sorted by severity. "Fixed" means fixed in this review.
      both MF and typical hardware encoders (NVENC, VA-API).
    - **Recommendation:** lab test S12; if needed, cap the level or fps, or use RFX for
      monitors wider than 4096 px.
-10. **Every reconnect is a full login with MFA (risk, open).**
+10. **Every reconnect is a full login with MFA (risk; mitigated by R2, opt-in).**
     - **What happens:**
       - neither the proxy nor xrdp issues an auto-reconnect cookie (ARC, [MS-RDPBCGR] 5.5);
-      - the proxy cannot validate one;
-      - the broker has no MFA grace period.
+      - the proxy cannot validate one.
     - **Effect:** after a network drop, mstsc must reconnect from scratch: Kerberos NLA, then
       a new push.
-    - **Recommendation:** an MFA grace period in the broker ([§12](#12-recommended-changes-not-made)).
+    - **Now (R2):** `[mfa] reconnect_grace` (default off) lets such a reconnect skip a
+      second factor passed shortly before by the same account, login method, principal and
+      client address ([auth-matrix.md](auth-matrix.md#reconnect-grace)).
 11. **WAN clients got LAN encoder settings (fixed, R6).**
     - **What happened:** mstsc sends `connectionType` = CONNECTION_TYPE_AUTODETECT (7). The
       proxy does no connect-time auto-detection ([MS-RDPBCGR] 2.2.14) and copied the
@@ -196,7 +197,7 @@ Sorted by severity. "Fixed" means fixed in this review.
 |---|---|---|---|
 | Server Redirection PDU (2.2.13), the spec's connection-broker model | fastrdp proxies instead of redirecting | conforms (design) | See the note below the table. |
 | Server Redirection **from a back-end** | Was followed by FreeRDP's client using the broker's credentials. Now refused (`fastrdp_client_redirect()`, `fastrdp_plugin.c:781-788`) | fixed | – |
-| Auto-reconnect (5.5; ARC_SC_PRIVATE_PACKET 2.2.4.2 in Save Session Info 2.2.10.1.1.4; ARC_CS 2.2.4.3) | xrdp ignores the client's cookie and sends none (`xrdp/libxrdp/xrdp_sec.c:998`). The proxy forwards whatever the back-end sends, but cannot validate a cookie itself. The front never sets AUTORECONNECT_SUPPORTED | risk | After a network drop mstsc does a fresh connection: NLA, which is silent with a Kerberos ticket, plus a new MFA push. Sessions themselves survive (xrdp reconnect, broker reuse). Recommendation R2 (MFA grace). Lab S8. |
+| Auto-reconnect (5.5; ARC_SC_PRIVATE_PACKET 2.2.4.2 in Save Session Info 2.2.10.1.1.4; ARC_CS 2.2.4.3) | xrdp ignores the client's cookie and sends none (`xrdp/libxrdp/xrdp_sec.c:998`). The proxy forwards whatever the back-end sends, but cannot validate a cookie itself. The front never sets AUTORECONNECT_SUPPORTED | risk | After a network drop mstsc does a fresh connection: NLA, which is silent with a Kerberos ticket, plus a new MFA push. Sessions themselves survive (xrdp reconnect, broker reuse). R2 (done, opt-in): `[mfa] reconnect_grace` skips the push for a reconnect within N seconds of a passed second factor, bound to account, login method, principal and client address ([auth-matrix.md](auth-matrix.md#reconnect-grace)). Lab S8. |
 
 **Why fastrdp proxies instead of redirecting.** The spec's model is a broker that sends a
 Server Redirection PDU, so that the client connects directly to the target. fastrdp does
@@ -275,6 +276,7 @@ Windows Media Foundation H.264 decoder: Baseline, Main and High, up to level 5.1
 | Back-end hop: clear WorkingDir, RemoteApplicationMode, PasswordIsSmartcardPin, SmartcardLogon, LoadBalanceInfo (routing token) | module `ClientPreConnect` | covered indirectly (back-end hop still logs in; e2e `back-end received the token`) |
 | Refuse a back-end Server Redirection PDU | module `ClientRedirect` hook | not tested here (needs a redirecting fake back-end) |
 | R6: connection type towards xrdp chosen by the broker (`lan_networks`, `xrdp_autodetect_profile`); `[*.autodetect]` in gfx.toml | `broker/brokerd/fastrdp_broker/conntype.py`, `config.py`, `server.py`; module `apply_connection_type`; `gfx.toml.j2`, `broker.toml.j2`, `roles/common` | `broker/brokerd/tests/test_conntype.py`; `run.sh`: front type 7/2 reported, broker's `lan` reaches the back-end as 6, missing/unknown keeps the client's; `tests/ansible/test_templates.py` |
+| R2: MFA grace for reconnects, `[mfa] reconnect_grace` (seconds, default 0 = off) and `reconnect_grace_same_address` (default true): a login whose second factor privacyIDEA confirmed and whose session started records an entry (account, `nla`/`tls`, Kerberos principal, client address); reconnects matching it within the period skip OTP/push. Absolute from the real second factor, memory only, `fastrdpctl clear-grace [USER]` | `broker/brokerd/fastrdp_broker/{grace,server,config,protocol,__main__}.py`; `roles/common` (`fastrdp_mfa_reconnect_grace*`, validation), `broker.toml.j2`; `fastrdpctl.8` | `broker/brokerd/tests/test_reconnect_grace.py` (off by default, skip and log, expiry, absolute, address on/off, method and principal binding, nothing recorded on MFA failure, refusal, back-end error, exempt or `nla_kdc_enforced`; first factor, account and group checks still run; TLS OTP replay; clear); `tests/ansible/test_templates.py`. No e2e case: the proxy module is unchanged |
 | Webgate: `rdp_parameters` can no longer override hostname, port, username, password or `security`; a pinned fingerprint removes `ignore-cert` | `broker/webgate/fastrdp_webgate/app.py` | `broker/webgate/tests/test_gaps.py::test_rdp_parameters_cannot_override_security_or_pin` |
 | xrdp patch: IDR after lost output (`force_idr`, `forced-idr`); full-range BT.709 VUI and black | `patches/xrdp/0001-*.patch` (regenerated with `git format-patch` against pristine 0.10.6.1) | `patches/xrdp/test/test_ffmpeg_encoder.c`: no B-frames or mid-GOP IDR, Baseline/Main profile, full-range VUI, SPS+IDR after lost output, then P-frames, full-range black |
 | R8: the broker call ends as soon as the front client goes away (TCP FIN/RST on the front socket, found through the peer's event handles) or the proxy's `abort_event` is set; logged as `front connection closed while waiting for the broker`, no error info (nobody to send it to). The broker cancels the login when the proxy closes the connection: a push wait stops polling privacyIDEA, a session start under way completes but is not recorded as connected, a reply that cannot be written is no longer an "unexpected error" | `broker/proxy-module/fastrdp_plugin.c` (`abort_fds()`, `broker_call()`); `broker/brokerd/fastrdp_broker/{server,mfa,privacyidea,protocol}.py` (`Broker.login_unless_abandoned`) | `run.sh`: `pushwait` (fake broker waits 8 s as for a push, client gives up after 1 s): broker connection closed early (< 4 s), proxy logs the abandoned request; `broker/brokerd/tests/test_gaps.py` (`AbandonedLoginTests`, push wait cancel in `SecondFactorTests` / `PrivacyIdeaTests`) |
@@ -289,7 +291,7 @@ libx264, 17/17 each.
 | # | Where | Change | Why |
 |---|---|---|---|
 | R1 | `broker/brokerd/fastrdp_broker/server.py` | (done, [§11](#11-changes-made-in-this-review)) a machine-readable `"reason"` on every refusal while keeping `"error": "access denied"`: `denied`, `not_allowed`, `mfa_failed`, `mfa_timeout`, `backend`, documented in `protocol.py` | The module maps them to 0x7 / 0x9 / 0x7 / 0x409 / 0x400 (`errinfo_for_reply()`, `fastrdp_plugin.c:358-376`). |
-| R2 | `server.py` / `mfa.py` | MFA grace for reconnects: skip the second factor if the same user (and optionally the same client address or principal) passed MFA within N minutes (default 0 = off) | Without ARC support every network drop costs a new push ([§6](#6-redirection-load-balancing-reconnect)). |
+| R2 | `server.py`, `grace.py` | (done, [§11](#11-changes-made-in-this-review), opt-in) MFA grace for reconnects: skip the second factor if the same user (and optionally the same client address or principal) passed MFA within N seconds (`[mfa] reconnect_grace`, default 0 = off; [auth-matrix.md](auth-matrix.md#reconnect-grace)) | Without ARC support every network drop costs a new push ([§6](#6-redirection-load-balancing-reconnect)). |
 | R3 | `ansible/roles/freerdp_proxy` | (done, [§11](#11-changes-made-in-this-review)) When only the web path needs TLS (`fastrdp_web_enabled` and not `fastrdp_allow_tls_logins`), restrict TLS logins in the module to loopback peers (new `[FastRDP] AllowTlsFrom=127.0.0.1,::1`, Ansible `fastrdp_tls_login_sources`) | Before, any network client could open a TLS session up to the broker's refusal; now other peers get 0x7 from `tls_peer_allowed()` (`fastrdp_plugin.c:443-457`) before the broker sees them. |
 | R4 | FreeRDP upstream (`nego.c:1335-1360`) | On REDIRECTED_AUTHENTICATION_MODE_REQUIRED without support, answer RDP_NEG_RSP without the SUPPORTED flag (or a negotiation failure) instead of dropping TCP | Clear mstsc error for `/remoteGuard`. |
 | R5 | FreeRDP upstream / [windows-clients.md](windows-clients.md) §5 #4 | Disable NTLM in the proxy's acceptor | NTLM attempts fail with a CredSSP error instead of a later drop. |

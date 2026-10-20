@@ -23,6 +23,9 @@
             and fastrdp_mfa_nla_kdc_auth_indicators | difference(['passkey', 'pkinit', 'otp', 'radius', 'idp']) | length == 0)
       - not fastrdp_mfa_nla_kdc_enforced | bool or fastrdp_identity_provider != 'ad'
         or fastrdp_mfa_nla_kdc_enforced_by_ad_policy | bool
+      - fastrdp_mfa_reconnect_grace | string is match('^[0-9]+$')
+      - fastrdp_mfa_reconnect_grace | int <= 3600
+      - fastrdp_mfa_reconnect_grace_same_address | string | lower in ['true', 'false']
       - fastrdp_xrdp_autodetect_profile in ['lan', 'wan', 'broadband_high', 'satellite', 'broadband_low', 'modem', 'default']
       - fastrdp_lan_networks is sequence and fastrdp_lan_networks is not string
       # shape only; the broker parses them strictly (host bits set, prefix range) at start-up
@@ -39,6 +42,8 @@
       fastrdp_termsrv_aliases are plain DNS names; fastrdp_mfa_nla_kdc_enforced needs
       fastrdp_mfa_nla_kdc_auth_indicators from passkey, pkinit, otp, radius, idp (never
       hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md);
+      fastrdp_mfa_reconnect_grace is whole seconds 0..3600 and
+      fastrdp_mfa_reconnect_grace_same_address true or false (docs/auth-matrix.md);
       fastrdp_xrdp_autodetect_profile is lan, wan, broadband_high, satellite, broadband_low,
       modem or default; fastrdp_lan_networks is a list of CIDRs (docs/performance.md);
       fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md).

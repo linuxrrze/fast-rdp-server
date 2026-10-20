@@ -52,6 +52,97 @@ TGTs: FreeIPA `ipa service-mod TERMSRV/<host> --auth-ind=passkey --auth-ind=pkin
 (the identity role sets and verifies this; preflight reads it). Details, the AD case
 and the security review: [passkeys.md](passkeys.md#kdc-enforced-strong-authentication-for-nla).
 
+### Reconnect grace
+
+**`fastrdp_mfa_reconnect_grace`** (broker `[mfa] reconnect_grace`, seconds, default
+`0` = off, at most 3600) and **`fastrdp_mfa_reconnect_grace_same_address`**
+(`[mfa] reconnect_grace_same_address`, default `true`). `scripts/fastrdp-setup` does
+not ask for them; add them to the generated `group_vars/all/main.yml` by hand.
+
+Why: neither the proxy nor xrdp supports RDP auto-reconnect cookies
+([rdp-spec-conformance.md](rdp-spec-conformance.md#6-redirection-load-balancing-reconnect)).
+After every network drop (Wi-Fi roaming, VPN reconnect, laptop lid) mstsc reconnects
+with a full login: NLA, silent with a Kerberos ticket, and then a new push. With a
+grace period the broker skips the second factor for such a reconnect and logs
+
+```
+alice: nla login from 192.0.2.10; second factor skipped: reconnect grace (push passed 212s ago from 192.0.2.10)
+```
+
+How it works:
+
+- **What earns grace:** only a login whose second factor privacyIDEA confirmed (OTP or
+  push) *and* whose session then started (the broker handed the target to the proxy).
+  Refusals, wrong or missing OTPs, push timeouts, privacyIDEA errors and back-end errors
+  record nothing. Logins that never asked privacyIDEA record nothing either: exempt
+  groups, `nla_kdc_enforced`, web logins (their MFA is at Keycloak), `mode = "none"`.
+- **What must match** (all of it):
+  - the local account;
+  - the login method, i.e. the class of the first factor: `nla` (a Kerberos ticket for
+    `TERMSRV`) or `tls` (password checked by PAM). A push approved for an NLA login never
+    lets a TLS password login skip it, and the other way round: the two are stolen in
+    different ways (a ticket cache or a delegated credential vs. a typed password), so
+    holding one kind must not ride on MFA that was passed with the other. mstsc
+    reconnects with the method it used before, so this costs nothing;
+  - NLA: the Kerberos principal from the ticket (as the KDC canonicalised it). The
+    `principal` field of a TLS login is client-supplied and ignored, and so is the
+    `smartcard` flag (a PKINIT and a password-derived ticket for the same principal are
+    the same class: the broker cannot tell them apart);
+  - with `reconnect_grace_same_address = true`: the client address the proxy sees
+    (the TCP peer, not the client-supplied ClientAddress). A login without a known
+    address then never uses or earns grace.
+- **Absolute, not sliding:** the period counts from the last *real* second factor, also
+  when the session took a while to start. Logins that used grace do not extend it; the
+  next real push or OTP starts a new period. A sliding window would let somebody who
+  keeps reconnecting stay MFA-free forever.
+- **Still checked on every login:** the first factor (Kerberos NLA, or the PAM password
+  check for TLS), `[auth] allow_groups`, the PAM account phase (expired, locked,
+  `pam_access`, AD GPO logon right), `session_tgt = "required"`, realms. Grace replaces
+  the privacyIDEA call and nothing else.
+- **TLS with OTPs:** mstsc reconnects with the stored `password+OTP`. Within the grace
+  period the appended (now used) OTP is split off and not sent to privacyIDEA, so the
+  reconnect is not refused as an OTP replay. In `otp` mode a TLS reconnect without an
+  appended OTP is accepted too while grace applies; without grace it is refused before
+  the password check, as before.
+- **Memory only:** entries live in the broker process (pruned when they expire).
+  `systemctl restart fastrdp-brokerd` (and every upgrade) forgets all of them; the next
+  login of each user asks for the second factor again.
+- **Revoking:** `fastrdpctl clear-grace alice` forgets alice's entries (local account
+  name as in the broker log), `fastrdpctl clear-grace` everybody's. A login whose second
+  factor was passed before the clear and whose session is still starting records
+  nothing. `fastrdpctl status` shows `mfa_grace_entries`. `fastrdpctl logout` does not
+  clear grace; on a suspected compromise run both, and lock the account or revoke the
+  token.
+
+Security review:
+
+- **What it weakens:** within the period, a second login from the same address needs
+  only the first factor. An attacker who has the user's Kerberos ticket (or can obtain
+  one: the password) **and** connects from the same address (shared NAT, VPN
+  concentrator, the user's own compromised machine) right after the user passed MFA
+  gets in without a push. With `reconnect_grace_same_address = false` any address will
+  do, i.e. MFA is effectively "once per N seconds per user and method": use that only
+  where clients' addresses change on every reconnect (mobile networks) and the period
+  is short.
+- **What it does not weaken:** the first factor, account and group checks, the realm
+  check, and the binding to the principal. Grace never starts from a login that did
+  not pass privacyIDEA, so it cannot extend `nla_kdc_enforced`, exempt groups or the
+  web path, and a refused login (R1 reasons `denied`, `not_allowed`, `mfa_failed`,
+  `mfa_timeout`, `backend`) never creates an entry. The reply to a refused login is the
+  same with or without grace.
+- **A compromised client machine** already controls the running session, so grace
+  adds little there. A malicious push approved by mistake (push fatigue) is
+  extended by the period: `fastrdpctl clear-grace` limits that once noticed.
+- **`session_tgt`:** grace does not touch it. A grace login with a password (TLS, NLA
+  with delegation) still gets a fresh TGT for GNOME/Plasma; with
+  `session_tgt = "required"` a passwordless login is still refused.
+- **Recommended values:** `300`–`900` seconds with the address binding on. That covers
+  a network drop, a VPN reconnect or moving between meeting rooms, but not the next
+  morning. Keep it `0` where every login must show a fresh second factor (e.g. admin
+  hosts). The 3600 s limit keeps this a reconnect aid, not a replacement for MFA.
+- **Not covered:** a broker restart forgets grace (safe direction); several proxy hosts
+  each have their own broker and grace; the web path is unchanged.
+
 During a push the client simply waits ("connecting…"). `fastrdp_proxy_broker_timeout`
 (default 120 s) must be larger than `push_timeout` (default 60 s).
 

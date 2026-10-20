@@ -59,6 +59,15 @@ fastrdp_mfa_nla_kdc_enforced: false
 fastrdp_mfa_nla_kdc_auth_indicators: [passkey, pkinit]   # FreeIPA; also otp, radius, idp; never hardened
 fastrdp_mfa_nla_kdc_set_auth_ind: true                    # FreeIPA: let the identity role set them
 fastrdp_mfa_nla_kdc_enforced_by_ad_policy: false          # AD: you guarantee it by policy (no check possible)
+# MFA grace for reconnects (broker [mfa] reconnect_grace; docs/auth-matrix.md#reconnect-grace):
+# seconds after a passed OTP/push during which reconnects of the same account, login
+# method (NLA/TLS), Kerberos principal and, with ..._same_address, client address skip
+# the second factor (the RDP proxy has no auto-reconnect cookies, so every network drop
+# is a new login). Counted from the real second factor, never extended; 0 = off, at most
+# 3600; 300-900 recommended. Broker memory only (a restart clears it);
+# `fastrdpctl clear-grace USER` forgets a user's grace.
+fastrdp_mfa_reconnect_grace: 0
+fastrdp_mfa_reconnect_grace_same_address: true
 
 # ---------------------------------------------------------------- web access
 # Browser path (Keycloak + Guacamole, role web_gateway). Read by the broker and proxy

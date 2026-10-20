@@ -35,6 +35,13 @@ yubikey_otp = true
 # issues TERMSRV tickets after passkey/PKINIT pre-authentication (FreeIPA auth
 # indicators; docs/passkeys.md). TLS and web logins are unaffected. Not for AD.
 #nla_kdc_enforced = false
+# Reconnects after a network drop (no RDP auto-reconnect cookies) skip a second factor
+# passed less than this many seconds ago by the same account, login method (nla/tls),
+# Kerberos principal and, with reconnect_grace_same_address, client address. Counted
+# from that OTP/push, never extended; memory only; 0 = off, max 3600, 300-900 suggested.
+# `fastrdpctl clear-grace USER` revokes it. docs/auth-matrix.md#reconnect-grace
+#reconnect_grace = 0
+#reconnect_grace_same_address = true
 
 [mfa.privacyidea]
 url = "https://privacyidea.example.com"

@@ -54,10 +54,13 @@ def ctl_main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="list sessions known to the broker")
     lo = sub.add_parser("logout", help="terminate all sessions of a user")
     lo.add_argument("user")
+    cg = sub.add_parser("clear-grace", help="forget MFA reconnect grace ([mfa] reconnect_grace) "
+                        "of a user, or of all users")
+    cg.add_argument("user", nargs="?", help="local account name as in the broker log (default: all users)")
     args = ap.parse_args(argv)
     cfg = config_mod.load(args.config)
-    req = {"op": args.cmd}
-    if args.cmd == "logout":
+    req = {"op": args.cmd.replace("-", "_")}
+    if args.cmd in ("logout", "clear-grace") and args.user:
         req["user"] = args.user
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.connect(cfg.broker.socket)

@@ -12,6 +12,12 @@ fastrdpctl \- query and control the fastrdp session broker
 .IR config ]
 .B logout
 .I user
+.br
+.B fastrdpctl
+.RB [ \-c
+.IR config ]
+.B clear\-grace
+.RI [ user ]
 .SH DESCRIPTION
 .B fastrdpctl
 talks to a running
@@ -24,6 +30,16 @@ List the sessions known to the broker.
 .BI logout " user"
 Terminate all sessions of
 .IR user .
+.TP
+.BR clear\-grace " [\fIuser\fR]"
+Forget the MFA reconnect grace
+.RB ( "[mfa] reconnect_grace" )
+of
+.I user
+(the local account name, as in the broker log), or of all users. Their next
+login asks for the second factor again. Use it on a suspected compromise, together
+with
+.BR logout .
 .SH OPTIONS
 .TP
 .BI \-c " config\fR, " \-\-config " config"

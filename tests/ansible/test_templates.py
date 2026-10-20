@@ -250,6 +250,13 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual(cfg.mfa.mode, "push")
         self.assertEqual(cfg.auth.realms, ["LAB.EXAMPLE.COM"])
 
+    def test_reconnect_grace(self):
+        for name in ("broker-lab.toml", "broker-minimal.toml"):
+            mfa = broker_config.parse(toml(name)).mfa
+            self.assertEqual((mfa.reconnect_grace, mfa.reconnect_grace_same_address), (0, True), name)
+        mfa = broker_config.parse(toml("broker-mfa.toml")).mfa
+        self.assertEqual((mfa.reconnect_grace, mfa.reconnect_grace_same_address), (600, False))
+
     def test_session_tgt_required(self):
         self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")
 
@@ -386,6 +393,10 @@ class CommonChecks(unittest.TestCase):
             "TLS login source not an address": dict(ok, fastrdp_tls_login_sources=["127.0.0.1", "localhost"]),
             "TLS login source with a newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\nAllowTls=true"]),
             "TLS login source with a trailing newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\n"]),
+            "reconnect grace negative": dict(ok, fastrdp_mfa_reconnect_grace=-1),
+            "reconnect grace over an hour": dict(ok, fastrdp_mfa_reconnect_grace=3601),
+            "reconnect grace in minutes": dict(ok, fastrdp_mfa_reconnect_grace="10m"),
+            "reconnect grace same address not a bool": dict(ok, fastrdp_mfa_reconnect_grace_same_address="maybe"),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -406,6 +417,13 @@ class CommonChecks(unittest.TestCase):
         self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[
             "127.0.0.1", "::1", "10.0.0.0/8", "2001:db8::/32"]), 0)
         self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[]), 0)
+
+    def test_reconnect_grace_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for grace in (0, 600, 3600):
+            with self.subTest(grace):
+                self.assertEqual(self.run_checks(**ok, fastrdp_mfa_reconnect_grace=grace,
+                                                 fastrdp_mfa_reconnect_grace_same_address=False), 0)
 
     def test_aliases_pass(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",

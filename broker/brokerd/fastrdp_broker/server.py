@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import conntype, identity, pamauth, tgt
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
 from .config import Config
+from .grace import GraceKey, ReconnectGrace
 from .identity import IdentityError, LocalUser
 from .mfa import MfaDenied, SecondFactor, split_otp
 from .protocol import ProtocolError, int_field, peer_uid, read_message, str_field, write_message
@@ -50,6 +51,15 @@ class Broker:
                 "the KDC must require passkey/PKINIT pre-authentication for TERMSRV tickets "
                 "(FreeIPA: ipa service-mod TERMSRV/<host> --auth-ind=passkey --auth-ind=pkinit)",
                 ", ".join(cfg.auth.realms), cfg.mfa.mode,
+            )
+        # [mfa] reconnect_grace (grace.py): reconnects skip a recently passed second factor.
+        self.grace = ReconnectGrace(cfg.mfa.reconnect_grace, cfg.mfa.reconnect_grace_same_address)
+        if self.grace.enabled and cfg.mfa.mode != "none":
+            log.info(
+                "[mfa] reconnect_grace: reconnects within %ds of a passed %s second factor skip it "
+                "(same account, login method, principal%s)",
+                cfg.mfa.reconnect_grace, cfg.mfa.mode,
+                " and client address" if cfg.mfa.reconnect_grace_same_address else "; any client address",
             )
         self.backends: dict[str, Backend] = {
             name: cls(cfg, self.state, self.tokens) for name, cls in BACKENDS.items()
@@ -191,7 +201,8 @@ class Broker:
                 split = split_otp(secret, self.cfg.mfa)
                 if split:
                     secret, otp = split
-                elif self.cfg.mfa.mode == "otp":
+                elif self.cfg.mfa.mode == "otp" and not self.grace.lookup(self.grace_key(user, msg)):
+                    # Without a grace entry the login fails anyway: refuse before PAM.
                     raise Denied(f"{user.name}: no OTP appended to password", "mfa_failed")
             try:
                 await asyncio.to_thread(
@@ -205,6 +216,17 @@ class Broker:
 
         raise Denied(f"unknown method {method!r}")
 
+    def grace_key(self, user: LocalUser, msg: dict) -> GraceKey | None:
+        """Reconnect-grace binding of a login whose first factor checked out (grace.py).
+        Called only for NLA (Kerberos principal from the ticket) and TLS password logins;
+        the principal field of a TLS login is client-supplied and ignored."""
+        method = str_field(msg, "method", required=True)
+        principal = None
+        if method == "nla":
+            name, realm = identity.split_principal(str_field(msg, "principal", required=True))
+            principal = f"{name}@{realm}"
+        return self.grace.key(user.name, method, principal, str_field(msg, "client_address"))
+
     async def login(self, msg: dict) -> dict:
         session_id = str_field(msg, "session_id", required=True, max_len=64)
         user, password, otp, mfa_done = await self.first_factor(msg)
@@ -214,14 +236,24 @@ class Broker:
             raise Denied(f"{user.name} is not in an allowed group", self.authz_reason(user, proven))
         self.require_credential(user, password)
 
+        passed = None  # (grace key, time, factor) of a real second factor
         if mfa_done:
             log.info("second factor for %s already verified by %s", user.name, mfa_done)
         elif not self.mfa.exempt(user.groups):
-            try:
-                factor = await self.mfa.verify(user.name, otp, password)
-            except MfaDenied as exc:
-                raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
-            log.info("second factor ok for %s via %s", user.name, factor)
+            grace_key = self.grace_key(user, msg)
+            if hit := self.grace.lookup(grace_key):
+                entry, age = hit
+                log.info("%s: %s login from %s; second factor skipped: reconnect grace "
+                         "(%s passed %ds ago from %s)%s", user.name, msg.get("method"),
+                         str_field(msg, "client_address"), entry.factor, age, entry.address,
+                         "; appended OTP not checked" if otp else "")
+            else:
+                try:
+                    factor = await self.mfa.verify(user.name, otp, password)
+                except MfaDenied as exc:
+                    raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
+                log.info("second factor ok for %s via %s", user.name, factor)
+                passed = (grace_key, self.grace.clock(), factor)
 
         try:
             desktop_name = await self.choose_desktop(user, str_field(msg, "desktop_hint"))
@@ -251,6 +283,11 @@ class Broker:
             starting.add_done_callback(lambda t: self._abandoned_start_done(t, user.name))
             raise
         self.active[session_id] = user.name
+        if passed and passed[0]:
+            # Only now: refusals, MFA failures and back-end errors never earn grace.
+            self.grace.record(*passed, str_field(msg, "client_address"))
+            log.info("%s: reconnect grace for %s logins%s for %ds", user.name, passed[0].method,
+                     f" from {passed[0].address}" if passed[0].address else "", self.grace.seconds)
         log.info(
             "login %s session=%s desktop=%s -> %s:%d (%s)",
             user.name, session_id, desktop.name, target.host, target.port, target.security,
@@ -361,6 +398,7 @@ class Broker:
             "connected": len(self.active),
             "pending_tokens": len(self.tokens),
             "pending_web_tokens": len(self.web_tokens),
+            "mfa_grace_entries": len(self.grace),
         }
 
     async def logout(self, msg: dict) -> dict:
@@ -370,6 +408,13 @@ class Broker:
             if self.state.get(user.name, backend.name):
                 await backend.logout(user)
         return {"ok": True}
+
+    async def clear_grace(self, msg: dict) -> dict:
+        """fastrdpctl clear-grace [USER]: forget reconnect grace (suspected compromise)."""
+        user = str_field(msg, "user")  # local account name; None = everybody
+        n = self.grace.clear(user)
+        log.warning("reconnect grace cleared for %s (%d entries)", user or "all users", n)
+        return {"ok": True, "cleared": n}
 
     # ------------------------------------------------------------- sockets
     async def handle_broker_client(self, reader, writer) -> None:
@@ -394,6 +439,8 @@ class Broker:
                         reply = await self.status()
                     elif op == "logout" and uid == 0:
                         reply = await self.logout(msg)
+                    elif op == "clear_grace" and uid == 0:
+                        reply = await self.clear_grace(msg)
                     else:
                         log.warning("op %r not permitted for uid %d", op, uid)
                         reply = {"ok": False, "error": "not permitted", "reason": "denied"}

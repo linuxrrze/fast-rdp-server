@@ -743,6 +743,8 @@ exempt_groups = []
 otp_lengths = [6]
 yubikey_otp = true
 nla_kdc_enforced = false
+reconnect_grace = 0
+reconnect_grace_same_address = true
 
 [mfa.privacyidea]
 url = ""
@@ -1289,6 +1291,11 @@ Role `mfa_privacyidea`; modes and privacyIDEA settings in [auth-matrix.md](auth-
   in `/etc/fastrdp/privacyidea-service.secret` (`root:root 0600`), and `service_user`;
 - `broker.toml`: `[mfa] mode` (`otp`, `push`, `otp_or_push`), `exempt_groups`,
   `otp_lengths`; `[mfa.privacyidea] url`, `realm`, `verify_tls`;
+- optional: `[mfa] reconnect_grace` (seconds, e.g. `600`; `0` = off) so that reconnects
+  after a network drop skip a second factor passed shortly before, bound to the same
+  client address unless `reconnect_grace_same_address = false`
+  ([auth-matrix.md](auth-matrix.md#reconnect-grace)); `fastrdpctl clear-grace USER`
+  revokes it;
 - check: `curl -fsS https://pi.example.com/healthz/` from the host; then
   `fastrdp-brokerd --check` and `systemctl restart fastrdp-brokerd`.
 

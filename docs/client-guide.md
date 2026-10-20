@@ -90,6 +90,10 @@ connection type:i:7
   ([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)). GNOME and
   Plasma desktops adapt by themselves and ignore it.
 - Approve the push on the phone while mstsc shows "Configuring remote session…".
+  After a network drop mstsc logs in again from scratch (your session is kept). That
+  asks for a new push, unless the administrator set a reconnect grace period and you
+  passed MFA from the same address within it
+  ([auth-matrix.md](auth-matrix.md#reconnect-grace)).
 - Outside the network the KDC must be reachable (VPN), or set a KDC proxy in group
   policy ([windows-clients.md](windows-clients.md) §3.10).
 

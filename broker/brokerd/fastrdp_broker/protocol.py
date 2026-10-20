@@ -44,8 +44,10 @@ PAM module -> token.sock (root only):
   {"op": "redeem", "user": str, "token": str} -> {"ok": true, "password": str|null}
 
 Admin (root) -> broker.sock:
-  {"op": "status"} -> {"ok": true, "sessions": [...]}
+  {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int, ...}
   {"op": "logout", "user": str} -> {"ok": true}
+  {"op": "clear_grace", "user": str|absent} -> {"ok": true, "cleared": int}
+      forget [mfa] reconnect_grace entries of one local account (absent: all)
 """
 
 from __future__ import annotations

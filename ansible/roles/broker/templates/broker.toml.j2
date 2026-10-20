@@ -18,6 +18,8 @@ exempt_groups = {{ fastrdp_mfa_exempt_groups | to_json }}
 otp_lengths = {{ fastrdp_otp_lengths | to_json }}
 yubikey_otp = true
 nla_kdc_enforced = {{ fastrdp_mfa_nla_kdc_enforced | bool | lower }}
+reconnect_grace = {{ fastrdp_mfa_reconnect_grace | int }}
+reconnect_grace_same_address = {{ fastrdp_mfa_reconnect_grace_same_address | bool | lower }}
 
 [mfa.privacyidea]
 url = "{{ fastrdp_privacyidea_url if fastrdp_mfa_mode != 'none' else '' }}"
