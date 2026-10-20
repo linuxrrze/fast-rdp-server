@@ -296,5 +296,38 @@ class WebgateToml(unittest.TestCase):
                          {"enable-font-smoothing": "true", "color-depth": "32", "resize-method": "display-update"})
 
 
+class NfsKrb5Homes(unittest.TestCase):
+    """fastrdp_nfs_krb5_homes: gssproxy service for rpc.gssd + nfs.conf.d snippet."""
+
+    def gssproxy(self, name):
+        text = (OUT / name).read_text()
+        pairs = [tuple(p.strip() for p in line.split("=", 1)) for line in text.splitlines()
+                 if "=" in line and not line.lstrip().startswith("#")]
+        sections = [line for line in text.splitlines() if line.startswith("[")]
+        return sections, pairs
+
+    def test_gssproxy_impersonation_service(self):
+        sections, pairs = self.gssproxy("gssproxy-nfs-client.conf")
+        self.assertEqual(sections, ["[service/fastrdp-nfs-client]"])
+        opts = dict(pairs)
+        self.assertEqual(opts["mechs"], "krb5")
+        self.assertEqual(opts["cred_usage"], "initiate")  # never accept with the host keytab
+        for flag in ("allow_any_uid", "impersonate", "trusted"):
+            self.assertEqual(opts[flag], "yes", flag)
+        self.assertEqual(opts["euid"], "0")
+        self.assertEqual(opts["program"], "/usr/sbin/rpc.gssd")
+        self.assertEqual([v for k, v in pairs if k == "cred_store"],
+                         ["keytab:/etc/krb5.keytab", "ccache:FILE:/var/lib/gssproxy/clients/krb5cc_%U"])
+
+    def test_own_keytab(self):
+        _, pairs = self.gssproxy("gssproxy-nfs-client-own.conf")
+        self.assertIn(("cred_store", "keytab:/etc/gssproxy/nfs.keytab"), pairs)
+
+    def test_gssd_uses_gssproxy(self):
+        cp = ini("nfs-gssd.conf")
+        self.assertEqual(cp.sections(), ["gssd"])
+        self.assertEqual(dict(cp["gssd"]), {"use-gss-proxy": "1"})
+
+
 if __name__ == "__main__":
     unittest.main()

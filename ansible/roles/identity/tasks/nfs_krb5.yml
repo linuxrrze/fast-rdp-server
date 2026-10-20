@@ -1,0 +1,50 @@
+---
+# Kerberized NFS homes (fastrdp_nfs_krb5_homes): rpc.gssd + gssproxy impersonation.
+- name: NFS client and gssproxy packages
+  ansible.builtin.apt:
+    name: [nfs-common, gssproxy]
+    state: present
+
+- name: Impersonation keytab
+  ansible.builtin.stat:
+    path: "{{ fastrdp_nfs_gssproxy_keytab }}"
+  register: fastrdp_nfs_keytab
+
+- name: Impersonation keytab present
+  ansible.builtin.assert:
+    that: fastrdp_nfs_keytab.stat.exists
+    fail_msg: >-
+      {{ fastrdp_nfs_gssproxy_keytab }} is missing: rpc.gssd (machine credentials) and
+      gssproxy (impersonation) need the host keytab. Join the domain first.
+
+- name: Gssproxy service for rpc.gssd
+  ansible.builtin.template:
+    src: gssproxy-nfs-client.conf.j2
+    dest: /etc/gssproxy/90-fastrdp-nfs-client.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart gssproxy
+
+- name: Configuration directory of the NFS tools
+  ansible.builtin.file:
+    path: /etc/nfs.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Rpc.gssd uses gssproxy
+  ansible.builtin.template:
+    src: nfs-gssd.conf.j2
+    dest: /etc/nfs.conf.d/fastrdp-gssd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rpc-gssd
+
+- name: Gssproxy running
+  ansible.builtin.systemd_service:
+    name: gssproxy
+    enabled: true
+    state: started

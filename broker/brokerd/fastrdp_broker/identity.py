@@ -4,13 +4,17 @@
 
 from __future__ import annotations
 
+import errno
 import grp
+import logging
 import os
 import pwd
 import re
 from dataclasses import dataclass
 
 from .config import AuthSection, Config
+
+log = logging.getLogger("fastrdp.identity")
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._@-]{1,256}$")
 DESKTOP_PREF = ".config/fastrdp/desktop"
@@ -79,17 +83,28 @@ def user_allowed(user: LocalUser, auth: AuthSection) -> bool:
 
 
 def read_desktop_pref(user: LocalUser) -> str | None:
-    """Read ~/.config/fastrdp/desktop without following symlinks (we run as root)."""
+    """Read ~/.config/fastrdp/desktop without following symlinks (we run as root).
+
+    Any error means "no preference": root often cannot read the home directory at all
+    (NFS with sec=krb5*: root has no user credentials, EACCES/EKEYEXPIRED; root_squash),
+    and a login must never fail because of this optional file. Blocking (unreachable NFS
+    server) is handled by the caller, see Broker.read_desktop_pref.
+    """
     path = os.path.join(user.home, DESKTOP_PREF)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
+    except OSError as exc:
+        if exc.errno != errno.ENOENT:
+            log.debug("%s: cannot open %s: %s", user.name, path, exc)
         return None
     try:
         st = os.fstat(fd)
         if st.st_uid != user.uid or not (st.st_mode & 0o170000 == 0o100000):
             return None
         data = os.read(fd, 64)
+    except OSError as exc:  # e.g. EIO, or EKEYEXPIRED when the credentials expire mid-read
+        log.debug("%s: cannot read %s: %s", user.name, path, exc)
+        return None
     finally:
         os.close(fd)
     value = data.decode(errors="ignore").strip().splitlines()
@@ -101,15 +116,31 @@ def desktop_allowed(cfg: Config, name: str, user: LocalUser) -> bool:
     return desk is not None and (not desk.groups or bool(user.groups & set(desk.groups)))
 
 
-def choose_desktop(cfg: Config, user: LocalUser, hint: str | None) -> str:
-    """Client hint > user preference file > group default > global default."""
+def hinted_desktop(cfg: Config, user: LocalUser, hint: str | None) -> str | None:
+    """The desktop named by the client hint, if the user may use it."""
     if hint:
         hint = hint.strip()
         if hint.lower().startswith("fastrdp:"):
             hint = hint.split(":", 1)[1]
         if desktop_allowed(cfg, hint, user):
             return hint
-    pref = read_desktop_pref(user)
+    return None
+
+
+_READ_PREF = object()
+
+
+def choose_desktop(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PREF) -> str:
+    """Client hint > user preference file > group default > global default.
+
+    `pref`: the preference already read by the caller (None = none); by default the
+    file is read here, synchronously.
+    """
+    hinted = hinted_desktop(cfg, user, hint)
+    if hinted:
+        return hinted
+    if pref is _READ_PREF:
+        pref = read_desktop_pref(user)
     if pref and desktop_allowed(cfg, pref, user):
         return pref
     for group, desk in cfg.group_defaults.items():

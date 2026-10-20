@@ -76,3 +76,7 @@
     name: sssd
     state: started
     enabled: true
+
+- name: Kerberized NFS home directories
+  ansible.builtin.include_tasks: nfs_krb5.yml
+  when: fastrdp_nfs_krb5_homes | bool

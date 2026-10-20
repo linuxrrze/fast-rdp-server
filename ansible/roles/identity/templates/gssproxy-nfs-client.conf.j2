@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# NFS client credentials for rpc.gssd (fastrdp_nfs_krb5_homes, docs/nfs-kerberos-homes.md).
+# rpc.gssd switches to the uid that touches the mount and calls GSSAPI; with
+# use-gss-proxy=1 those calls come here. gssproxy maps the uid to its user name
+# (getpwuid + default realm), gets a ticket to itself for that user with the host
+# keytab (S4U2Self), then a ticket to nfs/<server> (S4U2Proxy). The KDC decides which
+# NFS servers this host may impersonate users to.
+[service/fastrdp-nfs-client]
+mechs = krb5
+cred_store = keytab:{{ fastrdp_nfs_gssproxy_keytab }}
+cred_store = ccache:FILE:/var/lib/gssproxy/clients/krb5cc_%U
+cred_usage = initiate
+allow_any_uid = yes
+impersonate = yes
+trusted = yes
+euid = 0
+# Only rpc.gssd may use this service, not arbitrary programs with GSS_USE_PROXY=yes.
+program = /usr/sbin/rpc.gssd

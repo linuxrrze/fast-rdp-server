@@ -61,7 +61,10 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
 - **Desktop choice:** client hint `fastrdp:<desktop>` in the alternate-shell field,
   then `~/.config/fastrdp/desktop`, then `[defaults.groups]`, then `[defaults] desktop`
   (`identity.choose_desktop`). A hint for a desktop the user may not use is ignored
-  silently and the next rule applies (RDP clients). The web chooser offers only the
+  silently and the next rule applies (RDP clients). The broker reads the preference
+  file as root in a worker thread for at most `[broker] home_read_timeout` seconds
+  (default 3, `0` = never); an unreadable or hanging home (NFS with `sec=krb5*`,
+  server down) means "no preference" ([nfs-kerberos-homes.md](../nfs-kerberos-homes.md)). The web chooser offers only the
   desktops the user may use and refuses others ([web.md](web.md)).
 - **Restricting desktops:** `fastrdp_desktop_groups` (e.g. `{plasma: [rdp-kde]}`)
   renders `groups = [...]` per desktop into `broker.toml`; desktops not listed are open

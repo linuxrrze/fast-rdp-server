@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# rpc.gssd: let gssproxy acquire user credentials (impersonation), see
+# /etc/gssproxy/90-fastrdp-nfs-client.conf and docs/nfs-kerberos-homes.md.
+[gssd]
+use-gss-proxy = 1

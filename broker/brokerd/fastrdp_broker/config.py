@@ -28,6 +28,10 @@ class BrokerSection:
     port_range: tuple[int, int] = (33900, 34899)
     token_ttl: int = 60
     session_start_timeout: int = 90
+    # Seconds the broker waits for ~/.config/fastrdp/desktop (read as root). Home
+    # directories on NFS can hang (server down) or refuse root (sec=krb5*); the login
+    # then falls back to the group/global default. 0 = never read users' homes.
+    home_read_timeout: float = 3.0
 
 
 @dataclass
@@ -140,6 +144,12 @@ def parse(raw: dict) -> Config:
             raise ConfigError("[broker] port_range must be [low, high] within 1025..65535")
         broker_raw["port_range"] = (lo, hi)
     broker = _section(BrokerSection, broker_raw, "broker")
+    if (
+        isinstance(broker.home_read_timeout, bool)
+        or not isinstance(broker.home_read_timeout, (int, float))
+        or not 0 <= broker.home_read_timeout <= 60
+    ):
+        raise ConfigError("[broker] home_read_timeout must be a number of seconds in 0..60")
 
     auth = _section(AuthSection, dict(raw.pop("auth", {})), "auth")
     auth.realms = [r.upper() for r in auth.realms]

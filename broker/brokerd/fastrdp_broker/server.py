@@ -10,6 +10,7 @@ import logging
 import os
 import pwd
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from . import identity, pamauth
 from .backends import BACKENDS, Backend, BackendError, LoginRequest
@@ -44,6 +45,33 @@ class Broker:
         self.user_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.proxy_uid = pwd.getpwnam(cfg.broker.proxy_user).pw_uid
         self.active: dict[str, str] = {}  # proxy session id -> user
+        # Reads of users' home directories run here, never in the event loop and never in
+        # the default executor (PAM checks): a hung NFS mount may block a thread forever.
+        self.home_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fastrdp-home")
+
+    # ---------------------------------------------------------------- desktop
+    async def read_desktop_pref(self, user: LocalUser) -> str | None:
+        """~/.config/fastrdp/desktop with a time limit; None if unreadable or too slow."""
+        timeout = self.cfg.broker.home_read_timeout
+        if timeout <= 0:
+            return None
+        fut = asyncio.get_running_loop().run_in_executor(self.home_pool, identity.read_desktop_pref, user)
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        except TimeoutError:
+            log.warning(
+                "%s: no answer from %s within %.1fs (home on a hung network filesystem?); "
+                "using the default desktop", user.name, user.home, timeout,
+            )
+            return None
+
+    async def choose_desktop(self, user: LocalUser, hint: str | None) -> str:
+        """identity.choose_desktop, reading the user's preference file off the event loop."""
+        hinted = identity.hinted_desktop(self.cfg, user, hint)
+        if hinted:
+            return hinted
+        pref = await self.read_desktop_pref(user)
+        return identity.choose_desktop(self.cfg, user, None, pref=pref)
 
     # ---------------------------------------------------------------- login
     async def first_factor(
@@ -133,7 +161,7 @@ class Broker:
             log.info("second factor ok for %s via %s", user.name, factor)
 
         try:
-            desktop_name = identity.choose_desktop(self.cfg, user, str_field(msg, "desktop_hint"))
+            desktop_name = await self.choose_desktop(user, str_field(msg, "desktop_hint"))
         except IdentityError as exc:
             raise Denied(str(exc)) from None
         desktop = self.cfg.desktops[desktop_name]
@@ -173,7 +201,7 @@ class Broker:
     async def web_desktops(self, msg: dict) -> dict:
         """fastrdp-webgate lists the desktops for its chooser (no token issued)."""
         user, desktops = await self._web_user(msg)
-        default = identity.choose_desktop(self.cfg, user, None)
+        default = await self.choose_desktop(user, None)
         return {"ok": True, "user": user.name, "desktops": desktops, "default": default}
 
     async def issue_web_token(self, msg: dict) -> dict:

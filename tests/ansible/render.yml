@@ -17,11 +17,25 @@
     - ../../ansible/roles/freerdp_proxy/defaults/main.yml
     - ../../ansible/roles/web_gateway/defaults/main.yml
     - ../../ansible/roles/tuning/defaults/main.yml
+    - ../../ansible/roles/identity/defaults/main.yml
   vars:
     roles_dir: "{{ playbook_dir }}/../../ansible/roles"
     ansible_fqdn: rdp1.lab.example.com
     fastrdp_gpu_effective: none
   tasks:
+    - name: Kerberized NFS homes (gssproxy impersonation for rpc.gssd)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_nfs_krb5_homes: true
+        fastrdp_nfs_gssproxy_keytab: "{{ item.keytab }}"
+      loop:
+        - {src: gssproxy-nfs-client.conf.j2, dest: gssproxy-nfs-client.conf, keytab: /etc/krb5.keytab}
+        - {src: gssproxy-nfs-client.conf.j2, dest: gssproxy-nfs-client-own.conf, keytab: /etc/gssproxy/nfs.keytab}
+        - {src: nfs-gssd.conf.j2, dest: nfs-gssd.conf, keytab: /etc/krb5.keytab}
+
     - name: Xrdp gfx.toml per encoder choice
       ansible.builtin.template:
         src: "{{ roles_dir }}/xrdp/templates/gfx.toml.j2"

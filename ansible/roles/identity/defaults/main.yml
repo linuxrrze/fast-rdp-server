@@ -4,3 +4,14 @@
 fastrdp_ad_gpo_access_control: permissive
 # For provider "none": keytab with TERMSRV/<fqdn> keys, on the controller.
 fastrdp_termsrv_keytab_src: ""
+
+# Home directories on NFS with sec=krb5 / krb5i / krb5p (docs/nfs-kerberos-homes.md).
+# true: rpc.gssd asks gssproxy for NFS credentials, and gssproxy obtains them for
+# every local user by impersonation (S4U2Self + S4U2Proxy) with the host keytab, so
+# sessions without a password (Kerberos SSO, smartcard, web, GNOME, Plasma) can use
+# their home. The directory must allow constrained delegation from this host to
+# nfs/<server> first (AD: msDS-AllowedToDelegateTo or RBCD; FreeIPA: delegation rule).
+fastrdp_nfs_krb5_homes: false
+# Keytab whose FIRST entry is the impersonating principal (AD: HOST$@REALM,
+# FreeIPA: host/<fqdn>@REALM). Check with: klist -k <keytab> | head
+fastrdp_nfs_gssproxy_keytab: /etc/krb5.keytab

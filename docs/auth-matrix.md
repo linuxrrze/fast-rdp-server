@@ -62,6 +62,9 @@ split in the wrong place.
   - FreeIPA: `ipa service-add TERMSRV/<fqdn>` + `ipa-getkeytab`.
 - Accepted realms: `fastrdp_realm` (broker `[auth] realms`). Principals from other
   realms are refused even if a cross-realm trust exists.
+- Home directories on NFS with `sec=krb5`/`krb5i`/`krb5p` need a TGT (or gssproxy
+  impersonation) before the session starts: see
+  [nfs-kerberos-homes.md](nfs-kerberos-homes.md) for which logins work.
 - Sessions use `KCM:` credential caches. sssd renews TGTs for up to 7 days
   (`krb5_renewable_lifetime`), which is long enough for long-running terminal-server
   sessions.
