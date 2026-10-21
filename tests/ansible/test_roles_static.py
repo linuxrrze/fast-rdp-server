@@ -58,6 +58,15 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("ansible.builtin.meta: flush_handlers", identity)
         self.assertIn("sss_cache -E", (ANSIBLE / "roles" / "identity" / "handlers" / "main.yml").read_text())
 
+    def test_broker_config_validated_before_install(self):
+        # a broker.toml the installed broker rejects must never replace the working one
+        # (force_handlers would restart into it), and older packages than these roles stop early
+        tasks = (ANSIBLE / "roles" / "broker" / "tasks" / "main.yml").read_text()
+        self.assertIn("validate: env PYTHONPATH=/usr/lib/fastrdp/python /usr/bin/python3 -m fastrdp_broker"
+                      " --check --config %s", tasks)
+        self.assertIn("Installed packages are not older than these roles", tasks)
+        self.assertNotIn("name: Validate broker configuration", tasks)
+
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         # the inventory name first (reverse DNS can give the bare domain), the fact as fallback

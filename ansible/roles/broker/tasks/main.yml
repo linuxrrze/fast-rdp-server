@@ -68,6 +68,28 @@
         state: "{{ fastrdp_apt_package_state }}"
       notify: Restart fastrdp-brokerd
 
+    # The roles come from the checkout, the packages from the APT channel: roles newer than
+    # the installed broker write settings it rejects (e.g. a stable package and roles from main).
+    - name: Installed broker version
+      ansible.builtin.command: dpkg-query -W -f=${Version} fastrdp-broker
+      register: fastrdp_broker_pkg
+      changed_when: false
+
+    - name: Installed packages are not older than these roles
+      vars:
+        roles_version: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../debian/changelog').splitlines()[0]
+             | regex_replace('^[^(]*[(]([0-9.]+).*$', '\1') }}
+        pkg_version: "{{ fastrdp_broker_pkg.stdout | regex_replace('[~+].*$', '') }}"
+      ansible.builtin.assert:
+        that: pkg_version is version(roles_version, '>=')
+        fail_msg: >-
+          fastrdp-broker {{ fastrdp_broker_pkg.stdout }} is older than these roles ({{ roles_version }}),
+          which may write settings it does not know. Install the matching packages
+          (fastrdp_apt_package_state: latest after the release is published, or channel testing for main),
+          or check out the tag of the installed version (git checkout v{{ pkg_version }}).
+        quiet: true
+
     - name: No copies from build installs shadowing the packaged unit and command
       ansible.builtin.file:
         path: "{{ item }}"
@@ -75,6 +97,8 @@
       loop: [/etc/systemd/system/fastrdp-brokerd.service, /usr/local/sbin/fastrdpctl]
       notify: Restart fastrdp-brokerd
 
+# validate: a config the broker rejects never replaces the working one (with force_handlers
+# the restart would otherwise run and stop the broker).
 - name: Broker configuration
   ansible.builtin.template:
     src: broker.toml.j2
@@ -82,6 +106,7 @@
     owner: root
     group: root
     mode: "0600"
+    validate: env PYTHONPATH=/usr/lib/fastrdp/python /usr/bin/python3 -m fastrdp_broker --check --config %s
   notify: Restart fastrdp-brokerd
 
 - name: Broker unit
@@ -93,12 +118,6 @@
     mode: "0644"
   when: fastrdp_install_method == 'build'
   notify: Restart fastrdp-brokerd
-
-- name: Validate broker configuration
-  ansible.builtin.command: /usr/bin/python3 -m fastrdp_broker --check
-  environment:
-    PYTHONPATH: /usr/lib/fastrdp/python
-  changed_when: false
 
 - name: Broker running
   ansible.builtin.systemd_service:
