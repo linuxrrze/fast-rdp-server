@@ -71,6 +71,12 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("only_upgrade: true", repo)
         # vendored FreeRDP/xrdp: own versions from packaging/*/debian/changelog
         self.assertIn("Upgrade vendored packages older than these roles", repo)
+        # the comparison is the script's (tests/ansible/test_outdated_packages.sh), run before and
+        # after the upgrade; still older afterwards stops the play here, not in a later role
+        self.assertEqual(repo.count("ansible.builtin.script: \"{{ fastrdp_outdated_cmd }}\""), 2)
+        self.assertTrue((ANSIBLE / "roles" / "base" / "files" / "fastrdp-outdated-packages.sh").is_file())
+        self.assertIn("Installed fastrdp packages are not older than these roles", repo)
+        self.assertIn("Versions of these roles are well-formed", repo)
         common = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         for f in ("packaging/freerdp/debian/changelog", "packaging/xrdp/debian/changelog"):
             self.assertIn(f, common)

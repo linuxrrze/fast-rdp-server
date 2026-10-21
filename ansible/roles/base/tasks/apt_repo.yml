@@ -46,51 +46,81 @@
 
 # The roles come from the checkout, the packages from the repository: installed fastrdp
 # packages older than these roles are upgraded here (later roles only install missing ones),
-# so new roles never configure an old broker. The broker role checks the result.
-- name: Installed fastrdp packages
-  ansible.builtin.command:
-    argv: >-
-      {{ ['dpkg-query', '-W', '-f=${Package} ${Version} ${db:Status-Abbrev}\\n']
-         + fastrdp_apt_own_packages + (fastrdp_apt_vendored_versions | list) }}
-  register: fastrdp_installed_pkgs
-  changed_when: false
-  failed_when: fastrdp_installed_pkgs.rc > 1     # 1: some are not installed
+# so new roles never configure an old broker. A malformed changelog line must not turn
+# into a garbage comparison.
+- name: Versions of these roles are well-formed
+  ansible.builtin.assert:
+    that:
+      - fastrdp_roles_version is match('^[0-9]+(\\.[0-9]+)+$')
+      - fastrdp_apt_vendored_versions.values() | reject('match', '^[0-9][A-Za-z0-9.+~-]*-[A-Za-z0-9.+~]+$') | list == []
+    fail_msg: >-
+      Cannot read the versions of these roles from the checkout: fastrdp_roles_version
+      '{{ fastrdp_roles_version }}' (debian/changelog), vendored {{ fastrdp_apt_vendored_versions }}
+      (packaging/*/debian/changelog). Check the first line of these changelogs.
+    quiet: true
 
-- name: Upgrade fastrdp packages older than these roles ({{ fastrdp_roles_version }})
+# files/fastrdp-outdated-packages.sh: one line "own|vendored PACKAGE INSTALLED REQUIRED" per
+# installed package that is older (own: release number against fastrdp_roles_version; vendored:
+# dpkg --compare-versions against packaging/*/debian/changelog, without the ~<distro> suffix).
+- name: Fastrdp packages older than these roles
   vars:
-    installed: >-
-      {{ fastrdp_installed_pkgs.stdout_lines | map('split') | selectattr('2', 'defined')
-         | selectattr('2', 'match', '^ii') | selectattr('0', 'in', fastrdp_apt_own_packages) | list }}
-    # name -> upstream version without the ~<distro> / +git suffix
-    versions: >-
-      {{ dict(installed | map(attribute='0') | zip(installed | map(attribute='1') | map('regex_replace', '[~+].*$', ''))) }}
-    older: >-
-      {{ versions | dict2items | selectattr('value', 'version', fastrdp_roles_version, '<') | map(attribute='key') | list }}
-  ansible.builtin.apt:
-    name: "{{ older }}"
-    state: latest
-    only_upgrade: true
-    update_cache: true
-    cache_valid_time: 0
-  when: older | length > 0
-  notify: [Restart fastrdp-brokerd, Restart fastrdp-proxy]
+    fastrdp_outdated_cmd: >-
+      fastrdp-outdated-packages.sh {{ ([fastrdp_roles_version] + fastrdp_apt_own_packages
+         + (fastrdp_apt_vendored_versions.items() | map('join', '=') | list)) | map('quote') | join(' ') }}
+  block:
+    - name: Installed fastrdp packages older than these roles ({{ fastrdp_roles_version }})
+      ansible.builtin.script: "{{ fastrdp_outdated_cmd }}"
+      register: fastrdp_outdated_pkgs
+      changed_when: false
+      check_mode: false
 
-# The vendored FreeRDP/xrdp packages have their own versions (packaging/*/debian/changelog
-# of this checkout): a patch-only change bumps their revision, which the fastrdp packages'
-# dependency ranges do not force.
-- name: Upgrade vendored packages older than these roles
-  vars:
-    installed: >-
-      {{ fastrdp_installed_pkgs.stdout_lines | map('split') | selectattr('2', 'defined')
-         | selectattr('2', 'match', '^ii') | selectattr('0', 'in', fastrdp_apt_vendored_versions | list) | list }}
-  ansible.builtin.apt:
-    name: "{{ item.0 }}"
-    state: latest
-    only_upgrade: true
-    update_cache: true
-    cache_valid_time: 0
-  loop: "{{ installed }}"
-  loop_control:
-    label: "{{ item.0 }} {{ item.1 }}"
-  when: (item.1 | regex_replace('~(deb|ubuntu)[0-9.]+$', '')) is version(fastrdp_apt_vendored_versions[item.0], '<')
-  notify: [Restart fastrdp-proxy, Restart xrdp]
+    - name: Upgrade fastrdp packages older than these roles
+      vars:
+        older: "{{ fastrdp_outdated_pkgs.stdout_lines | map('split') | selectattr('0', 'defined') | selectattr('0', 'eq', 'own') | map(attribute='1') | list }}"
+      ansible.builtin.apt:
+        name: "{{ older }}"
+        state: latest
+        only_upgrade: true
+        update_cache: true
+        cache_valid_time: 0
+      when: older | length > 0
+      notify: [Restart fastrdp-brokerd, Restart fastrdp-proxy, Restart fastrdp-webgate]
+
+    # The vendored FreeRDP/xrdp packages have their own versions (packaging/*/debian/changelog
+    # of this checkout): a patch-only change bumps their revision, which the fastrdp packages'
+    # dependency ranges do not force.
+    - name: Upgrade vendored packages older than these roles
+      ansible.builtin.apt:
+        name: "{{ item.1 }}"
+        state: latest
+        only_upgrade: true
+        update_cache: true
+        cache_valid_time: 0
+      loop: "{{ fastrdp_outdated_pkgs.stdout_lines | map('split') | selectattr('0', 'defined') | selectattr('0', 'eq', 'vendored') | list }}"
+      loop_control:
+        label: "{{ item.1 }} {{ item.2 }}"
+      notify: [Restart fastrdp-proxy, Restart xrdp]
+
+    # If the repository has nothing newer, stop here: newer roles would write settings the
+    # installed packages reject. (Check mode upgrades nothing, so nothing to check.)
+    - name: Installed fastrdp packages after the upgrade
+      ansible.builtin.script: "{{ fastrdp_outdated_cmd }}"
+      register: fastrdp_outdated_after
+      changed_when: false
+      when: fastrdp_outdated_pkgs.stdout_lines | map('split') | selectattr('0', 'defined') | list | length > 0 and not ansible_check_mode
+
+    - name: Installed fastrdp packages are not older than these roles
+      vars:
+        still: "{{ fastrdp_outdated_after.stdout_lines | map('split') | selectattr('0', 'defined') | list }}"
+      ansible.builtin.assert:
+        that: still | length == 0
+        fail_msg: >-
+          Still older than these roles after the upgrade:
+          {% for p in still %}{{ p[1] }} {{ p[2] }} (needs {{ p[3] }}){{ '.' if loop.last else ',' }} {% endfor %}
+          The {{ fastrdp_apt_suite }} suite of {{ fastrdp_apt_repo_url }} has no newer version yet
+          (release not published, or not live on GitHub Pages yet: the pages workflow of the
+          repository waits up to 15 minutes for it and fails if it does not go live).
+          Retry later, use channel testing for a checkout of main, or check out the tag of the
+          installed version (git checkout v<version>).
+        quiet: true
+      when: fastrdp_outdated_after is not skipped

@@ -83,9 +83,10 @@
         fail_msg: >-
           fastrdp-broker {{ fastrdp_broker_pkg.stdout }} is older than these roles ({{ fastrdp_roles_version }})
           even after the upgrade in the base role: the {{ fastrdp_apt_suite }} suite of
-          {{ fastrdp_apt_repo_url }} has no newer version yet (release not published, or GitHub Pages
-          still serves the previous one for a few minutes). Retry later, use channel testing for a
-          checkout of main, or check out the tag of the installed version (git checkout v{{ pkg_version }}).
+          {{ fastrdp_apt_repo_url }} has no newer version yet (release not published, or not live on
+          GitHub Pages yet: the pages workflow of the repository waits up to 15 minutes for it).
+          Retry later, use channel testing for a checkout of main, or check out the tag of the
+          installed version (git checkout v{{ pkg_version }}).
         quiet: true
 
     - name: No copies from build installs shadowing the packaged unit and command

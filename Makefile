@@ -44,11 +44,12 @@ test-proxy-module:
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report
 
-test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/ci/*.sh, TERMSRV helpers; dpkg-dev curl patch xz-utils git
+test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/ci/*.sh, TERMSRV helpers, base role's package check; dpkg-dev curl patch xz-utils git
 	tests/packaging/test_fetch.sh
 	tests/packaging/test_build_key.sh
 	tests/packaging/test_ci_scripts.sh
 	tests/packaging/test_publish_gh_pages.sh
+	tests/ansible/test_outdated_packages.sh
 	tests/packaging/test_xrdp_site_config.sh
 	python3 -m unittest -v tests/identity/test_termsrv_helpers.py
 
@@ -117,9 +118,9 @@ lint:   # ansible-lint, shellcheck (missing: SKIP, or FAIL with FASTRDP_TESTS_ST
 	  shellcheck -x broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
 		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
 		tests/proxy-e2e/*.sh tests/krb5-spnego/run.sh tests/smoke/*.sh tests/perf/*.sh patches/xrdp/test/run_test.sh \
-		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh && \
+		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh tests/ansible/*.sh && \
 	  shellcheck -e SC1090$(comma)SC2015 tests/wlroots/run.sh && \
-	  shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* \
+	  shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* ansible/roles/base/files/*.sh \
 		packaging/xrdp/debian/fastrdp-xrdp.postinst packaging/xrdp/debian/fastrdp-xrdp.postrm)
 	packaging/ci/check-build-deps.sh
 
