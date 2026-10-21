@@ -586,6 +586,29 @@ class TicketRenewal(unittest.TestCase):
         self.assertEqual(k["default_ccache_name"], "KCM:")
 
 
+class SessionCredentialCache(unittest.TestCase):
+    """pam_sss must store TGTs where the session's processes look (backlog K1): they
+    get no KRB5CCNAME and use default_ccache_name = KCM:. sssd uses the same value
+    when sssd.conf has no krb5_ccname_template (sssd-krb5(5); krb5_common.c reads
+    [libdefaults] default_ccache_name, fallback FILE:%d/krb5cc_%U_XXXXXX)."""
+
+    def test_no_ccname_template_in_sssd_files(self):
+        files = sorted(OUT.glob("sssd*.conf"))
+        self.assertTrue(files)
+        for path in files:
+            with self.subTest(path.name):
+                cp = ini(path.name)
+                for section in cp.sections():
+                    self.assertNotIn("krb5_ccname_template", cp[section])
+
+    def test_sssd_restarts_when_the_default_cache_changes(self):
+        main = (REPO / "ansible/roles/identity/tasks/main.yml").read_text()
+        for task in ("- name: Kerberos client settings of fastrdp (snippet)",
+                     "- name: Kerberos client configuration (AD, none"):
+            block = main[main.index(task):].split("\n\n", 1)[0]
+            self.assertIn("notify: Restart sssd", block, task)
+
+
 class FullyQualifiedNames(unittest.TestCase):
     """fastrdp_sssd_fully_qualified_names: SSSD names (AD sssd.conf, FreeIPA snippet,
     checked for provider "none") and the broker's name order come from one variable."""

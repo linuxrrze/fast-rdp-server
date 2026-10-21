@@ -222,8 +222,13 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
   registers it for renewal (`krb5_renew_interval`). The password passes only
   through the PAM conversation, never argv, environment, files or logs. Then
   `klist -s` runs with the user's uid/gid (no supplementary groups, `HOME=/`, cwd
-  `/`) to check that a valid TGT is really there (sssd authenticates offline from
-  its cache without a TGT).
+  `/`, no `KRB5CCNAME`: the default cache, as in the session) to check that a valid
+  TGT is really there (sssd authenticates offline from its cache without a TGT). If
+  another principal's cache is primary in the user's KCM collection (`kinit` of a
+  second principal), the login's cache is made primary first (`kswitch`); a `FILE:`
+  cache from an `sssd.conf` `krb5_ccname_template` is refused, since the session
+  would not find it ([which cache](../nfs-kerberos-homes.md#which-cache-the-session-uses)).
+  Check a running session with `sudo tests/smoke/check-session-tgt.sh USER`.
 - **Reconnect:** runs on every login with a password, also when the running session
   is reused, so a reconnect renews an expiring TGT for all processes of the uid.
 - **`[broker] session_tgt`** (`fastrdp_session_tgt`): `auto` (default) = failures

@@ -13,19 +13,22 @@ import os
 import unittest
 from unittest import mock
 
-from fastrdp_broker import config, pamauth, sysutil, tgt
+from fastrdp_broker import config, identity, pamauth, sysutil, tgt
 from fastrdp_broker.config import ConfigError
 from fastrdp_broker.state import Session
 from test_gaps import _BrokerHarness, raw_example, user
 
 PW = "S3cret-pw!"  # never allowed outside the PAM conversation
+AUTH = config.parse(raw_example()).auth
 
 
 class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.calls = []  # order of TGT step and back-end start
-        self.establish = mock.Mock(side_effect=lambda *a: self.calls.append("tgt") or "KCM:")
+        # return_value: what pam_sss reports once a test resets side_effect to None
+        self.establish = mock.Mock(side_effect=lambda *a: self.calls.append("tgt") or "KCM:",
+                                   return_value="KCM:")
         self.klist = mock.AsyncMock(return_value=sysutil.Result(0, "", ""))
         self.ensure.side_effect = lambda req: self.calls.append("ensure") or self.ensure.return_value
         for p in (mock.patch("fastrdp_broker.pamauth.establish_credentials", self.establish),
@@ -43,8 +46,8 @@ class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
                 self.assertTrue((await self.gnome(desktop=desktop))["ok"])
                 self.establish.assert_called_with("fastrdp-tgt", "alice", PW)
                 self.assertEqual(self.calls, ["tgt", "ensure"])
-                # klist checks the cache pam_sss reported, as the user
-                self.klist.assert_awaited_with(self.users["alice"], "klist", "-s", env={"KRB5CCNAME": "KCM:"})
+                # klist checks the default cache, as the user: what the session uses
+                self.klist.assert_awaited_with(self.users["alice"], "klist", "-s")
 
     async def test_tls_login_gets_tgt(self):
         self.assertTrue((await self.login(password=PW, desktop_hint="fastrdp:plasma"))["ok"])
@@ -150,13 +153,13 @@ class TgtObtainTests(unittest.IsolatedAsyncioTestCase):
                                           "FASTRDP_SECRET": PW}), \
                 mock.patch("fastrdp_broker.pamauth.establish_credentials", return_value="KCM:") as pam, \
                 mock.patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
-            await tgt.obtain(u, PW)
+            await tgt.obtain(u, PW, AUTH)
         pam.assert_called_once_with("fastrdp-tgt", "alice", PW)  # only PAM gets the password
         self.assertEqual(captured["argv"], ("klist", "-s"))
         self.assertNotIn(PW, " ".join(captured["argv"]))
         env = captured["env"]
         self.assertNotIn(PW, " ".join(f"{k}={v}" for k, v in env.items()))
-        self.assertEqual(env["KRB5CCNAME"], "KCM:")             # from pam_sss, not the broker's
+        self.assertNotIn("KRB5CCNAME", env)  # neither the broker's nor pam_sss's: the default
         self.assertNotIn("KRB5_CONFIG", env)
         self.assertEqual(env["HOME"], "/")                      # never the NFS home
         # privileges dropped completely: uid, gid and no supplementary groups (root's)
@@ -169,13 +172,118 @@ class TgtObtainTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch("fastrdp_broker.sysutil.run_dropped",
                            new=mock.AsyncMock(return_value=sysutil.Result(1, "", ""))) as klist, \
                 self.assertRaisesRegex(tgt.TgtError, "no valid TGT"):
-            await tgt.obtain(user(), PW)
-        self.assertEqual(klist.await_args.kwargs["env"], None)  # no KRB5CCNAME from PAM: default
+            await tgt.obtain(user(), PW, AUTH)
+        self.assertEqual(klist.await_args.args[1:], ("klist", "-s"))
         with mock.patch("fastrdp_broker.pamauth.establish_credentials", return_value=None), \
                 mock.patch("fastrdp_broker.sysutil.run_dropped",
                            new=mock.AsyncMock(side_effect=FileNotFoundError("klist"))), \
                 self.assertRaisesRegex(tgt.TgtError, "klist"):
-            await tgt.obtain(user(), PW)
+            await tgt.obtain(user(), PW, AUTH)
+
+
+def klist_out(*caches):
+    """`klist` / `klist -A` output (C locale) for (cache, principal) pairs."""
+    return "\n".join(f"Ticket cache: {c}\nDefault principal: {p}\n\n"
+                     "Valid starting       Expires              Service principal\n"
+                     "10/21/26 08:00:00  10/21/26 18:00:00  krbtgt/LAB.EXAMPLE.COM@LAB.EXAMPLE.COM\n"
+                     for c, p in caches)
+
+
+class TgtCacheSelectionTests(unittest.IsolatedAsyncioTestCase):
+    """The session uses the default cache (no KRB5CCNAME): the TGT must be there.
+
+    Regressions: a FILE cache from sssd's krb5_ccname_template passed the check of the
+    cache pam_sss reported, though the session never looks there; in a KCM collection
+    whose primary cache is another principal (kinit alice.admin in a session) sssd
+    refreshes the login's cache without making it primary (krb5_child create_ccache)."""
+
+    ALICE = ("KCM:1500:111", "alice@LAB.EXAMPLE.COM")
+    ADMIN = ("KCM:1500:222", "alice.admin@LAB.EXAMPLE.COM")
+
+    def setUp(self):
+        self.calls = []
+        self.primary = self.ALICE
+        self.caches = [self.ALICE]
+        self.valid = {self.ALICE[0], self.ADMIN[0]}
+        self.ccname = "KCM:"
+
+    async def run_dropped(self, u, *argv, env=None, timeout=15):
+        self.calls.append(argv)
+        self.assertIsNone(env)  # the session's view: no KRB5CCNAME
+        if argv == ("klist",):
+            return sysutil.Result(0 if self.primary else 1, klist_out(self.primary) if self.primary else "", "")
+        if argv == ("klist", "-A"):
+            return sysutil.Result(0, klist_out(*self.caches), "")
+        if argv[:2] == ("klist", "-s"):
+            cache = argv[2] if len(argv) > 2 else (self.primary or ("",))[0]
+            return sysutil.Result(0 if cache in self.valid else 1, "", "")
+        if argv[:2] == ("kswitch", "-c"):
+            self.primary = next(c for c in self.caches if c[0] == argv[2])
+            return sysutil.Result(0, "", "")
+        raise AssertionError(argv)
+
+    @staticmethod
+    def resolve(name, realm, auth):
+        if name == "alice":
+            return user()
+        if name == "alice.admin":
+            return user("alice.admin", uid=1600)
+        raise identity.UnknownUser(name)
+
+    async def obtain(self):
+        with mock.patch("fastrdp_broker.pamauth.establish_credentials", return_value=self.ccname), \
+                mock.patch("fastrdp_broker.sysutil.run_dropped", side_effect=self.run_dropped), \
+                mock.patch("fastrdp_broker.identity.resolve_principal", side_effect=self.resolve):
+            await tgt.obtain(user(), PW, AUTH)
+
+    def switched(self):
+        return [c for c in self.calls if c[0] == "kswitch"]
+
+    async def test_own_cache_primary(self):
+        await self.obtain()
+        self.assertNotIn(("klist", "-A"), self.calls)
+        self.assertEqual(self.switched(), [])
+        self.assertEqual(self.calls[-1], ("klist", "-s"))
+
+    async def test_other_principal_primary_is_switched(self):
+        self.primary, self.caches = self.ADMIN, [self.ADMIN, self.ALICE]
+        with self.assertLogs("fastrdp.tgt", "INFO") as logs:
+            await self.obtain()
+        self.assertEqual(self.switched(), [("kswitch", "-c", "KCM:1500:111")])
+        self.assertEqual(self.primary, self.ALICE)
+        self.assertIn("made the primary", "\n".join(logs.output))
+        self.assertNotIn(PW, "\n".join(logs.output))
+
+    async def test_expired_own_cache_is_not_switched_to(self):
+        self.primary, self.caches = self.ADMIN, [self.ADMIN, self.ALICE]
+        self.valid = {self.ADMIN[0]}  # sssd offline: alice's cache not refreshed
+        await self.obtain()
+        self.assertEqual(self.switched(), [])
+
+    async def test_no_primary_yet(self):
+        self.primary = None  # e.g. the uid's KCM collection was empty before
+        await self.obtain()
+        self.assertEqual(self.switched(), [("kswitch", "-c", "KCM:1500:111")])
+
+    async def test_file_cache_from_sssd_template_refused(self):
+        self.ccname = "FILE:/tmp/krb5cc_1500_AbCdEf"
+        with self.assertRaisesRegex(tgt.TgtError, "krb5_ccname_template"):
+            await self.obtain()
+        self.assertEqual(self.switched(), [])
+
+    async def test_file_default_no_collection_steps(self):
+        self.ccname = "FILE:/tmp/krb5cc_1500"
+        self.primary = self.caches[0] = ("FILE:/tmp/krb5cc_1500", "alice@LAB.EXAMPLE.COM")
+        self.valid = {"FILE:/tmp/krb5cc_1500"}
+        await self.obtain()
+        self.assertEqual(self.calls, [("klist",), ("klist", "-s")])
+
+    def test_helpers(self):
+        self.assertEqual(tgt.cache_type("KCM:1500:1"), "KCM")
+        self.assertEqual(tgt.cache_type("/tmp/krb5cc_1500"), "FILE")
+        self.assertEqual(tgt.cache_type("DIR::/run/user/1500/krb5cc/tkt"), "DIR")
+        self.assertEqual(tgt.parse_caches(klist_out(self.ADMIN, self.ALICE)), [self.ADMIN, self.ALICE])
+        self.assertEqual(tgt.parse_caches("klist: Credentials cache 'KCM:1500' not found\n"), [])
 
 
 class FakeLibpam:

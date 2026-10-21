@@ -121,7 +121,7 @@ class Broker:
         if mode == "off" or backend.obtains_tgt or not password:
             return  # without a password "required" already refused the login
         try:
-            await tgt.obtain(user, password)
+            await tgt.obtain(user, password, self.cfg.auth)
         except tgt.TgtError as exc:
             if mode == "required":
                 raise Denied(f"{user.name}: no Kerberos TGT for the {backend.name} session: {exc}") from None

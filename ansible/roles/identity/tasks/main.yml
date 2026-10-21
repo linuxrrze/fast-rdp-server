@@ -30,6 +30,10 @@
     group: root
     mode: "0755"
 
+# sssd has no krb5_ccname_template of fastrdp's: it reads default_ccache_name from the
+# Kerberos configuration when it starts (sssd-krb5(5), "Default: (from libkrb5)"), so
+# pam_sss stores TGTs in KCM, where the session's processes look (no KRB5CCNAME there).
+# A change takes effect only with an sssd restart.
 - name: Kerberos client settings of fastrdp (snippet)
   ansible.builtin.template:
     src: krb5-fastrdp.conf.j2
@@ -37,6 +41,7 @@
     owner: root
     group: root
     mode: "0644"
+  notify: Restart sssd
 
 - name: Kerberos client configuration (AD, none; FreeIPA keeps the enrolment's)
   ansible.builtin.template:
@@ -46,6 +51,7 @@
     group: root
     mode: "0644"
   when: fastrdp_identity_provider != 'ipa'
+  notify: Restart sssd
 
 - name: TERMSRV keys must be AES (FreeRDP cannot use RC4)
   ansible.builtin.assert:

@@ -223,9 +223,16 @@ Now the broker obtains the TGT itself, for every login that carries the password
 1. `pam_authenticate` + `pam_setcred(PAM_ESTABLISH_CRED)` for the user with PAM
    service `fastrdp-tgt` (`broker/session/pam/fastrdp-tgt`: `auth required pam_sss.so`
    only). The password goes only through the PAM conversation.
-2. `klist -s` with the user's uid/gid (no supplementary groups, clean environment,
-   `HOME=/`, cwd `/`, `KRB5CCNAME` as reported by `pam_sss`) checks that a valid TGT
-   is now in the cache.
+2. Checks with the user's uid/gid (no supplementary groups, clean environment
+   **without `KRB5CCNAME`**, `HOME=/`, cwd `/`), i.e. against the default cache that
+   the session's processes use (they get no `KRB5CCNAME` either, see
+   [Which cache the session uses](#which-cache-the-session-uses)):
+   - the cache `pam_sss` reported must have the default cache's type: a `FILE:` cache
+     from a `krb5_ccname_template` in `sssd.conf` is refused with a hint;
+   - in a collection (`KCM:`), if the primary cache is not the user's own valid one
+     (e.g. after `kinit alice.admin` in a session), the user's cache is made primary
+     (`kswitch -c`; principal mapped like an NLA login, `identity.resolve_principal`);
+   - `klist -s` checks that the primary cache has a valid TGT.
 3. `[broker] session_tgt`: `auto` logs a failure and starts the session anyway,
    `required` refuses the login, `off` skips both steps.
 
@@ -237,8 +244,10 @@ Why PAM (option a) and not `kinit` in the user's manager (option b), from sssd
   it to `krb5_child`, and `krb5_child.c:2541-2562` calls `switch_to_user()`
   (`krb5_ccache.c:45`) before `create_ccache()`. So the broker running as root makes
   no difference; KCM sees the user's peer uid. For collections (`KCM:`)
-  `create_ccache()` reuses the cache of the same principal or creates one and makes
-  it primary (`krb5_child.c:1662-1707`, `krb5_cc_switch`), so `klist -s` sees it.
+  `create_ccache()` reuses the cache of the same principal, or creates one and makes
+  only that new one primary (`krb5_child.c` `create_ccache()`: `switch_to_cc` is set
+  only after `krb5_cc_new_unique`). A refreshed existing cache stays secondary if the
+  user switched to another principal; hence the `kswitch` in step 2.
 - The cache template is sssd's (`krb5_auth.c:299`, `krb5_ccname_template`, default
   from libkrb5), the principal is the user's real UPN from the directory (no
   `user@REALM` guess as with `kinit`), KDC discovery and failover are sssd's, and
@@ -250,6 +259,43 @@ Why PAM (option a) and not `kinit` in the user's manager (option b), from sssd
 - `kinit` inside the user's systemd manager (`sysutil.run_as_user`) would start
   `user@UID.service` *before* the TGT exists, which is the failure described in Q1,
   and its ticket would only be renewed by sssd-kcm.
+
+### Which cache the session uses
+
+[verified from sources: sssd main 2026-10 (`krb5_common.c`, `krb5_child.c`,
+`kcmsrv_ops.c`), MIT krb5 (`klist.c`, `cc_kcm.c`), xrdp 0.10.6.1
+(`verify_user_pam.c` `auth_set_env`); end-to-end result: inferred, check on a host
+with `tests/smoke/check-session-tgt.sh`]
+
+- **Where sssd stores the TGT:** `krb5_ccname_template` if `sssd.conf` sets it, else
+  `[libdefaults] default_ccache_name` read from the Kerberos configuration at sssd's
+  start (`sss_get_system_ccname_template()`), else the build default
+  `FILE:%d/krb5cc_%U_XXXXXX`. fastrdp sets no template, so sssd follows
+  `/etc/krb5.conf.d/fastrdp` (`KCM:`); the identity role restarts sssd when that file
+  or `/etc/krb5.conf` changes. `pam_sss` puts `KRB5CCNAME=<template expanded>` (here
+  `KCM:`) into the environment of *its* PAM handle only.
+- **KCM is per uid:** sssd-kcm keys caches by the peer uid of the socket; the default
+  (primary) cache of the uid's collection is the one marked default, else the first.
+  Every process of the uid that resolves `KCM:` sees the same collection, whatever
+  session or service it belongs to.
+- **xrdp (X11, wlroots):** xrdp-sesman exports its PAM environment into the session
+  (`auth_set_env`), so the desktop has `KRB5CCNAME=KCM:`; `startwm.sh` and
+  `dbus-run-session` pass it on. The user's systemd manager (`pam_systemd`,
+  `user@UID.service`) has no `KRB5CCNAME` and uses the default, `KCM:`: the same.
+- **GNOME:** `gdm-autologin` (GDM's Debian PAM file: `pam_permit` auth, no `pam_sss`
+  auth) sets no `KRB5CCNAME`, so gnome-session and the user manager have none: default
+  `KCM:`, where the broker's `fastrdp-tgt` PAM call stored the TGT [inferred: the PAM
+  service of GDM 50 headless sessions is not yet validated on a host].
+- **Plasma:** `fastrdp-plasma@.service` (`PAMName=fastrdp-session`, no auth phase) and
+  `session-plasma` set no `KRB5CCNAME`: default `KCM:`.
+- **Applications:** `klist`, GSSAPI (Firefox `negotiate`, `smbclient -k`, gvfs smb,
+  `ssh -K`) and `rpc.gssd` (forks with the uid, default cache) use the primary KCM
+  cache. Not with a sandbox that blocks the KCM socket: the Firefox **snap**'s
+  `kerberos-tickets` interface allows only `FILE` caches in `/tmp` (snapd
+  `interfaces/builtin/kerberos_tickets.go`), so SPNEGO in snap Firefox finds no TGT;
+  use Firefox from a `.deb` [inferred].
+- So no session environment change is needed as long as nothing sets another
+  `KRB5CCNAME` (`/etc/environment`, profile scripts, a FILE `krb5_ccname_template`).
 
 Limits [inferred, lab check needed]: when sssd is offline (KDC unreachable) or uses
 `cached_auth_timeout`, authentication succeeds from the cache without a TGT; the
