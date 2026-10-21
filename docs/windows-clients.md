@@ -36,7 +36,7 @@ Kerberos NLA if all of the following hold:
 4. The proxy can answer Kerberos **user-to-user**, which mstsc always starts with under
    CredSSP: with AD, `fastrdp-freerdp3` ≥ 3.32.2-3 and the machine account's entries in
    `/etc/fastrdp/termsrv.keytab` (`fastrdp-termsrv-keytab` and the identity role do both,
-   §3.14). The end of the exchange with mstsc is still to be confirmed in the lab (L18).
+   §3.14). Confirmed with mstsc against an AD-joined host (field report 2026-10-22).
 
   If Windows instead puts NegoEx first, a WinPR acceptor bug can break the exchange (§3.3).
   Whether a domain-joined Windows client ever does that has to be tested.
@@ -68,6 +68,7 @@ default on Windows 11 22H2+ Enterprise) Windows does not delegate the logon pass
 | Any client, **IP address** | **refused at once**: no ticket → Windows offers only NTLM, which the acceptor does not offer (§3.13); proxy log `client <addr> attempted NTLM` | – | high (code, e2e with FreeRDP) |
 | DNS alias / load-balancer name not registered as SPN | **refused at once** (NTLM only, §3.13) | – | high |
 | Non-joined Windows, user `alice@lab.example.com`, KDC reachable | works like row 1 (U2U as for every mstsc, §3.14) | yes / no | medium; field report 2026-10-21: failed before the U2U fix, retest pending |
+| mstsc, AD, `fastrdp-freerdp3` ≥ 3.32.2-3, machine account entries in the proxy keytab | **works**: Kerberos user-to-user (§3.14) | as row 1 | verified (field report 2026-10-22, two clients) |
 | Any mstsc, AD, `fastrdp-freerdp3` < 3.32.2-3 or proxy keytab without the machine account entry | **fails**: the acceptor cannot answer mstsc's user-to-user request (log `retrieveTgtForPrincipal ... Client 'TERMSRV/<host>@REALM' not found`, resp. `Kerberos user-to-user: no TGT`), Kerberos is dropped, no NTLM (§3.14) | – | verified (field report, e2e) |
 | Non-joined Windows, user `LAB\alice` (NetBIOS domain) | **likely NTLM** (KDC not locatable from the NetBIOS name) → refused at once (§3.13) | – | inference |
 | Non-joined, off-network, no VPN, no KDC proxy | refused at once (NTLM only, §3.13) | – | high |
@@ -696,16 +697,17 @@ report's error ("Client 'TERMSRV/localhost@TEST.FASTRDP' not found in Kerberos
 database"). With TERMSRV keys only it fails and names the missing keys; with the KDC in
 MIT/FreeIPA mode TERMSRV keys alone work.
 
-**Still open (lab L18, §7).** The fix is verified up to the AP-REP with WinPR and MIT on
-both sides. Not verified with mstsc: that Windows accepts the TGT-REP of the machine
-account and the AD KDC issues the U2U ticket (expected: it is what Windows servers do),
-and the end of the SPNEGO exchange. Microsoft's own acceptor answers the AP-REQ with
-accept-incomplete, the AP-REP and a mechListMIC, and the client finishes with
-accept-completed and its MIC. WinPR answers with accept-completed and the AP-REP without
-a MIC (the client's first mechanism was selected, `negotiate.c:1250-1264`); RFC 4178 §5
-makes the MIC optional then. Whether mstsc accepts that, and whether a MIC it might send
-anyway together with pubKeyAuth trips `nla_server_authenticate()` (compare §3.3), only
-the lab shows.
+**Confirmed with mstsc (field report 2026-10-22).** Two Windows clients logged in with
+mstsc through the proxy of an AD-joined host (fastrdp 0.5.0, `fastrdp-freerdp3`
+3.32.2-3); the proxy logged `client <addr> requested Kerberos user-to-user
+(KERB-TGT-REQUEST)` for both, and NLA only offers Kerberos (§3.13), so the logins were
+Kerberos U2U. So Windows accepts the machine account's TGT-REP, the AD KDC issues the U2U
+ticket, and mstsc accepts WinPR's end of the SPNEGO exchange: accept-completed and the
+AP-REP without a mechListMIC (the client's first mechanism was selected,
+`negotiate.c:1250-1264`; optional per RFC 4178 §5), where Microsoft's own acceptor
+answers accept-incomplete, the AP-REP and a MIC. Not recorded: whether mstsc sent a MIC
+anyway (it did not trip `nla_server_authenticate()`, compare §3.3), and the DC-side
+events of lab L18 (AS for `<NAME>$`, TGS with ENC-TKT-IN-SKEY).
 
 ## 4. Required AD / client settings
 
@@ -760,7 +762,7 @@ non-joined clients not `LAB\alice`.
 | 7 | Broker principal/user match fails for UPN ≠ sAMAccountName (§3.6) | probable bug | **fixed:** the principal is authoritative for NLA |
 | 8 | No KDC proxy offering (§3.10) | gap | **implemented, Windows lab pending:** `fastrdp_web_kdcproxy` (python3-kdcproxy behind the web gateway's nginx, [web-access.md](web-access.md#kdc-proxy)) |
 | 9 | auth-matrix.md / client-guide.md: SSO row lacks Credential Guard/Restricted Admin; `LAB\alice` advice for non-joined clients | docs | **done** (UPN and FQDN recommended); revisit after the lab |
-| 10 | WinPR U2U acceptor cannot get a TGT with AD: mstsc's KERB-TGT-REQUEST fails, Kerberos dropped (§3.14, field report) | bug (upstream FreeRDP) + keytab content | **fixed:** `patches/freerdp/0004` (machine account TGT from the keytab), `fastrdp-termsrv-keytab` copies the `<NAME>$` entries (same keys), identity role checks them, module logs U2U requests. e2e: `run_nla.sh` (AD-like MIT KDC). mstsc lab L18 pending |
+| 10 | WinPR U2U acceptor cannot get a TGT with AD: mstsc's KERB-TGT-REQUEST fails, Kerberos dropped (§3.14, field report) | bug (upstream FreeRDP) + keytab content | **fixed:** `patches/freerdp/0004` (machine account TGT from the keytab), `fastrdp-termsrv-keytab` copies the `<NAME>$` entries (same keys), identity role checks them, module logs U2U requests. e2e: `run_nla.sh` (AD-like MIT KDC). mstsc confirmed (field report 2026-10-22) |
 
 ## 6. What only a Windows lab can settle
 
