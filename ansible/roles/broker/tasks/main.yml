@@ -68,8 +68,8 @@
         state: "{{ fastrdp_apt_package_state }}"
       notify: Restart fastrdp-brokerd
 
-    # The roles come from the checkout, the packages from the APT channel: roles newer than
-    # the installed broker write settings it rejects (e.g. a stable package and roles from main).
+    # The base role upgrades packages older than the roles; if the repository has nothing newer,
+    # stop here: newer roles would write settings the installed broker rejects.
     - name: Installed broker version
       ansible.builtin.command: dpkg-query -W -f=${Version} fastrdp-broker
       register: fastrdp_broker_pkg
@@ -77,17 +77,15 @@
 
     - name: Installed packages are not older than these roles
       vars:
-        roles_version: >-
-          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../debian/changelog').splitlines()[0]
-             | regex_replace('^[^(]*[(]([0-9.]+).*$', '\1') }}
         pkg_version: "{{ fastrdp_broker_pkg.stdout | regex_replace('[~+].*$', '') }}"
       ansible.builtin.assert:
-        that: pkg_version is version(roles_version, '>=')
+        that: pkg_version is version(fastrdp_roles_version, '>=')
         fail_msg: >-
-          fastrdp-broker {{ fastrdp_broker_pkg.stdout }} is older than these roles ({{ roles_version }}),
-          which may write settings it does not know. Install the matching packages
-          (fastrdp_apt_package_state: latest after the release is published, or channel testing for main),
-          or check out the tag of the installed version (git checkout v{{ pkg_version }}).
+          fastrdp-broker {{ fastrdp_broker_pkg.stdout }} is older than these roles ({{ fastrdp_roles_version }})
+          even after the upgrade in the base role: the {{ fastrdp_apt_suite }} suite of
+          {{ fastrdp_apt_repo_url }} has no newer version yet (release not published, or GitHub Pages
+          still serves the previous one for a few minutes). Retry later, use channel testing for a
+          checkout of main, or check out the tag of the installed version (git checkout v{{ pkg_version }}).
         quiet: true
 
     - name: No copies from build installs shadowing the packaged unit and command

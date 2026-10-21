@@ -1,3 +1,10 @@
+fast-rdp-server (0.4.2) unstable; urgency=medium
+
+  * Deploys upgrade installed fastrdp packages that are older than the roles
+    instead of only stopping.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 14:05:00 +0200
+
 fast-rdp-server (0.4.1) unstable; urgency=medium
 
   * Broker configuration validated before it is installed; deploys stop when the

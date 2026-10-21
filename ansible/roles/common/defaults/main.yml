@@ -136,3 +136,12 @@ fastrdp_lan_networks: []               # client CIDRs, e.g. [10.0.0.0/8, "2001:d
 # Hide other users' processes (/proc hidepid). The nftables owner rules already stop
 # other users from reaching back-end ports.
 fastrdp_proc_hidepid: false
+
+# Derived: the version of these roles (debian/changelog of the checkout). Packages from the
+# APT repository must not be older (base role upgrades them, broker role checks).
+fastrdp_roles_version: >-
+  {{ lookup('ansible.builtin.file', playbook_dir ~ '/../debian/changelog').splitlines()[0]
+     | regex_replace('^[^(]*[(]([0-9.]+).*$', '\1') }}
+# fastrdp's own packages (one source package, one version); the vendored FreeRDP/xrdp
+# packages have their own versions and follow as dependencies.
+fastrdp_apt_own_packages: [fastrdp-broker, libpam-fastrdp-token, fastrdp-session, fastrdp-proxy-module, fastrdp-webgate]

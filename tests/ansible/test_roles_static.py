@@ -65,6 +65,11 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("validate: env PYTHONPATH=/usr/lib/fastrdp/python /usr/bin/python3 -m fastrdp_broker"
                       " --check --config %s", tasks)
         self.assertIn("Installed packages are not older than these roles", tasks)
+        # ...and the base role upgrades fastrdp packages older than the roles before that
+        repo = (ANSIBLE / "roles" / "base" / "tasks" / "apt_repo.yml").read_text()
+        self.assertIn("Upgrade fastrdp packages older than these roles", repo)
+        self.assertIn("only_upgrade: true", repo)
+        self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
     def test_host_name_defaults(self):

@@ -43,3 +43,32 @@
   ansible.builtin.apt:
     update_cache: true
   when: fastrdp_apt_key is changed or fastrdp_apt_source is changed
+
+# The roles come from the checkout, the packages from the repository: installed fastrdp
+# packages older than these roles are upgraded here (later roles only install missing ones),
+# so new roles never configure an old broker. The broker role checks the result.
+- name: Installed fastrdp packages
+  ansible.builtin.command:
+    argv: "{{ ['dpkg-query', '-W', '-f=${Package} ${Version} ${db:Status-Abbrev}\\n'] + fastrdp_apt_own_packages }}"
+  register: fastrdp_installed_pkgs
+  changed_when: false
+  failed_when: fastrdp_installed_pkgs.rc > 1     # 1: some are not installed
+
+- name: Upgrade fastrdp packages older than these roles ({{ fastrdp_roles_version }})
+  vars:
+    installed: >-
+      {{ fastrdp_installed_pkgs.stdout_lines | map('split') | selectattr('2', 'defined')
+         | selectattr('2', 'match', '^ii') | list }}
+    # name -> upstream version without the ~<distro> / +git suffix
+    versions: >-
+      {{ dict(installed | map(attribute='0') | zip(installed | map(attribute='1') | map('regex_replace', '[~+].*$', ''))) }}
+    older: >-
+      {{ versions | dict2items | selectattr('value', 'version', fastrdp_roles_version, '<') | map(attribute='key') | list }}
+  ansible.builtin.apt:
+    name: "{{ older }}"
+    state: latest
+    only_upgrade: true
+    update_cache: true
+    cache_valid_time: 0
+  when: older | length > 0
+  notify: [Restart fastrdp-brokerd, Restart fastrdp-proxy]
