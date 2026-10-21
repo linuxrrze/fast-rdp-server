@@ -175,10 +175,10 @@ dir=$(packaging/ci/prepare-vendored.sh xrdp /tmp/vendored)   # likewise for fast
 5. **krb5-spnego** (per distro, informational): reports whether the distribution's
    MIT krb5 has the SPNEGO mechListMIC bug as a warning.
 6. **publish** (push to `main` or tag `v*`, after tests, build and e2e): rebuilds the
-   APT repository, force-pushes it as a single commit to `gh-pages` and deploys
-   the same tree to GitHub Pages (`actions/deploy-pages`, environment
-   `github-pages`); for tags also attaches the `.deb`s and the source archives to a
-   GitHub release.
+   APT repository, force-pushes it as a single commit to `gh-pages` and starts the
+   `pages` workflow on `main`, which deploys that tree to GitHub Pages and waits until
+   the site serves it (see [Pages](#pages)); for tags also attaches the `.deb`s and the
+   source archives to a GitHub release.
 
 ### Publishing: concurrency and retry
 
@@ -270,19 +270,34 @@ secret is missing.
 
 ### Pages
 
-The publish job deploys the site itself (`actions/configure-pages`,
-`upload-pages-artifact`, `deploy-pages`), right after the `gh-pages` push in the same
-job, so the `apt-repository` queue keeps push and deployment in order. `gh-pages`
-stays the record of the published tree: the next publish reads the other channel from
-it, and the first push to `main` creates it. GitHub must not build Pages from that
-branch (its "pages build and deployment" workflow would publish a second time on
-every push, with an outdated Node.js 20 action). Repository settings:
+`.github/workflows/pages.yml` deploys the site (`actions/configure-pages`,
+`upload-pages-artifact`, `deploy-pages`). The publish job starts it after its
+`gh-pages` push (`gh workflow run pages.yml --ref main`, permission `actions: write`),
+for `main` and for release tags alike. Its job is in the same `apt-repository` queue,
+so it runs after that publish and deploys the `gh-pages` tip as it is then; every
+publish starts one, so the last deployment carries the latest tree. `gh-pages` stays
+the record of the published tree: the next publish reads the other channel from it,
+and the first push to `main` creates it.
+
+Always from `main`: v0.5.0's publish deployed from the tag run (ref `v0.5.0`); the
+deployment reported success, but the site kept serving the previous `main`
+deployment (stable suites at 0.4.4, the new `.deb`s 404 also on CDN misses), and
+hosts stopped in the base role's package check. So after deploying, the workflow
+runs `packaging/ci/check-pages-live.sh`: every `dists/*/InRelease` of the deployed
+tree must be byte-identical at the public URL, retried every 30 s for up to 15
+minutes (the CDN caches 10); otherwise the run fails and names the stale suites with
+both dates. A stale site is then a red CI run, not a failed `make deploy`. To redeploy
+by hand: Actions > pages > Run workflow (branch `main`), or
+`gh workflow run pages.yml --ref main`.
+
+GitHub must not build Pages from the branch (its "pages build and deployment"
+workflow would publish a second time on every push, with an outdated Node.js 20
+action). Repository settings:
 
 1. Settings > Pages > Build and deployment > Source: **GitHub Actions**
    (or `gh api -X PUT repos/linuxrrze/fast-rdp-server/pages -f build_type=workflow`).
-2. Settings > Environments > `github-pages` > Deployment branches and tags: keep
-   `main` and add a **tag** rule `v*`, otherwise a release tag's publish is refused
-   ("not allowed to deploy to github-pages due to environment protection rules").
+2. Settings > Environments > `github-pages` > Deployment branches and tags: `main`
+   (a tag rule `v*` is no longer needed).
 
 The deployment leaves out dotfiles (`.nojekyll` is only in the branch; Pages runs no
 Jekyll for an Actions deployment anyway).

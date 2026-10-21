@@ -49,6 +49,7 @@ test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/c
 	tests/packaging/test_build_key.sh
 	tests/packaging/test_ci_scripts.sh
 	tests/packaging/test_publish_gh_pages.sh
+	tests/packaging/test_check_pages_live.sh
 	tests/ansible/test_outdated_packages.sh
 	tests/packaging/test_xrdp_site_config.sh
 	python3 -m unittest -v tests/identity/test_termsrv_helpers.py

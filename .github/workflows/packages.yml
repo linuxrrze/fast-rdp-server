@@ -290,17 +290,11 @@ jobs:
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     container: debian:trixie
-    # contents: push gh-pages, the release; pages + id-token: deploy-pages
+    # contents: push gh-pages, the release; actions: start pages.yml
     permissions:
       contents: write
-      pages: write
-      id-token: write
-    # Pages source "GitHub Actions" (docs/packaging.md "Pages"): this job deploys the
-    # site. The environment must allow tags v* (stable), not only main.
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    # One publish (gh-pages push + Pages deployment) at a time (each rebuilds the whole gh-pages tree), queued in order:
+      actions: write
+    # One publish at a time (each rebuilds the whole gh-pages tree), queued in order:
     # queue: max keeps up to 100 pending publishes instead of the default single
     # pending slot, where a main publish arriving would cancel a pending tag publish
     # (stable + GitHub release). The push itself is a compare-and-swap on top
@@ -319,10 +313,8 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git gnupg reprepro
+            ca-certificates gh git gnupg reprepro
       - uses: actions/checkout@v5
-      # fails here, before anything is pushed, if Pages is not set to "GitHub Actions"
-      - uses: actions/configure-pages@v6
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -367,14 +359,11 @@ jobs:
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages site \
             "APT repository: ${{ steps.channel.outputs.name }} from ${GITHUB_SHA}" \
             packaging/apt/publish.sh "${{ steps.channel.outputs.name }}" debs
-      # The same tree as pushed (site/ after the push; .git is left out by the action).
-      # In this job, so the apt-repository queue keeps "push, then deploy" in order.
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+      # pages.yml deploys the gh-pages tip on main, also for tags: a deployment from a tag
+      # run reports success without going live (docs/packaging.md "Pages"). It queues
+      # behind this job in the apt-repository group.
+      - name: Deploy gh-pages (pages workflow on main)
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
       - name: GitHub release with the packages
         if: steps.channel.outputs.name == 'stable'
         uses: softprops/action-gh-release@v3

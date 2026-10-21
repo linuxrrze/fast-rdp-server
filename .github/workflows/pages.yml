@@ -1,0 +1,53 @@
+# Deploys the gh-pages tree (the APT repository) to GitHub Pages and waits until the
+# public URL serves it. Started by the publish job of packages.yml after every gh-pages
+# push (gh workflow run pages.yml --ref main), for main and for release tags.
+#
+# Always on main: a Pages deployment from a tag run (ref v0.5.0) reported success but
+# never went live, the site kept serving the previous main deployment. docs/packaging.md
+# "Pages".
+name: pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy gh-pages to GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.repository_owner == 'linuxrrze'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Same queue as the publish job: a deployment never runs while a publish rewrites
+    # gh-pages, and it deploys the tip as it is then (every publish starts one, so the
+    # last deployment always carries the latest tree).
+    concurrency:
+      group: apt-repository
+      cancel-in-progress: false
+      queue: max
+    env:
+      APT_REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: site
+      # fails here if Pages is not set to "GitHub Actions"
+      - uses: actions/configure-pages@v6
+      # .git and other dotfiles are left out by the action
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+      - name: Site serves the deployed repository
+        run: packaging/ci/check-pages-live.sh "$APT_REPO_URL" site
