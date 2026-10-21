@@ -82,7 +82,7 @@ checked in this repository.
 
 | Process | User | Started by |
 |---|---|---|
-| `gnome-headless-session@<user>.service` | the user | broker (`systemctl start`), unit shipped by GDM |
+| `gnome-headless-session@<user>.service` (`gdm-new-session <user> --headless`) | `gdm` (static user, role drop-in; upstream: a `DynamicUser` in group `gdm`) | broker (`systemctl start`), unit shipped by GDM. Only a D-Bus client: asks GDM (`RemoteDisplayFactory.CreateUserDisplay`) to start the user's session, then waits |
 | `gnome-shell` (headless) and session services | the user | GDM / gnome-session (upstream) |
 | `gnome-remote-desktop-daemon` (headless) | the user | user unit `gnome-remote-desktop-headless.service` |
 | `grdctl` calls | the user | broker via `systemd-run --user` |
@@ -113,6 +113,7 @@ implements; **none of these is tested through fastrdp**.
 |---|---|
 | packages `fastrdp_gnome_packages`: `gdm3, gnome-shell, gnome-session, gnome-remote-desktop, gnome-control-center, gnome-console, nautilus, xwayland, dconf-cli` | role `gnome_rd` |
 | `/usr/lib/systemd/system/gnome-headless-session@.service` | GDM 50+ (the role asserts it exists) |
+| `/etc/systemd/system/gnome-headless-session@.service.d/fastrdp.conf` | role (`fastrdp_gdm_headless_static_user`, default `true`): `DynamicUser=no`, `User=gdm`, `Group=gdm`, plus `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` (implied by `DynamicUser=yes`, restored here). Ubuntu 26.04's dbus-daemon disconnects the upstream unit's DynamicUser client (see Troubleshooting) |
 | `gdm.service` | enabled and started by the role |
 | `gnome-remote-desktop.service` (system) | disabled and stopped by the role |
 | `gnome-remote-desktop-headless.service` (user unit) | g-r-d package; enabled per user by the broker in `/run/user/<uid>/systemd/user` (`--runtime`) |
@@ -170,6 +171,13 @@ places them; not checked.
 
 ## Security properties
 
+- Who may start a session for a user: GDM checks polkit action
+  `org.gnome.displaymanager.displayfactory.manage-user-displays`. GDM's
+  `/usr/share/polkit-1/rules.d/20-gdm.rules` allows it only for a caller in group `gdm`
+  running inside the matching `gnome-headless-session@<user>.service`
+  (`subject.system_unit`, polkit ≥ 124). The role's drop-in keeps that check (static
+  `gdm` user, not root: polkit always allows uid 0) and restores the sandboxing that
+  `DynamicUser=yes` implied. Only root can start the unit (the broker).
 - g-r-d listens on a per-user port; the broker refuses to route unless the port is
   held by exactly the user's uid. A user who grabs a port the broker picked for
   someone else causes a failed login (`held by unexpected uid`), not a hijack.
@@ -235,6 +243,12 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
   avoid it (restrict with `groups`, or tell users).
 - `sessions.json` loss (corrupt file) costs only the reuse shortcut: g-r-d is
   reconfigured on a new port.
+- The GDM headless unit needs the role's drop-in on systems with dbus-daemon (Ubuntu
+  26.04): its upstream `DynamicUser=yes` client is disconnected from the system bus
+  (dbus-daemon resolves every connecting uid through NSS and silently drops it on
+  failure, dbus#390; GDM upstream targets dbus-broker, RHEL ships `User=gdm`). Revisit
+  with dbus-broker (Ubuntu 26.10): `fastrdp_gdm_headless_static_user: false` restores the
+  upstream identity.
 
 ## Troubleshooting
 
@@ -243,6 +257,8 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
 | `backend error: GNOME session for USER: grdctl --headless rdp … (systemd-run as the user) failed (N): <first error lines>` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
 | `backend error: home directory H of USER does not exist (parent P missing: automount not set up?)` | the directory names a home path this host does not have: set up autofs (`fastrdp_autofs`) or use local homes (`fastrdp_sssd_override_homedir`), [nfs-kerberos-homes.md](../nfs-kerberos-homes.md#where-homes-are) |
 | `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M UID@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=UID@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
+| `journalctl -u gnome-headless-session@USER`: `gdm-new-session: Failed: The connection is closed`, exit 70, 5 restarts | the system bus rejected the unit's uid before GDM saw anything (dbus-daemon and `DynamicUser`): check the drop-in is active (`systemctl cat gnome-headless-session@USER` shows `fastrdp.conf`, `User=gdm`); baseline: `sudo systemd-run --wait --pipe -p DynamicUser=yes busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetId` fails, with `-p User=gdm` it works |
+| `Starting session failed: Not authorized for action org.gnome.displaymanager.displayfactory.manage-user-displays` | polkit refused: `gdm-new-session` run outside its unit (e.g. by hand with `sudo -u gdm`), the caller not in group `gdm`, or polkit < 124 (no `subject.system_unit`) |
 | `port P is held by unexpected uid(s) [...]` | `ss -ltnp 'sport = :P'`: another user's process holds the port; next login picks another port |
 | Session starts but login at g-r-d fails (proxy log: back-end connect error) | credentials mismatch after a manual `grdctl` change: `fastrdpctl logout USER` and log in again |
 | GPO denial | `journalctl -u sssd -g gpo` / `/var/log/sssd/` for denials naming GDM's PAM service |

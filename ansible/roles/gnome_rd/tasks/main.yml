@@ -15,6 +15,46 @@
     that: fastrdp_gdm_headless.stat.exists
     fail_msg: GDM on this host lacks gnome-headless-session@.service (needs GDM 50+).
 
+- name: Drop-in directory of the GDM headless unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/gnome-headless-session@.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: fastrdp_gdm_headless_static_user | bool
+
+# polkit (GDM's 20-gdm.rules) still requires group gdm inside the matching
+# gnome-headless-session@<user>.service; root would bypass that check.
+- name: GDM headless unit runs as the static gdm user (dbus-daemon drops its DynamicUser client)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gnome-headless-session@.service.d/fastrdp.conf
+    content: |
+      # Ansible managed (fast-rdp-server): local changes are overwritten
+      # Ubuntu 26.04's dbus-daemon disconnects this unit's DynamicUser client
+      # ("Failed: The connection is closed"); run as the static gdm user instead.
+      [Service]
+      DynamicUser=no
+      User=gdm
+      Group=gdm
+      # Implied by DynamicUser=yes, lost with DynamicUser=no:
+      ProtectSystem=strict
+      ProtectHome=yes
+      PrivateTmp=yes
+      # no RemoveIPC=: it would remove IPC objects of the shared gdm account
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_gdm_headless_static_user | bool
+  notify: Reload systemd units (GDM headless drop-in)
+
+- name: No fastrdp drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/gnome-headless-session@.service.d/fastrdp.conf
+    state: absent
+  when: not fastrdp_gdm_headless_static_user | bool
+  notify: Reload systemd units (GDM headless drop-in)
+
 - name: GDM running (manages headless user displays)
   ansible.builtin.systemd_service:
     name: gdm.service

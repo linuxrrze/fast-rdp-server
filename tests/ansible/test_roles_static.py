@@ -72,6 +72,17 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
+    def test_gdm_headless_static_user(self):
+        # dbus-daemon (Ubuntu 26.04) drops the unit's DynamicUser client; static gdm user,
+        # with the sandboxing DynamicUser implied, and not root (root bypasses GDM's polkit rule)
+        tasks = (ANSIBLE / "roles" / "gnome_rd" / "tasks" / "main.yml").read_text()
+        for line in ("DynamicUser=no", "User=gdm", "Group=gdm", "ProtectSystem=strict", "ProtectHome=yes",
+                     "PrivateTmp=yes"):
+            self.assertIn(line, tasks)
+        self.assertNotIn("User=root", tasks)
+        self.assertIn("gnome-headless-session@.service.d/fastrdp.conf", tasks)
+        self.assertIn("daemon_reload: true", (ANSIBLE / "roles" / "gnome_rd" / "handlers" / "main.yml").read_text())
+
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         # the inventory name first (reverse DNS can give the bare domain), the fact as fallback

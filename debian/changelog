@@ -1,3 +1,10 @@
+fast-rdp-server (0.4.3) unstable; urgency=medium
+
+  * GNOME: GDM headless unit runs as the static gdm user (Ubuntu 26.04 dbus-daemon
+    drops its DynamicUser client).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 14:55:14 +0200
+
 fast-rdp-server (0.4.2) unstable; urgency=medium
 
   * Deploys upgrade installed fastrdp packages that are older than the roles
