@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -41,6 +42,14 @@ class BrokerSection:
     # "required" = refuse logins without a password, and logins whose TGT step fails.
     # "off" = never. See docs/nfs-kerberos-homes.md.
     session_tgt: str = "auto"
+    # Home directory of the user before any back-end starts (home.py): "create" = refuse
+    # with a clear log line if it is unusable, create it (mkhomedir_helper, mode 0700)
+    # if only its last component is missing; "check" = never create; "off" = no check.
+    home_check: str = "create"
+    # home_check = "create" only creates homes whose parent directory is one of these
+    # roots or below one (also after resolving symlinks); the roots themselves and
+    # missing parents never. [] = never create.
+    home_create_roots: list[str] = field(default_factory=lambda: ["/home"])
 
 
 @dataclass
@@ -152,6 +161,7 @@ VALID_BACKENDS = ("xrdp", "gnome", "plasma")
 VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push")
 VALID_SESSION_TGT = ("auto", "off", "required")
 DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
+VALID_HOME_CHECK = ("create", "check", "off")
 MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
 
 
@@ -195,6 +205,15 @@ def parse(raw: dict) -> Config:
         raise ConfigError("[broker] home_read_timeout must be a number of seconds in 0..60")
     if broker.session_tgt not in VALID_SESSION_TGT:
         raise ConfigError(f"[broker] session_tgt must be one of {VALID_SESSION_TGT}")
+    if broker.home_check not in VALID_HOME_CHECK:
+        raise ConfigError(f"[broker] home_check must be one of {VALID_HOME_CHECK}")
+    if not isinstance(broker.home_create_roots, list) or not all(
+        isinstance(r, str) and r.startswith("/") and not r.startswith("//") and r != "/"
+        and os.path.normpath(r) == r and "\n" not in r
+        for r in broker.home_create_roots
+    ):
+        raise ConfigError("[broker] home_create_roots must be a list of absolute, normalised "
+                          "directories other than / (e.g. [\"/home\"])")
 
     auth = _section(AuthSection, dict(raw.pop("auth", {})), "auth")
     if not isinstance(auth.strip_realm, bool):

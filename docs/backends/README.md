@@ -72,6 +72,13 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
   (default 3, `0` = never); an unreadable or hanging home (NFS with `sec=krb5*`,
   server down) means "no preference" ([nfs-kerberos-homes.md](../nfs-kerberos-homes.md)). The web chooser offers only the
   desktops the user may use and refuses others ([web.md](web.md)).
+- **Home directory** (`[broker] home_check`, default `create`): before any back-end
+  starts, the broker refuses a home whose parent is missing (automount not set up) or
+  that is not a usable directory, and creates a missing home like `pam_mkhomedir`
+  (0700, `/etc/skel`) when only its last component is missing, in a root-owned, local
+  directory that is one of `[broker] home_create_roots` (default `/home`)
+  or below one. GNOME needs this: nothing in its session path runs `pam_mkhomedir`
+  ([nfs-kerberos-homes.md](../nfs-kerberos-homes.md#where-homes-are)).
 - **Kerberos TGT** (`[broker] session_tgt`, Ansible `fastrdp_session_tgt`, role
   `common`, default `auto`): for GNOME and Plasma the broker obtains the user's TGT
   through PAM service `fastrdp-tgt` before the session starts, on every login that

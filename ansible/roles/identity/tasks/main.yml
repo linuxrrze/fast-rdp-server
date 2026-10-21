@@ -182,3 +182,7 @@
 - name: Kerberized NFS home directories
   ansible.builtin.include_tasks: nfs_krb5.yml
   when: fastrdp_nfs_krb5_homes | bool
+
+- name: Automounted home directories
+  ansible.builtin.include_tasks: autofs.yml
+  when: fastrdp_autofs != 'none'

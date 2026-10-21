@@ -1,7 +1,7 @@
 # {{ ansible_managed }}
 [sssd]
 domains = {{ fastrdp_domain }}
-services = nss, pam
+services = nss, pam{{ ", autofs" if fastrdp_autofs == "sssd" else "" }}
 
 [pam]
 offline_credentials_expiration = 1
@@ -26,5 +26,13 @@ krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
 krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
 # Treat the RDP PAM services like Windows RDS ("Allow log on through Remote Desktop Services").
 ad_gpo_access_control = {{ fastrdp_ad_gpo_access_control }}
-ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session
+ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session, +gdm-autologin
 ad_maximum_machine_account_password_age = 30
+{% if fastrdp_sssd_override_homedir %}
+# Local homes instead of the directory's unixHomeDirectory (fastrdp_sssd_override_homedir).
+override_homedir = {{ fastrdp_sssd_override_homedir }}
+{% endif %}
+{% if fastrdp_autofs == 'sssd' %}
+# Automount maps from AD (fastrdp_autofs: sssd; nsswitch "automount: files sss").
+autofs_provider = ad
+{% endif %}

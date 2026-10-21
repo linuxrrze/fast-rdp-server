@@ -43,3 +43,7 @@ fastrdp_nfs_krb5_homes: false
 # Keytab whose FIRST entry is the impersonating principal (AD: HOST$@REALM,
 # FreeIPA: host/<fqdn>@REALM). Check with: klist -k <keytab> | head
 fastrdp_nfs_gssproxy_keytab: /etc/krb5.keytab
+
+# fastrdp_autofs: sssd on FreeIPA: the automount location whose maps sssd serves
+# (ipa automountlocation-find; FreeIPA's own default location is "default").
+fastrdp_autofs_ipa_location: default

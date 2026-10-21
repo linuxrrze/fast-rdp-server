@@ -21,3 +21,9 @@
   ansible.builtin.systemd_service:
     name: rpc-gssd
     state: restarted
+
+# autofs reads nsswitch.conf and the master map at start.
+- name: Restart autofs
+  ansible.builtin.systemd_service:
+    name: autofs
+    state: restarted

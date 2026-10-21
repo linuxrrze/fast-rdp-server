@@ -483,6 +483,105 @@ Implemented (see [Changes](#changes-in-this-repository)):
 7. **FreeIPA:** the same snippet adds `krb5_renewable_lifetime`/`krb5_renew_interval`
    to `[domain/<fastrdp_domain>]`, which `ipa-client-install` does not write.
 
+## Where homes are
+
+The home directory is whatever NSS (sssd) reports: AD `unixHomeDirectory`, FreeIPA
+`homeDirectory`, or for AD accounts without one `fallback_homedir = /home/%u`
+(`sssd-ad.conf.j2`). That path must exist on the RDP host, or be creatable there.
+A directory that names `/autofs/srv/home/<user>` on a host without autofs breaks
+every session: GNOME's `grdctl` aborts with *Init file credentials failed: Error
+creating directory /autofs: Permission denied*; xrdp's `pam_mkhomedir` would even
+create `/autofs/srv/home/<user>` on local disk, as root.
+
+**What the broker does** (`broker/brokerd/fastrdp_broker/home.py`, `[broker]
+home_check`, default `create`), before any back-end starts, for every desktop:
+
+| Home | Result |
+|---|---|
+| exists, a directory (a symlink to one is fine), owned by the user | login goes on |
+| exists, owned by another uid | the user must be able to write to it (tested as the user, `test -w`); else refused, uid 65534 with a hint at NFSv4 id mapping |
+| only the last component is missing | created like `pam_mkhomedir umask=0077`: `mkhomedir_helper <user> 0077 /etc/skel 0700`, as in the `xrdp-sesman` and `fastrdp-session` stacks, always mode 0700 (their `pam_mkhomedir` would use `HOME_MODE` from `/etc/login.defs`, 0750 on Ubuntu). Only in a parent that is one of `[broker] home_create_roots` (Ansible `fastrdp_home_create_roots`, default `[/home]`, `[]` = never) or below one, as named and with symlinks resolved (a root that is itself a symlink, `/home -> /var/home`, is fine; a symlink below a root leading out of it is not), that exists (the roots and other missing parents are never created; the helper itself would create missing parents), that is root-owned and writable by root alone along the whole path, as named and resolved (no symlink swaps), on a local file system (NFS, CIFS, FUSE, ...: provision homes on the server), and never inside an automount point (its entries come from the map). GNOME has no `pam_mkhomedir` in its path, so this is what creates its homes |
+| a parent is missing | refused: `backend error: home directory /autofs/srv/home/marcel of marcel does not exist (parent /autofs missing: automount not set up?)` (below an automount point: *no map entry, or server down?*) |
+| not a directory, dangling symlink, relative path | refused |
+| root may not look (`sec=krb5*`, `root_squash`: EACCES), or no answer within `home_read_timeout` (3 s; hung NFS) | not checked, the login goes on |
+
+A refusal is reason `backend`: the client gets *ERRINFO_CB_DESTINATION_NOT_FOUND*
+(0x400), like any session start failure; the cause is in the broker log
+(`journalctl -u fastrdp-brokerd`). `home_check = "check"` never creates homes (sites
+that provision them elsewhere), `"off"` skips all of it. The setting is in
+`/etc/fastrdp/broker.toml` (not rendered by Ansible: the default fits).
+
+**The fixes**, in Ansible terms:
+
+1. **Mount what the directory names** (the directory's paths are right, the host is
+   missing the automounter): `fastrdp_autofs`, see
+   [Automounted homes](#automounted-homes).
+2. **Local homes** (the directory's paths are for other machines):
+   `fastrdp_sssd_override_homedir: /home/%u` renders `override_homedir` in sssd
+   (AD: `sssd.conf`, FreeIPA: `/etc/sssd/conf.d/50-fastrdp.conf`), which wins over
+   the directory's attribute. Expansions as in `sssd.conf(5)`: `%u` (login name),
+   `%U` (uid), `%d` (domain), `%f` (fully qualified name), `%l` (first letter), `%P`,
+   `%o` (the directory's home), `%h` (lower-case name), `%H` (`homedir_substring`),
+   `%%`. The broker creates only the last component: for `/home/%d/%u` create
+   `/home/<domain>` first. A path outside `fastrdp_home_create_roots` (default `[/home]`) is
+   never created by the broker: add its root, or provision the homes. Provider `none`: put `override_homedir = /home/%u` into
+   your `[domain/...]` section. Option d) in [Q5](#q5-solutions) for Kerberized
+   NFS is this plus a mount elsewhere.
+
+`make preflight` samples `fastrdp_preflight_user` (inventory or `-e`, a directory
+user) and the join account: `getent passwd`, then `stat` of every path component as
+the SSH user (5 s limit each). Check *home directories*: FAIL when a parent of the
+test user's home is missing and neither `fastrdp_autofs` nor
+`fastrdp_sssd_override_homedir` is set, or when the override's fixed prefix does not
+exist; WARN for the join account, hung mounts, and override paths with several
+dynamic components.
+
+## Automounted homes
+
+`fastrdp_autofs` (role `identity`, `tasks/autofs.yml`; default `none`: the host's
+business, nothing changed):
+
+- `sssd`: automount maps from the directory (AD and FreeIPA store them in LDAP).
+  Installs `autofs`; adds sssd's autofs responder (AD: `services = nss, pam, autofs`
+  and `autofs_provider = ad` in `sssd.conf`; FreeIPA: `autofs` appended to the
+  `services` line of the enrolment's `sssd.conf`, as `ipa-client-automount` does, and
+  `autofs_provider = ipa`, `ipa_automount_location = <fastrdp_autofs_ipa_location>`
+  (default `default`) in the conf.d snippet); sets `automount: files sss` in
+  `/etc/nsswitch.conf`; restarts sssd, then enables and starts `autofs`; drop-ins
+  `fastrdp-autofs.conf` order the boot `sssd` → `autofs` (else autofs reads empty
+  directory maps) → `fastrdp-brokerd` (both modes). `files`
+  first: Debian's `/etc/auto.master` includes `/etc/auto.master.d` and then
+  `+auto.master`, the master map from the next source (sss), so local and directory
+  maps work side by side. The LDAP schema sssd expects for the maps, and the
+  `ldap_autofs_*` options for another one, are in `sssd-ad(5)` / `sssd-ldap(5)`.
+  Provider `none`: the role installs autofs and sets nsswitch, the sssd part is
+  yours (`services = ..., autofs`, `autofs_provider`).
+- `files`: installs and enables `autofs`; the maps are yours, e.g.
+
+  ```
+  # /etc/auto.master.d/home.autofs
+  /autofs/srv/home  /etc/auto.home  --timeout=600
+  # /etc/auto.home
+  *  -fstype=nfs4,sec=krb5p  nfs1.example.com:/srv/home/&
+  ```
+
+  then `systemctl reload autofs`.
+
+Upgrades: on AD the role writes the whole `sssd.conf`, so an automount set up by hand
+there (`autofs` in `services`) is lost at every deployment unless
+`fastrdp_autofs: sssd` is set.
+
+Check: `automount -m` lists the maps, `ls /autofs/srv/home/<user>` mounts a home,
+`sss_cache -A` drops cached maps after a change in the directory.
+
+**Snaps** (Firefox and others on Ubuntu) refuse homes outside `/home`. Tell snapd
+the other prefix once per host: `snap set system homedirs=/autofs/srv/home` (snapd
+2.59+; several prefixes comma-separated; some snapd versions accept only prefixes
+below `/home`, then local homes via `fastrdp_sssd_override_homedir` are the way out).
+Not done by the roles. autofs `browse_mode` stays as configured (Debian: `no`); the
+broker stats homes with a trailing slash, so placeholders of browse mode are mounted
+before they are judged.
+
 ## NFS server and client checklist
 
 NFS server (Linux):
@@ -503,7 +602,8 @@ RDP host (client):
   name as given): `nfs1.example.com:/home /home nfs4 sec=krb5p,_netdev 0 0`, or autofs.
 - `fastrdp_nfs_krb5_homes: true` plus the directory delegation (Q5a), or restrict
   logins to typed passwords (Q5c).
-- Optional: `[broker] home_read_timeout = 0` if the broker should never touch homes.
+- Optional: `[broker] home_read_timeout = 0` if the broker should never read files in
+  homes, plus `home_check = "off"` to skip the [home check](#where-homes-are) too.
 
 ## Lab test plan
 
@@ -542,6 +642,11 @@ credentials"), xfreerdp, Keycloak web path.
    program with `GSS_USE_PROXY=yes` must not get impersonated credentials (`program =`).
 7. **Keytab order:** with the fastrdp TERMSRV entries present, check which principal
    gssproxy uses (`GSSPROXY` debug, `debug_level = 3` in `[gssproxy]`).
+8. **Home paths:** a user whose directory home is below a missing automount root:
+   GNOME and xrdp logins refused with the *parent ... missing* line, nothing created
+   on local disk; with `fastrdp_autofs: sssd` and a directory map the home mounts; with
+   `fastrdp_sssd_override_homedir: /home/%u` a new user gets `/home/<user>` (0700, skel)
+   at the first GNOME login.
 
 ## Changes in this repository
 
@@ -574,3 +679,11 @@ credentials"), xfreerdp, Keycloak web path.
 - `ansible/roles/identity`: `sssd-fastrdp.conf.j2` → `/etc/sssd/conf.d/50-fastrdp.conf`,
   `renew_lifetime` in `krb5-fastrdp.conf.j2`, variables in `sssd-ad.conf.j2`, handler
   `Restart sssd-kcm`; rendered and checked in `tests/ansible/` (`TicketRenewal`).
+- `broker/brokerd/fastrdp_broker/home.py`, `server.py` (`Broker.login`), `config.py`
+  (`[broker] home_check`), `sysutil.py` (`describe`, `summarize`: back-end errors name
+  the command and its meaningful stderr lines): [Where homes are](#where-homes-are).
+  Tests: `broker/brokerd/tests/test_home_dir.py`. Ansible
+  `fastrdp_sssd_override_homedir`, `fastrdp_autofs` and `fastrdp_home_create_roots` (role `common`, checked there; the
+  last one rendered as `[broker] home_create_roots`), `fastrdp_autofs_ipa_location`,
+  `roles/identity/tasks/autofs.yml`, handler `Restart autofs`; rendered and checked in
+  `tests/ansible/` (`HomeDirectories`); preflight check *home directories*.

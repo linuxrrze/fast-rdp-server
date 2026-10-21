@@ -18,6 +18,16 @@ session_start_timeout = 90
 # failure only logged; required = also refuse logins without a password (SSO without
 # delegation, smartcard, web) and failed TGT requests; off. docs/nfs-kerberos-homes.md
 #session_tgt = "auto"
+# The user's home directory before any session starts: create = refuse logins whose
+# home is unusable (missing parent such as an automount root that is not set up, not
+# a directory, someone else's and not writable), and create a missing home like
+# pam_mkhomedir (mode 0700, /etc/skel) when only its last component is missing below
+# a root-owned parent; check = never create; off. Time limit: home_read_timeout.
+#home_check = "create"
+# home_check = "create" creates a home only when its parent directory is one of these
+# or below one (also with symlinks resolved); never a root or another missing parent.
+# [] = never create.
+#home_create_roots = ["/home"]
 
 [auth]
 realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA

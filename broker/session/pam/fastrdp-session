@@ -7,7 +7,10 @@ session  required  pam_limits.so
 session  required  pam_loginuid.so
 session  required  pam_env.so readenv=1 envfile=/etc/default/locale
 session  optional  pam_keyinit.so force revoke
-session  required  pam_systemd.so class=user type=wayland desktop=KDE
+# Before pam_systemd, which starts user@UID.service in the home. The broker has
+# already created it (0700) or refused the login (home.py). Here HOME_MODE from
+# /etc/login.defs wins over umask (Ubuntu: 0750), and missing parents are created.
 session  optional  pam_mkhomedir.so umask=0077
+session  required  pam_systemd.so class=user type=wayland desktop=KDE
 session  optional  pam_sss.so
 -session optional  pam_kwallet5.so auto_start

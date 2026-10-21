@@ -54,8 +54,9 @@ TimeoutStopSec=20
 
 - `PAMName=fastrdp-session` opens a logind session. `/etc/pam.d/fastrdp-session` has
   only account (`pam_sss`) and session modules (`pam_limits`, `pam_loginuid`,
-  `pam_env` with `/etc/default/locale`, `pam_keyinit`, `pam_systemd class=user
-  type=wayland desktop=KDE`, `pam_mkhomedir`, `pam_sss`, optional `pam_kwallet5`).
+  `pam_env` with `/etc/default/locale`, `pam_keyinit`, `pam_mkhomedir` (before
+  `pam_systemd`; the broker has normally created the home already), `pam_systemd
+  class=user type=wayland desktop=KDE`, `pam_sss`, optional `pam_kwallet5`).
   There is no auth phase; systemd does not call it. The session's TGT comes from the
   broker (PAM service `fastrdp-tgt`), not from this stack.
 

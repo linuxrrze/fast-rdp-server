@@ -4,6 +4,8 @@ proxy_user = "_fastrdp-proxy"
 socket_group = "_fastrdp-broker"
 port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range[1] }}]
 session_tgt = "{{ fastrdp_session_tgt }}"
+# Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
+home_create_roots = {{ fastrdp_home_create_roots | map('string') | list | to_json }}
 
 [auth]
 realms = ["{{ fastrdp_realm | upper }}"]

@@ -1,0 +1,71 @@
+---
+# fastrdp_autofs (docs/nfs-kerberos-homes.md#automounted-homes):
+#   sssd  - automount maps from the directory through sssd's autofs responder;
+#   files - autofs with the admin's own maps (/etc/auto.master.d/*.autofs).
+# Debian's /etc/auto.master includes /etc/auto.master.d and "+auto.master" (the
+# nsswitch sources after files), so local maps keep working next to the directory's.
+- name: Automounter package
+  ansible.builtin.apt:
+    name: autofs
+    state: present
+
+# AD: sssd-ad.conf.j2 lists autofs in [sssd] services. FreeIPA: ipa-client-install owns
+# sssd.conf; add the responder like ipa-client-automount does (the domain options are in
+# the conf.d snippet). Provider none: your sssd.conf (docs/nfs-kerberos-homes.md).
+- name: SSSD autofs responder (FreeIPA)
+  ansible.builtin.lineinfile:
+    path: /etc/sssd/sssd.conf
+    regexp: '^(services\s*=\s*(?!.*\bautofs\b).*?)\s*$'
+    line: '\1, autofs'
+    backrefs: true
+  when:
+    - fastrdp_autofs == 'sssd'
+    - fastrdp_identity_provider == 'ipa'
+  notify: Restart sssd
+
+- name: Automount maps from sssd (nsswitch)
+  ansible.builtin.lineinfile:
+    path: /etc/nsswitch.conf
+    regexp: '^automount:'
+    line: 'automount:      files sss'
+  when: fastrdp_autofs == 'sssd'
+  notify: Restart autofs
+
+# At boot: autofs after sssd (else it reads empty directory maps), the broker after
+# autofs (its home check would see a missing automount root as "parent missing").
+- name: Start-up order sssd -> autofs -> broker (drop-in directories)
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [autofs.service, fastrdp-brokerd.service]
+
+- name: Start-up order sssd -> autofs -> broker (drop-ins)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.unit }}.d/fastrdp-autofs.conf"
+    content: |
+      # fastrdp (identity role, fastrdp_autofs): local changes are overwritten
+      [Unit]
+      {{ item.order }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {unit: autofs.service, order: "Wants=sssd.service\nAfter=sssd.service"}
+    - {unit: fastrdp-brokerd.service, order: "After=autofs.service"}
+  loop_control:
+    label: "{{ item.unit }}"
+  register: fastrdp_autofs_dropins
+
+# sssd must serve the maps before autofs reads them.
+- name: Apply the SSSD configuration before autofs starts
+  ansible.builtin.meta: flush_handlers
+
+- name: Automounter running
+  ansible.builtin.systemd_service:
+    name: autofs
+    enabled: true
+    state: started
+    daemon_reload: "{{ fastrdp_autofs_dropins is changed }}"

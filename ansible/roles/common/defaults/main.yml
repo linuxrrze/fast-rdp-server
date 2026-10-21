@@ -99,6 +99,26 @@ fastrdp_desktop_groups: {}
 fastrdp_desktop_labels: {}           # display names, e.g. {xfce: "XFCE (light)"}
 fastrdp_default_geometry: 1920x1080
 
+# ---------------------------------------------------------------- home directories
+# Where users' homes are (docs/nfs-kerberos-homes.md#where-homes-are). "" = the directory's
+# (AD unixHomeDirectory, FreeIPA homeDirectory; AD accounts without one: /home/<user>).
+# A path like /home/%u makes sssd report local homes instead (sssd.conf override_homedir;
+# expansions %u %U %d %f %l %P %o %h %H %%), e.g. when the directory names /autofs/...
+# paths that do not exist on this host. AD and FreeIPA; provider none: set it in your
+# sssd.conf. The broker creates a missing home (mode 0700, /etc/skel) only when its
+# parent directory exists: create /home/%d yourself for a path like /home/%d/%u.
+fastrdp_sssd_override_homedir: ""
+# Where the broker may create a missing home (broker [broker] home_create_roots): only
+# when the home's parent directory is one of these or below one, also with symlinks
+# resolved, on local disk and root-owned. Roots and other missing parents are never
+# created. [] = never create homes (they are provisioned elsewhere; still checked).
+fastrdp_home_create_roots: [/home]
+# Automounted homes (autofs): none = left to the host (default); sssd = automount maps
+# from the directory (AD/FreeIPA LDAP maps through sssd: installs autofs, adds sssd's
+# autofs service, nsswitch "automount: files sss"); files = installs and enables autofs,
+# the maps are yours (/etc/auto.master.d/*.autofs).
+fastrdp_autofs: none
+
 # ---------------------------------------------------------------- performance
 fastrdp_gpu: auto                    # auto | nvidia | mesa | none
 fastrdp_x264_threads: 2

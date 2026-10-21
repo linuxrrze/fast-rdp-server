@@ -100,6 +100,21 @@
         - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ipa-fqn.conf, provider: ipa}
         - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-none-fqn.conf, provider: none}
 
+    - name: SSSD with local homes (override_homedir) and directory automount maps (autofs)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_identity_provider: "{{ item.provider }}"
+        fastrdp_sssd_override_homedir: "{{ item.homedir }}"
+        fastrdp_autofs: "{{ item.autofs }}"
+      loop:
+        - {src: sssd-ad.conf.j2, dest: sssd-ad-homes.conf, provider: ad, homedir: /home/%u, autofs: sssd}
+        - {src: sssd-ad.conf.j2, dest: sssd-ad-autofs-files.conf, provider: ad, homedir: "", autofs: files}
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ipa-homes.conf, provider: ipa, homedir: /home/%d/%u, autofs: sssd}
+        - {src: sssd-fastrdp.conf.j2, dest: sssd-fastrdp-ad-homes.conf, provider: ad, homedir: /home/%u, autofs: sssd}
+
     - name: FreeIPA krb5.conf restored on hosts an older role had changed (with/without sssd's include dir)
       ansible.builtin.template:
         src: "{{ roles_dir }}/identity/templates/krb5-ipa.conf.j2"
@@ -255,6 +270,17 @@
         mode: "0644"
       vars:
         fastrdp_session_tgt: required
+
+    - name: Broker.toml, home creation roots (several, none)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-homes-{{ item.name }}.toml"
+        mode: "0644"
+      vars:
+        fastrdp_home_create_roots: "{{ item.roots }}"
+      loop:
+        - {name: several, roots: [/home, /srv/home]}
+        - {name: none, roots: []}
 
     - name: Proxy.ini and broker.toml with non-default ports (smoke test parser)
       ansible.builtin.template:

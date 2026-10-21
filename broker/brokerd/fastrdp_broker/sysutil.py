@@ -46,8 +46,36 @@ async def run(*argv: str, input: str | None = None, timeout: float = 30, check: 
         raise CommandError(f"timeout: {argv[0]} {argv[1] if len(argv) > 1 else ''}") from None
     res = Result(proc.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
     if check and res.rc != 0:
-        raise CommandError(f"{' '.join(argv[:3])}... failed ({res.rc}): {res.stderr.strip()[:500]}")
+        raise CommandError(f"{describe(argv)} failed ({res.rc}): {summarize(res.stderr or res.stdout)}")
     return res
+
+
+def describe(argv: tuple[str, ...] | list[str]) -> str:
+    """Short name of a command for logs: the program run through systemd-run, not
+    systemd-run's own options."""
+    if argv and os.path.basename(argv[0]) == "systemd-run" and "--" in argv:
+        inner = list(argv[list(argv).index("--") + 1:])
+        return f"{' '.join(inner[:4])}{' ...' if len(inner) > 4 else ''} (systemd-run as the user)"
+    return f"{' '.join(argv[:3])}{' ...' if len(argv) > 3 else ''}"
+
+
+def summarize(text: str, max_lines: int = 3, max_len: int = 400) -> str:
+    """The meaningful lines of a command's error output, on one line: no blank lines,
+    no GLib "**" separators, no repeats (GLib prints an assertion twice, the second
+    time after "Bail out! ")."""
+    seen, lines = set(), []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("Bail out! "):
+            line = line[len("Bail out! "):]
+        if not line or not any(c.isalnum() for c in line) or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) == max_lines:
+            break
+    out = "; ".join(lines) or "no error output"
+    return out if len(out) <= max_len else out[:max_len - 3] + "..."
 
 
 async def unit_active(unit: str) -> bool:

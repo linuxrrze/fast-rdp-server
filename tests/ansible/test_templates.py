@@ -866,5 +866,92 @@ class TermsrvUnits(unittest.TestCase):
         self.assertEqual(path["Install"]["WantedBy"], "multi-user.target")
 
 
+class HomeDirectories(unittest.TestCase):
+    """fastrdp_sssd_override_homedir (local homes) and fastrdp_autofs (directory automount
+    maps through sssd). Defaults change nothing."""
+
+    DOMAIN = "domain/lab.example.com"
+
+    def run_checks(self, **extra):
+        # all values as one JSON -e: "k=v" would cut "/home/%u x" at the space
+        args = [shutil.which("ansible-playbook"), "-i", "rdp1.example.com,", str(HERE / "check_common.yml"),
+                "-e", json.dumps(extra)]
+        env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
+                   ANSIBLE_PYTHON_INTERPRETER=sys.executable)
+        env.pop("ANSIBLE_CONFIG", None)
+        return subprocess.run(args, env=env, capture_output=True, text=True, cwd=HERE).returncode
+
+    def test_defaults_unchanged(self):
+        ad = ini("sssd-ad.conf")
+        self.assertEqual(ad["sssd"]["services"], "nss, pam")
+        self.assertEqual(ad[self.DOMAIN]["fallback_homedir"], "/home/%u")
+        # GDM's headless session (GNOME) is an RDP logon, not denied as unmapped
+        self.assertEqual(ad[self.DOMAIN]["ad_gpo_map_remote_interactive"],
+                         "+fastrdp, +xrdp-sesman, +fastrdp-session, +gdm-autologin")
+        for key in ("override_homedir", "autofs_provider"):
+            self.assertNotIn(key, ad[self.DOMAIN])
+            self.assertNotIn(key, ini("sssd-fastrdp-ipa.conf")[self.DOMAIN])
+
+    def test_ad_local_homes_and_automount_maps(self):
+        ad = ini("sssd-ad-homes.conf")
+        self.assertEqual(ad["sssd"]["services"], "nss, pam, autofs")
+        self.assertEqual(ad[self.DOMAIN]["override_homedir"], "/home/%u")
+        self.assertEqual(ad[self.DOMAIN]["autofs_provider"], "ad")
+        # autofs with the admin's own maps: sssd untouched
+        files = ini("sssd-ad-autofs-files.conf")
+        self.assertEqual(files["sssd"]["services"], "nss, pam")
+        self.assertNotIn("autofs_provider", files[self.DOMAIN])
+
+    def test_ipa_snippet(self):
+        dom = ini("sssd-fastrdp-ipa-homes.conf")[self.DOMAIN]
+        self.assertEqual(dom["override_homedir"], "/home/%d/%u")
+        self.assertEqual(dom["autofs_provider"], "ipa")
+        self.assertEqual(dom["ipa_automount_location"], "default")
+        self.assertEqual(dom["krb5_renew_interval"], "1h")
+        # AD has them in its own sssd.conf: the snippet keeps only [kcm]
+        self.assertEqual(ini("sssd-fastrdp-ad-homes.conf").sections(), ["kcm"])
+
+    def test_checks(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for good in ("/home/%u", "/home/%d/%u", "/srv/home/%l/%u", "/home/users/%f", "/home/%%x%u"):
+            with self.subTest(good=good):
+                self.assertEqual(self.run_checks(**ok, fastrdp_sssd_override_homedir=good, fastrdp_autofs="sssd"), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_autofs="files"), 0)
+        for bad in ("home/%u", "/home/%u/", "/home/%x", "/home/../%u", "/home/./%u", "/home/%u\n",
+                    "/home/%u x", "/", "//home/%u", "/home/%u;reboot"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.run_checks(**ok, fastrdp_sssd_override_homedir=bad), 0)
+        self.assertNotEqual(self.run_checks(**ok, fastrdp_sssd_override_homedir=["/home/%u"]), 0)
+        self.assertNotEqual(self.run_checks(**ok, fastrdp_autofs="ldap"), 0)
+
+    def test_home_create_roots_rendered(self):
+        for name, roots in (("broker-lab.toml", ["/home"]), ("broker-minimal.toml", ["/home"]),
+                            ("broker-homes-several.toml", ["/home", "/srv/home"]),
+                            ("broker-homes-none.toml", [])):
+            with self.subTest(name):
+                self.assertEqual(toml(name)["broker"]["home_create_roots"], roots)
+                cfg = broker_config.parse(toml(name))  # the broker accepts it
+                self.assertEqual(cfg.broker.home_create_roots, roots)
+
+    def test_home_create_roots_checks(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for good in ([], ["/home"], ["/home", "/srv/home"]):
+            with self.subTest(good=good):
+                self.assertEqual(self.run_checks(**ok, fastrdp_home_create_roots=good), 0)
+        for bad in ("/home", ["home"], ["/"], ["/home/"], ["/home/../etc"], ["/home/./x"], ["//home"],
+                    ["/home\n"], ["/home dir"], ['/home"]\nx = ["']):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.run_checks(**ok, fastrdp_home_create_roots=bad), 0)
+
+    def test_autofs_tasks(self):
+        # the responder line is appended once (idempotent) and sssd restarts before autofs
+        tasks = (REPO / "ansible/roles/identity/tasks/autofs.yml").read_text()
+        self.assertIn("(?!.*\\bautofs\\b)", tasks)
+        self.assertLess(tasks.index("flush_handlers"), tasks.index("name: autofs\n    enabled: true"))
+        self.assertIn("line: 'automount:      files sss'", tasks)
+        main = (REPO / "ansible/roles/identity/tasks/main.yml").read_text()
+        self.assertIn("include_tasks: autofs.yml", main)
+
+
 if __name__ == "__main__":
     unittest.main()

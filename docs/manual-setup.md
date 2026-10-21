@@ -285,7 +285,7 @@ krb5_renewable_lifetime = 7d
 krb5_renew_interval = 1h
 # Treat the RDP PAM services like Windows RDS ("Allow log on through Remote Desktop Services").
 ad_gpo_access_control = permissive
-ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session
+ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session, +gdm-autologin
 ad_maximum_machine_account_password_age = 30
 ```
 
@@ -299,6 +299,24 @@ qualified one), so the home directories stay `/home/alice`.
 `ad_gpo_access_control` (`fastrdp_ad_gpo_access_control`): start with `permissive`
 (denials are only logged in the sssd log). Grant *Allow log on through Remote Desktop
 Services* to the RDP users by GPO, check the log, then switch to `enforcing`.
+
+Home directories: the users' homes are their AD `unixHomeDirectory` (else
+`fallback_homedir`), and that path must exist on this host
+([nfs-kerberos-homes.md](nfs-kerberos-homes.md#where-homes-are)). Two optional
+additions at the end of `[domain/example.com]`:
+
+```ini
+# Local homes instead of the directory's unixHomeDirectory (fastrdp_sssd_override_homedir).
+override_homedir = /home/%u
+# Automount maps from AD (fastrdp_autofs: sssd; nsswitch "automount: files sss").
+autofs_provider = ad
+```
+
+With `autofs_provider`, also `services = nss, pam, autofs` in `[sssd]`, and the
+automounter: `apt install autofs`, the line `automount:      files sss` in
+`/etc/nsswitch.conf`, `systemctl restart sssd`, then `systemctl enable --now autofs`
+(details and the `files` variant in
+[nfs-kerberos-homes.md](nfs-kerberos-homes.md#automounted-homes)).
 
 ### 3.4 TERMSRV keytab for the proxy (AD)
 
@@ -360,6 +378,11 @@ use_fully_qualified_names = false
 
 Snippets in `conf.d` override the same keys in `sssd.conf`, later files (by name) the
 earlier ones, so this one wins over what `ipa-client-install` wrote.
+FreeIPA, optional, in the same section: `override_homedir = /home/%u` for local homes
+instead of the directory's (`fastrdp_sssd_override_homedir`); for automount maps from
+FreeIPA (`fastrdp_autofs: sssd`) `autofs_provider = ipa` and
+`ipa_automount_location = default`, plus `, autofs` appended to the `services` line of
+the enrolment's `sssd.conf` and the autofs steps of 3.3.
 
 ```sh
 install -d -m 0711 /etc/sssd/conf.d             # then write 50-fastrdp.conf
@@ -431,6 +454,9 @@ the RDP users for the PAM services `fastrdp`, `xrdp-sesman` and `fastrdp-session
   same (`false` for qualified names, section 9). The role reads your files (`sssd.conf`,
   then `conf.d/*.conf`; the last setting wins, else `default_domain_suffix` qualifies
   names) and fails if they disagree with `fastrdp_sssd_fully_qualified_names`.
+  only when `sssd.conf` exists. The home paths it reports must exist on this host:
+  `override_homedir = /home/%u` in its domain section for local homes, or autofs
+  ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#where-homes-are)).
 
 Then 3.5 with the FQDN principal only.
 
@@ -759,6 +785,8 @@ proxy_user = "_fastrdp-proxy"
 socket_group = "_fastrdp-broker"
 port_range = [33900, 34899]
 session_tgt = "auto"
+# Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
+home_create_roots = ["/home"]
 
 [auth]
 realms = ["EXAMPLE.COM"]
@@ -828,6 +856,8 @@ Values to change:
 | `[network] xrdp_autodetect_profile` | `fastrdp_xrdp_autodetect_profile` | `lan`, `wan`, `broadband_high`, `satellite`, `broadband_low`, `modem`, `default` ([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)); keep `[x264.autodetect]` in `gfx.toml` the same |
 | `[defaults] desktop`, `geometry`; `[defaults.groups]` | `fastrdp_default_desktop`, `fastrdp_default_geometry`, `fastrdp_group_desktops` | `[defaults.groups]` lines look like `"rdp-kde" = "plasma"` |
 | `[desktops.<name>]` | `fastrdp_desktops`, `fastrdp_desktop_labels`, `fastrdp_desktop_groups` | one table per desktop (section 7); optional `label = "..."`, `groups = [...]` |
+| `[broker] home_check` | none (not rendered) | `create` (default): refuse unusable homes, create a missing one (0700) below an existing root-owned parent; `check`; `off` ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#where-homes-are)) |
+| `[broker] home_create_roots` | `fastrdp_home_create_roots` | default `["/home"]`: `home_check = "create"` creates a home only when its parent is one of these or below one (also with symlinks resolved), never a root or another missing parent; `[]` = never create |
 | `[mfa]`, `[mfa.privacyidea]` | `fastrdp_mfa_*`, `fastrdp_privacyidea_*` | section 15.1 |
 | `[web] enabled` | `fastrdp_web_enabled` | section 15.2 |
 | `port_range`, `[backends.xrdp] port` | `fastrdp_backend_port_range`, `fastrdp_xrdp_port` | must match nftables, sysctl and `xrdp.ini` |

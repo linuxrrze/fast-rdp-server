@@ -14,6 +14,15 @@ The user never sees a GDM greeter; authentication and MFA happened at the proxy.
 Before `GnomeBackend.ensure()`, under the broker's per-user lock, the broker gets the
 user a **Kerberos TGT** when the login carried the password (`[broker] session_tgt`,
 see [Kerberos ticket](#kerberos-ticket-tgt)); on every login, so also on a reconnect.
+Then it checks the user's **home directory** (`[broker] home_check`): `grdctl` writes
+the RDP settings and credentials into it, and nothing on GNOME's path runs
+`pam_mkhomedir` (`grdctl` runs in `user@<uid>.service`, PAM service `systemd-user`,
+reached through `systemd-run --machine=<uid>@.host`, PAM service `login`). A missing
+home is created (mode 0700, `/etc/skel`) when its parent exists and is in
+`[broker] home_create_roots` (default `/home`); a missing parent,
+e.g. `/autofs` without autofs, refuses the login with a log line naming it, instead of
+`grdctl`'s *Error creating directory /autofs: Permission denied* and an assertion
+([nfs-kerberos-homes.md](../nfs-kerberos-homes.md#where-homes-are)).
 
 `GnomeBackend.ensure()` (under the broker's per-user lock):
 
@@ -174,8 +183,19 @@ places them; not checked.
   carried it, only to get a Kerberos TGT through PAM (next section). (Keyring
   unlocking: not handled by fastrdp; upstream behaviour unknown.)
 - AD GPO logon rights: the broker checks PAM service `fastrdp` (mapped in
-  `ad_gpo_map_remote_interactive`). GDM's own PAM service for headless sessions is
-  **not** in that mapping; whether sssd denies or needs it is to validate.
+  `ad_gpo_map_remote_interactive`). A GNOME session runs three more PAM services,
+  each with an account phase that sssd's GPO check sees: `gdm-autologin`
+  (`gnome-headless-session@`; not in any of sssd's default maps, so
+  `ad_gpo_default_right = deny` would refuse it: fastrdp adds it to
+  `ad_gpo_map_remote_interactive`), `systemd-user` (`user@<uid>.service`, in sssd's
+  default `ad_gpo_map_permit`) and `login` (the broker's `systemd-run
+  --machine=…@.host` for `grdctl`, through machined; in sssd's default
+  `ad_gpo_map_interactive`). With `fastrdp_ad_gpo_access_control: enforcing` GNOME
+  users therefore also need the *Allow log on locally* right, or `login` moved into
+  the remote-interactive map (`ad_gpo_map_interactive = -login`, `+login` in
+  `ad_gpo_map_remote_interactive`), which also changes console logins of the host.
+  Which PAM service GDM 50 uses for headless sessions: from the GDM sources, not yet
+  validated on a host.
 
 ## Kerberos ticket (TGT)
 
@@ -220,7 +240,8 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
 
 | Symptom | Checks |
 |---|---|
-| `backend error: GNOME session for USER: …systemd-run…failed` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
+| `backend error: GNOME session for USER: grdctl --headless rdp … (systemd-run as the user) failed (N): <first error lines>` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
+| `backend error: home directory H of USER does not exist (parent P missing: automount not set up?)` | the directory names a home path this host does not have: set up autofs (`fastrdp_autofs`) or use local homes (`fastrdp_sssd_override_homedir`), [nfs-kerberos-homes.md](../nfs-kerberos-homes.md#where-homes-are) |
 | `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M UID@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=UID@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
 | `port P is held by unexpected uid(s) [...]` | `ss -ltnp 'sport = :P'`: another user's process holds the port; next login picks another port |
 | Session starts but login at g-r-d fails (proxy log: back-end connect error) | credentials mismatch after a manual `grdctl` change: `fastrdpctl logout USER` and log in again |

@@ -30,6 +30,7 @@ def make_cfg(tmp: str, web: bool = False, **mfa) -> config.Config:
         socket_group="",
         state_dir=f"{tmp}/state",
         runtime_dir=f"{tmp}/run",
+        home_check="off",  # fake users' homes do not exist; test_home_dir.py covers it
     )
     raw["auth"]["allow_groups"] = []
     raw["mfa"]["mode"] = "none"

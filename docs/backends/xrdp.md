@@ -38,8 +38,10 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
        `PAM_IGNORE`, the stack skips `pam_sss` (no failed-logon counts in AD);
      - anything else → `PAM_AUTH_ERR`. A plain password never works here, so xrdp
        cannot be used to bypass MFA.
-   - session phase: `pam_systemd.so class=user type=x11` (logind session),
-     `pam_mkhomedir`, `pam_sss`, keyrings if installed.
+   - session phase: `pam_mkhomedir` (before `pam_systemd`, which starts the user
+     manager in the home; the broker has normally created the home already, or
+     refused a home with a missing parent), `pam_systemd.so class=user type=x11`
+     (logind session), `pam_sss`, keyrings if installed.
 5. If the user has a session for the same colour depth (`[Sessions] Policy=Default`),
    sesman reconnects to it. Otherwise it starts `/usr/lib/xorg/Xorg -config
    xrdp/xorg.conf` (display offset 10) as the user, then the window manager script.

@@ -57,6 +57,8 @@
     preflight_keytab_src: "{{ fastrdp_termsrv_keytab_src | default(preflight_role_defaults.fastrdp_termsrv_keytab_src) }}"
     preflight_render_world: "{{ fastrdp_render_nodes_world_accessible | default(preflight_role_defaults.fastrdp_render_nodes_world_accessible) | bool }}"
     preflight_drm_device: "{{ fastrdp_xorgxrdp_drm_device | default(preflight_role_defaults.fastrdp_xorgxrdp_drm_device) }}"
+    preflight_override_homedir: "{{ fastrdp_sssd_override_homedir | default(preflight_role_defaults.fastrdp_sssd_override_homedir) }}"
+    preflight_autofs: "{{ fastrdp_autofs | default(preflight_role_defaults.fastrdp_autofs) }}"
     # Rough sizing of the server itself; sessions need more (detail line of the check).
     preflight_heavy_desktops: "{{ preflight_desktops | intersect(['gnome', 'plasma', 'plasma-x11', 'cinnamon']) | length > 0 }}"
     preflight_min_ram_mb: "{{ 4096 if preflight_heavy_desktops else 2048 }}"
@@ -343,6 +345,125 @@
              'fix': 'provider none: create TERMSRV/' ~ preflight_fqdn ~ ' in your KDC, export the keytab and set '
                     ~ 'fastrdp_termsrv_keytab_src; install an sssd.conf for your LDAP'}] }}
       when: preflight_idp == 'none'
+
+    # ------------------------------------------------------------------ home directories
+    # The broker refuses logins whose home has a missing parent (e.g. the directory says
+    # /autofs/srv/home/<user> and autofs is not set up) and creates only a missing last
+    # component. Samples fastrdp_preflight_user (inventory or -e) and the join account,
+    # never enumerates the directory; stat as the SSH user with a time limit (hung NFS).
+    - name: Look at the home directories the directory reports
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          export LC_ALL=C
+          # probe PATH: OK, NOTDIR, or MISSING/HUNG/NOACCESS and the first such path component
+          probe() {
+              local rest=${1#/} prefix="" part out="directory" rc
+              while [ -n "$rest" ]; do
+                  part=${rest%%/*}
+                  if [ "$part" = "$rest" ]; then rest=""; else rest=${rest#*/}; fi
+                  [ -n "$part" ] || continue
+                  prefix="$prefix/$part"
+                  out=$(timeout 5 stat -L -c %F -- "$prefix" 2>&1); rc=$?
+                  if [ "$rc" -eq 124 ]; then printf 'HUNG\t%s\n' "$prefix"; return; fi
+                  if [ "$rc" -ne 0 ]; then
+                      case $out in
+                          *"No such file"*) printf 'MISSING\t%s\n' "$prefix" ;;
+                          *) printf 'NOACCESS\t%s\n' "$prefix" ;;
+                      esac
+                      return
+                  fi
+              done
+              if [ "$out" = directory ]; then printf 'OK\t%s\n' "$1"; else printf 'NOTDIR\t%s\n' "$1"; fi
+          }
+          is_autofs() {
+              awk -v p="$1" '{ for (i = 7; i <= NF; i++) if ($i == "-") { if ($(i + 1) == "autofs" && $5 == p) f = 1; break } }
+                  END { exit !f }' /proc/self/mountinfo
+          }
+          below_roots() {   # below_roots DIR: DIR is a root of CREATE_ROOTS or below one
+              local root
+              for root in $CREATE_ROOTS; do
+                  case $1/ in "$root"/*) return 0 ;; esac
+              done
+              return 1
+          }
+          sample() {   # sample USER SEVERITY-WHEN-BROKEN
+              local u=$1 sev=$2 entry home state path
+              if ! entry=$(getent passwd "$u"); then
+                  [ "$sev" = FAIL ] && echo "WARN fastrdp_preflight_user $u not found (host not joined yet?): homes not sampled"
+                  return
+              fi
+              home=$(cut -d: -f6 <<<"$entry")
+              IFS=$'\t' read -r state path < <(probe "$home")
+              case $state in
+                  OK) echo "INFO $u: $home exists" ;;
+                  NOTDIR) echo "$sev $u: home $home is not a directory" ;;
+                  HUNG) echo "WARN $u: stat $path did not answer within 5 s (hung NFS server or automount?)" ;;
+                  NOACCESS) echo "INFO $u: $path not readable as $(id -un) (fine for Kerberized NFS homes)" ;;
+                  MISSING)
+                      if [ "$path" = "$home" ]; then
+                          if is_autofs "$(dirname "$home")"; then
+                              echo "WARN $u: $home missing below the automount point $(dirname "$home") (no map entry?)"
+                          elif ! below_roots "$(dirname "$home")"; then
+                              echo "WARN $u: $home missing, outside fastrdp_home_create_roots (${CREATE_ROOTS:-none}): refused until it exists"
+                          else
+                              echo "INFO $u: $home missing; the broker creates it at the first login"
+                          fi
+                      elif [ -n "$OVERRIDE" ]; then
+                          echo "INFO $u: directory home $home has no $path here; fastrdp_sssd_override_homedir replaces it"
+                      elif [ "$AUTOFS" != none ]; then
+                          echo "WARN $u: home $home: $path does not exist yet; fastrdp_autofs: $AUTOFS sets up autofs, check again after the deployment"
+                      else
+                          echo "$sev $u: home $home: $path does not exist (automount not set up?); the broker refuses logins of such users"
+                      fi ;;
+              esac
+          }
+          [ -n "$TEST_USER" ] && sample "$TEST_USER" FAIL
+          [ -n "$JOIN_USER" ] && [ "$JOIN_USER" != "$TEST_USER" ] && sample "$JOIN_USER" WARN
+          if [ -n "$OVERRIDE" ]; then
+              static=${OVERRIDE%%\%*}
+              static=${static%/*}
+              IFS=$'\t' read -r state path < <(probe "${static:-/}")
+              case $state in
+                  OK) echo "INFO override_homedir $OVERRIDE: $static exists" ;;
+                  HUNG) echo "WARN override_homedir: stat $path did not answer within 5 s" ;;
+                  NOACCESS) echo "INFO override_homedir: $path not readable as $(id -un)" ;;
+                  *) echo "FAIL fastrdp_sssd_override_homedir $OVERRIDE: $path does not exist (or is no directory)" ;;
+              esac
+              below_roots "${static:-/}" \
+                  || echo "WARN override_homedir $OVERRIDE outside fastrdp_home_create_roots (${CREATE_ROOTS:-none}): not created"
+              case ${OVERRIDE#"$static"/} in
+                  */*) echo "WARN fastrdp_sssd_override_homedir $OVERRIDE: the broker creates only the last component; create the directories above it" ;;
+              esac
+          fi
+          [ -z "$TEST_USER$OVERRIDE" ] && echo "INFO no user sampled (set fastrdp_preflight_user to a directory user)"
+          exit 0
+      environment:
+        TEST_USER: "{{ fastrdp_preflight_user | default('') }}"
+        JOIN_USER: "{{ (fastrdp_join_user | default(preflight_role_defaults.fastrdp_join_user)) if preflight_idp in ['ad', 'ipa'] else '' }}"
+        OVERRIDE: "{{ preflight_override_homedir }}"
+        AUTOFS: "{{ preflight_autofs }}"
+        CREATE_ROOTS: "{{ fastrdp_home_create_roots | default(preflight_role_defaults.fastrdp_home_create_roots) | join(' ') }}"
+      register: preflight_homes
+      changed_when: false
+      failed_when: false
+
+    - name: Result - home directories
+      vars:
+        out: "{{ preflight_homes.stdout_lines | default([]) }}"
+        errs: "{{ out | select('match', '^FAIL ') | map('regex_replace', '^FAIL ', '') | list }}"
+        warns: "{{ out | select('match', '^WARN ') | map('regex_replace', '^WARN ', '') | list }}"
+        infos: "{{ out | select('match', '^INFO ') | map('regex_replace', '^INFO ', '') | list }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'home directories',
+             'status': 'FAIL' if errs else ('WARN' if warns else 'PASS'),
+             'detail': ((errs + warns) if (errs + warns) else infos) | join('; ')
+                       or 'not checked: ' ~ (preflight_homes.stderr | default('no output') | truncate(120)),
+             'fix': 'set up the automounter (fastrdp_autofs: sssd for directory maps, or files) so the home paths '
+                    ~ 'from the directory exist, or use local homes (fastrdp_sssd_override_homedir: /home/%u); '
+                    ~ 'docs/nfs-kerberos-homes.md#where-homes-are'}] }}
 
     # ------------------------------------------------------------------ ports
     - name: List listening TCP ports (/proc/net, no iproute2 needed)

@@ -276,7 +276,9 @@ password checks and the PAM *account* phase for every login. PAM service
 GNOME/Plasma session's TGT; it has no `pam_faillock`, so a stale delegated password
 does not lock the account for fastrdp (the KDC still counts the failure). In AD, sssd maps this
 service (plus `xrdp-sesman` and `fastrdp-session`) to the **"Allow log on through
-Remote Desktop Services"** GPO right (`ad_gpo_map_remote_interactive`).
+Remote Desktop Services"** GPO right (`ad_gpo_map_remote_interactive`), and GDM's
+`gdm-autologin` (GNOME headless sessions) too; GNOME's `grdctl` step also runs PAM
+service `login` (interactive right), see [gnome.md](backends/gnome.md).
 
 The Ansible default is `ad_gpo_access_control = permissive`: denials are only
 logged. Check the logs, then switch to `enforcing`.

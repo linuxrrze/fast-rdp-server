@@ -12,7 +12,7 @@ import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import conntype, identity, pamauth, tgt
+from . import conntype, home, identity, pamauth, tgt
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
 from .config import Config
 from .grace import GraceKey, ReconnectGrace
@@ -275,6 +275,11 @@ class Broker:
         async def start() -> Target:
             async with self.user_locks[user.name]:
                 await self.session_tgt(user, password, backend)
+                # Before any back-end: a missing home must not surface as a grdctl
+                # assertion (GNOME has no pam_mkhomedir) or be created below a missing
+                # automount root (pam_mkhomedir in xrdp-sesman would). home.py
+                await home.prepare(user, self.cfg.broker.home_check, self.home_pool,
+                                   self.cfg.broker.home_read_timeout, self.cfg.broker.home_create_roots)
                 return await backend.ensure(LoginRequest(user, desktop, password, width, height))
 
         # A session start that is under way completes even if the proxy gives up on this

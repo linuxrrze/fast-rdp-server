@@ -21,4 +21,13 @@ krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
 krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
 # fastrdp_sssd_fully_qualified_names: "alice@{{ fastrdp_domain }}" instead of "alice"
 use_fully_qualified_names = {{ fastrdp_sssd_fully_qualified_names | bool | lower }}
+{% if fastrdp_sssd_override_homedir %}
+# Local homes instead of the directory's homeDirectory (fastrdp_sssd_override_homedir).
+override_homedir = {{ fastrdp_sssd_override_homedir }}
+{% endif %}
+{% if fastrdp_autofs == 'sssd' %}
+# Automount maps from FreeIPA (fastrdp_autofs: sssd; autofs added to [sssd] services).
+autofs_provider = ipa
+ipa_automount_location = {{ fastrdp_autofs_ipa_location }}
+{% endif %}
 {% endif %}

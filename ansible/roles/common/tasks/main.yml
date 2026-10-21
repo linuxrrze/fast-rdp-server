@@ -12,6 +12,27 @@
       or fix the PTR record / /etc/hosts.
     quiet: true
 
+# override_homedir goes into sssd.conf as is: an absolute path of plain names and the
+# expansions sssd knows (sssd.conf(5)), no "." or ".." components, no trailing slash.
+- name: Home directory settings
+  ansible.builtin.assert:
+    that:
+      - fastrdp_sssd_override_homedir is string
+      - fastrdp_sssd_override_homedir == ''
+        or (fastrdp_sssd_override_homedir is match('^(/([A-Za-z0-9._@+-]|%[uUdflPohH%])+)+\Z')
+            and fastrdp_sssd_override_homedir is not search('(^|/)\.\.?(/|$)'))
+      - fastrdp_autofs in ['none', 'sssd', 'files']
+      - fastrdp_home_create_roots is sequence and fastrdp_home_create_roots is not string
+      - fastrdp_home_create_roots | map('string') | reject('match', '^(/[A-Za-z0-9._@+-]+)+\Z') | list | length == 0
+      - fastrdp_home_create_roots | map('string') | select('search', '(^|/)\.\.?(/|$)') | list | length == 0
+    fail_msg: >-
+      fastrdp_sssd_override_homedir is "" (the directory's homes) or an absolute path such as
+      /home/%u, with only the sssd expansions %u %U %d %f %l %P %o %h %H %% (sssd.conf(5));
+      fastrdp_autofs is none, sssd or files; fastrdp_home_create_roots is a list of absolute
+      directories other than / without "." or ".." components or a trailing slash, e.g.
+      [/home] or [] (docs/nfs-kerberos-homes.md).
+    quiet: true
+
 - name: Required site settings are present and consistent
   ansible.builtin.assert:
     that:
