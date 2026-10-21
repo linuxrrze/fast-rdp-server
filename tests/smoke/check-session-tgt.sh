@@ -159,6 +159,31 @@ if [ -n "$pprinc" ]; then
     done
 fi
 
+# ---------------------------------------------------------------- reminder (K4)
+# tgt-notify warns before the TGT can no longer be renewed (renew-until, default 7 days
+# after the last password login). docs/nfs-kerberos-homes.md#long-running-sessions
+NOTIFY=/usr/libexec/fastrdp/tgt-notify
+if [ ! -x "$NOTIFY" ]; then
+    warn "$NOTIFY missing: no reminder before the TGT can no longer be renewed (fastrdp-session, desktops role)"
+elif grep -Eqs '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*false' /etc/fastrdp/tgt-notify.conf; then
+    warn "reminder off (/etc/fastrdp/tgt-notify.conf: enabled = false; fastrdp_tgt_notify)"
+else
+    [ -f /etc/xdg/autostart/fastrdp-tgt-notify.desktop ] \
+        || bad "/etc/xdg/autostart/fastrdp-tgt-notify.desktop missing: sessions do not start the reminder"
+    if pgrep -u "$UID_" -f "$NOTIFY" >/dev/null 2>&1; then
+        ok "reminder running in $U's session ($(pgrep -u "$UID_" -f "$NOTIFY" | wc -l) process(es), one per session bus)"
+    else
+        warn "no reminder process of $U (started by XDG autostart or wlroots-in-x when the desktop starts)"
+    fi
+    command -v notify-send >/dev/null 2>&1 || command -v gdbus >/dev/null 2>&1 \
+        || bad "neither notify-send (libnotify-bin) nor gdbus: the reminder cannot show anything"
+    if st=$(as_user "$NOTIFY" --status 2>&1); then
+        ok "reminder status: $st"
+    else
+        bad "$NOTIFY --status: $st"
+    fi
+fi
+
 # ---------------------------------------------------------------- applications
 if [ -x /snap/bin/firefox ] && snap list firefox >/dev/null 2>&1; then
     warn "Firefox is a snap: its confinement allows only FILE caches in /tmp (kerberos-tickets interface), not KCM; SPNEGO will not find the TGT"

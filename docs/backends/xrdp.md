@@ -74,6 +74,11 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
   logout first. The broker sees the running session (a logind session of the user
   opened by the `xrdp-sesman` PAM service, state not `closing`), keeps the recorded
   desktop and logs `reconnecting to running <desktop> session (requested <other>)`.
+- Kerberos: each reconnect with a password is a new sesman login (`pam_authenticate`,
+  the broker token carries the password to `pam_sss`) and gets a new TGT with a new
+  renewal limit; a reconnect without one renews nothing. Long-lived sessions warn their
+  user before renewal ends (`fastrdp_tgt_notify`, XDG autostart in the desktop's
+  `dbus-run-session` bus) ([long-running sessions](../nfs-kerberos-homes.md#long-running-sessions)).
 - `fastrdpctl logout USER` ends only those xrdp logind sessions
   (`loginctl terminate-session <id>`); SSH and other logins of the user stay.
 - `fastrdpctl status` first drops records of xrdp sessions that no longer exist

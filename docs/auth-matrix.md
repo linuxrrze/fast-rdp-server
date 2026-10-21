@@ -42,6 +42,16 @@ renewable, or renewal ends within 24 h: the next login with a password gets a ne
 session; `--json` for scripts. Only metadata: no ticket or key data
 ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#q4-ticket-lifetime-and-renewal)).
 
+**Sessions longer than the renewable lifetime** (`fastrdp_krb5_renewable_lifetime`,
+default 7 days after the last login with a password): sssd cannot renew the TGT any
+further, and the session loses Kerberized NFS/SMB homes and shares. Users see a desktop
+notification 24 h and 2 h before that and once when the TGT has expired
+(`fastrdp_tgt_notify*`, every desktop; nothing without a TGT). What renews: a reconnect
+with a password (every back-end, also to the running session) or `kinit` in the
+session; lock/unlock is no reliable way in fastrdp sessions. Without any of this:
+gssproxy impersonation for the mounts
+([nfs-kerberos-homes.md](nfs-kerberos-homes.md#long-running-sessions)).
+
 YubiKeys work in three ways:
 - **PIV smartcard** (NLA logon via PKINIT);
 - **YubiKey OTP** (44 modhex characters appended to the password, detected

@@ -88,4 +88,15 @@ done
 # Clipboard between the X display (RDP clipboard channel) and the Wayland desktop.
 WAYLAND_DISPLAY=$WL "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/clipboard-bridge" &
 
+# Desktop notifications: the compositors bring no notification daemon; mako
+# (mako-notifier, optional) shows them on the Wayland desktop. Then the reminder
+# before the Kerberos login can no longer be renewed (tgt-notify, backlog K4); these
+# compositors do not run XDG autostart. Both end with the session (cleanup).
+if command -v mako >/dev/null 2>&1; then
+    WAYLAND_DISPLAY=$WL mako &
+fi
+if [ -x "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/tgt-notify" ]; then
+    WAYLAND_DISPLAY=$WL "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/tgt-notify" &
+fi
+
 wait "$COMP_PID"

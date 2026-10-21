@@ -36,6 +36,10 @@ server (login, token handoff, encoder, channels, reconnect) is the
      changes (dynamic resolution, reconnect with another size);
    - **clipboard:** starts `/usr/libexec/fastrdp/clipboard-bridge`
      (`$FASTRDP_LIBEXEC` overrides the directory);
+   - **notifications:** starts `mako` if installed (`mako-notifier`; the compositors
+     bring no notification daemon) and `/usr/libexec/fastrdp/tgt-notify`, the
+     Kerberos login reminder (these compositors run no XDG autostart;
+     [long-running sessions](../nfs-kerberos-homes.md#long-running-sessions));
    - waits for the compositor; on exit kills its children.
 4. `clipboard-bridge` (Python) polls both sides every 0.5 s with `xclip`
    (`UTF8_STRING`) and `wl-paste`/`wl-copy` (`text/plain;charset=utf-8`), copies
@@ -116,6 +120,10 @@ only.
 - Full xrdp session with a real xorgxrdp display and GPU: **to validate**. Tests ran
   on Xvfb only.
 - Audio and drive redirection behave as in xrdp ([xrdp.md](xrdp.md#channels)).
+- No desktop notifications without `mako-notifier` (not installed by fastrdp: its
+  D-Bus activation file can take over notifications of MATE sessions on the same
+  host); the Kerberos login reminder then only logs
+  ([long-running sessions](../nfs-kerberos-homes.md#long-running-sessions)).
 
 ## Troubleshooting
 

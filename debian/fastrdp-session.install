@@ -3,3 +3,4 @@ broker/session/systemd/fastrdp-plasma@.service usr/lib/systemd/system/
 broker/session/pam/fastrdp-session etc/pam.d/
 broker/session/pam/xrdp-sesman usr/share/fastrdp-session/pam.d/
 broker/session/xsessions/*.desktop usr/share/xsessions/
+broker/session/autostart/fastrdp-tgt-notify.desktop etc/xdg/autostart/

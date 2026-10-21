@@ -1452,5 +1452,70 @@ class KdcProxy(unittest.TestCase):
                 self.assertNotEqual(run(self, **extra), 0)
 
 
+class TgtNotify(unittest.TestCase):
+    """Kerberos login reminder (desktops role, fastrdp_tgt_notify*; backlog K4): the
+    rendered /etc/fastrdp/tgt-notify.conf is read by tgt-notify's own parser, and the
+    common checks refuse what it would reject in every session."""
+
+    ROLE = REPO / "ansible/roles/desktops"
+
+    def test_defaults(self):
+        from fastrdp_broker import tgtnotify
+        s = tgtnotify.load(OUT / "tgt-notify-default.conf")
+        self.assertTrue(s.enabled)
+        self.assertEqual(s.thresholds, (86400, 7200))
+        self.assertEqual(s.interval, 600)
+        self.assertTrue(s.notify_expired)
+        self.assertEqual(s.texts, tgtnotify.Settings().texts)   # built-in texts
+
+    def test_custom(self):
+        from fastrdp_broker import tgtnotify
+        s = tgtnotify.load(OUT / "tgt-notify-custom.conf")
+        self.assertFalse(s.enabled)
+        self.assertEqual(s.thresholds, (172800, 5400, 3600))
+        self.assertEqual(s.interval, 300)
+        self.assertFalse(s.notify_expired)
+        self.assertEqual(s.texts["summary"], "Kerberos-Anmeldung endet in {left}")
+        self.assertEqual(s.texts["body"], 'Ab {deadline} kein Zugriff auf "H:\\" ({principal}).\nNeu verbinden: Ä')
+        self.assertEqual(s.texts["expired_body"], tgtnotify.EXPIRED_BODY)
+
+    def test_tasks(self):
+        tasks = (self.ROLE / "tasks/tgt_notify.yml").read_text()
+        self.assertIn("import_tasks: tgt_notify.yml", (self.ROLE / "tasks/main.yml").read_text())
+        for text in ("dest: /etc/fastrdp/tgt-notify.conf", "dest: /usr/libexec/fastrdp/tgt-notify",
+                     "dest: /etc/xdg/autostart/fastrdp-tgt-notify.desktop", "name: libnotify-bin",
+                     "name: fastrdp-session"):
+            self.assertIn(text, tasks)
+        # the packaged files are the ones the build install copies
+        install = (REPO / "debian/fastrdp-session.install").read_text()
+        self.assertIn("broker/session/autostart/fastrdp-tgt-notify.desktop etc/xdg/autostart/", install)
+        self.assertIn("broker/session/libexec/* usr/libexec/fastrdp/", install)
+        desktop = configparser.ConfigParser(interpolation=None)
+        desktop.read(REPO / "broker/session/autostart/fastrdp-tgt-notify.desktop")
+        self.assertEqual(desktop["Desktop Entry"]["Exec"], "/usr/libexec/fastrdp/tgt-notify")
+        self.assertNotIn("OnlyShowIn", desktop["Desktop Entry"])   # every desktop
+        # wlroots compositors run no XDG autostart: wlroots-in-x starts it
+        self.assertIn("/tgt-notify\" &", (REPO / "broker/session/libexec/wlroots-in-x").read_text())
+
+    def test_checks(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        checks = CommonChecks()
+        for good in ({"fastrdp_tgt_notify": False}, {"fastrdp_tgt_notify_thresholds": []},
+                     {"fastrdp_tgt_notify_thresholds": ["7d", "36h", "90m", 3600]},
+                     {"fastrdp_tgt_notify_interval": "1h", "fastrdp_tgt_notify_expired": False},
+                     {"fastrdp_tgt_notify_texts": {"summary": "Noch {left}", "body": "Ab {deadline} ({principal})"}}):
+            with self.subTest(good=good):
+                self.assertEqual(checks.run_checks(**ok, **good), 0)
+        for bad in ({"fastrdp_tgt_notify": "maybe"}, {"fastrdp_tgt_notify_thresholds": "24h"},
+                    {"fastrdp_tgt_notify_thresholds": ["24 h"]}, {"fastrdp_tgt_notify_thresholds": ["0h"]},
+                    {"fastrdp_tgt_notify_thresholds": ["1w"]}, {"fastrdp_tgt_notify_interval": "0"},
+                    {"fastrdp_tgt_notify_interval": "soon"}, {"fastrdp_tgt_notify_texts": "hello"},
+                    {"fastrdp_tgt_notify_texts": {"title": "x"}}, {"fastrdp_tgt_notify_texts": {"body": ""}},
+                    {"fastrdp_tgt_notify_texts": {"body": "{user}"}}, {"fastrdp_tgt_notify_texts": {"body": "{left"}},
+                    {"fastrdp_tgt_notify_texts": {"summary": ["x"]}}):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(checks.run_checks(**ok, **bad), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

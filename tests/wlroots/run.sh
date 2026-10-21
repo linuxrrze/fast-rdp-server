@@ -57,7 +57,7 @@ run_one() { # compositor display width height [compositor args...]
         else
             bad "$comp: restart over stale socket"; tail -3 "$rt/comp2.log"
         fi
-        kill $lpid 2>/dev/null; pkill -x "$comp"; pkill -f clipboard-bridge
+        kill $lpid 2>/dev/null; pkill -x "$comp"; pkill -f clipboard-bridge; pkill -f libexec/tgt-notify
     )
     kill $xpid 2>/dev/null
     wait $xpid 2>/dev/null

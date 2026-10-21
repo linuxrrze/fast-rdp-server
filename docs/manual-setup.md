@@ -57,7 +57,7 @@ Do not repeat these steps; the rest of this guide covers what the packages leave
 | `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab`), user `_fastrdp-proxy` |
 | `fastrdp-freerdp3` | FreeRDP in `/opt/fastrdp` (`freerdp-proxy`, `xfreerdp`) |
 | `libpam-fastrdp-token` | `pam_fastrdp_token.so` |
-| `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman` |
+| `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman`, the Kerberos login reminder `/usr/libexec/fastrdp/tgt-notify` with `/etc/xdg/autostart/fastrdp-tgt-notify.desktop` |
 | `fastrdp-xrdp` | xrdp + xorgxrdp (replaces the distribution `xrdp`/`xorgxrdp`), units (disabled), user `xrdp`; `postinst` creates `/etc/xrdp/cert.pem`, `/etc/xrdp/key.pem` (`root:xrdp 0640`) and `rsakeys.ini`, and the files of section 10 from upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/` where they are missing (they are not conffiles: replace them, dpkg never asks about them) |
 | `fastrdp-webgate` | web gateway code and unit (disabled), user `_fastrdp-web` |
 
@@ -793,6 +793,29 @@ LockOnResume=false
 [KDE]
 AnimationDurationFactor=0
 ```
+
+**Kerberos login reminder** (all desktops; `roles/desktops/tasks/tgt_notify.yml`): a
+desktop notification before the session's TGT can no longer be renewed
+([nfs-kerberos-homes.md](nfs-kerberos-homes.md#long-running-sessions)). The program and
+its autostart entry come with `fastrdp-session` (`wlroots-in-x` starts it for Sway,
+labwc and Wayfire). Install the notification tool and write
+`/etc/fastrdp/tgt-notify.conf` (`root:root 0644`; without the file the defaults below
+apply, `enabled = false` turns it off):
+
+```sh
+apt install --no-install-recommends libnotify-bin
+```
+
+```toml
+enabled = true                 # fastrdp_tgt_notify
+thresholds = ["24h", "2h"]     # fastrdp_tgt_notify_thresholds: before renew-until (s m h d)
+interval = "10m"               # fastrdp_tgt_notify_interval
+notify_expired = true          # fastrdp_tgt_notify_expired
+# summary, body, expired_summary, expired_body: own texts (fastrdp_tgt_notify_texts)
+# with {left}, {deadline}, {principal}
+```
+
+Check as a user in a session: `/usr/libexec/fastrdp/tgt-notify --status`.
 
 ## 8. Tuning
 

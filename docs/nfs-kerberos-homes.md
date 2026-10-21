@@ -350,9 +350,104 @@ wrong delegated password counts at the KDC (AD `badPwdCount`) but not in
   reconnects with a password do the same through the broker (`session_tgt`), also
   when the running session is reused. Reconnects without a password (SSO,
   smartcard, web) do not refresh anything; the user must run `kinit` in the session.
+  Users are warned before renewal ends: [Long-running sessions](#long-running-sessions).
 - **With gssproxy impersonation** none of this applies. gssproxy gets new tickets with
   the host keytab whenever rpc.gssd needs a context, so access does not expire with
   the user's TGT (gssproxy `docs/NFS.md`: access is "always on") [inferred].
+
+### Long-running sessions
+
+Terminal-server sessions often live longer than the renewable lifetime
+(`fastrdp_krb5_renewable_lifetime`, default and AD default 7 days, counted from the
+last login with a password). Windows re-acquires a TGT from the password key it
+keeps in LSA; a Linux session cannot. What fastrdp offers (backlog K4):
+
+**1. A reminder in the session** (`fastrdp_tgt_notify`, default on). Every desktop
+session runs `/usr/libexec/fastrdp/tgt-notify` as the user: XDG autostart
+(`/etc/xdg/autostart/fastrdp-tgt-notify.desktop`; XFCE, MATE, Cinnamon, LXQt,
+Plasma X11, GNOME, Plasma) or `wlroots-in-x` (Sway, labwc and Wayfire run no XDG
+autostart). Every `fastrdp_tgt_notify_interval` (10 min) it reads the user's default
+cache like `fastrdpctl tickets` (`klist -f`, no `KRB5CCNAME`, `LC_ALL=C`, `TZ=UTC`)
+and computes the **deadline**: renew-until for a renewable TGT, else the expiry. It
+shows a desktop notification once per threshold (`fastrdp_tgt_notify_thresholds`,
+default 24 h and 2 h before; the last one has urgency `critical`, which most daemons
+keep on screen until dismissed)
+and once when the TGT has expired (`fastrdp_tgt_notify_expired`): from when the
+session has no access to Kerberized homes and shares, and what to do (reconnect with
+the password, or `kinit`). Own texts, e.g. translated: `fastrdp_tgt_notify_texts`
+(`summary`, `body`, `expired_summary`, `expired_body`; placeholders `{left}`,
+`{deadline}`, `{principal}`). Settings: `/etc/fastrdp/tgt-notify.conf`, read when the
+session starts.
+
+- **Quiet without a TGT:** sessions of SSO, smartcard, Remote Credential Guard and web
+  logins have no TGT in KCM and see nothing (with gssproxy impersonation they need
+  none).
+- **Once per threshold and TGT:** what was shown is kept per session bus in
+  `$XDG_RUNTIME_DIR/fastrdp-tgt-notify/` (also across a restart of the checker); a new
+  TGT has a new deadline and starts over. Only the most urgent due warning is shown
+  (a session started 1 h before the deadline gets the 2 h one, not both). A failed
+  notification (no daemon yet) is retried at the next check.
+- **A realm without renewable TGTs** (`renew_lifetime` refused by the KDC, e.g. MIT
+  `max_renewable_life = 0`): the deadline is the expiry (e.g. 10 h), so every session
+  gets the 24 h warning right after login. That is accurate; lower the thresholds or
+  turn the reminder off there.
+- **Why in the session and not a systemd user timer:** xrdp sessions run the desktop
+  under `dbus-run-session` (`startwm.sh`), a private session bus with the desktop's
+  notification daemon; a user unit only reaches the user bus. One checker per
+  session bus (`flock`); it ends with its parent (the session).
+- **Notification daemons:** GNOME Shell, Plasma (plasmashell), Cinnamon, XFCE
+  (`xfce4-notifyd`, a dependency of `xfce4-goodies`), MATE (`mate-notification-daemon`,
+  in `mate-desktop-environment-core`) and LXQt (`lxqt-notificationd`, in `lxqt-core`)
+  bring one. Sway, labwc and Wayfire do not: `wlroots-in-x` starts `mako` if it is
+  installed (`mako-notifier`, not installed by fastrdp). Caveat: `mako-notifier` ships a
+  D-Bus activation file for `org.freedesktop.Notifications`; on a host that also offers
+  MATE (whose daemon is only D-Bus activated) the bus may pick mako, which cannot run in
+  an X11 session, so MATE users would see no notifications [inferred]. Without a
+  daemon the reminder only writes the failure to its standard error (the session's
+  log) and tries again at the next check.
+- Sending: `notify-send` (`libnotify-bin`, installed by the desktops role), else
+  `gdbus` (`org.freedesktop.Notifications.Notify`).
+- Diagnostics: `/usr/libexec/fastrdp/tgt-notify --status` (as the user: deadline and
+  due stage, JSON), `tests/smoke/check-session-tgt.sh` (section *reminder*).
+
+**2. What renews the TGT** (gives a new renew-until):
+
+| Way | Back-ends | Status |
+|---|---|---|
+| Reconnect with a password (NLA with delegated/typed password, or TLS) | xrdp (X11, wlroots): every connection is a new sesman login with `pam_authenticate`, the token carries the password to `pam_sss` | flow verified in xrdp 0.10.6.1 and broker code (`XrdpBackend.ensure` issues a token with the password also when the running session is reused; `test_session_tgt.test_xrdp_reconnect_hands_password_to_pam`); result inferred, check on a host |
+| | GNOME, Plasma: `Broker.session_tgt` runs before `backend.ensure()` on every login with a password, also when the running session is reused | verified in code and tests (`test_reconnect_refreshes_tgt`, `test_plasma_reconnect_refreshes_tgt`); result inferred, check on a host |
+| `kinit` in a terminal of the session | all | MIT `kinit` without a name takes the principal of the existing default cache (kinit(1)) and stores the new TGT in the KCM collection; `renew_lifetime` makes it renewable and sssd-kcm (`[kcm] tgt_renewal`) renews it. A principal sssd maps differently (UPN, enterprise name): `kinit <principal>` |
+| Reconnect without a password (SSO, smartcard, web) | all | does **not** renew |
+| Lock and unlock the screen | see below | **not recommended** |
+
+**Lock/unlock** would renew only where a screen locker authenticates through
+`pam_sss` online: sssd's `krb5_child` stores a new TGT in the user's ccache on every
+successful online authentication, whatever the PAM service (Q3) [inferred for screen
+lockers; not checked on a host]. In fastrdp sessions this is no dependable way:
+- XFCE, MATE (`mate-desktop-environment-core`), LXQt and the wlroots desktops have no
+  screen locker (the desktops role removes `light-locker` and `xscreensaver`; the RDP
+  client locks); locking does nothing or fails.
+- GNOME (unlock through GDM's `gdm-password` service), Plasma/Plasma X11
+  (`kscreenlocker`, PAM service `kde`) and Cinnamon (`cinnamon-screensaver`) can lock
+  manually (automatic locking is off for GNOME and Plasma), but whether the unlock
+  in a headless/xrdp session reaches `pam_sss` online and refreshes the KCM cache, and
+  whether AD GPO access control (`ad_gpo_map_*`) lets these services through, is
+  unverified.
+- `cached_auth_timeout` in `sssd.conf` or an unreachable KDC: the unlock succeeds from
+  sssd's cache and renews nothing.
+So the reminder recommends reconnecting or `kinit`. Sites that verified unlock for
+their desktops can add it to the text (`fastrdp_tgt_notify_texts`).
+
+**3. No renewal needed: gssproxy impersonation** (Q5a; `fastrdp_nfs_krb5_homes`,
+`fastrdp_smb_krb5_homes` in [smb-kerberos-homes.md](smb-kerberos-homes.md)). The
+kernel's NFS/SMB upcalls get service tickets from the host keytab through
+S4U2Self/S4U2Proxy, so home and shares stay accessible however long the session
+runs, also for sessions without any TGT [inferred; NFS: gssproxy is asked first
+(`REMOTE_FIRST`); SMB: `cifs.upcall` falls back to gssproxy once the user's TGT is no
+longer valid]. It covers only the configured mounts:
+other Kerberos services (SSO in the browser, `ssh -K`, `smbclient -k` to other
+servers) still use the user's TGT and stop after renew-until; the reminder still
+helps there. This is the option for sites where sessions routinely run for weeks.
 
 ## Q5: Solutions
 
@@ -574,6 +669,9 @@ Implemented (see [Changes](#changes-in-this-repository)):
    `fastrdp_krb5_renewable_lifetime`), `renew_lifetime` in `/etc/krb5.conf.d/fastrdp`.
 7. **FreeIPA:** the same snippet adds `krb5_renewable_lifetime`/`krb5_renew_interval`
    to `[domain/<fastrdp_domain>]`, which `ipa-client-install` does not write.
+8. **Reminder before renewal ends** (`fastrdp_tgt_notify`, default on): a desktop
+   notification in every session before the TGT can no longer be renewed, see
+   [Long-running sessions](#long-running-sessions).
 
 ## Where homes are
 
@@ -724,7 +822,12 @@ credentials"), xfreerdp, Keycloak web path.
    disconnect; check renewals (`klist` times, sssd_be log; for a `kinit` TGT the
    sssd_kcm log, `debug_level` in `[kcm]`), then the failure after
    `renew_till` (errno seen by `cat ~/x`), then recovery on reconnect with and without
-   password.
+   password. Reminder (renewable for 1 h, `fastrdp_tgt_notify_thresholds: [40m, 10m]`,
+   `fastrdp_tgt_notify_interval: 1m`), per desktop (XFCE, MATE, LXQt, Sway with and
+   without `mako-notifier`, GNOME, Plasma): one notification per threshold and one
+   after expiry, none after a reconnect with a password until the new deadline, none
+   for an SSO session; `tgt-notify --status` as the user. Lock/unlock where a locker
+   exists (GNOME, Plasma, Cinnamon): does `klist` show a new renew-until?
 5. **gssproxy:** enable `fastrdp_nfs_krb5_homes`, configure delegation; repeat 1 and 4
    for all logins (expect "works"); `prot1` must fail without a password and work with
    one (fallback); KDC logs show S4U2Self/S4U2Proxy; `klist -c
@@ -766,6 +869,12 @@ credentials"), xfreerdp, Keycloak web path.
   (`[broker] session_tgt`), `broker/session/pam/fastrdp-tgt` (installed by role
   `broker` and package `fastrdp-broker`); Ansible `fastrdp_session_tgt` (role
   `common`). Tests: `broker/brokerd/tests/test_session_tgt.py`.
+- `broker/brokerd/fastrdp_broker/tgtnotify.py`, `broker/session/libexec/tgt-notify`,
+  `broker/session/autostart/fastrdp-tgt-notify.desktop` (package `fastrdp-session`),
+  start in `wlroots-in-x`; Ansible `fastrdp_tgt_notify*` (role `common`, checked
+  there), `roles/desktops/tasks/tgt_notify.yml`, `templates/tgt-notify.conf.j2`. Tests:
+  `broker/brokerd/tests/test_tgtnotify.py`, reconnect tests in `test_session_tgt.py`,
+  `tests/ansible/` (`TgtNotify`); smoke check in `tests/smoke/check-session-tgt.sh`.
 - `backends/gnome.py`: `systemctl --user --runtime enable` (test in
   `test_gaps.BackendTests.test_gnome_start`).
 - `ansible/roles/identity`: `sssd-fastrdp.conf.j2` → `/etc/sssd/conf.d/50-fastrdp.conf`,

@@ -78,3 +78,6 @@
   ansible.builtin.apt:
     name: [light-locker, xscreensaver]
     state: absent
+
+- name: Kerberos login reminder (tgt-notify)
+  ansible.builtin.import_tasks: tgt_notify.yml

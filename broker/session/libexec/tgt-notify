@@ -1,0 +1,15 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Desktop notification before the session's Kerberos TGT can no longer be renewed
+# (fastrdp_broker/tgtnotify.py, backlog K4). Started in each desktop session as the
+# user: XDG autostart (/etc/xdg/autostart/fastrdp-tgt-notify.desktop) or wlroots-in-x.
+# Settings: /etc/fastrdp/tgt-notify.conf. Diagnostics: tgt-notify --status
+import sys
+
+sys.path.insert(0, "/usr/lib/fastrdp/python")
+try:
+    from fastrdp_broker.tgtnotify import main
+except ImportError:      # fastrdp-broker not installed: nothing to check
+    sys.exit(0)
+sys.exit(main())

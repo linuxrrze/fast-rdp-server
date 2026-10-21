@@ -43,6 +43,12 @@ check "fastrdp-brokerd --check accepts the example config" /usr/sbin/fastrdp-bro
 check "fastrdpctl --help" /usr/sbin/fastrdpctl --help
 check "xrdp built with --enable-ffmpeg" bash -c '/usr/sbin/xrdp -v | grep -q -- --enable-ffmpeg'
 check "session launcher installed" test -x /usr/libexec/fastrdp/startwm.sh
+# Kerberos login reminder (backlog K4): autostarted in every desktop session
+check "tgt-notify installed" test -x /usr/libexec/fastrdp/tgt-notify
+check "tgt-notify autostart entry is a conffile of fastrdp-session" \
+    bash -c 'dpkg-query -W -f="\${Conffiles}\n" fastrdp-session | grep -q " /etc/xdg/autostart/fastrdp-tgt-notify.desktop "'
+check "tgt-notify --status" /usr/libexec/fastrdp/tgt-notify --config /nonexistent --status
+output_has "tgt-notify imports the broker module (defaults without a config file)" '"enabled": true'
 for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman fastrdp-termsrv-keytab; do
     check "$u.service shipped" test -f "/usr/lib/systemd/system/$u.service"
 done

@@ -1,0 +1,56 @@
+---
+# Kerberos login reminder (backlog K4): /usr/libexec/fastrdp/tgt-notify runs in every
+# desktop session as the user (XDG autostart; wlroots desktops: wlroots-in-x) and
+# warns before the session's TGT can no longer be renewed. It talks to the session's
+# own notification daemon (xrdp sessions have a private bus from dbus-run-session, so a
+# systemd user unit could not reach it). docs/nfs-kerberos-homes.md#long-running-sessions
+- name: Notification tool for the Kerberos login reminder
+  ansible.builtin.apt:
+    name: libnotify-bin
+    state: present
+    install_recommends: false
+  when: fastrdp_tgt_notify | bool
+
+- name: Kerberos login reminder from this checkout
+  when: fastrdp_install_method == 'build'
+  block:
+    - name: Directories for the Kerberos login reminder
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/usr/libexec/fastrdp, /etc/xdg/autostart]
+
+    - name: Kerberos login reminder program
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/libexec/tgt-notify"
+        dest: /usr/libexec/fastrdp/tgt-notify
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Kerberos login reminder autostart entry (every desktop session)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/autostart/fastrdp-tgt-notify.desktop"
+        dest: /etc/xdg/autostart/fastrdp-tgt-notify.desktop
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Kerberos login reminder from the APT repository (fastrdp-session)
+  ansible.builtin.apt:
+    name: fastrdp-session
+    state: "{{ fastrdp_apt_package_state }}"
+  when: fastrdp_install_method == 'apt'
+
+# Also with fastrdp_tgt_notify: false: the autostart entry stays, tgt-notify reads
+# "enabled = false" and exits.
+- name: Kerberos login reminder settings
+  ansible.builtin.template:
+    src: tgt-notify.conf.j2
+    dest: /etc/fastrdp/tgt-notify.conf
+    owner: root
+    group: root
+    mode: "0644"

@@ -230,7 +230,10 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
   would not find it ([which cache](../nfs-kerberos-homes.md#which-cache-the-session-uses)).
   Check a running session with `sudo tests/smoke/check-session-tgt.sh USER`.
 - **Reconnect:** runs on every login with a password, also when the running session
-  is reused, so a reconnect renews an expiring TGT for all processes of the uid.
+  is reused, so a reconnect renews an expiring TGT for all processes of the uid,
+  with a new renewal limit (`krb5_renewable_lifetime`). Before that limit the session
+  shows a reminder (`fastrdp_tgt_notify`, XDG autostart; gnome-shell is the
+  notification daemon) ([long-running sessions](../nfs-kerberos-homes.md#long-running-sessions)).
 - **`[broker] session_tgt`** (`fastrdp_session_tgt`): `auto` (default) = failures
   are logged (`no Kerberos TGT for the gnome session: …`), the login continues;
   `required` = such failures refuse the login, and logins **without** a password are

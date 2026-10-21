@@ -12,7 +12,9 @@ Before `PlasmaBackend.ensure()`, under the same lock, the broker gets the user a
 login including reconnects; same mechanism as for
 [GNOME](gnome.md#kerberos-ticket-tgt). The TGT is in the user's KCM cache before
 `fastrdp-plasma@<user>` starts, so Plasma can use a Kerberized NFS home from its first
-access.
+access. A reconnect with a password renews it (new renewal limit); before the limit the
+session shows a reminder (`fastrdp_tgt_notify`, XDG autostart, plasmashell
+notifications) ([long-running sessions](../nfs-kerberos-homes.md#long-running-sessions)).
 
 `PlasmaBackend.ensure()` (under the broker's per-user lock):
 

@@ -78,6 +78,38 @@
       (docs/desktop-matrix.md#host-safety-power-actions).
     quiet: true
 
+# The values go into /etc/fastrdp/tgt-notify.conf (desktops role) as TOML strings;
+# tgt-notify refuses what it cannot parse, so check here, not in every session.
+- name: Kerberos login reminder settings (desktops role)
+  vars:
+    thresholds: "{{ fastrdp_tgt_notify_thresholds }}"
+    threshold_list: "{{ thresholds if thresholds is sequence and thresholds is not string and thresholds is not mapping else [] }}"
+    texts: "{{ fastrdp_tgt_notify_texts }}"
+    text_map: "{{ texts if texts is mapping else {} }}"
+  ansible.builtin.assert:
+    that:
+      - fastrdp_tgt_notify | string | lower in ['true', 'false']
+      - fastrdp_tgt_notify_expired | string | lower in ['true', 'false']
+      - thresholds is sequence and thresholds is not string and thresholds is not mapping
+      - threshold_list | map('string') | reject('match', '^0*[1-9][0-9]*[smhd]?\Z') | list | length == 0
+      - fastrdp_tgt_notify_interval | string is match('^0*[1-9][0-9]*[smhd]?\Z')
+      - texts is mapping
+      - text_map.keys() | difference(['summary', 'body', 'expired_summary', 'expired_body']) | length == 0
+      - text_map.values() | reject('string') | list | length == 0
+      - text_map.values() | map('trim') | select('equalto', '') | list | length == 0
+      # only {left} {deadline} {principal}; literal braces doubled
+      - text_map.values() | map('regex_replace', '\{\{|\}\}|\{(left|deadline|principal)\}', '')
+        | select('search', '[{}]') | list | length == 0
+    fail_msg: >-
+      fastrdp_tgt_notify and fastrdp_tgt_notify_expired are true or false;
+      fastrdp_tgt_notify_thresholds is a list of durations such as [24h, 2h] (a whole
+      number above 0 with s, m, h or d; [] = only when expired); fastrdp_tgt_notify_interval
+      is one duration, e.g. 10m; fastrdp_tgt_notify_texts is a mapping with the keys
+      summary, body, expired_summary, expired_body (each optional, non-empty text), using
+      only the placeholders {left}, {deadline} and {principal}
+      (docs/nfs-kerberos-homes.md#long-running-sessions).
+    quiet: true
+
 # Role web_gateway's defaults. The KDCs go into kdcproxy.conf as they are (one
 # space-separated line), and the realm becomes its section name.
 - name: KDC proxy settings (web_gateway role)

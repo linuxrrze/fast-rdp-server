@@ -99,6 +99,7 @@ Depends:
  ${python3:Depends},
 Recommends:
  fastrdp-broker,
+ libnotify-bin,
 Description: session launchers and units for fastrdp back ends
  fastrdp turns a Linux host into a multi-user RDP terminal server.
  .
@@ -110,7 +111,10 @@ Description: session launchers and units for fastrdp back ends
     Sway, labwc and Wayfire,
   - the xrdp-sesman PAM stack that accepts only broker tokens (installed
     as a template under /usr/share/fastrdp-session; copy it to
-    /etc/pam.d/xrdp-sesman, the deployment roles do this).
+    /etc/pam.d/xrdp-sesman, the deployment roles do this),
+  - tgt-notify, started in every desktop session (XDG autostart): a desktop
+    notification before the session's Kerberos login can no longer be
+    renewed (settings: /etc/fastrdp/tgt-notify.conf).
 
 Package: fastrdp-webgate
 Architecture: all

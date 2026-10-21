@@ -435,6 +435,26 @@
         - {name: groups-console, groups: [sudo, "rdp admins@example.com"], console: true}
         - {name: root-only, groups: [], console: false}
 
+    - name: Kerberos login reminder settings (desktops role) with the defaults
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/desktops/templates/tgt-notify.conf.j2"
+        dest: "{{ render_out }}/tgt-notify-default.conf"
+        mode: "0644"
+
+    - name: Kerberos login reminder settings, own thresholds and texts
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/desktops/templates/tgt-notify.conf.j2"
+        dest: "{{ render_out }}/tgt-notify-custom.conf"
+        mode: "0644"
+      vars:
+        fastrdp_tgt_notify: false
+        fastrdp_tgt_notify_thresholds: [2d, 90m, 3600]
+        fastrdp_tgt_notify_interval: 5m
+        fastrdp_tgt_notify_expired: false
+        fastrdp_tgt_notify_texts:
+          summary: "Kerberos-Anmeldung endet in {left}"
+          body: "Ab {deadline} kein Zugriff auf \"H:\\\" ({principal}).\nNeu verbinden: Ä"
+
 # A new site sets only what is required: everything else must come from role
 # defaults (roles/common), and the common checks must pass.
 - name: Render with a minimal inventory (role defaults + realm/domain)

@@ -131,6 +131,42 @@ class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.establish.call_count, 2)
         run_as_user.assert_not_awaited()
 
+    async def test_plasma_reconnect_refreshes_tgt(self):
+        """K4: a reconnect to a running Plasma session (real reuse path, no unit restart)
+        with a password gets a new TGT (new renew-until) before the session is reused."""
+        plasma = self.broker.backends["plasma"]
+        del plasma.ensure
+        self.broker.state.put(Session("alice", "plasma", "plasma", port=41002, rdp_user="fastrdp",
+                                      rdp_password="sess"))
+        with mock.patch("fastrdp_broker.sysutil.unit_active", new=mock.AsyncMock(return_value=True)), \
+                mock.patch("fastrdp_broker.netcheck.listener_uids", return_value={1500}), \
+                mock.patch("fastrdp_broker.sysutil.run", new=mock.AsyncMock()) as run:
+            for _ in range(2):
+                reply = await self.gnome(desktop="plasma")
+                self.assertTrue(reply["ok"], reply)
+                self.assertEqual(reply["target"]["password"], "sess")   # same session
+            self.assertTrue((await self.gnome(desktop="plasma", password=None))["ok"])
+        self.assertEqual(self.establish.call_count, 2)
+        self.establish.assert_called_with("fastrdp-tgt", "alice", PW)
+        run.assert_not_awaited()            # not restarted
+
+    async def test_xrdp_reconnect_hands_password_to_pam(self):
+        """K4: an xrdp reconnect (running session reused) gets a token that carries the
+        password, so xrdp-sesman's pam_sss authenticates again and renews the TGT; the
+        broker's own TGT step is not needed there."""
+        xrdp = self.broker.backends["xrdp"]
+        del xrdp.ensure
+        self.broker.state.put(Session("alice", "xrdp", "xfce"))
+        with mock.patch.object(xrdp, "expected_listener_uid", return_value=990), \
+                mock.patch("fastrdp_broker.netcheck.listener_uids", return_value={990}), \
+                mock.patch.object(xrdp, "live_sessions", new=mock.AsyncMock(return_value=["7"])):
+            for password in (PW, PW, None):
+                reply = await self.nla(password=password)
+                self.assertTrue(reply["ok"], reply)
+                token = reply["target"]["password"]
+                self.assertEqual(self.broker.tokens.redeem("alice", token), (True, password))
+        self.establish.assert_not_called()
+
     def _request(self, msg):
         from test_server import request
         return request(self.cfg.broker.socket, msg)

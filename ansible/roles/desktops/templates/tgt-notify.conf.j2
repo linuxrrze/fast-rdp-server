@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Kerberos login reminder: read by /usr/libexec/fastrdp/tgt-notify in every desktop
+# session (docs/nfs-kerberos-homes.md#long-running-sessions). Changes apply to sessions
+# started afterwards.
+enabled = {{ fastrdp_tgt_notify | bool | lower }}
+thresholds = {{ fastrdp_tgt_notify_thresholds | map('string') | list | to_json }}
+interval = {{ fastrdp_tgt_notify_interval | string | to_json }}
+notify_expired = {{ fastrdp_tgt_notify_expired | bool | lower }}
+{% for key in ['summary', 'body', 'expired_summary', 'expired_body'] %}
+{% if key in fastrdp_tgt_notify_texts %}
+{{ key }} = {{ fastrdp_tgt_notify_texts[key] | string | to_json }}
+{% endif %}
+{% endfor %}

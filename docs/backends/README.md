@@ -86,6 +86,10 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
   `auto` logs failures, `required` refuses failed TGT requests and logins without a
   password (before MFA), `off` disables it. See [gnome.md](gnome.md#kerberos-ticket-tgt)
   and [nfs-kerberos-homes.md](../nfs-kerberos-homes.md).
+- **Kerberos login reminder** (`fastrdp_tgt_notify`, default on, role `desktops`): every
+  desktop session warns its user 24 h and 2 h before the TGT can no longer be renewed
+  and when it has expired (reconnect with the password, or `kinit`); quiet without a
+  TGT ([long-running sessions](../nfs-kerberos-homes.md#long-running-sessions)).
 - **Ticket renewal** (role `identity`): `fastrdp_krb5_renewable_lifetime` (`7d`),
   `fastrdp_krb5_renew_interval` (`1h`), `fastrdp_kcm_tgt_renewal` (`true`, sssd-kcm
   renews every TGT in KCM, also from `kinit`), in `/etc/sssd/conf.d/50-fastrdp.conf`,

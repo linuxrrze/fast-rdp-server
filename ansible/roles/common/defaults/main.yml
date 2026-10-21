@@ -37,6 +37,22 @@ fastrdp_session_tgt: auto
 # Members of listed groups get the strictest mode of their groups (required > auto >
 # off), everybody else fastrdp_session_tgt. Group names as in fastrdp_allow_groups.
 fastrdp_session_tgt_groups: {}
+# Kerberos login reminder (desktops role: /usr/libexec/fastrdp/tgt-notify, XDG autostart
+# in every desktop session, /etc/fastrdp/tgt-notify.conf). sssd renews a session's TGT
+# only until its renew-until time (fastrdp_krb5_renewable_lifetime after the last login
+# with a password, AD default 7 days); then the session loses Kerberized NFS/SMB homes
+# and shares until the user reconnects with the password or runs kinit. The reminder
+# warns once per threshold before that and once when the TGT has expired. Sessions
+# without a TGT (SSO without password) see nothing. Not needed with gssproxy
+# impersonation for every Kerberized mount. docs/nfs-kerberos-homes.md#long-running-sessions
+fastrdp_tgt_notify: true
+fastrdp_tgt_notify_thresholds: [24h, 2h]   # before renew-until; units s m h d; [] = only when expired
+fastrdp_tgt_notify_interval: 10m           # how often each session checks (at least 1m)
+fastrdp_tgt_notify_expired: true           # also once when the TGT has expired
+# Own texts, e.g. translated: {summary, body, expired_summary, expired_body}, each
+# optional, with the placeholders {left}, {deadline} (local time) and {principal}.
+# {} = the built-in English texts (reconnect with the password, or kinit).
+fastrdp_tgt_notify_texts: {}
 
 # Other DNS names clients type for THIS host (DNS aliases), e.g. [rdp.example.com].
 # Each gets a TERMSRV/<alias> Kerberos principal (identity role; registering it needs

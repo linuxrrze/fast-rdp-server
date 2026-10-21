@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=fastrdp Kerberos login reminder
+Comment=Warns before the Kerberos login of this session can no longer be renewed
+Exec=/usr/libexec/fastrdp/tgt-notify
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
