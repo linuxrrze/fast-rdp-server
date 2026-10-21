@@ -5,7 +5,7 @@ log_format fastrdp_web '$remote_addr [$time_local] "$request_method $uri" $statu
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name {{ ansible_fqdn }};
+    server_name {{ fastrdp_fqdn }};
     ssl_certificate     /etc/fastrdp/front.crt;
     ssl_certificate_key /etc/fastrdp/front.key;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -36,7 +36,7 @@ server {
 server {
     listen 80;
     listen [::]:80;
-    server_name {{ ansible_fqdn }};
+    server_name {{ fastrdp_fqdn }};
     access_log /var/log/nginx/fastrdp-web.log fastrdp_web;
     return 301 https://$host$request_uri;
 }

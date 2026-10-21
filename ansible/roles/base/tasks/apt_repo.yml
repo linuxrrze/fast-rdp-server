@@ -27,7 +27,7 @@
   ansible.builtin.copy:
     dest: /etc/apt/sources.list.d/fast-rdp-server.sources
     content: |
-      # {{ ansible_managed }}
+      # Ansible managed (fast-rdp-server): local changes are overwritten
       Types: deb
       URIs: {{ fastrdp_apt_repo_url }}
       Suites: {{ fastrdp_apt_suite }}

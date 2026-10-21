@@ -14,10 +14,10 @@ fastrdp_termsrv_enctypes: [aes256-cts-hmac-sha1-96, aes128-cts-hmac-sha1-96]
 # fastrdp_termsrv_aliases), and those whose keys must be in /etc/fastrdp/termsrv.keytab
 # (FreeIPA aliases share the FQDN principal's keys; provider "none": FQDN only).
 fastrdp_termsrv_spns: >-
-  {{ (['TERMSRV/' ~ ansible_fqdn, 'TERMSRV/' ~ (ansible_hostname | upper)]
+  {{ (['TERMSRV/' ~ fastrdp_fqdn, 'TERMSRV/' ~ (fastrdp_hostname | upper)]
       + (fastrdp_termsrv_aliases | map('regex_replace', '^', 'TERMSRV/') | list)) | unique }}
 fastrdp_termsrv_keytab_spns: >-
-  {{ fastrdp_termsrv_spns if fastrdp_identity_provider == 'ad' else ['TERMSRV/' ~ ansible_fqdn] }}
+  {{ fastrdp_termsrv_spns if fastrdp_identity_provider == 'ad' else ['TERMSRV/' ~ fastrdp_fqdn] }}
 # Derived: directory of fastrdp-termsrv-check / fastrdp-termsrv-keytab (fastrdp-broker
 # package: /usr/sbin; build: copies in /usr/local/sbin).
 fastrdp_termsrv_sbin: "{{ '/usr/sbin' if fastrdp_install_method == 'apt' else '/usr/local/sbin' }}"

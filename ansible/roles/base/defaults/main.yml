@@ -10,7 +10,7 @@ fastrdp_apt_repo_url: https://linuxrrze.github.io/fast-rdp-server
 # stable = release tags, testing = main branch
 fastrdp_apt_channel: stable
 # One suite per distro release (binaries are built per release): resolute-stable, trixie-testing, ...
-fastrdp_apt_suite: "{{ ansible_distribution_release }}-{{ fastrdp_apt_channel }}"
+fastrdp_apt_suite: "{{ ansible_facts.distribution_release }}-{{ fastrdp_apt_channel }}"
 fastrdp_apt_key_url: "{{ fastrdp_apt_repo_url }}/fast-rdp-server-archive-keyring.asc"
 # Pin the key file, e.g. "sha256:<hex>" (recommended; "" = trust the HTTPS download)
 fastrdp_apt_key_checksum: ""
@@ -21,5 +21,5 @@ fastrdp_apt_package_state: present
 # (fastrdp_front_cert_src: ""): every name clients may type, i.e. the FQDN, the short
 # name and fastrdp_termsrv_aliases. An existing /etc/fastrdp/front.crt is kept.
 fastrdp_front_cert_san: >-
-  {{ ([ansible_fqdn, ansible_hostname] + fastrdp_termsrv_aliases) | unique
+  {{ ([fastrdp_fqdn, fastrdp_hostname] + fastrdp_termsrv_aliases) | unique
      | map('regex_replace', '^', 'DNS:') | join(',') }}

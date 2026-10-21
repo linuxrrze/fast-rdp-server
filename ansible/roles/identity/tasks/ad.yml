@@ -21,7 +21,7 @@
   ansible.builtin.copy:
     dest: /etc/fastrdp/krb5-termsrv-enctypes.conf
     content: |
-      # {{ ansible_managed }}
+      # Ansible managed (fast-rdp-server): local changes are overwritten
       [libdefaults]
           permitted_enctypes = {{ fastrdp_termsrv_enctypes | join(' ') }}
     owner: root
@@ -33,7 +33,7 @@
     argv: "{{ [fastrdp_termsrv_sbin ~ '/fastrdp-termsrv-check', '-k', '/etc/krb5.keytab'] + item }}"
   loop:
     - "{{ fastrdp_termsrv_spns[:2] }}"    # FQDN and short name: the machine may add them itself
-    - "{{ fastrdp_termsrv_spns[2:] or ['TERMSRV/' ~ ansible_fqdn] }}"   # aliases
+    - "{{ fastrdp_termsrv_spns[2:] or ['TERMSRV/' ~ fastrdp_fqdn] }}"   # aliases
   register: fastrdp_termsrv_hostkeys
   changed_when: false
   failed_when: false
@@ -44,8 +44,8 @@
   ansible.builtin.command:
     cmd: >-
       adcli update --domain={{ fastrdp_domain }} --computer-password-lifetime=0
-      --add-service-principal=TERMSRV/{{ ansible_fqdn }}
-      --add-service-principal=TERMSRV/{{ ansible_hostname | upper }}
+      --add-service-principal=TERMSRV/{{ fastrdp_fqdn }}
+      --add-service-principal=TERMSRV/{{ fastrdp_hostname | upper }}
   environment:
     KRB5_CONFIG: /etc/fastrdp/krb5-termsrv-enctypes.conf:/etc/krb5.conf
   when: fastrdp_termsrv_hostkeys.results[0].rc != 0

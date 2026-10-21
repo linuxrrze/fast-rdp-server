@@ -6,6 +6,9 @@
 # ---------------------------------------------------------------- identity
 fastrdp_realm: ""                    # REQUIRED: Kerberos realm, e.g. EXAMPLE.COM
 fastrdp_domain: ""                   # REQUIRED: DNS domain, e.g. example.com
+# The host's names, from the facts (top-level fact variables are deprecated in ansible-core)
+fastrdp_fqdn: "{{ ansible_facts.fqdn }}"
+fastrdp_hostname: "{{ ansible_facts.hostname }}"
 fastrdp_identity_provider: ad        # ad (Samba AD / Active Directory) | ipa (FreeIPA) | none (keytab provided)
 fastrdp_join_user: Administrator     # account used for the domain join
 fastrdp_join_password: "{{ vault_fastrdp_join_password | default('') }}"    # secret: vault.yml

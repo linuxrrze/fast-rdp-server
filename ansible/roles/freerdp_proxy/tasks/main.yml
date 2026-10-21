@@ -111,7 +111,7 @@
   ansible.builtin.copy:
     dest: /etc/nftables.d/fastrdp-front.nft
     content: |
-      # {{ ansible_managed }}
+      # Ansible managed (fast-rdp-server): local changes are overwritten
       # Placeholder: add your site's inbound policy for TCP {{ fastrdp_listen_port }} here
       # (e.g. only from the VPN/NetBird range). The fastrdp table only restricts back-end ports.
     owner: root

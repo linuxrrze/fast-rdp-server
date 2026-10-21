@@ -53,6 +53,7 @@ test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg
 
 test-ansible:   # ansible-core; syntax check + role templates rendered and parsed; Keycloak script (offline)
 	@$(call with_tool,test-ansible,ansible-playbook,cd ansible && ansible-playbook --syntax-check site.yml)
+	python3 -m unittest -v tests/ansible/test_roles_static.py
 	python3 -m unittest -v tests/ansible/test_templates.py
 	python3 -m unittest -v tests/keycloak/test_keycloak_passkeys.py
 

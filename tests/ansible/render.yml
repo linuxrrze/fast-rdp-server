@@ -22,10 +22,16 @@
     - ../../ansible/roles/gpu/defaults/main.yml
   vars:
     roles_dir: "{{ playbook_dir }}/../../ansible/roles"
-    ansible_fqdn: rdp1.lab.example.com
-    ansible_hostname: rdp1
+    render_fqdn: rdp1.lab.example.com
+    render_hostname: rdp1
     fastrdp_gpu_effective: none
   tasks:
+    # set_fact: play vars would lose against fastrdp_fqdn from common's defaults in vars_files
+    - name: Host names (facts in a real run)
+      ansible.builtin.set_fact:
+        fastrdp_fqdn: "{{ render_fqdn }}"
+        fastrdp_hostname: "{{ render_hostname }}"
+
     - name: GPU packages per stack (role gpu)
       ansible.builtin.copy:
         dest: "{{ render_out }}/gpu-packages-{{ item }}.json"
@@ -285,12 +291,15 @@
     - ../../ansible/roles/web_gateway/defaults/main.yml
   vars:
     roles_dir: "{{ playbook_dir }}/../../ansible/roles"
-    ansible_fqdn: rdp1.example.com
+    render_fqdn: rdp1.example.com
+    render_hostname: rdp1
     fastrdp_gpu_effective: none
   tasks:
     # set_fact: play vars would lose against the defaults file in vars_files
     - name: The only settings a minimal inventory needs
       ansible.builtin.set_fact:
+        fastrdp_fqdn: "{{ render_fqdn }}"
+        fastrdp_hostname: "{{ render_hostname }}"
         fastrdp_realm: EXAMPLE.COM
         fastrdp_domain: example.com
 

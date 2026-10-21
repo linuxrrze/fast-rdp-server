@@ -11,7 +11,7 @@
   gather_facts: false
   become: false
   vars:
-    ansible_fqdn: rdp1.lab.example.com
+    fastrdp_fqdn: rdp1.lab.example.com
     fastrdp_realm: LAB.EXAMPLE.COM
     fastrdp_domain: lab.example.com
     fastrdp_krb5_conf: "{{ krb5_conf }}"

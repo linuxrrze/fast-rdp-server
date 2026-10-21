@@ -116,7 +116,7 @@ safe). Still worth a robustness fix upstream (§5).
 ### 3.2 SPN, keytab, names (Q2)
 
 - **AD** (`ansible/roles/identity/tasks/ad.yml:17-24`):
-  - registers `TERMSRV/<ansible_fqdn>` and `TERMSRV/<SHORTNAME>` via `adcli update`;
+  - registers `TERMSRV/<fqdn>` and `TERMSRV/<SHORTNAME>` via `adcli update`;
   - `fastrdp-termsrv-keytab` copies all `TERMSRV/*` entries from `/etc/krb5.keytab`;
   - **Fixed:** the role checks that both SPNs (and the aliases) have an AES key at the
     newest kvno (`fastrdp-termsrv-check`, `klist -ke`) and fails otherwise;

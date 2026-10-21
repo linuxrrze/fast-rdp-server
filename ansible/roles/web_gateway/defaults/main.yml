@@ -1,6 +1,6 @@
 ---
 # Browser access: Keycloak (OIDC) -> fastrdp-webgate -> Guacamole -> fastrdp proxy.
-fastrdp_web_public_url: "https://{{ ansible_fqdn }}"
+fastrdp_web_public_url: "https://{{ fastrdp_fqdn }}"
 fastrdp_web_oidc_issuer: https://keycloak.lab.example.com/realms/lab
 fastrdp_web_oidc_client_id: fastrdp-web
 fastrdp_web_oidc_client_secret: "{{ vault_fastrdp_web_oidc_client_secret | default('') }}"

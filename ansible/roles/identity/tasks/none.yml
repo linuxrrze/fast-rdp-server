@@ -16,4 +16,4 @@
 - name: Keytab present
   ansible.builtin.assert:
     that: fastrdp_keytab.stat.exists
-    fail_msg: Provide fastrdp_termsrv_keytab_src (TERMSRV/{{ ansible_fqdn }}) and an sssd.conf for provider "none".
+    fail_msg: Provide fastrdp_termsrv_keytab_src (TERMSRV/{{ fastrdp_fqdn }}) and an sssd.conf for provider "none".

@@ -35,7 +35,7 @@ ones marked **site** are always site-specific.
 |---|---|---|
 | Kerberos realm (**site**) | `EXAMPLE.COM` | `fastrdp_realm` |
 | DNS domain (**site**) | `example.com` | `fastrdp_domain` |
-| Host FQDN / short name (**site**) | `rdp1.example.com` / `rdp1` (AD account `RDP1$`) | facts `ansible_fqdn`, `ansible_hostname` |
+| Host FQDN / short name (**site**) | `rdp1.example.com` / `rdp1` (AD account `RDP1$`) | `fastrdp_fqdn`, `fastrdp_hostname` (from the facts `fqdn`, `hostname`) |
 | Directory | Samba/Windows AD (FreeIPA and MIT: deltas in 3.6, 3.7) | `fastrdp_identity_provider: ad` |
 | Join account (**site**) | `Administrator` | `fastrdp_join_user` |
 | Allowed groups | none (every directory user) | `fastrdp_allow_groups: []` |

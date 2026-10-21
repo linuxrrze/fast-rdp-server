@@ -38,7 +38,7 @@
     creates: /usr/bin/nvidia-smi
   when:
     - fastrdp_gpu_effective == 'nvidia'
-    - ansible_distribution == 'Ubuntu'
+    - ansible_facts.distribution == 'Ubuntu'
 
 - name: NVIDIA driver (Debian, non-free)
   ansible.builtin.apt:
@@ -46,7 +46,7 @@
     state: present
   when:
     - fastrdp_gpu_effective == 'nvidia'
-    - ansible_distribution == 'Debian'
+    - ansible_facts.distribution == 'Debian'
 
 - name: NVIDIA KMS + GBM for headless Wayland compositors
   ansible.builtin.copy:
