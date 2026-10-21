@@ -19,9 +19,10 @@ CONF = REPO / "broker/sbin/termsrv.conf"
 
 KLIST_HEAD = "Keytab name: FILE:{kt}\nKVNO Principal\n---- " + "-" * 60 + "\n"
 
-# Fake "keytabs" are text files, one "KVNO PRINCIPAL ENCTYPE" line per entry.
+# Fake "keytabs" are text files, one "KVNO PRINCIPAL ENCTYPE [KEY]" line per entry.
 FAKE_KTUTIL = r'''#!/usr/bin/env python3
-# ktutil on stdin commands: rkt FILE, list, delent SLOT (later slots shift up), wkt FILE, quit
+# ktutil on stdin commands: rkt FILE, list [-k] [-e], delent SLOT (later slots shift up),
+# wkt FILE, quit
 import sys
 entries = []
 for line in sys.stdin:
@@ -33,8 +34,13 @@ for line in sys.stdin:
     elif cmd[0] == "list":
         print("slot KVNO Principal")
         print("---- ---- " + "-" * 60)
-        for i, (kvno, princ, _) in enumerate(entries, 1):
-            print(f"{i:4d} {kvno:>4} {princ}")
+        for i, (kvno, princ, enc, *key) in enumerate(entries, 1):
+            line = f"{i:4d} {kvno:>4} {princ}"
+            if "-e" in cmd:
+                line += f" ({enc})"
+            if "-k" in cmd:
+                line += f"  (0x{key[0] if key else '00'})"
+            print(line)
     elif cmd[0] == "delent":
         del entries[int(cmd[1]) - 1]
     elif cmd[0] == "wkt":
@@ -148,14 +154,19 @@ class TermsrvKeytabCheck(unittest.TestCase):
 
 
 class TermsrvKeytabExtract(unittest.TestCase):
-    """fastrdp-termsrv-keytab: only TERMSRV/* entries of the host keytab, root:<group> 0640."""
+    """fastrdp-termsrv-keytab: the TERMSRV/* entries of the host keytab plus the machine
+    account entries with the same keys, root:<group> 0640."""
 
-    HOST = [("3", "RDP1$@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-            ("3", "TERMSRV/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-            ("3", "host/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-            ("3", "TERMSRV/RDP1@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-            ("3", "RestrictedKrbHost/RDP1@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96"),
-            ("3", "TERMSRV/RDP1@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96")]
+    # adcli: one key set for the account and all its SPNs (aa.., bb..)
+    HOST = [("3", "RDP1$@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96", "aa11"),
+            ("3", "TERMSRV/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96", "aa11"),
+            ("3", "host/rdp1.lab.example.com@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96", "aa11"),
+            ("3", "TERMSRV/RDP1@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96", "aa11"),
+            ("3", "RestrictedKrbHost/RDP1@LAB.EXAMPLE.COM", "aes256-cts-hmac-sha1-96", "aa11"),
+            ("3", "TERMSRV/RDP1@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96", "bb22"),
+            ("3", "RDP1$@LAB.EXAMPLE.COM", "aes128-cts-hmac-sha1-96", "bb22")]
+    TERMSRV = ["TERMSRV/rdp1.lab.example.com@LAB.EXAMPLE.COM", "TERMSRV/RDP1@LAB.EXAMPLE.COM",
+               "TERMSRV/RDP1@LAB.EXAMPLE.COM"]
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -179,17 +190,46 @@ class TermsrvKeytabExtract(unittest.TestCase):
     def written(self, path=None):
         return [line.split()[1] for line in (path or self.dst).read_text().splitlines()]
 
-    def test_only_termsrv_keys(self):
+    def test_termsrv_and_machine_keys(self):
         r = self.run_extract("-s", str(self.src), "-d", str(self.dst))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.written(), ["TERMSRV/rdp1.lab.example.com@LAB.EXAMPLE.COM",
-                                          "TERMSRV/RDP1@LAB.EXAMPLE.COM", "TERMSRV/RDP1@LAB.EXAMPLE.COM"])
+        self.assertEqual(self.written(), ["RDP1$@LAB.EXAMPLE.COM"] + self.TERMSRV + ["RDP1$@LAB.EXAMPLE.COM"])
+        self.assertNotIn("note:", r.stderr)
         self.assertEqual(self.log.read_text().split()[:6], ["-o", "root", "-g", "_fastrdp-proxy", "-m", "0640"])
         self.assertTrue(self.log.read_text().strip().endswith(f"{self.dst}.new"))
         self.assertFalse(Path(f"{self.dst}.new").exists())   # renamed into place
 
+    def test_machine_entry_only_with_a_termsrv_key(self):
+        # a machine account entry whose key no TERMSRV entry has (other kvno, other key,
+        # another account) is not copied: the proxy gets no new key
+        self.src.write_text("".join(" ".join(e) + "\n" for e in self.HOST[1:6]) +
+                            "2 RDP1$@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96 aa11\n"
+                            "3 RDP1$@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96 cc33\n"
+                            "3 OTHER$@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96 dd44\n")
+        r = self.run_extract("-s", str(self.src), "-d", str(self.dst))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.written(), self.TERMSRV)
+        self.assertIn("note: no machine account", r.stderr)   # Windows clients will fail
+
+    def test_without_machine_keys(self):
+        r = self.run_extract("-n", "-s", str(self.src), "-d", str(self.dst))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.written(), self.TERMSRV)
+        self.assertNotIn("note:", r.stderr)
+        (self.dir / "termsrv.conf").write_text("FASTRDP_TERMSRV_KEYTAB_MACHINE=no\n")
+        r = self.run_extract("-s", str(self.src), "-d", str(self.dst))
+        self.assertEqual(self.written(), self.TERMSRV)
+        r = self.run_extract("-s", str(self.src), "-d", str(self.dst),
+                             env={"FASTRDP_TERMSRV_KEYTAB_MACHINE": "yes"})   # environment wins
+        self.assertEqual(len(self.written()), 5)
+        r = self.run_extract("-s", str(self.src), "-d", str(self.dst),
+                             env={"FASTRDP_TERMSRV_KEYTAB_MACHINE": "maybe"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("must be yes or no", r.stderr)
+
     def test_no_termsrv_keys(self):
-        self.src.write_text("3 host/rdp1.lab.example.com@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96\n")
+        self.src.write_text("3 host/rdp1.lab.example.com@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96 aa11\n"
+                            "3 RDP1$@LAB.EXAMPLE.COM aes256-cts-hmac-sha1-96 aa11\n")
         self.dst.write_text("old\n")
         r = self.run_extract("-s", str(self.src), "-d", str(self.dst))
         self.assertEqual(r.returncode, 1)
@@ -213,12 +253,12 @@ class TermsrvKeytabExtract(unittest.TestCase):
             f'FASTRDP_TERMSRV_KEYTAB="{self.dst}"\nFASTRDP_TERMSRV_KEYTAB_GROUP = conf-group  \n')
         self.assertEqual(self.run_extract().returncode, 0)   # file only
         self.assertIn("-g conf-group ", self.log.read_text())
-        self.assertEqual(len(self.written()), 3)
+        self.assertEqual(len(self.written()), 5)
         r = self.run_extract(env={"FASTRDP_TERMSRV_KEYTAB_GROUP": "env-group",
                                   "FASTRDP_TERMSRV_KEYTAB": str(other)})   # environment wins
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("-g env-group ", self.log.read_text().splitlines()[-1])
-        self.assertEqual(len(self.written(other)), 3)
+        self.assertEqual(len(self.written(other)), 5)
         r = self.run_extract("-g", "opt-group", env={"FASTRDP_TERMSRV_KEYTAB_GROUP": "env-group"})
         self.assertIn("-g opt-group ", self.log.read_text().splitlines()[-1])   # option wins
 
@@ -236,7 +276,8 @@ class ShippedSettings(unittest.TestCase):
         # The packaged conffile only documents the defaults: every setting is commented out.
         lines = [line for line in CONF.read_text().splitlines() if line.strip() and not line.startswith("#")]
         self.assertEqual(lines, [])
-        for key in ("FASTRDP_HOST_KEYTAB", "FASTRDP_TERMSRV_KEYTAB", "FASTRDP_TERMSRV_KEYTAB_GROUP"):
+        for key in ("FASTRDP_HOST_KEYTAB", "FASTRDP_TERMSRV_KEYTAB", "FASTRDP_TERMSRV_KEYTAB_GROUP",
+                    "FASTRDP_TERMSRV_KEYTAB_MACHINE"):
             self.assertIn(f"#{key}=", CONF.read_text())
             self.assertIn(key, KEYTAB.read_text())
 

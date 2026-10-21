@@ -12,10 +12,20 @@
 #   stops on its own instead of seeing a dropped connection (patches/freerdp/0002);
 #   proxy g (AcceptRemoteGuard=true) takes the login identity-only: the broker gets the
 #   principal, "remote_guard": true and no password (patches/freerdp/0003).
+# Kerberos user-to-user (mstsc under CredSSP starts with a KERB-TGT-REQUEST): the KDC mimics
+#   Active Directory when kadmin has add_alias (MIT >= 1.22): TERMSRV/localhost is an alias
+#   (SPN) of the machine account FASTRDP$, and the kdcpolicy module kdc_adlike.c refuses it
+#   as an AS client. The acceptor must answer with FASTRDP$'s TGT: proxy u has its keys
+#   (fastrdp-termsrv-keytab layout, patches/freerdp/0004), proxy t only the TERMSRV keys.
+#   With the switch file of kdc_adlike.c the KDC lets TERMSRV/localhost get a TGT, as plain
+#   MIT and FreeIPA do, and proxy t works with the TERMSRV keys alone. Without add_alias
+#   (Debian 13: krb5 1.21) TERMSRV/localhost is a principal of its own and only that case runs.
 #
-# Needs krb5-kdc, krb5-admin-server, krb5-user (or KRB5_SYSROOT with them extracted)
+# Needs krb5-kdc, krb5-admin-server, krb5-user (or KRB5_SYSROOT with them extracted),
+# libkrb5-dev for kdc_adlike.c (KRB5_CFLAGS: extra compiler flags, e.g. -I<include dir>)
 # plus everything run.sh needs. The Remote Credential Guard checks need a FreeRDP built
-# with Kerberos (WITH_KRB5) and patches/freerdp/0002 + 0003 (fastrdp-freerdp3 3.32.2-2).
+# with Kerberos (WITH_KRB5) and patches/freerdp/0002 + 0003 (fastrdp-freerdp3 3.32.2-2), the
+# user-to-user checks patches/freerdp/0004 (3.32.2-3).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -39,6 +49,15 @@ gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-dec
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
 gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \
     "${LNK[@]}" -lfreerdp3 -lwinpr3
+# AD-like KDC policy (krb5/kdcpolicy_plugin.h from libkrb5-dev)
+KRB5_CFLAGS=${KRB5_CFLAGS-$(pkg-config --cflags krb5 2>/dev/null || true)}
+# shellcheck disable=SC2086  # KRB5_CFLAGS: several flags
+if ! gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared $KRB5_CFLAGS "$HERE/kdc_adlike.c" \
+        -o "$W/kdc_adlike.so" 2> "$W/kdc_adlike.err"; then
+    cat "$W/kdc_adlike.err" >&2
+    echo "run_nla.sh: cannot build kdc_adlike.c (libkrb5-dev; KRB5_CFLAGS=-I<dir with krb5/>)" >&2
+    exit 2
+fi
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
     -subj /CN=localhost -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
 cd "$W"
@@ -71,23 +90,41 @@ cat > kdc.conf <<EOT
     }
 [logging]
     kdc = FILE:$W/kdc.log
+[plugins]
+    kdcpolicy = {
+        module = adlike:$W/kdc_adlike.so
+    }
 EOT
 if [ -n "$KRB5_SYSROOT" ]; then
     printf '[dbmodules]\n    db_module_dir = %s\n' "$KRB5_SYSROOT/usr/lib/$MA/krb5/plugins/kdb" >> kdc.conf
 fi
 export KRB5_CONFIG=$W/krb5.conf KRB5_KDC_PROFILE=$W/kdc.conf KRB5CCNAME=FILE:$W/none.cc
+# kdc_adlike.c: while this file exists, service principals may be AS clients (MIT, FreeIPA)
+export FASTRDP_TEST_KDC_SPN_AS=$W/kdc-spn-as
 "$KB/kdb5_util" create -s -r TEST.FASTRDP -P masterpw >/dev/null 2>&1
+AD=0
+# (grep without -q: reads all, so pipefail does not see kadmin's SIGPIPE)
+"$KB/kadmin.local" -r TEST.FASTRDP -q "list_requests" 2>/dev/null | grep add_alias >/dev/null && AD=1
 # HOST/localhost: Remote Credential Guard clients send a service ticket for HOST/<server>
 # (upper case, as WinPR asks for it; MIT principal names are case-sensitive).
-for q in "addprinc -pw alicepw alice" "addprinc -randkey TERMSRV/localhost" \
-         "ktadd -k $W/termsrv.keytab TERMSRV/localhost" "addprinc -randkey HOST/localhost" \
+# AD layout: TERMSRV/localhost is an alias of FASTRDP$, the keytab entries for both carry
+# the same key (as adcli writes them); ad.keytab is what fastrdp-termsrv-keytab extracts.
+if [ $AD = 1 ]; then
+    termsrv=("addprinc -randkey FASTRDP\$" "add_alias TERMSRV/localhost FASTRDP\$"
+             "ktadd -norandkey -k $W/termsrv.keytab TERMSRV/localhost"
+             "ktadd -norandkey -k $W/ad.keytab TERMSRV/localhost" "ktadd -norandkey -k $W/ad.keytab FASTRDP\$")
+else
+    termsrv=("addprinc -randkey TERMSRV/localhost" "ktadd -k $W/termsrv.keytab TERMSRV/localhost")
+fi
+for q in "addprinc -pw alicepw alice" "${termsrv[@]}" "addprinc -randkey HOST/localhost" \
          "ktadd -norandkey -k $W/alice.keytab alice"; do
     "$KB/kadmin.local" -r TEST.FASTRDP -q "$q" >/dev/null 2>&1
 done
 "$KB/krb5kdc" -n > kdc.out 2>&1 &
 
 # --- proxies (NLA only) + recording brokers that refuse everything (no back-end needed)
-# p: defaults (no Remote Credential Guard); g: AcceptRemoteGuard=true
+# p: defaults (no Remote Credential Guard); g: AcceptRemoteGuard=true;
+# u: AD keytab (TERMSRV + machine account keys); t: TERMSRV keys only (user-to-user cases)
 mkproxy() { # name port broker-socket [extra [FastRDP] line]
 cat > "$1.ini" <<EOT
 [Server]
@@ -116,12 +153,18 @@ EOT
 }
 mkproxy p 23489 b.sock
 mkproxy g 23490 g.sock AcceptRemoteGuard=true
-python3 "$HERE/fake_broker.py" b.sock b.log 1 > b.out 2>&1 &
-python3 "$HERE/fake_broker.py" g.sock g.log 1 > g.out 2>&1 &
+mkproxy u 23491 u.sock
+mkproxy t 23492 t.sock
+[ $AD = 1 ] || cp termsrv.keytab ad.keytab
+for x in b g u t; do python3 "$HERE/fake_broker.py" $x.sock $x.log 1 > $x.out 2>&1 & done
 KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" p.ini > proxy.log 2>&1 &
 KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
-for _ in $(seq 50); do grep -q ready b.out g.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23489) 2>/dev/null &&
-    (exec 3<>/dev/tcp/127.0.0.1/23490) 2>/dev/null && break; sleep 0.2; done
+KRB5_KTNAME=FILE:$W/ad.keytab LD_PRELOAD="$W/shim.so" "$PROXY" u.ini > proxy-u.log 2>&1 &
+KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" t.ini > proxy-t.log 2>&1 &
+for _ in $(seq 50); do grep -q ready b.out g.out u.out t.out 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23489) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23490) 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23491) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23492) 2>/dev/null &&
+    break; sleep 0.2; done
 
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice alicepw "" >/dev/null 2>&1 || true
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice wrongpw "" >/dev/null 2>&1 || true
@@ -140,6 +183,15 @@ RCG=(env E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_REMOTE_GUARD=1 "KRB5CCNAME=FILE:$
 "${RCG[@]}" timeout 20 ./client localhost 23490 alice "" "" > rcg.out 2>&1 || true
 # the option changes nothing for password logins
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23490 alice alicepw "" >/dev/null 2>&1 || true
+# Kerberos user-to-user only, like mstsc: the client's first token is a KERB-TGT-REQUEST
+U2U=(env E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_AUTH_PKGS='none,u2u' timeout 20 ./client localhost)
+if [ $AD = 1 ]; then
+    "${U2U[@]}" 23491 alice alicepw "" > u2u-ad.out 2>&1 || true
+    "${U2U[@]}" 23492 alice alicepw "" > u2u-ad-termsrv.out 2>&1 || true
+fi
+touch "$FASTRDP_TEST_KDC_SPN_AS"
+"${U2U[@]}" 23492 alice alicepw "" > u2u-mit.out 2>&1 || true
+rm -f "$FASTRDP_TEST_KDC_SPN_AS"
 sleep 1
 
 fail=0
@@ -147,7 +199,7 @@ check() { # description python-expression over logins (proxy p) and glogins (pro
     if python3 - "$2" <<'PY'
 import json, os, sys
 load = lambda f: [r for r in (json.loads(l) for l in open(f)) if r["op"] == "login"] if os.path.exists(f) else []
-logins, glogins = load("b.log"), load("g.log")
+logins, glogins, ulogins, tlogins = load("b.log"), load("g.log"), load("u.log"), load("t.log")
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
@@ -186,12 +238,30 @@ logged "RCG accepted: proxy logged identity only, credentials discarded" proxy-g
 logged "RCG accepted: the client reached the broker's refusal (Set Error Info 0x7)" rcg.out "errinfo=0x00000007"
 check "AcceptRemoteGuard=true: password NLA login unchanged" \
     'len(pw := [r for r in glogins if not r["remote_guard"]]) == 1 and pw[0]["password"] == "alicepw"'
+# Kerberos user-to-user (patches/freerdp/0004)
+if [ $AD = 1 ]; then
+    logged "U2U, AD: the KDC refuses TERMSRV/localhost as an AS client" kdc.log "SPN_AS_CLIENT"
+    check "U2U, AD: a user-to-user-only client logs in (machine account keys in the keytab)" \
+        'len(ulogins) == 1 and ulogins[0]["method"] == "nla" and ulogins[0]["principal"] == "alice@TEST.FASTRDP" and ulogins[0]["password"] == "alicepw"'
+    logged "U2U, AD: the proxy answered with the TGT of FASTRDP\$" kdc.log \
+        'FASTRDP$@TEST.FASTRDP for krbtgt/TEST.FASTRDP@TEST.FASTRDP'
+    logged "U2U, AD: the module logged the client's user-to-user request" proxy-u.log \
+        "requested Kerberos user-to-user (KERB-TGT-REQUEST)"
+    logged "U2U, AD, TERMSRV keys only: refused, WinPR names the missing keys" proxy-t.log \
+        "Kerberos user-to-user: no TGT for TERMSRV/localhost@TEST.FASTRDP: the keytab needs the keys of the account"
+else
+    echo "skip U2U, AD layout: kadmin has no add_alias (MIT krb5 < 1.22)"
+fi
+check "U2U, MIT/FreeIPA (TERMSRV/localhost may get a TGT): login with the TERMSRV keys alone" \
+    'len(tlogins) == 1 and tlogins[0]["principal"] == "alice@TEST.FASTRDP"'
 if [ $fail -ne 0 ]; then
-    for f in proxy.log proxy-g.log; do
+    for f in proxy.log proxy-g.log proxy-u.log proxy-t.log; do
         echo "--- $f:"; grep -E "fastrdp|nla|NLA|krb|Kerberos|ERROR|REDIRECTED" "$f" | tail -25
     done
     echo "--- client (RCG, proxy p):"; tail -5 rcg-refused.out
     echo "--- client (RCG, proxy g):"; tail -5 rcg.out
     echo "--- kinit:"; cat kinit.out
+    echo "--- client (U2U):"; tail -3 u2u-*.out
+    echo "--- kdc:"; grep -E "AS_REQ|TGS_REQ" kdc.log | grep -vE "alice@TEST.FASTRDP for krbtgt" | tail -12
 fi
 exit $fail

@@ -225,6 +225,12 @@ split in the wrong place.
   - The role fails, listing the principals, if `/etc/fastrdp/termsrv.keytab` lacks an
     AES key at the newest kvno (`fastrdp-termsrv-check` from `fastrdp-broker`, also run
     by `tests/smoke/check-host.sh`).
+- **mstsc uses Kerberos user-to-user** (CredSSP, every Windows client): the proxy answers
+  with the TGT of the account that owns `TERMSRV/<host>`. AD: the machine account
+  `<NAME>$`, whose entries `fastrdp-termsrv-keytab` copies into the proxy keytab (the
+  same keys as the TERMSRV entries; the role fails without them; needs
+  `fastrdp-freerdp3` ≥ 3.32.2-3). FreeIPA and MIT: the TERMSRV principal itself. FreeRDP
+  clients fall back to plain Kerberos. [windows-clients.md](windows-clients.md) §3.14.
 - The self-signed lab certificate (`fastrdp_front_cert_src: ""`) names the FQDN, the
   short name and the aliases. An existing `/etc/fastrdp/front.crt` is kept: delete it
   to get a new one. In production, use a certificate from your CA with the same names.

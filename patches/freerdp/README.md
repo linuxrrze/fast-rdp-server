@@ -146,3 +146,53 @@ checks.
 **Status upstream.** Still present in 3.32.2. Not submitted.
 
 **Drop it when** a FreeRDP release parses TSRemoteGuardCreds without `supplementalCreds`.
+
+## 0004 – [winpr,kerberos] U2U acceptor: answer with the TGT of the machine account
+
+**Problem.** Windows does Kerberos user-to-user under CredSSP on purpose: CredSSP calls
+`InitializeSecurityContext` with `ISC_REQ_USE_SESSION_KEY`, so mstsc's first token is a
+KERB-TGT-REQUEST for `TERMSRV/<host>` (GSS OID 1.2.840.113554.1.2.2.3, TOK_ID `04 00`),
+listed under the MS-KRB5 mechType. The acceptor must answer with a TGT; the KDC then
+issues the user-to-user ticket only if that TGT's client is the account that owns the
+requested name (MIT `check_tgs_u2u()`; AD maps the SPN to its account).
+`retrieveSomeTgt()` in `winpr/libwinpr/sspi/Kerberos/kerberos.c` asked for a TGT of
+`TERMSRV/<host>` with the keytab key and, with MIT krb5, of `<second name component>$`,
+i.e. `<fqdn>$`. In Active Directory `TERMSRV/<host>` is an SPN of the computer account
+`<NAME>$`: the KDC refuses it as an AS client ("Client 'TERMSRV/…' not found in Kerberos
+database") and no account is called `<fqdn>$`. Kerberos was dropped; before R5 the client
+ended in NTLM, now the login simply fails. Field report and analysis:
+[docs/windows-clients.md](../../docs/windows-clients.md) §3.14.
+
+**Who is affected.** Every mstsc (domain-joined or not) against a FreeRDP server whose
+Kerberos acceptor uses an AD computer account's keys: freerdp-proxy with fastrdp,
+gnome-remote-desktop, the shadow server. FreeRDP clients log in anyway: they offer U2U
+as a mechanism of its own before plain Kerberos and fall back to an AP-REQ. With FreeIPA
+or a plain MIT KDC `TERMSRV/<host>` is a principal of its own, may get a TGT, and U2U
+already worked.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp with AD, Windows clients | **yes**, together with the machine account entries in `/etc/fastrdp/termsrv.keytab` (`fastrdp-termsrv-keytab` copies them: same keys as the TERMSRV entries) |
+| FreeIPA, MIT, FreeRDP clients only | no (behaviour unchanged) |
+| fastrdp's regression suite (`run_nla.sh`, AD-like KDC) | **yes**: the user-to-user login fails without it |
+
+**Fix.** Look in the acceptor's keytab for a machine account entry (one name component
+ending in `$`, realm of the service) and get its TGT first; then the service principal
+itself as before; otherwise log a warning that names the missing keys. The `<fqdn>$`
+guess is dropped (an entry of that name would still be found by the keytab search). No
+new configuration: the keytab content decides. One AS exchange per user-to-user login,
+as before.
+
+**Regression test.** `tests/proxy-e2e/run_nla.sh` with MIT krb5 ≥ 1.22 (kadmin
+`add_alias`): `TERMSRV/localhost` is an alias of `FASTRDP$`, the kdcpolicy module
+`tests/proxy-e2e/kdc_adlike.c` refuses SPNs as AS clients. A client limited to U2U logs in
+through a proxy with the `FASTRDP$` entries; unpatched, the same login fails with the
+field report's error (19/22 instead of 22/22).
+
+**Status upstream.** Still present on FreeRDP master (2026-10-21). Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** a FreeRDP release gets the U2U TGT from the account that owns the
+service name.

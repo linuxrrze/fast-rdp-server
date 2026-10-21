@@ -1,3 +1,4 @@
 0001-core-scard-do-not-truncate-PKCS-11-slot-id.patch
 0002-core-nego-answer-an-unsupported-Remote-Credential-Guard-request.patch
 0003-core-nla-accept-TSRemoteGuardCreds-without-supplementalCreds.patch
+0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch

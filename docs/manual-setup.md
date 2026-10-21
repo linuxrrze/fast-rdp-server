@@ -326,6 +326,20 @@ copy of the `TERMSRV/*` keys only, written by `/usr/sbin/fastrdp-termsrv-keytab`
 `root:_fastrdp-proxy 0640`, replaced atomically, and an error if the host keytab has no
 TERMSRV keys.
 
+The copy also holds the machine account's own entries (`<NAME>$@REALM`), but only those
+with the same kvno, enctype and key as a TERMSRV entry: in AD these are the same keys
+under the account's name, so the proxy gets no new secret. Windows clients need them:
+mstsc starts NLA with Kerberos user-to-user, and the proxy (`fastrdp-freerdp3` ≥
+3.32.2-3) answers with the machine account's TGT, which it gets with these entries
+([windows-clients.md](windows-clients.md) §3.14). Check:
+
+```sh
+klist -k /etc/fastrdp/termsrv.keytab   # TERMSRV/<fqdn>, TERMSRV/<SHORT> and <SHORT>$ at the same kvno
+```
+
+The script prints `note: no machine account (<NAME>$) entry with the TERMSRV keys` when
+the host keytab has none; then Windows clients cannot log in with Kerberos.
+
 **Machine-password rotation.** sssd changes the machine password every 30 days
 (`ad_maximum_machine_account_password_age`), which writes new keys to
 `/etc/krb5.keytab`. The packaged `fastrdp-termsrv-keytab.path` watches that file and
@@ -335,8 +349,9 @@ proxy if it runs. Both units are installed disabled.
 **Configure** (only if your paths or group differ from the defaults):
 `/etc/fastrdp/termsrv.conf`, a conffile of `fastrdp-broker` with every setting commented
 out: `FASTRDP_HOST_KEYTAB` (`/etc/krb5.keytab`), `FASTRDP_TERMSRV_KEYTAB`
-(`/etc/fastrdp/termsrv.keytab`), `FASTRDP_TERMSRV_KEYTAB_GROUP` (`_fastrdp-proxy`).
-The environment and the options `-s`/`-d`/`-g` override it. Another host keytab also
+(`/etc/fastrdp/termsrv.keytab`), `FASTRDP_TERMSRV_KEYTAB_GROUP` (`_fastrdp-proxy`),
+`FASTRDP_TERMSRV_KEYTAB_MACHINE` (`yes`; `no` = TERMSRV entries only, Windows clients then
+fail). The environment and the options `-s`/`-d`/`-g`/`-n` override it. Another host keytab also
 needs a drop-in for the path unit (`PathChanged=`).
 
 **Enable** the watcher and extract the keys now:

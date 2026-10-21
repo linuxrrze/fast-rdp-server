@@ -1,3 +1,13 @@
+fastrdp-freerdp3 (3.32.2-3) unstable; urgency=medium
+
+  * patches/freerdp: winpr/kerberos: the Kerberos user-to-user acceptor answers
+    with the TGT of the machine account (<NAME>$ in the keytab) before trying
+    the service principal itself. Windows clients (mstsc under CredSSP) start
+    with user-to-user; with Active Directory the KDC refuses TERMSRV/<host> as
+    an AS client, so Kerberos NLA from Windows always failed.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 22:32:32 +0200
+
 fastrdp-freerdp3 (3.32.2-2) unstable; urgency=medium
 
   * patches/freerdp: core/nego: answer a Remote Credential Guard request the

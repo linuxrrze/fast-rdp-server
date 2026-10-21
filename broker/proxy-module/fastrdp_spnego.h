@@ -4,12 +4,13 @@
  * Which security mechanisms does a CredSSP client offer? Reads the client's first
  * TSRequest ([MS-CSSP] 2.2.1): negoTokens[0].negoToken is an SPNEGO negTokenInit
  * (RFC 4178 4.2.1, GSS framing RFC 2743 3.1) whose mechTypes list the mechanisms, or a
- * bare NTLMSSP message. Only the mechTypes list counts; the optimistic mechToken is
- * opaque. libc only, so that tests/proxy-module/test_spnego.c can test it without
- * FreeRDP.
+ * bare NTLMSSP message. Only the mechTypes list counts for the mechanisms; of the
+ * optimistic mechToken only the Kerberos token id is read (fastrdp_tsrequest_krb5_tok()).
+ * libc only, so that tests/proxy-module/test_spnego.c can test it without FreeRDP.
  *
  * Used by the module to log plainly that a client tried NTLM (fastrdp offers only
- * Kerberos NLA, see fastrdp_server_session_init()).
+ * Kerberos NLA, see fastrdp_server_session_init()) and that a client starts with
+ * Kerberos user-to-user (mstsc under CredSSP).
  */
 #ifndef FASTRDP_SPNEGO_H
 #define FASTRDP_SPNEGO_H
@@ -28,6 +29,15 @@ enum
 	FASTRDP_MECH_OTHER = 1 << 5
 };
 #define FASTRDP_MECH_ANY_KERBEROS (FASTRDP_MECH_KRB5 | FASTRDP_MECH_MS_KRB5 | FASTRDP_MECH_U2U)
+
+/* TOK_ID of a Kerberos GSS token (RFC 4121 4.1; user-to-user: draft-swift-win2k-krb-user2user
+ * 4, MS-KILE). mstsc under CredSSP starts with KERB-TGT-REQUEST (it asks the server for its
+ * TGT, ISC_REQ_USE_SESSION_KEY), other clients with an AP-REQ. */
+enum
+{
+	FASTRDP_KRB5_TOK_AP_REQ = 0x0100,
+	FASTRDP_KRB5_TOK_TGT_REQ = 0x0400
+};
 
 /* One DER element at *p (< end): tag (single byte), content, advances *p past it. */
 static int fastrdp_der_next(const unsigned char** p, const unsigned char* end, unsigned char* tag,
@@ -135,10 +145,10 @@ static unsigned fastrdp_nego_token_mechs(const unsigned char* t, size_t n)
 	return mechs;
 }
 
-/* Mechanisms offered in a TSRequest PDU: SEQUENCE { [0] version, [1] negoTokens
- * SEQUENCE OF SEQUENCE { [0] OCTET STRING }, ... }. 0 if the PDU is not a TSRequest
- * with a recognised negoToken. */
-static unsigned fastrdp_tsrequest_mechs(const unsigned char* pdu, size_t n)
+/* negoTokens[0].negoToken of a TSRequest PDU: SEQUENCE { [0] version, [1] negoTokens
+ * SEQUENCE OF SEQUENCE { [0] OCTET STRING }, ... }. 0 if there is none. */
+static int fastrdp_tsrequest_nego_token(const unsigned char* pdu, size_t n, const unsigned char** os,
+                                        size_t* oslen)
 {
 	const unsigned char* p = pdu;
 	const unsigned char* v = NULL;
@@ -154,15 +164,81 @@ static unsigned fastrdp_tsrequest_mechs(const unsigned char* pdu, size_t n)
 	size_t itemlen = 0;
 	const unsigned char* tok = NULL;
 	size_t toklen = 0;
+	return fastrdp_der_find(v, l, 0xa1, &nd, &ndlen) &&
+	       fastrdp_der_find(nd, ndlen, 0x30, &seq, &seqlen) &&
+	       fastrdp_der_find(seq, seqlen, 0x30, &item, &itemlen) &&
+	       fastrdp_der_find(item, itemlen, 0xa0, &tok, &toklen) &&
+	       fastrdp_der_find(tok, toklen, 0x04, os, oslen);
+}
+
+/* Mechanisms offered in a TSRequest PDU. 0 if the PDU is not a TSRequest with a
+ * recognised negoToken. */
+static unsigned fastrdp_tsrequest_mechs(const unsigned char* pdu, size_t n)
+{
 	const unsigned char* os = NULL;
 	size_t oslen = 0;
-	if (!fastrdp_der_find(v, l, 0xa1, &nd, &ndlen) ||
-	    !fastrdp_der_find(nd, ndlen, 0x30, &seq, &seqlen) ||
-	    !fastrdp_der_find(seq, seqlen, 0x30, &item, &itemlen) ||
-	    !fastrdp_der_find(item, itemlen, 0xa0, &tok, &toklen) ||
-	    !fastrdp_der_find(tok, toklen, 0x04, &os, &oslen))
+	if (!fastrdp_tsrequest_nego_token(pdu, n, &os, &oslen))
 		return 0;
 	return fastrdp_nego_token_mechs(os, oslen);
+}
+
+/* TOK_ID of a Kerberos GSS InitialContextToken: [APPLICATION 0] { OID (KRB5, MS-KRB5 or
+ * U2U), TOK_ID (2 bytes), ... }. 0 for anything else. */
+static unsigned fastrdp_krb5_tok_id(const unsigned char* t, size_t n)
+{
+	const unsigned char* p = t;
+	const unsigned char* v = NULL;
+	size_t l = 0;
+	unsigned char tag = 0;
+	if (!fastrdp_der_next(&p, t + n, &tag, &v, &l) || tag != 0x60)
+		return 0;
+	const unsigned char* end = v + l;
+	const unsigned char* oid = NULL;
+	size_t oidlen = 0;
+	if (!fastrdp_der_next(&v, end, &tag, &oid, &oidlen) || tag != 0x06 ||
+	    !(fastrdp_mech_from_oid(oid, oidlen) & FASTRDP_MECH_ANY_KERBEROS) || end - v < 2)
+		return 0;
+	return ((unsigned)v[0] << 8) | v[1];
+}
+
+/* Kerberos TOK_ID of the client's first token in a TSRequest PDU: the optimistic
+ * mechToken of an SPNEGO negTokenInit, or a bare Kerberos token. 0 if there is none
+ * (no optimistic token, NTLM, not a TSRequest). */
+static unsigned fastrdp_tsrequest_krb5_tok(const unsigned char* pdu, size_t n)
+{
+	static const unsigned char spnego[] = { 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02 };
+	const unsigned char* t = NULL;
+	size_t tn = 0;
+	if (!fastrdp_tsrequest_nego_token(pdu, n, &t, &tn))
+		return 0;
+	const unsigned char* p = t;
+	const unsigned char* v = NULL;
+	size_t l = 0;
+	unsigned char tag = 0;
+	if (!fastrdp_der_next(&p, t + tn, &tag, &v, &l) || tag != 0x60)
+		return 0;
+	const unsigned char* end = v + l;
+	const unsigned char* oid = NULL;
+	size_t oidlen = 0;
+	if (!fastrdp_der_next(&v, end, &tag, &oid, &oidlen) || tag != 0x06)
+		return 0;
+	if (oidlen != sizeof(spnego) || memcmp(oid, spnego, oidlen) != 0)
+		return fastrdp_krb5_tok_id(t, tn);
+	/* negTokenInit [0] NegTokenInit { mechTypes [0], reqFlags [1], mechToken [2] OCTET STRING } */
+	const unsigned char* init = NULL;
+	size_t initlen = 0;
+	const unsigned char* seq = NULL;
+	size_t seqlen = 0;
+	const unsigned char* mt = NULL;
+	size_t mtlen = 0;
+	const unsigned char* os = NULL;
+	size_t oslen = 0;
+	if (!fastrdp_der_next(&v, end, &tag, &init, &initlen) || tag != 0xa0 ||
+	    !fastrdp_der_find(init, initlen, 0x30, &seq, &seqlen) ||
+	    !fastrdp_der_find(seq, seqlen, 0xa2, &mt, &mtlen) ||
+	    !fastrdp_der_find(mt, mtlen, 0x04, &os, &oslen))
+		return 0;
+	return fastrdp_krb5_tok_id(os, oslen);
 }
 
 /* "NegoEx, NTLM" for a log line. */

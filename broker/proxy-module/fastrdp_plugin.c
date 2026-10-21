@@ -984,6 +984,16 @@ static int fastrdp_read_pdu(rdpTransport* transport, wStream* s)
 		          (ctx->peer && ctx->peer->hostname) ? ctx->peer->hostname : "?",
 		          fastrdp_mech_names(mechs, names, sizeof(names)));
 	}
+	/* mstsc under CredSSP asks for the server's TGT first (Kerberos user-to-user). The
+	 * acceptor answers with the TGT of the account that owns TERMSRV/<name>; with Active
+	 * Directory that is the machine account, whose keys must be in the proxy's keytab
+	 * (fastrdp-termsrv-keytab, patches/freerdp/0004). */
+	if (fastrdp_tsrequest_krb5_tok(b, n) == FASTRDP_KRB5_TOK_TGT_REQ)
+		WLog_INFO(TAG,
+		          "[%s] client %s requested Kerberos user-to-user (KERB-TGT-REQUEST): the proxy "
+		          "answers with the TGT of the account owning TERMSRV/<name> (AD: machine "
+		          "account <NAME>$ keys in the proxy keytab)",
+		          sid, (ctx->peer && ctx->peer->hostname) ? ctx->peer->hostname : "?");
 
 	const rdpTransportIo* cur = freerdp_get_io_callbacks(ctx);
 	if (cur && cur->ReadPdu == fastrdp_read_pdu)

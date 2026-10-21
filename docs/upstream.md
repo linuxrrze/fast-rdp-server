@@ -16,14 +16,16 @@ self-built FreeRDP 3.32.1 (with the fix below) and MIT krb5 1.22.2.
 | 4 | xrdp | FFmpeg H.264 encoder (VA-API, NVENC, QSV) | `patches/xrdp/`, shipped in `fastrdp-xrdp`; draft PR text in §4 (rebase onto devel, GPU results to do); not submitted |
 | 5 | FreeRDP | Server drops the TCP connection when a client requires Remote Credential Guard and the server does not support it, instead of answering RDP_NEG_RSP without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED | `patches/freerdp/0002`, shipped in `fastrdp-freerdp3` 3.32.2-2; not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
 | 6 | FreeRDP | Server rejects TSRemoteGuardCreds without the optional `supplementalCreds`, i.e. every FreeRDP `/remoteGuard` client | `patches/freerdp/0003`, shipped in `fastrdp-freerdp3` 3.32.2-2; not submitted |
+| 7 | FreeRDP | Kerberos user-to-user acceptor asks the KDC for a TGT of `TERMSRV/<host>` (or `<fqdn>$`), which Active Directory refuses: every mstsc Kerberos NLA login to an AD-joined FreeRDP server fails | `patches/freerdp/0004`, shipped in `fastrdp-freerdp3` 3.32.2-3; not submitted. Analysis: [windows-clients.md](windows-clients.md) §3.14 |
 
 Nothing in 1–4 is needed for fastrdp itself:
 - (1) is a client-side bug, and p11-kit-proxy (small slot ids) avoids it.
 - (2) does not affect freerdp-proxy, whose WinPR acceptor parses the MIC correctly.
 
-(5) and (6) are server-side and used by fastrdp: (5) for a clear refusal of `mstsc
+(5), (6) and (7) are server-side and used by fastrdp: (5) for a clear refusal of `mstsc
 /remoteGuard`, (6) for `[FastRDP] AcceptRemoteGuard=true` with FreeRDP clients
-([windows-clients.md](windows-clients.md) §3.11).
+([windows-clients.md](windows-clients.md) §3.11), (7) for any mstsc Kerberos login with
+AD ([windows-clients.md](windows-clients.md) §3.14).
 
 ## 1. FreeRDP: PKCS#11 slot id truncated to 16 bits
 

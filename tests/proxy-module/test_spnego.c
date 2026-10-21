@@ -174,6 +174,101 @@ int main(void)
 	static const unsigned char version_only[] = { 0x30, 0x05, 0xa0, 0x03, 0x02, 0x01, 0x06 };
 	check("TSRequest without negoTokens", version_only, sizeof(version_only), 0, 0);
 
+	/* Kerberos token id of the optimistic token. mstsc under CredSSP: mechTypes
+	 * [MS-KRB5, KRB5, NegoEx, NTLM], mechToken = U2U KERB-TGT-REQUEST for
+	 * TERMSRV/<fqdn> without realm. For TERMSRV/fastrdp-server.linux-ng.de that token is
+	 * 78 bytes, the size in the proxy's debug log of the failing Windows 11 login. */
+	{
+		unsigned char a[256], b[256], c[256], g[1024];
+		static const unsigned char pvno_msgtype[] = { 0xa0, 0x03, 0x02, 0x01, 0x05,
+			                                          0xa1, 0x03, 0x02, 0x01, 0x10 };
+		static const unsigned char nametype[] = { 0xa0, 0x03, 0x02, 0x01, 0x02 };
+		size_t an = tlv(a, 0x1b, (const unsigned char*)"TERMSRV", 7);
+		an += tlv(a + an, 0x1b, (const unsigned char*)"fastrdp-server.linux-ng.de", 26);
+		size_t bn = tlv(b, 0x30, a, an);  /* name-string SEQUENCE OF GeneralString */
+		an = tlv(a, 0xa1, b, bn);         /* [1] */
+		memcpy(c, nametype, sizeof(nametype));
+		memcpy(c + sizeof(nametype), a, an);
+		bn = tlv(b, 0x30, c, sizeof(nametype) + an); /* PrincipalName */
+		an = tlv(a, 0xa2, b, bn);                    /* server-name [2] */
+		memcpy(c, pvno_msgtype, sizeof(pvno_msgtype));
+		memcpy(c + sizeof(pvno_msgtype), a, an);
+		bn = tlv(b, 0x30, c, sizeof(pvno_msgtype) + an); /* KERB-TGT-REQUEST */
+		size_t gn = tlv(g, 0x06, OID_U2U, sizeof(OID_U2U));
+		g[gn++] = 0x04; /* TOK_ID 04 00 */
+		g[gn++] = 0x00;
+		memcpy(g + gn, b, bn);
+		const size_t u2ulen = tlv(c, 0x60, g, gn + bn);
+		if (u2ulen != 78)
+		{
+			printf("FAIL mstsc U2U token is %zu bytes, want 78\n", u2ulen);
+			failures++;
+		}
+		n = spnego_init(tok, win, 4, c, u2ulen);
+		n = tsrequest(pdu, tok, n);
+		check("Windows, user-to-user", pdu, n,
+		      FASTRDP_MECH_MS_KRB5 | FASTRDP_MECH_KRB5 | FASTRDP_MECH_NEGOEX | FASTRDP_MECH_NTLM,
+		      0);
+		if (fastrdp_tsrequest_krb5_tok(pdu, n) != FASTRDP_KRB5_TOK_TGT_REQ)
+		{
+			printf("FAIL mstsc U2U: token id 0x%04x\n", fastrdp_tsrequest_krb5_tok(pdu, n));
+			failures++;
+		}
+		for (size_t cut = 0; cut < n; cut++)
+			if (fastrdp_tsrequest_krb5_tok(pdu, cut) != 0)
+			{
+				printf("FAIL truncated U2U TSRequest (%zu of %zu bytes) parsed\n", cut, n);
+				failures++;
+				break;
+			}
+
+		/* AP-REQ under the KRB5 OID, optimistic (Windows with a plain Kerberos ticket) */
+		gn = tlv(g, 0x06, OID_KRB5, sizeof(OID_KRB5));
+		g[gn++] = 0x01;
+		g[gn++] = 0x00;
+		memcpy(g + gn, big, sizeof(big));
+		static unsigned char apreq[700];
+		const size_t apn = tlv(apreq, 0x60, g, gn + sizeof(big));
+		n = spnego_init(tok, win, 4, apreq, apn);
+		n = tsrequest(pdu, tok, n);
+		if (fastrdp_tsrequest_krb5_tok(pdu, n) != FASTRDP_KRB5_TOK_AP_REQ)
+		{
+			printf("FAIL Windows AP-REQ: token id 0x%04x\n", fastrdp_tsrequest_krb5_tok(pdu, n));
+			failures++;
+		}
+		/* bare U2U token (no SPNEGO) */
+		n = tsrequest(pdu, c, u2ulen);
+		if (fastrdp_tsrequest_krb5_tok(pdu, n) != FASTRDP_KRB5_TOK_TGT_REQ)
+		{
+			printf("FAIL bare U2U token\n");
+			failures++;
+		}
+		/* no optimistic token, NTLM token, opaque stand-in: 0 */
+		n = spnego_init(tok, winpr, 3, NULL, 0);
+		n = tsrequest(pdu, tok, n);
+		const unsigned none = fastrdp_tsrequest_krb5_tok(pdu, n);
+		n = spnego_init(tok, noticket, 2, NTLM_NEGOTIATE, sizeof(NTLM_NEGOTIATE));
+		n = tsrequest(pdu, tok, n);
+		const unsigned ntlmtok = fastrdp_tsrequest_krb5_tok(pdu, n);
+		n = spnego_init(tok, win, 4, big, sizeof(big));
+		n = tsrequest(pdu, tok, n);
+		const unsigned opaque = fastrdp_tsrequest_krb5_tok(pdu, n);
+		/* an NTLM OID in GSS framing is not a Kerberos token */
+		gn = tlv(g, 0x06, OID_NTLM, sizeof(OID_NTLM));
+		g[gn++] = 0x04;
+		g[gn++] = 0x00;
+		const size_t fakeu2u = tlv(a, 0x60, g, gn);
+		n = spnego_init(tok, win, 4, a, fakeu2u);
+		n = tsrequest(pdu, tok, n);
+		const unsigned wrongoid = fastrdp_tsrequest_krb5_tok(pdu, n);
+		if (none || ntlmtok || opaque || wrongoid)
+		{
+			printf("FAIL token id where there is none: %x %x %x %x\n", none, ntlmtok, opaque,
+			       wrongoid);
+			failures++;
+		}
+	}
+
 	/* names for the log line */
 	char names[96];
 	fastrdp_mech_names(FASTRDP_MECH_NEGOEX | FASTRDP_MECH_NTLM, names, sizeof(names));

@@ -9,6 +9,7 @@ fastrdp-termsrv-keytab \- copy the TERMSRV keys of the host keytab for the fastr
 .IR termsrv-keytab ]
 .RB [ \-g
 .IR group ]
+.RB [ \-n ]
 .SH DESCRIPTION
 On Active Directory hosts the machine account owns the
 .B TERMSRV/*
@@ -19,6 +20,16 @@ writes a keytab with only the
 .B TERMSRV/*
 entries (owner root, the given group, mode 0640) and replaces the old one
 atomically. It fails if the host keytab has no TERMSRV keys.
+.PP
+It also copies the entries of the machine account itself
+.RI ( NAME $@ REALM )
+whose key version, encryption type and key equal those of a TERMSRV entry.
+Active Directory keeps one key set per account, so these are the TERMSRV keys
+under the account's own name and the proxy gets no new key. Windows clients
+(mstsc under CredSSP) start with Kerberos user-to-user, and the proxy must then
+answer with a TGT of the account that owns the TERMSRV name, which it gets with
+these entries. Without them Windows clients cannot log in with Kerberos; the
+command prints a note when it finds none.
 .PP
 sssd changes the machine password regularly, which writes new keys to the host
 keytab.
@@ -45,6 +56,10 @@ Keytab to write (FASTRDP_TERMSRV_KEYTAB, default
 .BI \-g " group"
 Group of the written keytab (FASTRDP_TERMSRV_KEYTAB_GROUP, default
 .IR _fastrdp-proxy ).
+.TP
+.B \-n
+Copy the TERMSRV entries only, not the machine account's
+(FASTRDP_TERMSRV_KEYTAB_MACHINE=no; default yes).
 .SH ENVIRONMENT
 Options win over the environment variables named above, which win over
 the configuration file.

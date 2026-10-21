@@ -3,14 +3,20 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Copy only the TERMSRV/* keys from the host keytab into the proxy's keytab (AD: the
 # machine account owns the TERMSRV SPNs; the proxy must not read /etc/krb5.keytab).
+# Also copied: the entries of the machine account itself (<NAME>$@REALM) whose key is
+# one of the TERMSRV keys. AD keeps one key set per account, so these are the same keys
+# under the account's own name; the proxy needs that name to get the machine account's
+# TGT for Kerberos user-to-user, which Windows clients use under CredSSP
+# (patches/freerdp/0004). -n leaves them out.
 # Run by fastrdp-termsrv-keytab.service whenever the host keytab changes (machine
 # password rotation, fastrdp-termsrv-keytab.path).
-#   fastrdp-termsrv-keytab [-s HOST_KEYTAB] [-d TERMSRV_KEYTAB] [-g GROUP]
+#   fastrdp-termsrv-keytab [-s HOST_KEYTAB] [-d TERMSRV_KEYTAB] [-g GROUP] [-n]
 # Settings: options, else the environment, else /etc/fastrdp/termsrv.conf
 # (FASTRDP_TERMSRV_CONF), else the defaults:
 #   FASTRDP_HOST_KEYTAB=/etc/krb5.keytab
 #   FASTRDP_TERMSRV_KEYTAB=/etc/fastrdp/termsrv.keytab
 #   FASTRDP_TERMSRV_KEYTAB_GROUP=_fastrdp-proxy      (owner root, mode 0640)
+#   FASTRDP_TERMSRV_KEYTAB_MACHINE=yes               (no: as -n)
 # Exit 0: written, 1: no TERMSRV keys or an error, 2: usage.
 set -eu
 
@@ -21,18 +27,20 @@ conf_get() {
         | tail -n 1 | sed 's/[[:space:]]*$//; s/^"\(.*\)"$/\1/'
 }
 usage() {
-    echo "usage: $0 [-s host-keytab] [-d termsrv-keytab] [-g group]" >&2
+    echo "usage: $0 [-s host-keytab] [-d termsrv-keytab] [-g group] [-n]" >&2
     exit 2
 }
 
 SRC=${FASTRDP_HOST_KEYTAB:-$(conf_get FASTRDP_HOST_KEYTAB)}
 DST=${FASTRDP_TERMSRV_KEYTAB:-$(conf_get FASTRDP_TERMSRV_KEYTAB)}
 GROUP=${FASTRDP_TERMSRV_KEYTAB_GROUP:-$(conf_get FASTRDP_TERMSRV_KEYTAB_GROUP)}
-while getopts s:d:g:h opt; do
+MACHINE=${FASTRDP_TERMSRV_KEYTAB_MACHINE:-$(conf_get FASTRDP_TERMSRV_KEYTAB_MACHINE)}
+while getopts s:d:g:nh opt; do
     case $opt in
         s) SRC=$OPTARG ;;
         d) DST=$OPTARG ;;
         g) GROUP=$OPTARG ;;
+        n) MACHINE=no ;;
         *) usage ;;
     esac
 done
@@ -41,6 +49,11 @@ shift $((OPTIND - 1))
 SRC=${SRC:-/etc/krb5.keytab}
 DST=${DST:-/etc/fastrdp/termsrv.keytab}
 GROUP=${GROUP:-_fastrdp-proxy}
+MACHINE=${MACHINE:-yes}
+case $MACHINE in
+    yes|no) ;;
+    *) echo "FASTRDP_TERMSRV_KEYTAB_MACHINE must be yes or no, not '$MACHINE'" >&2; exit 2 ;;
+esac
 
 if [ ! -r "$SRC" ]; then
     echo "cannot read $SRC (join the domain first)" >&2
@@ -49,9 +62,18 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# ktutil slot numbers of all non-TERMSRV entries, highest first (deleting shifts later slots).
-slots=$(printf 'rkt %s\nlist\nquit\n' "$SRC" | ktutil \
-    | awk '$1 ~ /^[0-9]+$/ && $3 !~ /^TERMSRV\// {print $1}' | sort -rn)
+# ktutil slot numbers of the entries to drop, highest first (deleting shifts later slots).
+# "list -k -e" lines: slot kvno principal (enctype) (0xkey). A machine account entry
+# (<NAME>$@REALM) stays only when kvno, enctype and key equal those of a TERMSRV entry:
+# the proxy gets no key it did not have already. The keys only pass through this pipe.
+slots=$(printf 'rkt %s\nlist -k -e\nquit\n' "$SRC" | ktutil \
+    | awk -v machine="$MACHINE" '
+        $1 ~ /^[0-9]+$/ { slot[$1] = $3; key[$1] = $2 " " $4 " " $5
+                          if ($3 ~ /^TERMSRV\//) termsrv[$2 " " $4 " " $5] = 1 }
+        END { for (s in slot)
+                  if (slot[s] !~ /^TERMSRV\// &&
+                      !(machine == "yes" && slot[s] ~ /^[^\/@]+\$@/ && (key[s] in termsrv)))
+                      print s }' | sort -rn)
 {
     echo "rkt $SRC"
     for s in $slots; do echo "delent $s"; done
@@ -62,6 +84,10 @@ slots=$(printf 'rkt %s\nlist\nquit\n' "$SRC" | ktutil \
 if ! klist -k "$TMP/termsrv.keytab" 2>/dev/null | grep -q 'TERMSRV/'; then
     echo "no TERMSRV keys in $SRC - run: adcli update --add-service-principal=TERMSRV/$(hostname -f)" >&2
     exit 1
+fi
+if [ "$MACHINE" = yes ] && ! klist -k "$TMP/termsrv.keytab" 2>/dev/null | grep -q '^ *[0-9]* [^/@ ]*\$@'; then
+    echo "note: no machine account (<NAME>\$) entry with the TERMSRV keys in $SRC: Windows" \
+        "clients (Kerberos user-to-user) cannot log in with Active Directory" >&2
 fi
 install -o root -g "$GROUP" -m 0640 "$TMP/termsrv.keytab" "$DST.new"
 mv -f "$DST.new" "$DST"

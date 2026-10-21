@@ -233,7 +233,7 @@ jobs:
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             "$(ls ./vendored/fastrdp-freerdp3_*.deb)" \
-            gcc libc6-dev libcjson-dev openssl python3 \
+            gcc libc6-dev libcjson-dev libkrb5-dev openssl python3 \
             krb5-kdc krb5-admin-server krb5-user krb5-pkinit softhsm2 opensc p11-kit p11-kit-modules
       - name: TLS (run.sh)
         run: tests/proxy-e2e/run.sh

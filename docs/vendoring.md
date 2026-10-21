@@ -117,5 +117,10 @@ TLS 30/30, Kerberos NLA 11/11, smartcard via p11-kit 4/4 and via SoftHSM 4/4. Ag
 the same build without 0002/0003: TLS 29/30, NLA 6/11 (the Remote Credential Guard
 checks fail).
 
+2026-10-21, `3.32.2-3` (patch 0004, Kerberos user-to-user for mstsc with AD): scratch
+build with MIT Kerberos as above, all four e2e suites: TLS 30/30, Kerberos NLA 22/22 (MIT
+krb5 1.22.1 KDC in AD mode), smartcard via p11-kit 4/4 and via SoftHSM 4/4. Against the
+3.32.2-2 build (0001-0003): NLA 19/22, the user-to-user login fails as in the field report.
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.
