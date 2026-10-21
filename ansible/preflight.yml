@@ -24,6 +24,11 @@
     preflight_required_vars: [fastrdp_realm, fastrdp_domain]
     preflight_realm: "{{ fastrdp_realm | default('') }}"
     preflight_domain: "{{ fastrdp_domain | default('') | lower }}"
+    # The name clients connect to: fastrdp_fqdn, else the same default as roles/common
+    # (inventory name if it is an FQDN, else the fqdn fact); compared with hostname -f below.
+    preflight_fqdn: >-
+      {{ fastrdp_fqdn | default((inventory_hostname if inventory_hostname is match('^(?=.*[A-Za-z])[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$')
+      else ansible_facts.fqdn) | lower) | lower }}
     preflight_idp: "{{ fastrdp_identity_provider | default(preflight_role_defaults.fastrdp_identity_provider) }}"
     preflight_desktops: "{{ fastrdp_desktops | default(preflight_role_defaults.fastrdp_desktops) }}"
     preflight_gpu: "{{ fastrdp_gpu | default('auto') }}"
@@ -156,14 +161,20 @@
              'fix': hints | join('; ') if become_failed else ''}] }}
 
     # ------------------------------------------------------------------ name and DNS
+    - name: The host's own name (hostname -f)
+      ansible.builtin.command: hostname -f
+      register: preflight_hostname_f
+      changed_when: false
+      failed_when: false
+
     - name: Resolve the FQDN on the target (NSS, as Kerberos and sssd see it)
-      ansible.builtin.command: getent ahosts {{ ansible_facts.fqdn }}
+      ansible.builtin.command: getent ahosts {{ preflight_fqdn }}
       register: preflight_fwd
       changed_when: false
       failed_when: false
 
     - name: Resolve the FQDN from the admin machine (as clients see it)
-      ansible.builtin.command: getent ahosts {{ ansible_facts.fqdn }}
+      ansible.builtin.command: getent ahosts {{ preflight_fqdn }}
       register: preflight_fwd_ctl
       delegate_to: localhost
       changed_when: false
@@ -174,17 +185,22 @@
         addrs: "{{ preflight_fwd.stdout_lines | map('split') | map('first') | unique | list }}"
         nonloop: "{{ addrs | reject('match', '^(127\\.|::1$)') | list }}"
         own: "{{ ansible_facts.all_ipv4_addresses | default([]) + ansible_facts.all_ipv6_addresses | default([]) }}"
+        host_f: "{{ (preflight_hostname_f.stdout | default('')) | trim | lower }}"
+        fact: "{{ ansible_facts.fqdn | lower }}"
         problems: >-
-          {{ (['hostname is not fully qualified (' ~ ansible_facts.fqdn ~ ')'] if '.' not in ansible_facts.fqdn else [])
+          {{ (['hostname is not fully qualified (' ~ preflight_fqdn ~ ')'] if '.' not in preflight_fqdn else [])
+             + (['the RDP name is the bare domain ' ~ preflight_domain ~ ' (TERMSRV/' ~ preflight_domain ~ ')']
+                if preflight_fqdn == preflight_domain else [])
+             + (['clients will connect to ' ~ preflight_fqdn ~ ' (inventory name), but the host calls itself '
+                 ~ (host_f or '?') ~ ' (hostname -f)'] if host_f != preflight_fqdn else [])
+             + (['the fqdn fact of Ansible (reverse lookup of the host name) is ' ~ fact ~ ', not ' ~ preflight_fqdn
+                 ~ ': a PTR record or /etc/hosts line gives the wrong name'] if fact != preflight_fqdn else [])
              + (['FQDN does not resolve on the host'] if preflight_fwd.rc != 0 else [])
              + (['FQDN resolves only to loopback ' ~ addrs | join(',')] if preflight_fwd.rc == 0 and not nonloop else [])
              + (['FQDN does not resolve from the admin machine'] if preflight_fwd_ctl.rc != 0 else []) }}
         warnings: >-
-          {{ (['inventory name ' ~ inventory_hostname ~ ' differs from the host FQDN ' ~ ansible_facts.fqdn
-               ~ ' (clients must use ' ~ ansible_facts.fqdn ~ ')'] if inventory_hostname | lower != ansible_facts.fqdn | lower
-               and inventory_hostname not in ['localhost', ansible_host | default('')] else [])
-             + (['FQDN is not in the realm domain ' ~ preflight_domain]
-                if preflight_idp in ['ad', 'ipa'] and not (ansible_facts.fqdn | lower).endswith('.' ~ preflight_domain) else [])
+          {{ (['FQDN is not in the realm domain ' ~ preflight_domain]
+                if preflight_idp in ['ad', 'ipa'] and not preflight_fqdn.endswith('.' ~ preflight_domain) else [])
              + (['short name ' ~ ansible_facts.hostname ~ ' is longer than 15 characters (AD truncates the computer account)']
                 if preflight_idp == 'ad' and ansible_facts.hostname | length > 15 else [])
              + (['FQDN resolves to ' ~ nonloop | join(',') ~ ', which is not an address of this host (NAT?)']
@@ -194,9 +210,10 @@
         preflight_results: >-
           {{ preflight_results + [{'check': 'FQDN / forward DNS',
              'status': 'FAIL' if problems else ('WARN' if warnings else 'PASS'),
-             'detail': (problems + warnings) | join('; ') if (problems + warnings) else ansible_facts.fqdn ~ ' -> ' ~ addrs | join(','),
-             'fix': 'set the hostname to the FQDN (hostnamectl set-hostname), add an A/AAAA record, and remove a '
-                    ~ '127.0.1.1 <fqdn> line from /etc/hosts'}] }}
+             'detail': (problems + warnings) | join('; ') if (problems + warnings) else preflight_fqdn ~ ' -> ' ~ addrs | join(','),
+             'fix': 'set the hostname to the FQDN (hostnamectl set-hostname ' ~ preflight_fqdn ~ '), add an A/AAAA record '
+                    ~ 'and a PTR record for it, and replace a 127.0.1.1 line in /etc/hosts by "<address> '
+                    ~ preflight_fqdn ~ ' <short name>" (or set fastrdp_fqdn)'}] }}
 
     - name: Reverse lookup of the host address
       ansible.builtin.command: getent hosts {{ preflight_first_ip }}
@@ -211,10 +228,10 @@
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'reverse DNS',
-             'status': 'SKIP' if not preflight_first_ip else ('PASS' if ansible_facts.fqdn | lower in names else 'WARN'),
+             'status': 'SKIP' if not preflight_first_ip else ('PASS' if preflight_fqdn | lower in names else 'WARN'),
              'detail': 'no address to check' if not preflight_first_ip
                        else preflight_first_ip ~ ' -> ' ~ (names | join(',') if names else 'no PTR record'),
-             'fix': 'add a PTR record ' ~ preflight_first_ip ~ ' -> ' ~ ansible_facts.fqdn
+             'fix': 'add a PTR record ' ~ preflight_first_ip ~ ' -> ' ~ preflight_fqdn
                     ~ ' (Kerberos here does not need it, but FreeIPA and some clients do)'}] }}
 
     # ------------------------------------------------------------------ time
@@ -323,7 +340,7 @@
              'detail': 'TERMSRV keytab ' ~ ('found' if keytab_ok else 'missing (fastrdp_termsrv_keytab_src or /etc/fastrdp/termsrv.keytab)')
                        ~ ', /etc/sssd/sssd.conf ' ~ ('found' if sssd_ok else 'missing')
                        ~ (' (files on the host not checked: sudo failed)' if preflight_become_failed | default(false) else ''),
-             'fix': 'provider none: create TERMSRV/' ~ ansible_facts.fqdn ~ ' in your KDC, export the keytab and set '
+             'fix': 'provider none: create TERMSRV/' ~ preflight_fqdn ~ ' in your KDC, export the keytab and set '
                     ~ 'fastrdp_termsrv_keytab_src; install an sssd.conf for your LDAP'}] }}
       when: preflight_idp == 'none'
 
@@ -524,7 +541,7 @@
       environment:
         JOIN_USER: "{{ fastrdp_join_user | default(preflight_role_defaults.fastrdp_join_user) }}"
         JOIN_PW: "{{ fastrdp_join_password | default(vault_fastrdp_join_password | default('')) }}"
-        FQDN: "{{ ansible_facts.fqdn }}"
+        FQDN: "{{ preflight_fqdn }}"
       register: preflight_authind
       changed_when: false
       failed_when: false
@@ -544,27 +561,27 @@
         problems: >-
           {{ (['AD has no authentication indicators; set fastrdp_mfa_nla_kdc_enforced_by_ad_policy only if an AD policy '
                ~ 'guarantees strong logon for every account that may log in'] if state == 'AD' and not by_ad_policy else [])
-             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' has no authentication indicators: any password TGT gets a ticket'
+             + (['TERMSRV/' ~ preflight_fqdn ~ ' has no authentication indicators: any password TGT gets a ticket'
                  ~ (' (the identity role sets them)' if set_by_role else '')] if state == 'DONE' and not have else [])
-             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' also accepts ' ~ have | difference(allowed) | join(', ')
+             + (['TERMSRV/' ~ preflight_fqdn ~ ' also accepts ' ~ have | difference(allowed) | join(', ')
                  ~ ' (not in fastrdp_mfa_nla_kdc_auth_indicators)'] if state == 'DONE' and have | difference(allowed) else []) }}
         warnings: >-
           {{ (['host not enrolled in FreeIPA yet: the identity role sets and checks the indicators at deploy']
               if state == 'NOTENROLLED' else [])
              + (['no join password (vault loaded?): indicators not read'] if state == 'NOPASSWORD' else [])
              + (['kinit as the join account failed: indicators not read'] if state == 'NOKINIT' else [])
-             + (['TERMSRV/' ~ ansible_facts.fqdn ~ ' does not exist yet: the identity role creates it'] if state == 'NOSERVICE' else [])
+             + (['TERMSRV/' ~ preflight_fqdn ~ ' does not exist yet: the identity role creates it'] if state == 'NOSERVICE' else [])
              + (['AD: not verifiable here; you assert an AD policy enforces strong logon'] if state == 'AD' and by_ad_policy else [])
              + (['provider none: not verifiable here; your KDC must require passkey/PKINIT for TERMSRV '
-                 ~ '(MIT: kadmin set_string TERMSRV/' ~ ansible_facts.fqdn ~ ' require_auth "pkinit")'] if state == 'NONE' else []) }}
+                 ~ '(MIT: kadmin set_string TERMSRV/' ~ preflight_fqdn ~ ' require_auth "pkinit")'] if state == 'NONE' else []) }}
         fixable: "{{ set_by_role and fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length > 0 }}"
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'KDC-enforced NLA MFA',
              'status': ('WARN' if fixable and state == 'DONE' else 'FAIL') if problems else ('WARN' if warnings else 'PASS'),
              'detail': (problems + warnings) | join('; ') if (problems + warnings)
-                       else 'TERMSRV/' ~ ansible_facts.fqdn ~ ' requires ' ~ have | join(' or '),
-             'fix': 'ipa service-mod TERMSRV/' ~ ansible_facts.fqdn ~ ' '
+                       else 'TERMSRV/' ~ preflight_fqdn ~ ' requires ' ~ have | join(' or '),
+             'fix': 'ipa service-mod TERMSRV/' ~ preflight_fqdn ~ ' '
                     ~ allowed | map('regex_replace', '^', '--auth-ind=') | join(' ')
                     ~ ' (or let the identity role do it), or set fastrdp_mfa_nla_kdc_enforced: false; docs/passkeys.md'}] }}
       when: preflight_kdc_enforced
@@ -614,7 +631,7 @@
       environment:
         PREFLIGHT_CERT: "{{ preflight_cert_src }}"
         PREFLIGHT_KEY: "{{ preflight_key_src }}"
-        PREFLIGHT_FQDN: "{{ ansible_facts.fqdn }}"
+        PREFLIGHT_FQDN: "{{ preflight_fqdn }}"
       register: preflight_cert
       delegate_to: localhost
       changed_when: false
@@ -629,9 +646,9 @@
         preflight_results: >-
           {{ preflight_results + [{'check': 'RDP certificate',
              'status': ('FAIL' if errs else ('WARN' if warns else 'PASS')) if preflight_cert_src else 'WARN',
-             'detail': ((errs + warns) | join('; ') if (errs + warns) else preflight_cert_src ~ ' valid for ' ~ ansible_facts.fqdn)
+             'detail': ((errs + warns) | join('; ') if (errs + warns) else preflight_cert_src ~ ' valid for ' ~ preflight_fqdn)
                        if preflight_cert_src else 'self-signed certificate will be generated (lab only: clients warn)',
-             'fix': 'use a certificate for ' ~ ansible_facts.fqdn ~ ' (full chain) and its key: fastrdp_front_cert_src/fastrdp_front_key_src'}] }}
+             'fix': 'use a certificate for ' ~ preflight_fqdn ~ ' (full chain) and its key: fastrdp_front_cert_src/fastrdp_front_key_src'}] }}
 
     # ------------------------------------------------------------------ report
     - name: Format the report

@@ -1,4 +1,16 @@
 ---
+# TERMSRV/<domain> would be a principal no client asks for (clients ask for the name they
+# connect to); it happened with a PTR record pointing at the bare domain.
+- name: TERMSRV names are host names, never the bare domain
+  ansible.builtin.assert:
+    that:
+      - ('TERMSRV/' ~ fastrdp_domain) | lower not in fastrdp_termsrv_spns | map('lower') | list
+      - fastrdp_termsrv_spns | map('lower') | reject('match', '^termsrv/[a-z0-9-]+(\.[a-z0-9-]+)*$') | list | length == 0
+    fail_msg: >-
+      Refusing to register {{ fastrdp_termsrv_spns | join(', ') }}: TERMSRV/{{ fastrdp_domain }} is the
+      bare domain. Check fastrdp_fqdn ({{ fastrdp_fqdn }}) and fastrdp_termsrv_aliases.
+    quiet: true
+
 - name: Directory / Kerberos client packages
   ansible.builtin.apt:
     name: [sssd, sssd-kcm, sssd-tools, libnss-sss, libpam-sss, krb5-user, adcli, realmd, packagekit]

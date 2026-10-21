@@ -170,7 +170,9 @@ split in the wrong place.
 
 ## Kerberos specifics
 
-- Clients must connect to the **FQDN** of the server. The proxy accepts tickets for
+- Clients must connect to the **FQDN** of the server: `fastrdp_fqdn`, by default the
+  inventory name when that is an FQDN (otherwise Ansible's `fqdn` fact, which comes from a
+  reverse lookup). Preflight fails if it differs from `hostname -f` or from that fact. The proxy accepts tickets for
   `TERMSRV/<fqdn>`, `TERMSRV/<SHORTNAME>` and `TERMSRV/<alias>` for each name in
   `fastrdp_termsrv_aliases` (role `common`, default `[]`).
   - AD: the Ansible `identity` role adds these SPNs to the computer account

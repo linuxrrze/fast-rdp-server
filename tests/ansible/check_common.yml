@@ -4,7 +4,7 @@
 # Runs only the common role's site checks with role defaults plus -e overrides.
 # test_templates.py expects success or failure per case.
 - name: Common site checks
-  hosts: localhost
+  hosts: all              # the inventory name is fastrdp_fqdn's default (run_checks: host=)
   connection: local
   gather_facts: false
   become: false

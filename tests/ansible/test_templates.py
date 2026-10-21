@@ -350,8 +350,8 @@ class SmokeTestPorts(unittest.TestCase):
 class CommonChecks(unittest.TestCase):
     """roles/common/tasks/main.yml refuses inconsistent site settings."""
 
-    def run_checks(self, **extra):
-        args = [shutil.which("ansible-playbook"), "-i", "localhost,", str(HERE / "check_common.yml")]
+    def run_checks(self, host="rdp1.example.com", **extra):
+        args = [shutil.which("ansible-playbook"), "-i", f"{host},", str(HERE / "check_common.yml")]
         for k, v in extra.items():
             args += ["-e", f"{k}={v}" if isinstance(v, (str, int)) else json.dumps({k: v})]
         env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
@@ -361,6 +361,16 @@ class CommonChecks(unittest.TestCase):
 
     def test_minimal_passes(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com"), 0)
+
+    def test_host_name(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        # the inventory name (an FQDN) is fastrdp_fqdn, whatever reverse DNS says
+        self.assertEqual(self.run_checks(host="RDP1.Example.com", **ok), 0)
+        # never the bare domain (a PTR record pointing at it gave TERMSRV/example.com)
+        self.assertNotEqual(self.run_checks(host="example.com", **ok), 0)
+        self.assertNotEqual(self.run_checks(fastrdp_fqdn="example.com", **ok), 0)
+        self.assertNotEqual(self.run_checks(fastrdp_fqdn="rdp1", **ok), 0)
+        self.assertEqual(self.run_checks(host="192.0.2.10", fastrdp_fqdn="rdp1.example.com", **ok), 0)
 
     def test_failures(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

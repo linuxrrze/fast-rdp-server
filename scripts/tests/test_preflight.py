@@ -96,6 +96,17 @@ class TestPreflight(unittest.TestCase):
         self.assertIn("'fastrdp_privacyidea_url'", text)
         self.assertIn("vault_fastrdp_join_password", text)
 
+    def test_fqdn_rule_matches_common_default(self):
+        # preflight checks the name the roles will use: same rule (inventory name if an FQDN)
+        common = (REPO / "ansible" / "roles" / "common" / "defaults" / "main.yml").read_text()
+        rule = re.search(r"inventory_hostname is match\('([^']+)'\)", common).group(1)
+        self.assertIn(f"inventory_hostname is match('{rule}')", PLAYBOOK.read_text())
+        fqdn = re.compile(rule)
+        for name in ("rdp1.example.com", "RDP1.Example.COM", "a-b.c-d.example"):
+            self.assertTrue(fqdn.match(name), name)
+        for name in ("localhost", "rdp1", "192.0.2.10", "2001:db8::1", "rdp1.example.com:2222"):
+            self.assertFalse(fqdn.match(name), name)
+
     def test_fallbacks_match_role_defaults(self):
         # scripts/fastrdp-setup leaves out variables equal to their role default, and this play
         # does not load role defaults: every `fastrdp_x | default(...)` must mean what the role does

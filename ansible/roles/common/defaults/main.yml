@@ -6,8 +6,13 @@
 # ---------------------------------------------------------------- identity
 fastrdp_realm: ""                    # REQUIRED: Kerberos realm, e.g. EXAMPLE.COM
 fastrdp_domain: ""                   # REQUIRED: DNS domain, e.g. example.com
-# The host's names, from the facts (top-level fact variables are deprecated in ansible-core)
-fastrdp_fqdn: "{{ ansible_facts.fqdn }}"
+# The name clients connect to (TERMSRV/<fqdn>, certificate, nginx): the inventory name when
+# it is a DNS name with a dot (fastrdp-setup writes the FQDN there), else the fqdn fact.
+# Not the fact first: it comes from a reverse lookup, and a wrong PTR record or /etc/hosts
+# line silently gives e.g. the bare domain.
+fastrdp_fqdn: >-
+  {{ (inventory_hostname if inventory_hostname is match('^(?=.*[A-Za-z])[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$')
+      else ansible_facts.fqdn) | lower }}
 fastrdp_hostname: "{{ ansible_facts.hostname }}"
 fastrdp_identity_provider: ad        # ad (Samba AD / Active Directory) | ipa (FreeIPA) | none (keytab provided)
 fastrdp_join_user: Administrator     # account used for the domain join

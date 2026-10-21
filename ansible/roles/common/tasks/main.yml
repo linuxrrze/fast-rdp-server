@@ -1,4 +1,17 @@
 ---
+- name: Host name usable for Kerberos (TERMSRV/<fqdn>) and the certificate
+  ansible.builtin.assert:
+    that:
+      - fastrdp_fqdn is match('^[a-z0-9-]+(\.[a-z0-9-]+)+$')
+      - fastrdp_fqdn | lower != fastrdp_domain | lower
+    fail_msg: >-
+      fastrdp_fqdn is "{{ fastrdp_fqdn }}": it must be this host's fully qualified name
+      (e.g. rdp1.{{ fastrdp_domain }}), never the bare domain, or the TERMSRV principal and the
+      certificate get the wrong name. It is the inventory name when that is an FQDN, else the
+      fqdn fact (reverse DNS, /etc/hosts): use the FQDN as inventory name, set fastrdp_fqdn,
+      or fix the PTR record / /etc/hosts.
+    quiet: true
+
 - name: Required site settings are present and consistent
   ansible.builtin.assert:
     that:

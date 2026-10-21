@@ -51,7 +51,9 @@ class RolesStatic(unittest.TestCase):
 
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
-        self.assertIn('fastrdp_fqdn: "{{ ansible_facts.fqdn }}"', text)
+        # the inventory name first (reverse DNS can give the bare domain), the fact as fallback
+        self.assertRegex(text, r"fastrdp_fqdn: >-\n  \{\{ \(inventory_hostname if inventory_hostname is match\(")
+        self.assertIn("else ansible_facts.fqdn) | lower }}", text)
         self.assertIn('fastrdp_hostname: "{{ ansible_facts.hostname }}"', text)
 
 
