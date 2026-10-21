@@ -78,11 +78,13 @@ GNOME and Plasma sessions ignore the connection type
 **Authentication packages: `/auth-pkg-list:'kerberos,!ntlm'`.**
 - Without it, WinPR's Negotiate offers Kerberos U2U, Kerberos and NTLM, in that order
   (`negotiate.c:109-113`, defaults `negotiate.c:319-338`).
-- fastrdp refuses NTLM after NLA: the proxy logs `NLA without Kerberos refused`
-  (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:580-584`).
-- With `!ntlm`, a Kerberos problem (no KDC, wrong name) fails at once with the Kerberos
-  error. Without it, FreeRDP falls back to NTLM, which fastrdp refuses only after NLA,
-  with a less helpful error on the client.
+- fastrdp's proxy does not offer NTLM. A client that falls back to NTLM fails at its
+  first CredSSP message with `ERRCONNECT_LOGON_FAILURE`, and the proxy logs
+  `client <addr> attempted NTLM (offered: NTLM); only Kerberos NLA is accepted: check …`
+  ([windows-clients.md](windows-clients.md) §3.13).
+- With `!ntlm`, a Kerberos problem (no KDC, wrong name) fails on the client with the
+  Kerberos error, which says what went wrong. Without it, FreeRDP falls back to NTLM and
+  reports only the logon failure.
 - Package names: `kerberos`, `u2u`, `ntlm`, and `none` (only as the first entry: "all
   off, then enable the following") (`negotiate.c:44-47, 259-316`).
   - `kerberos` does not switch `u2u` off.
@@ -550,7 +552,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 - `/shell:` sets the alternate shell (`cmdline.c:5196-5200`); `.rdp`:
   `alternate shell:s:fastrdp:gnome`.
 - The module sends it to the broker as a hint and never forwards it to the back-end
-  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:733`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:852-853`).
+  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:751`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:870-871`).
 - The `fastrdp:` prefix is optional (`identity.py` `hinted_desktop`).
 - Order (`choose_desktop`):
   1. the hint, if that desktop exists and the user may use it (`fastrdp_desktop_groups`);

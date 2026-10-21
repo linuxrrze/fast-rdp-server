@@ -53,11 +53,13 @@
 #include <winpr/string.h>
 #include <winpr/wlog.h>
 #include <winpr/sspi.h>
+#include <winpr/stream.h>
 #include <winpr/synch.h>
 
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
+#include <freerdp/transport_io.h>
 #include <freerdp/server/proxy/proxy_config.h>
 #include <freerdp/server/proxy/proxy_context.h>
 #include <freerdp/server/proxy/proxy_modules_api.h>
@@ -66,6 +68,7 @@
 #include <freerdp/private/proxy_server.h>
 
 #include "fastrdp_addr.h"
+#include "fastrdp_spnego.h"
 
 #define TAG MODULE_TAG("fastrdp")
 #define PLUGIN_NAME "fastrdp"
@@ -163,19 +166,21 @@ static char* identity_string(const SEC_WINNT_AUTH_IDENTITY* id, const void* ptr,
 	return ConvertWCharNToUtf8Alloc((const WCHAR*)ptr, len, NULL);
 }
 
-/* TRUE if the finished NLA exchange used Kerberos. NTLM also answers
- * SECPKG_ATTR_AUTH_IDENTITY, but with a client-chosen domain, so it must not count. */
-static BOOL nla_used_kerberos(rdpContext* ps)
+/* The SSPI package of the finished NLA exchange ("Kerberos", "NTLM") into ascii[size];
+ * FALSE if it cannot be queried. */
+static BOOL nla_package_name(rdpContext* ps, char* ascii, size_t size)
 {
 	SecPkgContext_PackageInfo info = { 0 };
+	if (size == 0)
+		return FALSE;
+	memset(ascii, 0, size);
 	if (freerdp_nla_QueryContextAttributes(ps, SECPKG_ATTR_PACKAGE_INFO, &info) != SEC_E_OK ||
 	    !info.PackageInfo || !info.PackageInfo->Name)
 		return FALSE;
 	/* The SSPI table may be the ANSI or the wide variant depending on the build. */
 	const BYTE* name = (const BYTE*)info.PackageInfo->Name;
-	char ascii[16] = { 0 };
 	const BOOL wide = name[0] != 0 && name[1] == 0;
-	for (size_t i = 0; i < sizeof(ascii) - 1; i++)
+	for (size_t i = 0; i < size - 1; i++)
 	{
 		const BYTE c = wide ? name[2 * i] : name[i];
 		if (c == 0)
@@ -183,8 +188,15 @@ static BOOL nla_used_kerberos(rdpContext* ps)
 		ascii[i] = (char)c;
 	}
 	(void)freerdp_nla_FreeContextBuffer(ps, info.PackageInfo);
-	return _stricmp(ascii, "Kerberos") == 0;
+	return TRUE;
 }
+
+/* The one hint for every "this client could not do Kerberos" log line. */
+#define KERBEROS_HINT                                                                        \
+	"only Kerberos NLA is accepted: check that the client can reach the KDC (DNS SRV "       \
+	"_kerberos._tcp.<domain>, ksetup /addkdc or a KDC proxy), connects to the server's FQDN " \
+	"(not an IP address or an alias without TERMSRV SPN) and gives the user name as UPN "   \
+	"(user@domain)"
 
 /* --------------------------------------------------------------- broker IPC */
 
@@ -577,9 +589,15 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 
 	if (s->nla)
 	{
-		if (!nla_used_kerberos(pdata->ps))
+		/* NTLM is not offered (fastrdp_server_session_init()); kept as defence in depth.
+		 * NTLM also answers SECPKG_ATTR_AUTH_IDENTITY, but with a client-chosen domain,
+		 * so nothing but Kerberos may count. */
+		char pkg[16] = { 0 };
+		const BOOL have_pkg = nla_package_name(pdata->ps, pkg, sizeof(pkg));
+		if (!have_pkg || _stricmp(pkg, "Kerberos") != 0)
 		{
-			WLog_WARN(TAG, "[%s] NLA without Kerberos refused", pdata->session_id);
+			WLog_WARN(TAG, "[%s] NLA without Kerberos refused (package %s); " KERBEROS_HINT,
+			          pdata->session_id, have_pkg ? pkg : "unknown");
 			goto refuse;
 		}
 
@@ -865,8 +883,11 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteCredentialGuard, FALSE) ||
 	    !freerdp_settings_set_pointer_len(settings, FreeRDP_LoadBalanceInfo, NULL, 0))
 		return FALSE;
-	if (s->target_nla &&
-	    !freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, "!kerberos"))
+	/* The front list ("!ntlm", fastrdp_server_session_init()) was copied as well. The
+	 * back-end hop authenticates with the broker's one-time secret over NTLM (GNOME
+	 * Remote Desktop, KRdp); without NLA the list is unused. */
+	if (!freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList,
+	                                 s->target_nla ? "!kerberos" : NULL))
 		return FALSE;
 	return apply_connection_type(pdata, s, settings);
 }
@@ -893,6 +914,102 @@ static BOOL fastrdp_client_redirect(proxyPlugin* plugin, proxyData* pdata, void*
 	return FALSE;
 }
 
+/* NTLM in the front acceptor. fastrdp authenticates users only with Kerberos: an NTLM
+ * logon would be checked against nothing the proxy has (no SAM, no domain controller).
+ * Offering NTLM anyway made a client without a Kerberos ticket (IP address, KDC not
+ * reachable, not domain-joined) run the whole NTLM exchange and then fail with a generic
+ * "credentials did not work", and it sent the proxy an NTLMv2 response for the user's
+ * password. So the front Negotiate acceptor offers Kerberos (and U2U) only.
+ *
+ * WinPR's Negotiate honours FreeRDP_AuthenticationPackageList on the server side only
+ * when credssp_auth_setup_server() passes auth data to AcquireCredentialsHandle, i.e.
+ * when a keytab, an NTLM SAM file or an NTLM hash callback is set. The callback is the
+ * one that changes nothing else: the Kerberos acceptor keeps using the default keytab
+ * (KRB5_KTNAME from the proxy's environment, as before). It is never called while NTLM is
+ * disabled; should NTLM ever be selected anyway, it refuses. */
+static SECURITY_STATUS fastrdp_ntlm_refused(void* client, const SEC_WINNT_AUTH_IDENTITY* id,
+                                            const SecBuffer* ntproof, const BYTE* randkey,
+                                            const BYTE* mic, const SecBuffer* micvalue,
+                                            BYTE* hash)
+{
+	WINPR_UNUSED(id);
+	WINPR_UNUSED(ntproof);
+	WINPR_UNUSED(randkey);
+	WINPR_UNUSED(mic);
+	WINPR_UNUSED(micvalue);
+	WINPR_UNUSED(hash);
+	freerdp_peer* peer = (freerdp_peer*)client;
+	const pServerContext* ps = (peer && peer->context) ? (pServerContext*)peer->context : NULL;
+	WLog_WARN(TAG, "[%s] client attempted NTLM; " KERBEROS_HINT,
+	          (ps && ps->pdata) ? ps->pdata->session_id : "?");
+	return SEC_E_LOGON_DENIED;
+}
+
+/* The transport's own ReadPdu, wrapped by fastrdp_read_pdu() until NLA starts. */
+static pTransportRWFkt fastrdp_default_read_pdu = NULL;
+
+static BOOL is_x224_connection_request(const BYTE* b, size_t n)
+{
+	/* TPKT version 3 ([T.123] 8), then the X.224 CR TPDU code 0xE0 ([X.224] 13.3) */
+	return n >= 7 && b[0] == 0x03 && (b[5] & 0xf0) == 0xe0;
+}
+
+/* Front connection, before NLA: the client's first TSRequest names the mechanisms it
+ * offers. A client that offers NTLM but no Kerberos (it has no ticket for
+ * TERMSRV/<name>) is going to fail in the acceptor, which only logs
+ * "AcceptSecurityContext status SEC_E_INTERNAL_ERROR"; say why here. The wrapper removes
+ * itself at the first PDU after the X.224 Connection Request, so the rest of the session
+ * reads PDUs unwrapped. */
+static int fastrdp_read_pdu(rdpTransport* transport, wStream* s)
+{
+	WINPR_ASSERT(fastrdp_default_read_pdu);
+	const int rc = fastrdp_default_read_pdu(transport, s);
+	if (rc <= 0)
+		return rc;
+	const BYTE* b = Stream_Buffer(s);
+	const size_t n = Stream_Length(s);
+	if (is_x224_connection_request(b, n))
+		return rc;
+
+	rdpContext* ctx = transport_get_context(transport);
+	if (!ctx)
+		return rc;
+	const pServerContext* ps = (pServerContext*)ctx;
+	const char* sid = ps->pdata ? ps->pdata->session_id : "?";
+	const unsigned mechs = (n > 0 && b[0] == 0x30) ? fastrdp_tsrequest_mechs(b, n) : 0;
+	if ((mechs & FASTRDP_MECH_NTLM) && !(mechs & FASTRDP_MECH_ANY_KERBEROS))
+	{
+		char names[96] = { 0 };
+		WLog_WARN(TAG, "[%s] client %s attempted NTLM (offered: %s); " KERBEROS_HINT, sid,
+		          (ctx->peer && ctx->peer->hostname) ? ctx->peer->hostname : "?",
+		          fastrdp_mech_names(mechs, names, sizeof(names)));
+	}
+
+	const rdpTransportIo* cur = freerdp_get_io_callbacks(ctx);
+	if (cur && cur->ReadPdu == fastrdp_read_pdu)
+	{
+		rdpTransportIo io = *cur;
+		io.ReadPdu = fastrdp_default_read_pdu;
+		if (!freerdp_set_io_callbacks(ctx, &io))
+			WLog_WARN(TAG, "[%s] could not restore the transport callbacks", sid);
+	}
+	return rc;
+}
+
+static BOOL install_read_pdu_wrapper(rdpContext* ctx)
+{
+	const rdpTransportIo* cur = freerdp_get_io_callbacks(ctx);
+	if (!cur || !cur->ReadPdu)
+		return TRUE; /* nothing to wrap; only the log line is lost */
+	if (!fastrdp_default_read_pdu)
+		fastrdp_default_read_pdu = cur->ReadPdu;
+	if (cur->ReadPdu != fastrdp_default_read_pdu)
+		return TRUE; /* someone else's transport (stream dump/replay): leave it alone */
+	rdpTransportIo io = *cur;
+	io.ReadPdu = fastrdp_read_pdu;
+	return freerdp_set_io_callbacks(ctx, &io);
+}
+
 /* Before the front connection sequence starts. freerdp-proxy has no RDP-UDP listener
  * ([MS-RDPEMT]/[MS-RDPEUDP]), but FreeRDP's server defaults would still advertise
  * multitransport (TS_UD_SC_MULTITRANSPORT) and send an Initiate Multitransport Request
@@ -903,7 +1020,9 @@ static BOOL fastrdp_client_redirect(proxyPlugin* plugin, proxyData* pdata, void*
  * this hook) passes FreeRDP_RemoteCredentialGuard to the X.224 negotiation, which then
  * answers REDIRECTED_AUTHENTICATION_MODE_SUPPORTED ([MS-RDPBCGR] 2.2.1.2.1). Without it a
  * client that requires the mode gets a negotiation response without that flag and
- * disconnects itself (patches/freerdp/0002). */
+ * disconnects itself (patches/freerdp/0002).
+ * NLA: Kerberos only, see fastrdp_ntlm_refused(). The back-end client inherits the
+ * package list; fastrdp_client_pre_connect() replaces it. */
 static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, void* custom)
 {
 	WINPR_UNUSED(plugin);
@@ -912,10 +1031,13 @@ static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, v
 		return FALSE;
 	rdpSettings* front = pdata->ps->settings;
 	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
+	pdata->ps->peer->SspiNtlmHashCallback = fastrdp_ntlm_refused;
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
 	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0) &&
 	       freerdp_settings_set_bool(front, FreeRDP_RemoteCredentialGuard,
-	                                 config_bool(pdata, "AcceptRemoteGuard", FALSE));
+	                                 config_bool(pdata, "AcceptRemoteGuard", FALSE)) &&
+	       freerdp_settings_set_string(front, FreeRDP_AuthenticationPackageList, "!ntlm") &&
+	       install_read_pdu_wrapper(pdata->ps);
 }
 
 static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* custom)

@@ -32,11 +32,14 @@ test-pam:       # needs libpam0g-dev, libcjson-dev, pkg-config
 	@$(call run_if,test-pam,pkg-config --exists libcjson && echo '#include <security/pam_appl.h>' | $(CC) -E -x c -,\
 	  libpam0g-dev libcjson-dev pkg-config,$(MAKE) -C broker/pam_fastrdp_token check)
 
-# AllowTlsFrom address lists of the proxy module (fastrdp_addr.h); gcc only, no FreeRDP
+# AllowTlsFrom address lists (fastrdp_addr.h) and CredSSP mechanism offers (fastrdp_spnego.h)
+# of the proxy module; gcc only, no FreeRDP
 test-proxy-module:
 	@$(call with_tool,test-proxy-module,$(CC),mkdir -p build && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_addr tests/proxy-module/test_addr.c && \
-	  build/test_addr)
+	  build/test_addr && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_spnego tests/proxy-module/test_spnego.c && \
+	  build/test_spnego)
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report

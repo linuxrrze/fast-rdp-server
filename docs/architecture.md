@@ -38,8 +38,10 @@ troubleshooting): [backends/](backends/README.md).
 
 1. **Front-end authentication** (proxy)
    - *NLA*: CredSSP with Kerberos. The proxy accepts tickets for `TERMSRV/<fqdn>`.
-     NTLM is not offered: the proxy has no SAM file, so domain passwords cannot be
-     checked that way.
+     NTLM is not offered (the module sets `AuthenticationPackageList=!ntlm` on the
+     front): the proxy has no SAM file, so domain passwords cannot be checked that way.
+     A client without a ticket fails at its first CredSSP message, and the proxy logs
+     `attempted NTLM` with the fix ([windows-clients.md](windows-clients.md) §3.13).
    - *TLS* (optional, `fastrdp_allow_tls_logins`): the client sends user and
      password (+OTP) in the Client Info PDU. The broker verifies them through PAM.
    - *Smartcard*: NLA as above. The client got its ticket by PKINIT, and the
@@ -105,7 +107,8 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
 - **Secrets:**
   - The proxy wipes the front password (module copy and front settings) after
     handing it to the broker.
-  - NLA must have used Kerberos (checked via `SECPKG_ATTR_PACKAGE_INFO`); NTLM is refused.
+  - NLA must have used Kerberos (checked via `SECPKG_ATTR_PACKAGE_INFO`); NTLM is not
+    offered and would be refused.
   - Tokens live 60 s, are single-use, and are kept in memory only.
   - g-r-d/KRdp credentials are random per session and stored in the root-only
     `/var/lib/fastrdp/sessions.json`.

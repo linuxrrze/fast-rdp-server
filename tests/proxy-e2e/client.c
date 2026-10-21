@@ -4,6 +4,8 @@
  * usage: client HOST PORT USER PASSWORD SHELL
  * Default: TLS security, credentials in the Client Info PDU.
  * E2E_NLA=1: NLA with Kerberos only (E2E_DOMAIN = realm), credentials via CredSSP.
+ *   E2E_AUTH_PKGS overrides the package list (default "kerberos,!ntlm"; "" = WinPR's
+ *   defaults U2U, Kerberos, NTLM; "none,ntlm" = NTLM only, like a client without a ticket).
  * E2E_PKCS11=/path/module.so (with E2E_NLA=1): smartcard logon, PKINIT through the
  *   PKCS#11 token; PASSWORD is the PIN.
  * E2E_RAIL=1: request RemoteApp (INFO_RAIL). E2E_SC_PIN=1: flag the password as a smartcard

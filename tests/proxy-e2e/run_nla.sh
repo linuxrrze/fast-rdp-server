@@ -4,6 +4,8 @@
 # Kerberos NLA end-to-end test: throwaway MIT KDC + freerdp-proxy + fastrdp module.
 # Checks that the module reports the Kerberos-authenticated principal to the broker
 # and that failed Kerberos logins never reach the broker.
+# No NTLM (rdp-spec-conformance.md R5): the acceptor does not offer it; an NTLM-only client
+#   fails at its first CredSSP message and the proxy logs the attempt with a Kerberos hint.
 # Remote Credential Guard (client with E2E_REMOTE_GUARD=1, like mstsc /remoteGuard):
 #   proxy p (default, AcceptRemoteGuard unset) answers the X.224 request with a
 #   negotiation response without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED, so the client
@@ -123,6 +125,14 @@ for _ in $(seq 50); do grep -q ready b.out g.out 2>/dev/null && (exec 3<>/dev/tc
 
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice alicepw "" >/dev/null 2>&1 || true
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice wrongpw "" >/dev/null 2>&1 || true
+# WinPR's default list (U2U, Kerberos, NTLM): the acceptor, which no longer offers NTLM,
+# still picks Kerberos and the proxy does not mistake the offer for an NTLM attempt
+E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_AUTH_PKGS="" timeout 20 ./client localhost 23489 alice alicepw "" >/dev/null 2>&1 || true
+# a client that can only do NTLM (no ticket: IP address, KDC unreachable): refused at the
+# first CredSSP message, with a plain proxy log line
+t0=$(date +%s%N)
+E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_AUTH_PKGS='none,ntlm' timeout 20 ./client localhost 23489 alice alicepw "" > ntlm.out 2>&1 || true
+echo "$(( ($(date +%s%N) - t0) / 1000000 ))" > ntlm.ms
 # Remote Credential Guard: forwardable TGT in a ccache, no password at the client
 KRB5CCNAME=FILE:$W/alice.cc "$KINIT" -f -k -t "$W/alice.keytab" alice@TEST.FASTRDP > kinit.out 2>&1
 RCG=(env E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_REMOTE_GUARD=1 "KRB5CCNAME=FILE:$W/alice.cc")
@@ -145,15 +155,27 @@ PY
 logged() { # description file fixed-string
     if grep -qF -- "$3" "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-check "exactly one login reached the broker (wrong password stopped at NLA)" 'len(logins) == 1'
-check "method is nla with the Kerberos principal"   'logins[0]["method"] == "nla" and logins[0]["principal"] == "alice@TEST.FASTRDP"'
+holds() { # description command...
+    local d=$1; shift
+    if "$@"; then echo "ok   $d"; else echo "FAIL $d"; fail=1; fi
+}
+check "two logins reached the broker (wrong password and NTLM stopped at NLA)" 'len(logins) == 2'
+check "method is nla with the Kerberos principal"   'all(r["method"] == "nla" and r["principal"] == "alice@TEST.FASTRDP" for r in logins)'
 check "CredSSP user and delegated password passed" 'logins[0]["user"] == "alice" and logins[0]["password"] == "alicepw" and logins[0]["remote_guard"] is False'
+# R5: NTLM is not offered
+logged "NTLM: proxy logged the attempt and the Kerberos hint" proxy.log \
+    "attempted NTLM (offered: NTLM); only Kerberos NLA is accepted: check that the client can reach the KDC"
+logged "NTLM: the client failed in NLA" ntlm.out "freerdp_connect=0"
+holds "NTLM: Kerberos clients offering NTLM too are not reported" [ "$(grep -c "attempted NTLM" proxy.log)" = 1 ]
+holds "NTLM: the acceptor never ran NTLM (no SAM lookup)" \
+    [ "$(grep -cE "SAM database|ntlm_fetch_ntlm_v2_hash" proxy.log)" = 0 ]
+holds "NTLM: refused quickly ($(cat ntlm.ms) ms)" [ "$(cat ntlm.ms)" -lt 5000 ]
 # R4: Remote Credential Guard required, not offered
 logged "RCG not offered: the client got a negotiation response without RCG support" rcg-refused.out \
     "remote credential guard requested but not supported"
 logged "RCG not offered: proxy answered instead of dropping the connection" proxy.log \
     "REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled, answering without"
-check "RCG not offered: no login reached the broker" 'len(logins) == 1'
+check "RCG not offered: no login reached the broker" 'len(logins) == 2'
 # AcceptRemoteGuard=true: identity only
 check "RCG accepted: one login with the Kerberos principal, flagged remote_guard" \
     'len(rg := [r for r in glogins if r["remote_guard"]]) == 1 and rg[0]["method"] == "nla" and rg[0]["principal"] == "alice@TEST.FASTRDP"'

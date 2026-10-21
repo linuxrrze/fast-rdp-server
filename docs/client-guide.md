@@ -79,7 +79,8 @@ connection type:i:7
 - **Computer name:** the FQDN (`rdp1.lab.example.com`). The short name works on AD
   (`TERMSRV/RDP1`) and on FreeIPA (principal alias); DNS aliases only if they are in
   `fastrdp_termsrv_aliases`. An IP address never works: Windows falls back to NTLM,
-  which the server refuses.
+  which the server does not offer, so the login fails right after the password prompt
+  ("the logon attempt failed" or similar).
 - **User name:** use the **UPN**, `alice@lab.example.com` (or your UPN suffix,
   e.g. `marcel.ritter@corp.example.com`). Windows finds the KDC from it, also on
   machines that are not domain members.

@@ -13,6 +13,10 @@ identity (UPN ≠ sAMAccountName, §3.6); the identity role enforces and checks 
 registers the FreeIPA short name and optional alias SPNs (§3.2); the self-signed
 certificate names the short name and aliases (§3.7).
 
+Follow-up (2026-10-21, §5 #4): the proxy's NLA acceptor no longer offers NTLM. A client
+without a Kerberos ticket is refused at its first CredSSP message, and the proxy log says
+why (§3.13).
+
 ## 1. Short answer
 
 **Yes, with conditions.** A Windows 10/11 mstsc should be able to log in to fastrdp with
@@ -28,7 +32,9 @@ Kerberos NLA if all of the following hold:
   Whether a domain-joined Windows client ever does that has to be tested.
 
 These cases always fail, by design:
-- NTLM (IP address, no KDC, Entra-only devices);
+- NTLM (IP address, no KDC, Entra-only devices). The proxy does not offer NTLM, so the
+  login ends at the first CredSSP message, and the proxy log names the cause and the fix
+  (§3.13);
 - Remote Credential Guard, by default. The proxy now answers with a negotiation response
   that says "not supported", so mstsc can show its own message instead of a network
   error. With `fastrdp_accept_remote_guard: true` it logs in **identity only**: the
@@ -49,13 +55,13 @@ default on Windows 11 22H2+ Enterprise) Windows does not delegate the logon pass
 | AD-joined, `mstsc /remoteGuard` or GPO "Require Remote Credential Guard" | default: **refused cleanly**, RDP_NEG_RSP without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED, mstsc reports the missing support itself (dialog: lab L6). With `fastrdp_accept_remote_guard: true`: **works, identity only** (Kerberos principal; tickets discarded) | – / – (default); no / no (option) | high (code, e2e with FreeRDP); mstsc lab pending |
 | GPO "Restrict credential delegation" (RCG *or* Restricted Admin) | default: falls back to Restricted Admin, works. With `fastrdp_accept_remote_guard: true` the proxy offers both and mstsc presumably picks RCG: identity only, as above | no / no | medium |
 | AD-joined, short name (`rdp1`) | works (Identity role registers `TERMSRV/RDP1`); certificate name warning unless the short name is in the SAN | as above | medium |
-| Any client, **IP address** | **refused**: no ticket → NTLM → module rejects NLA without Kerberos | – | high |
-| DNS alias / load-balancer name not registered as SPN | **refused** (NTLM fallback) | – | high |
+| Any client, **IP address** | **refused at once**: no ticket → Windows offers only NTLM, which the acceptor does not offer (§3.13); proxy log `client <addr> attempted NTLM` | – | high (code, e2e with FreeRDP) |
+| DNS alias / load-balancer name not registered as SPN | **refused at once** (NTLM only, §3.13) | – | high |
 | Non-joined Windows, user `alice@lab.example.com`, KDC reachable | works like row 1 | yes / no | medium |
-| Non-joined Windows, user `LAB\alice` (NetBIOS domain) | **likely NTLM** (KDC not locatable from the NetBIOS name) → refused | – | inference |
-| Non-joined, off-network, no VPN, no KDC proxy | refused (NTLM) | – | high |
+| Non-joined Windows, user `LAB\alice` (NetBIOS domain) | **likely NTLM** (KDC not locatable from the NetBIOS name) → refused at once (§3.13) | – | inference |
+| Non-joined, off-network, no VPN, no KDC proxy | refused at once (NTLM only, §3.13) | – | high |
 | Non-joined, off-network, GPO/registry KDC proxy (MS-KKDCP) | works if the KDC proxy is reachable and trusted | yes / no | inference |
-| Entra-ID-only joined Windows (no on-prem AD ticket) | refused: Windows offers `[NegoEx, NTLM]` (FreeRDP #13168) | – | high |
+| Entra-ID-only joined Windows (no on-prem AD ticket) | refused at once: Windows offers `[NegoEx, NTLM]` (FreeRDP #13168), no Kerberos (§3.13) | – | high |
 | Smartcard / PIV / YubiKey PIV (mstsc PKINIT) | works like the FreeRDP smartcard path; PIN is not forwarded | no / no | medium |
 | Windows Hello for Business, certificate trust | as smartcard | no / no | inference |
 | Ticket/session key RC4-HMAC only | **fails** (pubKeyAuth/MIC format) | – | verified with MIT, §3.4 |
@@ -91,7 +97,7 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
   kerberos OID" (negotiate.c:1157).
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
   MS-KRB5. The module sees package `Kerberos`
-  (`nla_used_kerberos()`, `broker/proxy-module/fastrdp_plugin.c:168-187`).
+  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:171-192`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -107,8 +113,12 @@ WinPR 3.32.2 acceptor (§8). The Kerberos AP-REQ comes from MIT GSSAPI.
 | `[MS-KRB5, KRB5, NegoEx, NTLM]`, optimistic AP-REQ | **completes in 1 round**, accept-completed + AP-REP, no MIC; package `Kerberos`, identity `alice@REALM` |
 | `[NegoEx, MS-KRB5, KRB5, NTLM]`, optimistic NegoEx | Kerberos selected (accept-incomplete, supportedMech MS-KRB5); AP-REP plus acceptor MIC, which MIT verifies. **Then the bug in §3.3.** |
 | as above, no optimistic token | same as the previous row |
-| `[NegoEx, NTLM]` | NTLM selected (request-mic) → refused later by the module |
-| AP-REQ framed with the MS-KRB5 OID instead of KRB5 | Kerberos acceptor rejects the framing (`kerberos.c:1598-1608`, accepts only 1.2.840.113554.1.2.2 or U2U). Negotiate then **silently selects NTLM** → refused |
+| `[NegoEx, NTLM]` | NTLM selected (request-mic) → refused later by the module. **fastrdp now:** no mechanism left, refused at the first message (§3.13) |
+| AP-REQ framed with the MS-KRB5 OID instead of KRB5 | Kerberos acceptor rejects the framing (`kerberos.c:1598-1608`, accepts only 1.2.840.113554.1.2.2 or U2U). Negotiate then **silently selects NTLM** → refused. **fastrdp now:** no NTLM to fall back to, refused at the first message |
+
+The harness drives a WinPR acceptor with default settings (NTLM enabled). fastrdp's proxy
+disables NTLM in the acceptor (§3.13), so "NTLM selected" in the table is, for fastrdp,
+"no acceptable mechanism".
 
 The last row matters only if Windows frames the AP-REQ with the MS OID. Heimdal's krb5
 acceptor accepts only the standard OID in the framing, and Samba/Heimdal servers work
@@ -140,13 +150,14 @@ safe). Still worth a robustness fix upstream (§5).
   changed in AD first; the keytab check then fails with that hint.
 - **IP address:**
   - Windows asks for `TERMSRV/<ip>`, which does not exist, and falls back to NTLM.
-  - The WinPR NTLM acceptor has no SAM/hash callback in the proxy, so NTLM fails at
-    `ntlm_compute.c:285` (SamOpen) or at the latest in the module:
-    `fastrdp_server_peer_logon()` (`fastrdp_plugin.c:580-584`) refuses NLA that is not Kerberos.
+  - The proxy's acceptor does not offer NTLM (§3.13): the client's `[NegoEx, NTLM]` offer
+    leaves no mechanism, and the login ends at the first CredSSP message. Before, NTLM ran
+    to the end and failed at `ntlm_compute.c:285` (SamOpen), the module's check
+    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:592-602`) being the last line.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:713-718`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:731-736`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -225,8 +236,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:608-636`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:622-634`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:626-654`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:640-652`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -243,7 +254,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:578-601`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:590-619`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`mfa.py:58-65`).
@@ -348,7 +359,7 @@ Confidence medium; real card + AD + mstsc is lab test L7.
 ### 3.10 Off-network clients: KDC proxy, RD Gateway (Q8)
 
 - Without a reachable KDC, Windows cannot get the TERMSRV ticket and falls back to NTLM,
-  which is refused. Options:
+  which the proxy does not offer (§3.13). Options:
   1. **VPN** (simplest).
   2. **KDC proxy (MS-KKDCP).** An HTTPS endpoint that forwards Kerberos messages to the
      DCs: fastrdp's own (`fastrdp_web_kdcproxy: true`, python3-kdcproxy behind the web
@@ -489,6 +500,76 @@ Sources: [Remote Credential Guard](https://learn.microsoft.com/en-us/windows/sec
 [Kerberos credentials cache (LSA key refresh)](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961958(v=technet.10)),
 [RDS user data storage (UPD)](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/rds-plan-secure-data-storage).
 
+### 3.13 Clients without a Kerberos ticket: what happens, what the user sees
+
+**Server side (verified, e2e with a FreeRDP client).** The proxy's NLA acceptor offers
+Kerberos and Kerberos U2U only:
+- The module sets `FreeRDP_AuthenticationPackageList = "!ntlm"` on the front settings in
+  `ServerSessionInitialize` (`fastrdp_server_session_init()`). WinPR's Negotiate acceptor
+  honours the list only when `credssp_auth_setup_server()` passes auth data, i.e. with a
+  keytab, an NTLM SAM file or an NTLM hash callback (`credssp_auth.c:356-386`). The
+  module installs a hash callback (`fastrdp_ntlm_refused()`) for that: it changes nothing
+  in the Kerberos acceptor, which keeps the default keytab (`KRB5_KTNAME` from the unit),
+  and it refuses and logs if NTLM were ever selected.
+- `negotiate_AcquireCredentialsHandleW()` then skips the NTLM sub-credential
+  (`negotiate.c:1509`). A client whose negTokenInit lists no Kerberos OID gets no
+  mechanism: `AcceptSecurityContext` fails at the first CredSSP message
+  (`negotiate.c:1165-1166`), and the server answers with a TSRequest whose `errorCode` is
+  STATUS_LOGON_FAILURE (`nla.c:882-894`, `nla.c:2123`: for CredSSP versions 3, 4 and 6), then closes.
+  No NTLM CHALLENGE is sent, and the client never sends an NTLMv2 response for the
+  user's password to the proxy.
+- The module reads the mechanisms of that first TSRequest itself
+  (`fastrdp_read_pdu()`, `fastrdp_spnego.h`) and logs, for a client that offers NTLM
+  but no Kerberos:
+
+  ```
+  [WARN][proxy.modules.fastrdp] - [fastrdp_read_pdu]: [<session>] client 192.0.2.10 attempted
+  NTLM (offered: NegoEx, NTLM); only Kerberos NLA is accepted: check that the client can
+  reach the KDC (DNS SRV _kerberos._tcp.<domain>, ksetup /addkdc or a KDC proxy), connects
+  to the server's FQDN (not an IP address or an alias without TERMSRV SPN) and gives the
+  user name as UPN (user@domain)
+  ```
+
+  FreeRDP itself adds `AcceptSecurityContext status SEC_E_INTERNAL_ERROR` and
+  `client authentication failure`. Before this change the log had
+  `ntlm_fetch_ntlm_v2_hash: Could not find user in SAM database` and
+  `AcceptSecurityContext status SEC_E_NO_CREDENTIALS` after a full NTLM exchange.
+- The module's check after NLA (`fastrdp_server_peer_logon()`: package must be
+  `Kerberos`) stays as defence in depth.
+- The back-end hop is unaffected: `fastrdp_client_pre_connect()` replaces the copied
+  package list (`!kerberos` towards GNOME Remote Desktop and KRdp, which authenticate the
+  broker's one-time secret with NTLM).
+
+**Client side.**
+- FreeRDP (`/sec:nla /auth-pkg-list:'none,ntlm'`, or any client without a ticket that
+  falls back to NTLM): `ERRCONNECT_LOGON_FAILURE [0x00020014]` after one round trip
+  (verified, `run_nla.sh`).
+- mstsc (inference, lab L9/L13): CredSSP gets STATUS_LOGON_FAILURE (0xC000006D) in the
+  first server TSRequest, as it did before at the end of the NTLM exchange. The dialog is
+  therefore expected to stay the generic "The logon attempt failed" / "Your credentials
+  did not work", only sooner. The error text Windows shows is chosen by the client from
+  that NTSTATUS; FreeRDP's server always sends STATUS_LOGON_FAILURE for SSPI failures, so
+  a more specific dialog would need a FreeRDP change whose mstsc result is untested.
+  Record the dialog in the lab.
+
+**What to tell the user / helpdesk.** "The credentials did not work" right after the
+password prompt, from a machine that is not on the corporate network or connects by IP
+address, almost always means: no Kerberos ticket, not a wrong password. The proxy log
+confirms it (`attempted NTLM`). Fixes, in this order:
+1. Connect to the server's **FQDN** (`rdp1.lab.example.com`), not an IP address or a
+   name without a `TERMSRV/` SPN (`fastrdp_termsrv_aliases`, §3.2).
+2. Type the user as **UPN** (`alice@lab.example.com`), not `LAB\alice`, on machines that
+   are not domain members.
+3. Make the KDC reachable: domain DNS on the client (`nslookup -type=SRV
+   _kerberos._tcp.lab.example.com`), or on a workgroup machine
+   `ksetup /addkdc LAB.EXAMPLE.COM dc1.lab.example.com` (admin; may need a restart), or VPN.
+4. Off-network: the KDC proxy (§3.10, `fastrdp_web_kdcproxy`).
+5. Check on the client: `klist` after the attempt should list
+   `TERMSRV/rdp1.lab.example.com@LAB.EXAMPLE.COM`. `klist purge` and retry after a fix.
+
+Entra-only devices have no on-premises ticket at all; use the web path
+([web-access.md](web-access.md)) or Microsoft's Entra Kerberos/cloud trust (untested).
+
 ## 4. Required AD / client settings
 
 **AD / server:**
@@ -536,7 +617,7 @@ non-joined clients not `LAB\alice`.
 | 1 | WinPR negotiate acceptor: second mechListMIC (§3.3) | bug (upstream FreeRDP) | Appendix A patch; if lab L3 shows mstsc affected, carry it in `patches/freerdp/` and report upstream |
 | 2 | WinPR Kerberos acceptor rejects MS-KRB5 framing OID, Negotiate then silently picks NTLM (§3.1) | robustness (upstream) | accept `1.2.840.48018.1.2.2` in `kerberos_AcceptSecurityContext()` like MIT does; echo it in the AP-REP |
 | 3 | No RC4 (RFC 4757) Wrap/MIC (§3.4) | limitation (upstream) | document AES requirement (done here); optionally fail early with a clear log message when the session key is RC4 |
-| 4 | NTLM is offered by the acceptor although the module always refuses it | UX | **open, documented.** No configuration-only fix: `proxy.ini` has no package option. The server's Negotiate honours `AuthenticationPackageList=!ntlm` only when its auth data is set, i.e. with `KerberosKeytab` (or an NTLM SAM file/hash callback) in the front settings (`credssp_auth_setup_server()`), while fastrdp passes the keytab as `KRB5_KTNAME`. A module hook (`ServerSessionInitialize`) setting both is possible without FreeRDP changes, but it changes the acceptor's keytab handling and needs the e2e suites. The WinPR registry key `ntlm=0` is process-wide and would also break the proxy's NTLM hop to GNOME/Plasma |
+| 4 | NTLM is offered by the acceptor although the module always refuses it | UX | **fixed** (§3.13), no FreeRDP change: the module sets `AuthenticationPackageList=!ntlm` on the front in `ServerSessionInitialize` and installs a refusing NTLM hash callback, which makes `credssp_auth_setup_server()` pass the auth data that Negotiate needs to honour the list. The keytab handling is unchanged (`KRB5_KTNAME`), and the back-end hop gets its own list (`!kerberos` for the NTLM hop to GNOME/Plasma). The proxy logs `client <addr> attempted NTLM (offered: …)` with the fix-it hint. The WinPR registry key `ntlm=0` (process-wide) was not used. e2e: `run_nla.sh` |
 | 5 | Identity role: no AES enctype setting/check, no alias SPNs, FreeIPA without short name | gap | **fixed:** `fastrdp_termsrv_enctypes`, `fastrdp_termsrv_aliases`, FreeIPA short-name alias, `fastrdp-termsrv-check` in the role and in `check-host.sh` |
 | 6 | Base role: self-signed cert covers only the FQDN | gap | **fixed:** SAN = FQDN, short name, aliases; internal CA via `fastrdp_front_cert_src` |
 | 7 | Broker principal/user match fails for UPN ≠ sAMAccountName (§3.6) | probable bug | **fixed:** the principal is authoritative for NLA |
@@ -591,11 +672,11 @@ non-joined clients not `LAB\alice`.
 | L6 | W10, W11 | `mstsc /remoteGuard`; GPO "Require Remote Credential Guard"; GPO "Restrict credential delegation"; then the same with `fastrdp_accept_remote_guard: true` | default, first two: mstsc's own "Remote Credential Guard not supported" style error, not a network error (proxy log "REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled, answering without"); record the dialog text. Third: Restricted Admin, success. With the option: success without a password prompt, proxy log "Remote Credential Guard: identity only", broker log "remote credential guard: identity only, credentials discarded", no TGT in the session; record whether mstsc sends supplementalCreds (FreeRDP log level DEBUG) and the third case's choice (RCG or Restricted Admin) |
 | L7 | W10 | smartcard/YubiKey PIV user, mstsc, select smart card, PIN | success, `smartcard: true`, no PIN in broker log, no TGT |
 | L8 | W10, W11-WG | self-signed lab cert vs internal-CA cert; FQDN vs short name | record certificate prompts (Kerberos vs not) |
-| L9 | any | connect by IP address | failure ("authentication error"/"logon attempt failed"); proxy log "NLA without Kerberos refused" or NTLM SAM error |
+| L9 | any | connect by IP address | failure right after the password prompt; record the dialog text (expected "logon attempt failed"/"credentials did not work", §3.13); proxy log `attempted NTLM (offered: NegoEx, NTLM)` or `(offered: NTLM)`, no NTLM SAM error |
 | L10 | W10 | connect by short name `rdp1` | Kerberos success (ticket `TERMSRV/rdp1`), cert name warning unless the SAN contains it |
 | L11 | W11-WG | user `alice@lab.example.com` with DC reachable; then `LAB\alice` | UPN: success; NetBIOS: expect NTLM → refused |
 | L12 | W11-WG off-network | KDC proxy GPO/registry set, VPN off | success via KDC proxy |
-| L13 | W11-E | Entra-only device | refused (NTLM) |
+| L13 | W11-E | Entra-only device | refused at once; proxy log `attempted NTLM (offered: NegoEx, NTLM)` |
 | L14 | W10 | computer account temporarily RC4-only (`msDS-SupportedEncryptionTypes=0x4`), new ticket | failure at pubKeyAuth/MIC; restore AES |
 | L15 | W10 | `fastrdp_mfa_mode: push`, L1 and L5 | push prompt, success after approval; L5 needs the service user |
 | L16 | W10 | user with UPN prefix ≠ sAMAccountName, typed as UPN | expected refusal (§3.6) |
