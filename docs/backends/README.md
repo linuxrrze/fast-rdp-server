@@ -166,6 +166,10 @@ sudo fastrdpctl logout alice      # stop all of alice's back-end sessions (see p
 # Host smoke test (services, ports, sockets, nftables, keytab, PAM module, broker config)
 sudo tests/smoke/check-host.sh [test-user]
 
+# Power off/reboot/suspend refused for users in their RDP sessions (polkit rule, base role;
+# desktop-matrix.md#host-safety-power-actions); read-only, log in first
+sudo tests/smoke/check-power-actions.sh [user]...
+
 # Follow one login end to end
 journalctl -f -u fastrdp-proxy -u fastrdp-brokerd
 
@@ -192,11 +196,11 @@ Broker log lines to look for (`journalctl -u fastrdp-brokerd`):
 | `make test-webgate` | OIDC checks, Guacamole JSON format, CSRF, cert pinning, chooser lists only allowed desktops | yes |
 | `make test-gpu` (`tests/gpu/test_session_report.py`) | `session_report.py` verdicts on fake `/proc` trees | yes |
 | `make lint` | ansible-lint of `site.yml`; shellcheck of the session scripts and all test/build scripts | yes |
-| `make test-ansible` (`tests/ansible/`) | role templates rendered and parsed (gfx.toml per encoder, proxy.ini, broker.toml incl. desktop groups/labels and a minimal inventory, resource limits), site checks of role `common`, smoke-test port parsing | yes |
+| `make test-ansible` (`tests/ansible/`) | role templates rendered and parsed (gfx.toml per encoder, proxy.ini, broker.toml incl. desktop groups/labels and a minimal inventory, resource limits), site checks of role `common`, smoke-test port parsing, the polkit power rule evaluated in node | yes |
 | `make test-e2e`, `test-e2e-nla`, `test-e2e-smartcard[-softhsm]` (`tests/proxy-e2e/`) | real freerdp-proxy + module: token instead of password towards a **TLS** back-end, peer address, shell hint dropped, Kerberos principal binding, smartcard PIN not forwarded, 32-bit PKCS#11 slot ids | yes (job `e2e`, against the vendored FreeRDP) |
 | `make test-wlroots` (`tests/wlroots/run.sh`) | `wlroots-in-x` on Xvfb | no (manual) |
 | `make test-xrdp-encoder` (`patches/xrdp/test/`) | FFmpeg encoder code path with libx264, VA-API/NVENC fallback, fallback disabled | yes (job `vendored`, xrdp) |
-| `tests/perf/*`, `tests/smoke/check-host.sh` | measurements, deployed-host checks | no (manual) |
+| `tests/perf/*`, `tests/smoke/check-host.sh`, `check-power-actions.sh` | measurements, deployed-host checks | no (manual) |
 
 Not covered by any automated test: the NLA hop from the proxy to g-r-d or KRdp,
 the GNOME and Plasma drivers against real services, and xrdp sessions with a real

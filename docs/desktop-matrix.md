@@ -95,6 +95,74 @@ runbook: [performance.md](performance.md).
   hardware path is not yet tested on real GPUs; size CPUs for x264 until it is.
   Details: [backends/xrdp.md](backends/xrdp.md#encoding).
 
+## Host safety: power actions
+
+One user must not be able to shut down, reboot, suspend, hibernate or halt the shared host. The base role
+installs the polkit rule `/etc/polkit-1/rules.d/40-fastrdp-power.rules` for this
+(`fastrdp_block_power_actions: true`, the default).
+
+**Without the rule (upstream defaults).** logind (systemd 257 on Debian 13, 259 on Ubuntu 26.04) asks
+polkit for `org.freedesktop.login1.power-off`, `reboot`, `halt`, `suspend` or `hibernate`. When other
+users are logged in, which is always the case on a terminal server, it asks for the `-multiple-sessions`
+variant, and for `-ignore-inhibit` when an inhibitor blocks. `systemctl poweroff`/`reboot`/`suspend`
+as a user goes through the same logind call. polkit treats a session as *local* only when it has a
+seat. No fastrdp session has one:
+
+| Session | How logind registers it | polkit sees |
+|---|---|---|
+| xrdp (X11 desktops, wlroots) | xrdp-sesman's PAM: `PAM_TTY=:N` (an X display whose server has no VT), `PAM_RHOST` = client address, no `XDG_SEAT` → type `x11`, class `user`, no seat | not local → `allow_any` |
+| GNOME | GDM's RemoteDisplayFactory (`gdm-new-session --headless`): a display with `is-local=false` and no seat id, so no `XDG_SEAT` → type `wayland`, no seat | not local → `allow_any` |
+| Plasma | `fastrdp-plasma@.service`, `PAMName=fastrdp-session`, no `TTYPath=` (no `PAM_TTY`), `pam_systemd type=wayland` → no seat | not local → `allow_any` |
+
+`allow_any` is `auth_admin_keep` for all of these actions. So a user cannot do it without a password,
+but every desktop shows the entries ("challenge"), and anyone who knows an admin's password (polkit
+admins: group `sudo`, on Ubuntu also `admin`) can shut the host down from any session. Only active
+sessions *on a seat* (the console, GDM's login screen) get `allow_active = yes`, and Ubuntu's
+`policykit-desktop-privileges` refuses hibernate for everyone. Root is never asked (`sudo systemctl
+poweroff` works).
+
+**With the rule.** For the 15 power actions and `set-reboot-parameter`/`set-reboot-to-*` (these
+imply `reboot` in polkit and would otherwise authorize it through `allow_active = yes`):
+
+| Who | Answer | Desktop menus |
+|---|---|---|
+| user | `no` (logind `CanPowerOff` and friends: `no`) | entries hidden or greyed out (table below) |
+| member of `fastrdp_power_admin_groups` (default `[sudo]`) | `auth_admin_keep`: admin password, as before | entries shown, password prompt |
+| root | never reaches the rules | `sudo systemctl poweroff` works |
+| active console session, with `fastrdp_power_allow_local_console: true` | upstream defaults (`yes`) | as without the rule |
+
+Log out, lock, switching users, inhibitors (`systemd-inhibit`), lingering and the wall message keep
+their defaults. polkitd reloads the rules directory by itself.
+
+| Desktop | Reaction to `no` | Basis |
+|---|---|---|
+| GNOME (Shell system menu, end-session dialog) | power off, restart and suspend hidden | verified in source: gnome-session maps `no`/`na` to unavailable, gnome-shell `systemActions.js` hides unavailable actions |
+| Plasma, Plasma X11 | shutdown, restart, sleep, hibernate hidden in the leave menu and logout screen | verified in source: libkworkspace counts only `yes`/`challenge`/inhibited as possible |
+| MATE | buttons not added to the shutdown dialog | verified in source: mate-session `gsm-logout-dialog.c` |
+| XFCE | logout dialog keeps *Restart*, *Shut Down*, *Suspend*, *Hibernate* visible but greyed out | verified in source: xfce4-session sets them insensitive |
+| LXQt | lxqt-leave buttons disabled/hidden | source: liblxqt counts only `yes`/`challenge`; dialog to validate |
+| Cinnamon | hidden like GNOME | to validate (cinnamon-session is a gnome-session fork) |
+| Sway, labwc, Wayfire | the launchers add no power menu; `systemctl poweroff` in a terminal is refused | verified (repository) |
+
+Settings (`roles/common/defaults/main.yml`, checked by the common role):
+
+- `fastrdp_block_power_actions: true`. `false` removes the rule.
+- `fastrdp_power_admin_groups: [sudo]`. These users still get the admin password prompt. Name only
+  groups that polkit accepts as admins (Ubuntu/Debian: `sudo`, Ubuntu also `admin`). For a directory
+  group (e.g. `rdp-admins@example.com`), add a polkit admin rule for it as well, or those admins can
+  only answer the prompt with a `sudo` member's password. `[]` = only root.
+- `fastrdp_power_allow_local_console: false`. `true` leaves active console sessions (including GDM's
+  login screen) at the upstream defaults. RDP sessions never have a seat.
+
+Check on the host: log in over RDP as a normal user and as an admin, then
+`sudo tests/smoke/check-power-actions.sh USER...` (it only queries polkit and logind, it never
+powers off). In a session terminal, `busctl --system call org.freedesktop.login1
+/org/freedesktop/login1 org.freedesktop.login1.Manager CanPowerOff` must print `s "no"`. Only after
+that, `systemctl -i poweroff` must be refused with *Access denied*. Without `-i`, systemctl stops
+earlier because other users are logged in, so that message proves nothing. Not covered: other services that reboot
+on their own after an update (e.g. PackageKit offline updates triggered by an admin), and the physical
+power button (logind `HandlePowerKey`).
+
 ## Validation items before production
 
 1. **Plasma headless:** `fastrdp-plasma@USER` reaches a usable desktop, KRdp streams

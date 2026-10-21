@@ -62,6 +62,20 @@
       fastrdp_smb_krb5_homes: true) is a list of {what: //<server FQDN>/<share>, where:
       <absolute path>, options: <optional mount.cifs options without spaces, sec only
       krb5 or krb5i>}, each "where" once (docs/smb-kerberos-homes.md).
+
+# Group names go into the polkit rule as JSON strings; still only names a group can have
+# (letters, digits, . _ - @, spaces as in AD names), so a typo cannot change the rule.
+- name: Power action settings (polkit rule, base role)
+  ansible.builtin.assert:
+    that:
+      - fastrdp_block_power_actions | string | lower in ['true', 'false']
+      - fastrdp_power_allow_local_console | string | lower in ['true', 'false']
+      - fastrdp_power_admin_groups is sequence and fastrdp_power_admin_groups is not string
+      - fastrdp_power_admin_groups | map('string') | reject('match', '^[A-Za-z0-9._@][A-Za-z0-9._@ -]*\Z') | list | length == 0
+    fail_msg: >-
+      fastrdp_block_power_actions and fastrdp_power_allow_local_console are true or false;
+      fastrdp_power_admin_groups is a list of group names, e.g. [sudo] or [] (only root)
+      (docs/desktop-matrix.md#host-safety-power-actions).
     quiet: true
 
 - name: Required site settings are present and consistent

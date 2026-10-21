@@ -15,7 +15,7 @@ update fastrdp, compare the role files in the table below with your host.
 | [2 Base system and packages](#2-base-system-and-packages) | `roles/base/tasks/main.yml`, `roles/base/tasks/apt_repo.yml`; package tasks of `broker`, `freerdp_proxy`, `xrdp` |
 | [3 Kerberos, SSSD, domain join](#3-kerberos-sssd-domain-join) | `roles/identity/tasks/{main,ad,ipa,ipa_krb5,none}.yml`, `roles/identity/templates/*`, `roles/identity/defaults/main.yml`; `broker/sbin/*` (TERMSRV helpers) |
 | [4 Front TLS certificate](#4-front-tls-certificate) | `roles/base/tasks/main.yml` (certificate tasks), `roles/base/defaults/main.yml` (`fastrdp_front_cert_san`) |
-| [5 Firewall and kernel settings](#5-firewall-and-kernel-settings) | `roles/base/templates/nftables-fastrdp.nft.j2`, `roles/base/tasks/main.yml`, `roles/freerdp_proxy/tasks/main.yml` (front placeholder) |
+| [5 Firewall and kernel settings](#5-firewall-and-kernel-settings) | `roles/base/templates/nftables-fastrdp.nft.j2`, `roles/base/templates/40-fastrdp-power.rules.j2` (power actions), `roles/base/tasks/main.yml`, `roles/freerdp_proxy/tasks/main.yml` (front placeholder) |
 | [6 GPU](#6-gpu) | `roles/gpu/tasks/main.yml`, `roles/gpu/defaults/main.yml` |
 | [7 Desktops](#7-desktops) | `roles/desktops/*`, `roles/gnome_rd/*`, `roles/plasma_krdp/*` |
 | [8 Tuning](#8-tuning) | `roles/tuning/*` |
@@ -580,6 +580,70 @@ firewalld manages the host firewall, load the fastrdp table through it instead.
 Optional (`fastrdp_proc_hidepid: true`): hide other users' processes. Put
 `proc /proc proc defaults,hidepid=invisible 0 0` into `/etc/fstab` (replacing an
 existing `proc /proc` line), then `mount -o remount /proc`.
+
+No power off, reboot, suspend, hibernate or halt from RDP sessions (`fastrdp_block_power_actions:
+true`, the default; [desktop-matrix.md](desktop-matrix.md#host-safety-power-actions)). Without this
+rule every desktop offers these actions, and an admin's password is all it takes. Write
+`/etc/polkit-1/rules.d/40-fastrdp-power.rules` (`root:root 0644`, `40-fastrdp-power.rules.j2`;
+`adminGroups` from `fastrdp_power_admin_groups`, `allowLocalConsole` from
+`fastrdp_power_allow_local_console`). polkitd picks it up without a restart:
+
+```
+// fastrdp: users in RDP sessions must not power off, reboot, suspend, hibernate or halt
+// the shared host (fastrdp_block_power_actions; docs/desktop-matrix.md#host-safety-power-actions).
+// logind's power actions are refused (polkit NO: CanPowerOff and friends answer "no",
+// desktops hide or grey out the entries) except for:
+//   - root: polkit authorizes uid 0 before any rule (sudo systemctl poweroff works);
+//   - members of fastrdp_power_admin_groups: they authenticate as an admin, as before;
+//   - with fastrdp_power_allow_local_console: active sessions on a seat (the console).
+// Log out, lock, inhibitors and every other action keep their defaults.
+// ES5 only: polkitd evaluates rules with duktape.
+polkit.addRule(function (action, subject) {
+    var actions = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.power-off-ignore-inhibit",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.reboot-ignore-inhibit",
+        "org.freedesktop.login1.halt",
+        "org.freedesktop.login1.halt-multiple-sessions",
+        "org.freedesktop.login1.halt-ignore-inhibit",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.suspend-ignore-inhibit",
+        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.hibernate-multiple-sessions",
+        "org.freedesktop.login1.hibernate-ignore-inhibit",
+        "org.freedesktop.login1.set-reboot-parameter",
+        "org.freedesktop.login1.set-reboot-to-firmware-setup",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-menu",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-entry"
+    ];
+    var adminGroups = ["sudo"];
+    var allowLocalConsole = false;
+    var i;
+
+    if (actions.indexOf(action.id) < 0 || subject.user === "root") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (allowLocalConsole && subject.local && subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    for (i = 0; i < adminGroups.length; i++) {
+        if (subject.isInGroup(adminGroups[i])) {
+            return polkit.Result.AUTH_ADMIN_KEEP;
+        }
+    }
+    return polkit.Result.NO;
+});
+```
+
+```sh
+journalctl -u polkit -b | grep -i 40-fastrdp-power    # no "Error compiling script"
+# log in over RDP as a normal user, then (read-only, never powers off):
+sudo tests/smoke/check-power-actions.sh alice
+```
 
 ## 6. GPU
 

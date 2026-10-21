@@ -363,6 +363,24 @@
           color-depth: 32
           resize-method: display-update
 
+    - name: Polkit power rule (base role) with the defaults
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/base/templates/40-fastrdp-power.rules.j2"
+        dest: "{{ render_out }}/power-default.rules"
+        mode: "0644"
+
+    - name: Polkit power rule per admin-group/console setting
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/base/templates/40-fastrdp-power.rules.j2"
+        dest: "{{ render_out }}/power-{{ item.name }}.rules"
+        mode: "0644"
+      vars:
+        fastrdp_power_admin_groups: "{{ item.groups }}"
+        fastrdp_power_allow_local_console: "{{ item.console }}"
+      loop:
+        - {name: groups-console, groups: [sudo, "rdp admins@example.com"], console: true}
+        - {name: root-only, groups: [], console: false}
+
 # A new site sets only what is required: everything else must come from role
 # defaults (roles/common), and the common checks must pass.
 - name: Render with a minimal inventory (role defaults + realm/domain)

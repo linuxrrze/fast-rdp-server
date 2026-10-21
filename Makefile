@@ -9,7 +9,7 @@ test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototyp
 
 # Everything that runs locally without root (missing tools: SKIP, or FAIL with
 # FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, libcjson-dev, python3-cryptography, ansible-core,
-# ansible-lint, shellcheck, dpkg-dev, curl, reprepro, gnupg, apt.
+# ansible-lint, shellcheck, dpkg-dev, curl, reprepro, gnupg, apt, nodejs (polkit rule test).
 test-all: test test-scripts test-publish test-ansible
 
 test-broker:
@@ -51,7 +51,7 @@ test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/c
 test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg-dev apt
 	tests/packaging/test_publish.sh
 
-test-ansible:   # ansible-core; syntax check + role templates rendered and parsed; Keycloak script (offline)
+test-ansible:   # ansible-core, nodejs; syntax check + role templates rendered and parsed; Keycloak script (offline)
 	@$(call with_tool,test-ansible,ansible-playbook,cd ansible && ansible-playbook --syntax-check site.yml)
 	python3 -m unittest -v tests/ansible/test_roles_static.py
 	python3 -m unittest -v tests/ansible/test_templates.py

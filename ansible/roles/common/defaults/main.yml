@@ -147,6 +147,24 @@ fastrdp_lan_networks: []               # client CIDRs, e.g. [10.0.0.0/8, "2001:d
 # Hide other users' processes (/proc hidepid). The nftables owner rules already stop
 # other users from reaching back-end ports.
 fastrdp_proc_hidepid: false
+# Users in RDP sessions must not power off, reboot, suspend, hibernate or halt the shared
+# host (base role: polkit rule /etc/polkit-1/rules.d/40-fastrdp-power.rules for logind's
+# power actions, their -multiple-sessions/-ignore-inhibit variants and set-reboot-*).
+# Without it every user in an RDP session sees the menu entries, and the password of an
+# admin (polkit: group sudo) is all it takes. Desktops hide or grey out the entries
+# (logind answers "no"); log out, lock and inhibitors are unaffected. root (sudo
+# systemctl poweroff) is never affected. false = no rule (upstream polkit defaults).
+# docs/desktop-matrix.md#host-safety-power-actions
+fastrdp_block_power_actions: true
+# Members may still use these actions after authenticating as an admin (polkit
+# auth_admin_keep, the same prompt as without the rule). Use groups polkit accepts as
+# admins (Ubuntu/Debian: sudo; Ubuntu also admin), e.g. [sudo, rdp-admins@example.com]
+# only when polkit's admin rule names it too. [] = only root.
+fastrdp_power_admin_groups: [sudo]
+# true: active sessions on a physical seat (local console, incl. the GDM login screen)
+# keep the upstream defaults: power off, reboot and suspend without a password, even
+# while other users are logged in. RDP sessions never have a seat.
+fastrdp_power_allow_local_console: false
 
 # Derived: the version of these roles (debian/changelog of the checkout). Packages from the
 # APT repository must not be older (base role upgrades them, broker role checks).

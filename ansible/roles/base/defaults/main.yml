@@ -23,3 +23,17 @@ fastrdp_apt_package_state: present
 fastrdp_front_cert_san: >-
   {{ ([fastrdp_fqdn, fastrdp_hostname] + fastrdp_termsrv_aliases) | unique
      | map('regex_replace', '^', 'DNS:') | join(',') }}
+
+# Derived, normally not set: the logind polkit actions (systemd 257-259) the power rule
+# (fastrdp_block_power_actions) refuses. logind asks for the -multiple-sessions variant
+# while other users are logged in (always, on a terminal server) and for -ignore-inhibit
+# when an inhibitor blocks; set-reboot-* imply reboot in polkit, so they are refused too
+# (else their allow_active = yes would authorize reboot through the implication).
+# Kexec and soft-reboot use the reboot actions, hybrid-sleep and suspend-then-hibernate
+# the hibernate ones. Inhibitor, lock, linger and wall-message actions stay as they are.
+fastrdp_power_polkit_actions: >-
+  {{ (['power-off', 'reboot', 'halt', 'suspend', 'hibernate']
+      | product(['', '-multiple-sessions', '-ignore-inhibit']) | map('join') | list
+      + ['set-reboot-parameter', 'set-reboot-to-firmware-setup',
+         'set-reboot-to-boot-loader-menu', 'set-reboot-to-boot-loader-entry'])
+     | map('regex_replace', '^', 'org.freedesktop.login1.') | list }}

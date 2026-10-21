@@ -13,6 +13,7 @@ import ctypes
 import ctypes.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1102,6 +1103,127 @@ class HomeDirectories(unittest.TestCase):
         self.assertIn("line: 'automount:      files sss'", tasks)
         main = (REPO / "ansible/roles/identity/tasks/main.yml").read_text()
         self.assertIn("include_tasks: autofs.yml", main)
+
+
+class PowerRule(unittest.TestCase):
+    """Polkit rule against power off/reboot/suspend/hibernate/halt from RDP sessions
+    (base role, fastrdp_block_power_actions; backlog H1). The rule runs in node with
+    polkit's rule semantics (tests/ansible/polkit_rule_eval.js)."""
+
+    PREFIX = "org.freedesktop.login1."
+    # logind's actions for these operations (systemd 257-259 org.freedesktop.login1.policy,
+    # logind-action.c): kexec/soft-reboot -> reboot, hybrid-sleep/suspend-then-hibernate ->
+    # hibernate; set-reboot-* imply reboot.
+    REFUSED = [f"{op}{variant}" for op in ("power-off", "reboot", "halt", "suspend", "hibernate")
+               for variant in ("", "-multiple-sessions", "-ignore-inhibit")] + [
+        "set-reboot-parameter", "set-reboot-to-firmware-setup",
+        "set-reboot-to-boot-loader-menu", "set-reboot-to-boot-loader-entry"]
+    UNTOUCHED = ["inhibit-block-shutdown", "inhibit-delay-shutdown", "inhibit-block-sleep",
+                 "inhibit-delay-sleep", "inhibit-block-idle", "inhibit-handle-power-key",
+                 "lock-sessions", "set-self-linger", "set-wall-message", "chvt", "manage"]
+    RDP = {"local": False, "active": True}          # RDP sessions have no seat
+    CONSOLE = {"local": True, "active": True}       # active session on seat0
+
+    def evaluate(self, rules, cases):
+        node = shutil.which("node") or shutil.which("nodejs")
+        if not node:
+            if os.environ.get("FASTRDP_TESTS_STRICT") == "1":
+                self.fail("node (nodejs) not found")
+            self.skipTest("node (nodejs) not found")
+        res = subprocess.run([node, str(HERE / "polkit_rule_eval.js"), str(OUT / rules)],
+                             input=json.dumps(cases), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    def results(self, rules, actions, user, groups, session):
+        cases = [dict(session, action=self.PREFIX + a, user=user, groups=groups) for a in actions]
+        return dict(zip(actions, self.evaluate(rules, cases)))
+
+    def test_action_list(self):
+        text = (OUT / "power-default.rules").read_text()
+        actions = json.loads(re.search(r"var actions = (\[.*?\]);", text, re.S).group(1))
+        self.assertEqual(sorted(actions), sorted(self.PREFIX + a for a in self.REFUSED))
+
+    def test_es5_only(self):
+        # polkitd's duktape is ES5.1: no let/const, arrow functions or template strings
+        for name in ("power-default.rules", "power-groups-console.rules", "power-root-only.rules"):
+            with self.subTest(name):
+                code = "\n".join(line for line in (OUT / name).read_text().splitlines()
+                                 if not line.lstrip().startswith("//"))
+                self.assertNotRegex(code, r"\b(let|const|class)\s|=>|`")
+                self.assertIn("polkit.addRule(function (action, subject) {", code)
+
+    def test_users_refused_admins_authenticate(self):
+        for session in (self.RDP, self.CONSOLE):
+            with self.subTest(session=session):
+                user = self.results("power-default.rules", self.REFUSED, "alice", ["alice", "users"], session)
+                self.assertEqual(set(user.values()), {"no"})
+                admin = self.results("power-default.rules", self.REFUSED, "bob", ["bob", "sudo"], session)
+                self.assertEqual(set(admin.values()), {"auth_admin_keep"})
+
+    def test_other_actions_and_root_untouched(self):
+        other = self.results("power-default.rules", self.UNTOUCHED, "alice", ["alice"], self.RDP)
+        self.assertEqual(set(other.values()), {None})
+        root = self.results("power-default.rules", self.REFUSED, "root", ["root"], self.RDP)
+        self.assertEqual(set(root.values()), {None})
+        foreign = self.evaluate("power-default.rules", [dict(self.RDP, action="org.freedesktop.systemd1.manage-units",
+                                                             user="alice", groups=["alice"])])
+        self.assertEqual(foreign, [None])
+
+    def test_local_console_and_group_names(self):
+        rules = "power-groups-console.rules"
+        console = self.results(rules, self.REFUSED, "alice", ["alice"], self.CONSOLE)
+        self.assertEqual(set(console.values()), {None})            # upstream defaults
+        inactive = self.results(rules, ["power-off"], "alice", ["alice"], {"local": True, "active": False})
+        self.assertEqual(inactive, {"power-off": "no"})
+        rdp = self.results(rules, self.REFUSED, "alice", ["alice"], self.RDP)
+        self.assertEqual(set(rdp.values()), {"no"})
+        ad_admin = self.results(rules, ["reboot-multiple-sessions"], "carol@example.com",
+                                ["rdp admins@example.com"], self.RDP)
+        self.assertEqual(ad_admin, {"reboot-multiple-sessions": "auth_admin_keep"})
+
+    def test_root_only(self):
+        admin = self.results("power-root-only.rules", self.REFUSED, "bob", ["bob", "sudo"], self.RDP)
+        self.assertEqual(set(admin.values()), {"no"})
+
+    def test_smoke_script(self):
+        """tests/smoke/check-power-actions.sh (user mode) with stub busctl/pkcheck/loginctl."""
+        script = REPO / "tests/smoke/check-power-actions.sh"
+        text = script.read_text()
+        for a in self.REFUSED:  # its action list follows the role's
+            self.assertRegex(text, rf"(?m)(^|[ \"]){re.escape(a)}( |$|\")")
+        if os.geteuid() == 0:
+            self.skipTest("user mode only (as root the script needs a host with logind)")
+        with tempfile.TemporaryDirectory() as stubs:
+            for name, body in (("busctl", 'echo "s \\"$STUB_CAN\\""'), ("pkcheck", 'exit "$STUB_PK"'),
+                               ("loginctl", "exit 0")):
+                p = Path(stubs) / name
+                p.write_text(f"#!/bin/sh\n{body}\n")
+                p.chmod(0o755)
+            for can, pk, rc in (("no", 1, 0), ("na", 1, 0), ("challenge", 2, 1), ("yes", 0, 1), ("no", 127, 1)):
+                with self.subTest(can=can, pkcheck=pk):
+                    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", STUB_CAN=can, STUB_PK=str(pk),
+                               FASTRDP_POWER_RULE=str(OUT / "power-root-only.rules"))
+                    res = subprocess.run([str(script)], env=env, capture_output=True, text=True)
+                    self.assertEqual(res.returncode, rc, res.stdout + res.stderr)
+                    self.assertIn("ok   power rule present", res.stdout)
+
+    def test_tasks_and_checks(self):
+        tasks = (REPO / "ansible/roles/base/tasks/main.yml").read_text()
+        self.assertIn("dest: /etc/polkit-1/rules.d/40-fastrdp-power.rules", tasks)
+        self.assertIn("when: not fastrdp_block_power_actions | bool", tasks)
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        checks = CommonChecks()
+        for good in ({}, {"fastrdp_power_admin_groups": []},
+                     {"fastrdp_power_admin_groups": ["sudo", "rdp admins@example.com", "wheel"]},
+                     {"fastrdp_block_power_actions": False, "fastrdp_power_allow_local_console": True}):
+            with self.subTest(good=good):
+                self.assertEqual(checks.run_checks(**ok, **good), 0)
+        for bad in ({"fastrdp_power_admin_groups": "sudo"}, {"fastrdp_power_admin_groups": ['sudo"]; x = ["']},
+                    {"fastrdp_power_admin_groups": ["sudo\n"]}, {"fastrdp_power_admin_groups": ["-sudo"]},
+                    {"fastrdp_block_power_actions": "maybe"}, {"fastrdp_power_allow_local_console": "yes please"}):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(checks.run_checks(**ok, **bad), 0)
 
 
 if __name__ == "__main__":

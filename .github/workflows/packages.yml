@@ -44,7 +44,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git make gcc libc6-dev pkgconf libpam0g-dev libpam-modules \
             libcjson-dev python3 python3-venv python3-cryptography \
-            dpkg-dev curl patch xz-utils reprepro gnupg gpgv
+            dpkg-dev curl patch xz-utils reprepro gnupg gpgv nodejs
       - uses: actions/checkout@v5
       - name: ansible-lint, shellcheck (same versions as the documented dev setup)
         run: |

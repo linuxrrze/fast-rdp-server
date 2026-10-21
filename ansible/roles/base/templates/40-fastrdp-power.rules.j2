@@ -1,0 +1,33 @@
+// {{ ansible_managed }}
+// fastrdp: users in RDP sessions must not power off, reboot, suspend, hibernate or halt
+// the shared host (fastrdp_block_power_actions; docs/desktop-matrix.md#host-safety-power-actions).
+// logind's power actions are refused (polkit NO: CanPowerOff and friends answer "no",
+// desktops hide or grey out the entries) except for:
+//   - root: polkit authorizes uid 0 before any rule (sudo systemctl poweroff works);
+//   - members of fastrdp_power_admin_groups: they authenticate as an admin, as before;
+//   - with fastrdp_power_allow_local_console: active sessions on a seat (the console).
+// Log out, lock, inhibitors and every other action keep their defaults.
+// ES5 only: polkitd evaluates rules with duktape.
+polkit.addRule(function (action, subject) {
+    var actions = [
+{% for a in fastrdp_power_polkit_actions %}
+        {{ a | to_json }}{{ ',' if not loop.last else '' }}
+{% endfor %}
+    ];
+    var adminGroups = {{ fastrdp_power_admin_groups | map('string') | list | to_json }};
+    var allowLocalConsole = {{ fastrdp_power_allow_local_console | bool | to_json }};
+    var i;
+
+    if (actions.indexOf(action.id) < 0 || subject.user === "root") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (allowLocalConsole && subject.local && subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    for (i = 0; i < adminGroups.length; i++) {
+        if (subject.isInGroup(adminGroups[i])) {
+            return polkit.Result.AUTH_ADMIN_KEEP;
+        }
+    }
+    return polkit.Result.NO;
+});

@@ -120,6 +120,23 @@
     state: started
     enabled: true
 
+# polkitd reloads rules.d by itself (inotify); before the distribution's rules (49/50-*,
+# com.ubuntu.desktop.rules): the first rule with an answer wins.
+- name: No power off, reboot, suspend or hibernate from RDP sessions (polkit)
+  ansible.builtin.template:
+    src: 40-fastrdp-power.rules.j2
+    dest: /etc/polkit-1/rules.d/40-fastrdp-power.rules
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_block_power_actions | bool
+
+- name: No power rule when disabled (upstream polkit defaults)
+  ansible.builtin.file:
+    path: /etc/polkit-1/rules.d/40-fastrdp-power.rules
+    state: absent
+  when: not fastrdp_block_power_actions | bool
+
 - name: Optional /proc hidepid
   ansible.builtin.lineinfile:
     path: /etc/fstab
