@@ -207,8 +207,9 @@ split in the wrong place.
   the account name (`marcel.ritter@corp.example.com` → `mritter`), or `DOMAIN\user`;
   the ticket names the account (`mritter@CORP.EXAMPLE.COM`). The broker maps the
   principal to a local account in this order:
-  1. plain principal `name@REALM`: NSS `name`, then `name@realm` (with
-     `strip_realm = false` the other way round);
+  1. plain principal `name@REALM`: NSS `name`, then `name@realm` and
+     `name@<domain>` (`[auth] domains`); with `strip_realm = false` (fully qualified
+     names, [below](#short-or-fully-qualified-account-names)) the qualified names first;
   2. enterprise principal (`marcel.ritter\@corp.example.com@REALM`, if the KDC did not
      canonicalise the name): NSS lookup of the UPN, which SSSD resolves by its
      `userPrincipalName`. The UPN's local part alone is never used, since it may be
@@ -219,7 +220,9 @@ split in the wrong place.
   No match, root, or a multi-component principal (`alice/admin`): refused. The typed
   user name is only logged; if it names a *different* existing account, the delegated
   password is dropped (no TGT for the session) instead of being used for the
-  principal's account. TLS logins still use the typed name, as there is no principal.
+  principal's account. TLS and web logins use the typed name (`alice`, `DOMAIN\alice`,
+  `alice@example.com`), as there is no principal: the short name and the short name
+  qualified with the realm/domain, in the same order as 1.
 - Home directories on NFS with `sec=krb5`/`krb5i`/`krb5p` need a TGT (or gssproxy
   impersonation) before the session starts: see
   [nfs-kerberos-homes.md](nfs-kerberos-homes.md) for which logins work.
@@ -228,6 +231,42 @@ split in the wrong place.
   sessions. sssd-kcm also renews TGTs that users get with `kinit` in a session
   (`[kcm] tgt_renewal`, `fastrdp_kcm_tgt_renewal`); `/etc/krb5.conf.d/fastrdp` asks for
   renewable tickets (`renew_lifetime`).
+
+### Short or fully qualified account names
+
+`fastrdp_sssd_fully_qualified_names` (default `false`) sets SSSD's
+`use_fully_qualified_names` (AD: `sssd.conf`; FreeIPA: `conf.d/50-fastrdp.conf`, which
+overrides the enrolment's `sssd.conf`; provider `none`: your `sssd.conf` must say the
+same, the identity role checks it) and the broker's `[auth] strip_realm` (the opposite)
+from one variable.
+
+| | short names (`false`) | fully qualified names (`true`) |
+|---|---|---|
+| Account of `alice@EXAMPLE.COM` | `alice` | `alice@example.com` |
+| `ls -l`, `ps`, `who`, sudoers, ACLs, `fastrdpctl logout`/`clear-grace` | `alice` | `alice@example.com` |
+| Local account `alice` in `/etc/passwd` | **shadows** the directory user: NSS asks `files` before `sss`, so the principal `alice@EXAMPLE.COM` logs in as the *local* `alice` | a different account; the directory user is always `alice@example.com` |
+| Groups (`id`, `getent group`) | `rdp-users` | `rdp-users@example.com`; group names in `fastrdp_allow_groups`, `fastrdp_mfa_exempt_groups`, `fastrdp_desktop_groups`, `fastrdp_group_desktops` may stay short (they also match `<name>@<domain>`) or be written qualified to exclude a local group of the same name |
+| Several domains / trusts | names may collide between domains | unique |
+| Home directory | `/home/alice` | `/home/alice` (`fallback_homedir = /home/%u`, `%u` is the short name; AD `unixHomeDirectory` and FreeIPA `homeDirectory` win when set) |
+| privacyIDEA user | `alice` | `alice` (the broker strips our own domain) |
+
+Short names are what users and admins know, and what scripts and tools that build
+paths or mail addresses from `$USER` expect. Fully qualified names cost that
+convenience but make the account of a directory user unambiguous: no local account,
+created by a package, an admin or an earlier setup, can take its place, and users of
+several domains cannot collide. Choose it for new hosts with local accounts besides the
+directory, or when in doubt about them; the user types the same as before (`alice`,
+`DOMAIN\alice`, `alice@example.com`, or Kerberos SSO).
+
+Users without a qualified directory account still log in with their short name
+(local accounts, last candidate), also with `strip_realm = false`; if SSSD cannot
+answer at all (not running), a local account of the same short name would match then.
+
+Switching on a running host renames every directory user: their running sessions are
+recorded under the old name (`fastrdpctl status`), so log everybody out first
+(`fastrdpctl logout <user>`) or reboot after the run. sudoers, file ACLs and scripts
+that name directory users or groups need the new names. Home directories stay.
+`fastrdpctl logout` and `clear-grace` take the name as the broker logs it.
 
 ## Account policy
 

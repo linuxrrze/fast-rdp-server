@@ -19,6 +19,13 @@ fastrdp_join_user: Administrator     # account used for the domain join
 fastrdp_join_password: "{{ vault_fastrdp_join_password | default('') }}"    # secret: vault.yml
 # Who may log in: members of these groups; [] = every user who can authenticate.
 fastrdp_allow_groups: []
+# Directory accounts as "alice@<fastrdp_domain>" (SSSD use_fully_qualified_names; broker
+# [auth] strip_realm = false) instead of "alice": a local account with the same name
+# can then never stand in for a directory user. Users, sudoers, ACLs and tools see the
+# long names; homes stay /home/<short name>. docs/auth-matrix.md#short-or-fully-qualified-account-names
+# AD: sssd.conf, FreeIPA: /etc/sssd/conf.d/50-fastrdp.conf; provider "none": your
+# sssd.conf must say the same (the identity role checks it).
+fastrdp_sssd_fully_qualified_names: false
 # Kerberos TGT for GNOME/Plasma sessions (broker [broker] session_tgt; xrdp sessions get
 # one through their own PAM stack): auto = when the login carries the password (NLA
 # with delegated password, TLS), failures only logged; required = also refuse logins

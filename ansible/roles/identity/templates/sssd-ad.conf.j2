@@ -16,7 +16,10 @@ cache_credentials = true
 krb5_store_password_if_offline = true
 default_shell = /bin/bash
 ldap_id_mapping = true
-use_fully_qualified_names = false
+# fastrdp_sssd_fully_qualified_names: "alice@{{ fastrdp_domain }}" instead of "alice".
+use_fully_qualified_names = {{ fastrdp_sssd_fully_qualified_names | bool | lower }}
+# %u is the short name in both modes: switching keeps the home directories. Only for
+# users without unixHomeDirectory in AD (that one wins).
 fallback_homedir = /home/%u
 # Terminal-server sessions run for days: keep session TGTs renewed.
 krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}

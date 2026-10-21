@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastrdp_broker import config
+from fastrdp_broker import config, identity
 from fastrdp_broker.backends import Target
 from fastrdp_broker.identity import LocalUser
 
@@ -67,6 +67,8 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.broker.backends["xrdp"].ensure = self.ensure
         self.patches = [
             mock.patch("fastrdp_broker.identity.resolve", side_effect=lambda n, r, a: fake_user(n)),
+            mock.patch("fastrdp_broker.identity.resolve_login",
+                       side_effect=lambda n, a: fake_user(identity.normalize_rdp_user(n))),
             mock.patch("fastrdp_broker.pamauth.authenticate"),
             mock.patch("fastrdp_broker.pamauth.account_ok"),
         ]

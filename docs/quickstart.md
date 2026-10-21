@@ -180,7 +180,7 @@ records), then start with step 1. Use FreeIPA instead with `ipa` as the director
 ## Path B: production checklist
 
 Run `make setup` and answer **production**. It then also asks for allowed groups,
-the AD GPO mode, MFA exempt groups, TLS logins and the APT key checksum, and
+short or fully qualified account names, the AD GPO mode, MFA exempt groups, TLS logins and the APT key checksum, and
 defaults to a provided certificate. Work through the list before `make deploy`;
 `make preflight` checks the items marked (P).
 
@@ -193,6 +193,11 @@ defaults to a provided certificate. Work through the list before `make deploy`;
       (not Domain Admin); FreeIPA: an enrolment user. Used on the first run only;
       remove it from the vault afterwards if you like.
 - [ ] `allow_groups`: a group such as `rdp-users`; empty allows every directory user.
+- [ ] Short (`alice`) or fully qualified (`alice@example.com`) account names
+      (`fastrdp_sssd_fully_qualified_names`, asked by setup): qualified names keep local
+      accounts from standing in for directory users, short ones are what tools and
+      people expect ([auth-matrix.md](auth-matrix.md#short-or-fully-qualified-account-names)).
+      Decide before users log in; switching renames every directory user.
 - [ ] AD: grant "Allow log on through Remote Desktop Services" to that group by GPO.
       The role starts in `permissive` mode (denials only logged in the sssd log); check,
       then re-run setup with `enforcing`.

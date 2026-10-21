@@ -1,0 +1,22 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Runs the identity role's read-only SSSD name check (tasks/sssd_names.yml, provider
+# "none") on a directory other than /etc/sssd and writes what it found to OUT.
+#   ansible-playbook -i localhost, tests/ansible/sssd_names.yml -e sssd_dir=DIR -e out=FILE
+- name: SSSD names of an admin-provided configuration (identity role)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    fastrdp_sssd_dir: "{{ sssd_dir }}"
+  tasks:
+    - name: Name check of the identity role
+      ansible.builtin.include_tasks: ../../ansible/roles/identity/tasks/sssd_names.yml
+
+    - name: Result
+      ansible.builtin.copy:
+        dest: "{{ out }}"
+        content: "{{ {'found': fastrdp_sssd_conf_found | bool, 'fqn': fastrdp_sssd_fqn_found | bool} | to_json }}"
+        mode: "0644"

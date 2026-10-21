@@ -71,7 +71,9 @@ async def run_as_user(user: LocalUser, *argv: str, input: str | None = None, tim
     await ensure_user_manager(user)
     return await run(
         "systemd-run",
-        f"--machine={user.name}@.host",
+        # The uid, not the name: systemd splits "USER@HOST" at the first '@', so a fully
+        # qualified SSSD name ('alice@example.com') would not work (systemd >= 252).
+        f"--machine={user.uid}@.host",
         "--user",
         "--wait",
         "--pipe",

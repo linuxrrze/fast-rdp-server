@@ -17,3 +17,21 @@
   ansible.builtin.assert:
     that: fastrdp_keytab.stat.exists
     fail_msg: Provide fastrdp_termsrv_keytab_src (TERMSRV/{{ fastrdp_fqdn }}) and an sssd.conf for provider "none".
+
+# The broker's name order ([auth] strip_realm) follows fastrdp_sssd_fully_qualified_names;
+# if your sssd.conf says otherwise, local accounts may shadow directory users.
+- name: Names in your SSSD configuration (read-only)
+  ansible.builtin.include_tasks: sssd_names.yml
+  vars:
+    fastrdp_sssd_dir: /etc/sssd
+
+- name: SSSD gives the names fastrdp_sssd_fully_qualified_names says
+  ansible.builtin.assert:
+    that: fastrdp_sssd_fqn_found | bool == fastrdp_sssd_fully_qualified_names | bool
+    fail_msg: >-
+      fastrdp_sssd_fully_qualified_names is {{ fastrdp_sssd_fully_qualified_names | bool | lower }}, but
+      /etc/sssd/sssd.conf (with conf.d) gives {{ 'fully qualified (alice@domain)' if fastrdp_sssd_fqn_found | bool
+      else 'short (alice)' }} names: set use_fully_qualified_names = {{ fastrdp_sssd_fully_qualified_names | bool | lower }}
+      in its [domain/...] section, or change the variable (docs/auth-matrix.md#short-or-fully-qualified-account-names).
+    quiet: true
+  when: fastrdp_sssd_conf_found | bool

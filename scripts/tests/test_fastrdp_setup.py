@@ -236,6 +236,17 @@ class TestGeneratedInventory(SetupTestCase):
         self.assertIn("make preflight INVENTORY=", lab_out)
         self.assertNotIn("ANSIBLE_ARGS", lab_out)
 
+    @unittest.skipIf(yaml is None, "PyYAML not installed")
+    def test_fully_qualified_names(self):
+        def main(answers, *extra, **kw):
+            inv, _ = self.generate(answers, *extra, **kw)
+            return yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        env = {"FASTRDP_JOIN_PASSWORD": "J0in-Secret!x"}
+        self.assertNotIn("fastrdp_sssd_fully_qualified_names", main(self.production(), env=env))
+        self.assertIs(main(self.production(sssd_fully_qualified_names="y"), "--force", env=env)
+                      ["fastrdp_sssd_fully_qualified_names"], True)
+        self.assertNotIn("fastrdp_sssd_fully_qualified_names", main(LAB))
+
     def test_only_known_variables(self):
         corpus = role_corpus()
         for answers, env in ((LAB, {}), (self.production(), {"FASTRDP_JOIN_PASSWORD": "x"}),

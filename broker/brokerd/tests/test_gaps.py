@@ -687,6 +687,8 @@ class _BrokerHarness:
                       "eve": user("eve", ("other",))}
         self.patches = [
             mock.patch("fastrdp_broker.identity.resolve", side_effect=self.resolve),
+            mock.patch("fastrdp_broker.identity.resolve_login",
+                       side_effect=lambda n, a: self.resolve(identity.normalize_rdp_user(n), None, a)),
             mock.patch("fastrdp_broker.pamauth.authenticate"),
             mock.patch("fastrdp_broker.pamauth.account_ok"),
         ]

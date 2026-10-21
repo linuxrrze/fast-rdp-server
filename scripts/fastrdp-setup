@@ -76,6 +76,8 @@ VARIABLES = [
     ("identity", "fastrdp_join_password", "{{ vault_fastrdp_join_password | default('') }}", "from vault.yml"),
     ("identity", "fastrdp_termsrv_keytab_src", "", "keytab with TERMSRV/<fqdn> keys, on this machine"),
     ("identity", "fastrdp_allow_groups", [], "groups allowed to log in ([] = every directory user)"),
+    ("identity", "fastrdp_sssd_fully_qualified_names", False,
+     "directory users as user@domain, never shadowed by local accounts (docs/auth-matrix.md)"),
     ("identity", "fastrdp_ad_gpo_access_control", "permissive",
      "AD GPO logon right 'Allow log on through Remote Desktop Services'"),
     ("installation", "fastrdp_install_method", "build",
@@ -418,6 +420,12 @@ QUESTIONS = [
       help="Keytab with TERMSRV/<fqdn>@REALM keys, installed as /etc/fastrdp/termsrv.keytab."),
     Q("allow_groups", "Groups allowed to log in (comma-separated, empty = every directory user)", v_groups,
       lambda a: ["rdp-users"] if _is_prod(a) else []),
+    Q("sssd_fully_qualified_names", "Directory users as user@domain (fully qualified names)? (y/n)",
+      _bool, False, ask=_is_prod,
+      help="n: users are 'alice' (familiar; a local account 'alice' would take the place of\n"
+           "the directory user). y: users are 'alice@<domain>' everywhere (ls, sudoers, ACLs),\n"
+           "and no local account can stand in for them. Home directories stay /home/alice.\n"
+           "Provider none: your sssd.conf must set use_fully_qualified_names to match."),
     Q("ad_gpo_access_control", "AD GPO logon-right check: permissive / enforcing / disabled",
       v_choice("permissive", "enforcing", "disabled"), "permissive",
       when=lambda a: a["identity_provider"] == "ad", ask=_is_prod,
@@ -645,6 +653,7 @@ def variables_for(a):
         "fastrdp_domain": a["domain"],
         "fastrdp_identity_provider": a["identity_provider"],
         "fastrdp_allow_groups": a["allow_groups"],
+        "fastrdp_sssd_fully_qualified_names": bool(a.get("sssd_fully_qualified_names", False)),
         "fastrdp_listen_port": 3389,
         "fastrdp_front_cert_src": a.get("tls_cert", "") if a["tls"] == "provided" else "",
         "fastrdp_front_key_src": a.get("tls_key", "") if a["tls"] == "provided" else "",

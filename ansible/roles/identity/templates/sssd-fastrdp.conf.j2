@@ -15,7 +15,10 @@ krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
 {% if fastrdp_identity_provider == 'ipa' %}
 
 # ipa-client-install writes sssd.conf without these (AD: sssd-ad.conf.j2 has them).
+# Snippets in conf.d override sssd.conf (sssd.conf(5)).
 [domain/{{ fastrdp_domain }}]
 krb5_renewable_lifetime = {{ fastrdp_krb5_renewable_lifetime }}
 krb5_renew_interval = {{ fastrdp_krb5_renew_interval }}
+# fastrdp_sssd_fully_qualified_names: "alice@{{ fastrdp_domain }}" instead of "alice"
+use_fully_qualified_names = {{ fastrdp_sssd_fully_qualified_names | bool | lower }}
 {% endif %}

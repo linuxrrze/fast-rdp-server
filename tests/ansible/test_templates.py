@@ -407,6 +407,9 @@ class CommonChecks(unittest.TestCase):
             "reconnect grace over an hour": dict(ok, fastrdp_mfa_reconnect_grace=3601),
             "reconnect grace in minutes": dict(ok, fastrdp_mfa_reconnect_grace="10m"),
             "reconnect grace same address not a bool": dict(ok, fastrdp_mfa_reconnect_grace_same_address="maybe"),
+            "fully qualified names not a bool": dict(ok, fastrdp_sssd_fully_qualified_names="maybe"),
+            "fully qualified names as a domain": dict(ok, fastrdp_sssd_fully_qualified_names="example.com"),
+            "domain not a DNS name": dict(ok, fastrdp_domain="exa_mple.com"),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -434,6 +437,12 @@ class CommonChecks(unittest.TestCase):
             with self.subTest(grace):
                 self.assertEqual(self.run_checks(**ok, fastrdp_mfa_reconnect_grace=grace,
                                                  fastrdp_mfa_reconnect_grace_same_address=False), 0)
+
+    def test_fully_qualified_names_pass(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for value in (True, False, "true", "false"):
+            with self.subTest(value):
+                self.assertEqual(self.run_checks(**ok, fastrdp_sssd_fully_qualified_names=value), 0)
 
     def test_aliases_pass(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",
@@ -545,7 +554,8 @@ class TicketRenewal(unittest.TestCase):
         cp = ini("sssd-fastrdp-ipa.conf")
         self.assertEqual(cp.sections(), ["kcm", "domain/lab.example.com"])
         self.assertEqual(dict(cp["domain/lab.example.com"]),
-                         {"krb5_renewable_lifetime": "7d", "krb5_renew_interval": "1h"})
+                         {"krb5_renewable_lifetime": "7d", "krb5_renew_interval": "1h",
+                          "use_fully_qualified_names": "false"})
         # AD and "none": no domain section (AD has the options in its own sssd.conf)
         self.assertEqual(ini("sssd-fastrdp-ad.conf").sections(), ["kcm"])
         self.assertEqual(ini("sssd-fastrdp-none.conf").sections(), ["kcm"])
@@ -561,6 +571,81 @@ class TicketRenewal(unittest.TestCase):
         k = ini("krb5-fastrdp.conf")["libdefaults"]
         self.assertEqual(k["renew_lifetime"], "7d")
         self.assertEqual(k["default_ccache_name"], "KCM:")
+
+
+class FullyQualifiedNames(unittest.TestCase):
+    """fastrdp_sssd_fully_qualified_names: SSSD names (AD sssd.conf, FreeIPA snippet,
+    checked for provider "none") and the broker's name order come from one variable."""
+
+    def test_ad(self):
+        for name, fqn in (("sssd-ad.conf", "false"), ("sssd-ad-fqn.conf", "true")):
+            with self.subTest(name):
+                dom = ini(name)["domain/lab.example.com"]
+                self.assertEqual(dom["use_fully_qualified_names"], fqn)
+                # %u: the short name in both modes, the home directories stay
+                self.assertEqual(dom["fallback_homedir"], "/home/%u")
+
+    def test_ipa_snippet_overrides_the_enrolment(self):
+        # conf.d snippets override sssd.conf, which ipa-client-install writes (sssd.conf(5))
+        self.assertEqual(ini("sssd-fastrdp-ipa.conf")["domain/lab.example.com"]["use_fully_qualified_names"],
+                         "false")
+        cp = ini("sssd-fastrdp-ipa-fqn.conf")
+        self.assertEqual(cp["domain/lab.example.com"]["use_fully_qualified_names"], "true")
+        self.assertEqual(cp["domain/lab.example.com"]["krb5_renew_interval"], "1h")
+        # provider "none": the admin's sssd.conf decides (checked, never written)
+        self.assertEqual(ini("sssd-fastrdp-none-fqn.conf").sections(), ["kcm"])
+
+    def test_broker_name_order(self):
+        for name, realm, domain in (("broker-lab.toml", "LAB.EXAMPLE.COM", "lab.example.com"),
+                                    ("broker-minimal.toml", "EXAMPLE.COM", "example.com")):
+            with self.subTest(name):
+                auth = broker_config.parse(toml(name)).auth
+                self.assertEqual((auth.strip_realm, auth.realms, auth.domains), (True, [realm], [domain]))
+        # FreeIPA whose domain is not the realm: the broker also qualifies with the domain
+        auth = broker_config.parse(toml("broker-fqn.toml")).auth
+        self.assertEqual((auth.strip_realm, auth.realms, auth.domains),
+                         (False, ["IPA.LAB.EXAMPLE.ORG"], ["lab.example.com"]))
+
+    def found(self, files, sssd_conf=True):
+        """Run the identity role's check (tasks/sssd_names.yml) on files {name: text}."""
+        with tempfile.TemporaryDirectory(prefix="fastrdp-sssd.") as d:
+            os.mkdir(f"{d}/conf.d")
+            if sssd_conf:
+                Path(d, "sssd.conf").write_text(files.pop("sssd.conf", "[sssd]\nservices = nss, pam\n"))
+            for name, text in files.items():
+                Path(d, "conf.d", name).write_text(text)
+            env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
+                       ANSIBLE_PYTHON_INTERPRETER=sys.executable)
+            env.pop("ANSIBLE_CONFIG", None)
+            res = subprocess.run([shutil.which("ansible-playbook"), "-i", "localhost,", str(HERE / "sssd_names.yml"),
+                                  "-e", f"sssd_dir={d}", "-e", f"out={d}/out.json"],
+                                 env=env, capture_output=True, text=True, cwd=HERE)
+            self.assertEqual(res.returncode, 0, res.stdout[-3000:])
+            r = json.loads(Path(d, "out.json").read_text())
+        return r["fqn"] if r["found"] else None
+
+    def test_admin_sssd_conf(self):
+        dom = "[domain/example.com]\nid_provider = ldap\n"
+        cases = {
+            "nothing set: short names": ({}, False),
+            "set in sssd.conf": ({"sssd.conf": dom + "use_fully_qualified_names = True\n"}, True),
+            "commented out": ({"sssd.conf": dom + "# use_fully_qualified_names = true\n"
+                                               "; use_fully_qualified_names = true\n"}, False),
+            "snippet overrides sssd.conf": ({"sssd.conf": dom + "use_fully_qualified_names = true\n",
+                                             "90-local.conf": dom + "use_fully_qualified_names=false\n"}, False),
+            "later snippet wins": ({"10-a.conf": dom + "use_fully_qualified_names = false\n",
+                                    "20-b.conf": dom + "  use_fully_qualified_names = TRUE\n"}, True),
+            "not a snippet": ({"90-off.conf.disabled": dom + "use_fully_qualified_names = true\n"}, False),
+            "default_domain_suffix qualifies names": (
+                {"sssd.conf": "[sssd]\ndefault_domain_suffix = example.com\n" + dom}, True),
+            "explicit value beats default_domain_suffix": (
+                {"sssd.conf": "[sssd]\ndefault_domain_suffix = example.com\n" + dom
+                              + "use_fully_qualified_names = false\n"}, False),
+        }
+        for name, (files, expected) in cases.items():
+            with self.subTest(name):
+                self.assertIs(self.found(dict(files)), expected)
+        self.assertIsNone(self.found({}, sssd_conf=False))
 
 
 def krb5_profile(conf, snippet_dir):

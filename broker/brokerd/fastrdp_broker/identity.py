@@ -61,32 +61,96 @@ def normalize_rdp_user(user: str) -> str:
     return user
 
 
-def resolve(name: str, realm: str | None, auth: AuthSection) -> LocalUser:
-    if not SAFE_NAME.match(name):
-        raise IdentityError("invalid user name")
-    candidates = [name] if auth.strip_realm else []
-    if realm:
-        candidates.append(f"{name}@{realm.lower()}")
-    if not auth.strip_realm:
-        candidates.append(name)
+def qualifiers(auth: AuthSection, realm: str | None = None) -> list[str]:
+    """Domain parts of qualified account names ('alice@example.com'), lower case: the
+    given realm, the accepted realms, then [auth] domains (SSSD domain names, which may
+    differ from the realm on FreeIPA). SSSD with use_fully_qualified_names = true knows
+    directory users and groups only as 'name@<sssd domain>'."""
+    quals = [realm] if realm else []
+    quals += [*auth.realms, *auth.domains]
+    return list(dict.fromkeys(q.lower() for q in quals if q))
+
+
+def short_name(name: str, auth: AuthSection) -> str:
+    """'alice@example.com' -> 'alice' if example.com is one of ours (qualifiers()),
+    else unchanged: the name other systems (privacyIDEA) know a directory user by,
+    whether SSSD uses fully qualified names or not."""
+    if "@" in name:
+        local, dom = name.rsplit("@", 1)
+        if local and dom.lower() in qualifiers(auth):
+            return local
+    return name
+
+
+def _candidates(name: str, quals: list[str], auth: AuthSection) -> list[str]:
+    qualified = [f"{name}@{q}" for q in quals]
+    # strip_realm = true: the short name first (SSSD with short names; a local account
+    # of the same name wins). false (SSSD with fully qualified names): the directory's
+    # qualified name first, so a local account with the same short name never shadows it.
+    return [name, *qualified] if auth.strip_realm else [*qualified, name]
+
+
+def _lookup(candidates: list[str], what: str):
     for cand in candidates:
         try:
-            pw = pwd.getpwnam(cand)
-            break
+            return pwd.getpwnam(cand)
         except KeyError:
             continue
-    else:
-        raise UnknownUser(f"unknown user {name!r}")
+    raise UnknownUser(f"unknown user {what!r}")
+
+
+def _local_user(pw, auth: AuthSection, realm: str | None = None) -> LocalUser:
     if pw.pw_uid == 0:
         raise IdentityError("root logins are not allowed")
+    quals = qualifiers(auth, realm)
     # getgrouplist() asks NSS (incl. SSSD) for this user's groups without enumerating all groups.
     groups: set[str] = set()
     for gid in os.getgrouplist(pw.pw_name, pw.pw_gid):
         try:
-            groups.add(grp.getgrgid(gid).gr_name)
+            name = grp.getgrgid(gid).gr_name
         except KeyError:
             continue
+        groups.add(name)
+        # SSSD with fully qualified names qualifies groups too ('rdp-users@example.com'):
+        # group names in broker.toml without a domain match them, as with short names.
+        if "@" in name:
+            local, dom = name.rsplit("@", 1)
+            if local and dom.lower() in quals:
+                groups.add(local)
     return LocalUser(pw.pw_name, pw.pw_uid, pw.pw_gid, pw.pw_dir, frozenset(groups))
+
+
+def resolve(name: str, realm: str | None, auth: AuthSection) -> LocalUser:
+    """The account of `name` from realm `realm` (None: `name` exactly as given).
+
+    Candidates 'name' and 'name@<realm>' (for an accepted realm also 'name@<domain>'
+    for each [auth] domains), in the order [auth] strip_realm gives.
+    """
+    if not SAFE_NAME.match(name):
+        raise IdentityError("invalid user name")
+    quals = [realm] if realm else []
+    if realm and realm.upper() in auth.realms:
+        quals += auth.domains  # FreeIPA: the SSSD domain name may differ from the realm
+    quals = list(dict.fromkeys(q.lower() for q in quals))
+    return _local_user(_lookup(_candidates(name, quals, auth), name), auth, realm)
+
+
+def resolve_login(rdp_user: str, auth: AuthSection) -> LocalUser:
+    """The account of a user name without Kerberos principal: typed at a TLS login,
+    or from the web gateway. 'alice', 'DOMAIN\\alice' or 'alice@example.com'.
+
+    Candidates: the short name and the short name qualified with our realms and
+    [auth] domains (only the typed one if it is one of them), in the order
+    [auth] strip_realm gives. With short SSSD names this is the short name, as before.
+    """
+    typed = rdp_user.split("\\", 1)[1] if "\\" in rdp_user else rdp_user
+    name = normalize_rdp_user(rdp_user)
+    if not SAFE_NAME.match(name):
+        raise IdentityError("invalid user name")
+    quals = qualifiers(auth)
+    if "@" in typed and typed.rsplit("@", 1)[1].lower() in quals:
+        quals = [typed.rsplit("@", 1)[1].lower()]
+    return _local_user(_lookup(_candidates(name, quals, auth), name), auth)
 
 
 def unescape_principal_name(name: str) -> str:
@@ -142,7 +206,8 @@ def resolve_principal(name: str, realm: str, auth: AuthSection) -> LocalUser:
 
     The principal is the identity; the CredSSP user name is not used. Order:
     1. a plain name (AD puts the sAMAccountName in tickets, FreeIPA the uid) resolves
-       like before: 'name' / 'name@realm' (resolve(), honours strip_realm);
+       like before: 'name' / 'name@realm' (resolve(), honours strip_realm; with
+       [auth] domains also 'name@<domain>');
     2. an enterprise name ('marcel.ritter\\@corp.example.com', UPN in an NT-ENTERPRISE
        principal) resolves by its UPN: SSSD answers getpwnam('<upn>') with a UPN
        search. Its local part is never used on its own: it may be another person's
@@ -163,10 +228,16 @@ def resolve_principal(name: str, realm: str, auth: AuthSection) -> LocalUser:
     raise IdentityError(f"principal {name}@{realm} maps to no local account")
 
 
-def names_other_account(rdp_user: str, user: LocalUser) -> bool:
+def names_other_account(rdp_user: str, user: LocalUser, auth: AuthSection | None = None) -> bool:
     """True if the CredSSP user name ('alice', 'DOM\\alice', a UPN) is clearly a
-    different local account than `user`. Unknown names are not a conflict."""
-    candidates = [rdp_user, normalize_rdp_user(rdp_user)]
+    different local account than `user`. Unknown names are not a conflict. With
+    `auth`, the short name qualified with our realms/domains counts as well: with
+    fully qualified SSSD names, 'alice' may be a local account while the user is
+    'alice@example.com'."""
+    short = normalize_rdp_user(rdp_user)
+    candidates = [rdp_user, short]
+    if auth is not None:
+        candidates += [f"{short}@{q}" for q in qualifiers(auth)]
     other = False
     for cand in dict.fromkeys(candidates):
         if not SAFE_NAME.match(cand):

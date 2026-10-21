@@ -7,7 +7,10 @@ session_tgt = "{{ fastrdp_session_tgt }}"
 
 [auth]
 realms = ["{{ fastrdp_realm | upper }}"]
-strip_realm = true
+# false = SSSD names are "alice@{{ fastrdp_domain | lower }}" (fastrdp_sssd_fully_qualified_names):
+# that name first, so a local account "alice" never shadows the directory user.
+strip_realm = {{ (not (fastrdp_sssd_fully_qualified_names | bool)) | lower }}
+domains = ["{{ fastrdp_domain | lower }}"]
 pam_service = "fastrdp"
 allow_groups = {{ fastrdp_allow_groups | to_json }}
 allow_tls_password_login = {{ fastrdp_allow_tls_logins | bool | lower }}

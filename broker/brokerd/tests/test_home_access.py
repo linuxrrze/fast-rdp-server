@@ -112,6 +112,7 @@ class BrokerHomeTests(unittest.IsolatedAsyncioTestCase):
         self.release = threading.Event()
         self.patches = [
             mock.patch("fastrdp_broker.identity.resolve", return_value=self.user),
+            mock.patch("fastrdp_broker.identity.resolve_login", return_value=self.user),
             mock.patch("fastrdp_broker.pamauth.account_ok"),
         ]
         for p in self.patches:

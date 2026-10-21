@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -45,7 +46,12 @@ class BrokerSection:
 @dataclass
 class AuthSection:
     realms: list[str] = field(default_factory=list)
+    # true: SSSD has short names (use_fully_qualified_names = false), 'alice' is tried
+    # before 'alice@example.com'; false: fully qualified names, the other way round.
     strip_realm: bool = True
+    # SSSD domain names qualifying account and group names besides the realms (lower
+    # case), e.g. a FreeIPA domain that differs from its realm.
+    domains: list[str] = field(default_factory=list)
     pam_service: str = "fastrdp"
     allow_groups: list[str] = field(default_factory=list)
     allow_tls_password_login: bool = True
@@ -145,6 +151,7 @@ class Config:
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
 VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push")
 VALID_SESSION_TGT = ("auto", "off", "required")
+DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
 MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
 
 
@@ -190,7 +197,14 @@ def parse(raw: dict) -> Config:
         raise ConfigError(f"[broker] session_tgt must be one of {VALID_SESSION_TGT}")
 
     auth = _section(AuthSection, dict(raw.pop("auth", {})), "auth")
+    if not isinstance(auth.strip_realm, bool):
+        raise ConfigError("[auth] strip_realm must be true or false")
+    if not isinstance(auth.domains, list) or not all(
+        isinstance(d, str) and DOMAIN_NAME.fullmatch(d) for d in auth.domains
+    ):
+        raise ConfigError("[auth] domains must be a list of DNS domain names")
     auth.realms = [r.upper() for r in auth.realms]
+    auth.domains = [d.lower() for d in auth.domains]
 
     mfa_raw = dict(raw.pop("mfa", {}))
     pi = _section(PrivacyIdeaSection, dict(mfa_raw.pop("privacyidea", {})), "mfa.privacyidea")

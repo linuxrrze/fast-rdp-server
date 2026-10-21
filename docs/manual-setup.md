@@ -275,7 +275,10 @@ cache_credentials = true
 krb5_store_password_if_offline = true
 default_shell = /bin/bash
 ldap_id_mapping = true
+# fastrdp_sssd_fully_qualified_names: "alice@example.com" instead of "alice".
 use_fully_qualified_names = false
+# %u is the short name in both modes: switching keeps the home directories. Only for
+# users without unixHomeDirectory in AD (that one wins).
 fallback_homedir = /home/%u
 # Terminal-server sessions run for days: keep session TGTs renewed.
 krb5_renewable_lifetime = 7d
@@ -285,6 +288,13 @@ ad_gpo_access_control = permissive
 ad_gpo_map_remote_interactive = +fastrdp, +xrdp-sesman, +fastrdp-session
 ad_maximum_machine_account_password_age = 30
 ```
+
+`use_fully_qualified_names` (`fastrdp_sssd_fully_qualified_names`): `true` makes
+directory users `alice@example.com`, so a local account `alice` can never stand in for
+one; set `[auth] strip_realm = false` in `broker.toml` to match (section 9, and
+[auth-matrix.md](auth-matrix.md#short-or-fully-qualified-account-names) for the trade-offs). `%u` in
+`fallback_homedir` is the short name either way (sssd.conf(5): `%f` would be the
+qualified one), so the home directories stay `/home/alice`.
 
 `ad_gpo_access_control` (`fastrdp_ad_gpo_access_control`): start with `permissive`
 (denials are only logged in the sssd log). Grant *Allow log on through Remote Desktop
@@ -340,10 +350,16 @@ has them in `sssd.conf`):
 
 ```ini
 # ipa-client-install writes sssd.conf without these (AD: sssd-ad.conf.j2 has them).
+# Snippets in conf.d override sssd.conf (sssd.conf(5)).
 [domain/example.com]
 krb5_renewable_lifetime = 7d
 krb5_renew_interval = 1h
+# fastrdp_sssd_fully_qualified_names: "alice@example.com" instead of "alice"
+use_fully_qualified_names = false
 ```
+
+Snippets in `conf.d` override the same keys in `sssd.conf`, later files (by name) the
+earlier ones, so this one wins over what `ipa-client-install` wrote.
 
 ```sh
 install -d -m 0711 /etc/sssd/conf.d             # then write 50-fastrdp.conf
@@ -410,7 +426,11 @@ the RDP users for the PAM services `fastrdp`, `xrdp-sesman` and `fastrdp-session
   (e.g. `kadmin -q "ktadd -k termsrv.keytab -e aes256-cts-hmac-sha1-96:normal,aes128-cts-hmac-sha1-96:normal TERMSRV/rdp1.example.com"`
   on the KDC), `root:_fastrdp-proxy 0640`;
 - `/etc/sssd/sssd.conf` (`root:root 0600`) for your directory; sssd reads `conf.d/`
-  only when `sssd.conf` exists.
+  only when `sssd.conf` exists. Its `use_fully_qualified_names` decides whether users
+  are `alice` or `alice@example.com`; `[auth] strip_realm` in `broker.toml` must say the
+  same (`false` for qualified names, section 9). The role reads your files (`sssd.conf`,
+  then `conf.d/*.conf`; the last setting wins, else `default_domain_suffix` qualifies
+  names) and fails if they disagree with `fastrdp_sssd_fully_qualified_names`.
 
 Then 3.5 with the FQDN principal only.
 
@@ -742,7 +762,10 @@ session_tgt = "auto"
 
 [auth]
 realms = ["EXAMPLE.COM"]
+# false = SSSD names are "alice@example.com" (fastrdp_sssd_fully_qualified_names):
+# that name first, so a local account "alice" never shadows the directory user.
 strip_realm = true
+domains = ["example.com"]
 pam_service = "fastrdp"
 allow_groups = []
 allow_tls_password_login = true
@@ -797,6 +820,8 @@ Values to change:
 |---|---|---|
 | `[auth] realms` | `fastrdp_realm` (upper case) | **site** |
 | `[auth] allow_groups` | `fastrdp_allow_groups` | e.g. `["rdp-users"]`; `[]` = every user who can authenticate |
+| `[auth] strip_realm` | `fastrdp_sssd_fully_qualified_names` (inverted) | `true`: SSSD short names (`alice` is tried before `alice@example.com`); `false`: SSSD `use_fully_qualified_names = true` (the qualified name first). Must match `sssd.conf` (section 3) |
+| `[auth] domains` | `fastrdp_domain` (lower case) | SSSD domain names: qualified names are tried with them as well as with the realms (FreeIPA domains may differ from the realm). Group names without `@` in this file also match `group@<domain>` |
 | `[auth] allow_tls_password_login` | `fastrdp_allow_tls_logins` | `false` = NLA only; keep `ServerTlsSecurity`/`AllowTls` in `proxy.ini` consistent (section 11) |
 | `[broker] session_tgt` | `fastrdp_session_tgt` | `auto`, `required`, `off` ([nfs-kerberos-homes.md](nfs-kerberos-homes.md)) |
 | `[network] lan_networks` | `fastrdp_lan_networks` | client CIDRs as the server sees them, e.g. `["10.0.0.0/8", "2001:db8::/32"]`: auto-detect clients from there get the uncapped `lan` profile |

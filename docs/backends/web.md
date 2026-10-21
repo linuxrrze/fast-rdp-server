@@ -20,7 +20,9 @@ browser ─https─▶ nginx :443 ─/web/──────▶ fastrdp-webgate 
    nonce in a signed 10-minute cookie `fastrdp_web_login`).
 2. `GET /web/callback`: code exchange, ID-token checks, **MFA proof** (`acr` in
    `required_acr` or an `amr` entry in `required_amr_any`), username from
-   `username_claim`; `user@domain` only for domains in `strip_domains`. Session cookie
+   `username_claim`; `user@domain` only for domains in `strip_domains`, which are
+   removed. The broker maps the short name to the account like a TLS login (with
+   `fastrdp_sssd_fully_qualified_names`: `user@<domain>` first). Session cookie
    `fastrdp_web`, lifetime `session_lifetime` (900 s).
 3. Desktop chooser: the list is `[webgate] desktops` (`fastrdp_web_desktops`, default
    = `fastrdp_desktops`) plus "default".

@@ -136,7 +136,9 @@ class Broker:
         """Returns (user, real password or None, OTP or None, MFA already done by)."""
         method = str_field(msg, "method", required=True)
         rhost = str_field(msg, "client_address")
-        rdp_user = identity.normalize_rdp_user(str_field(msg, "user", required=True))
+        # As typed ('alice', 'DOMAIN\alice', 'alice@example.com'): the account of TLS and
+        # web logins; for NLA only checked against the principal's account.
+        rdp_user = str_field(msg, "user", required=True)
         secret = str_field(msg, "password")
 
         if method == "nla":
@@ -148,11 +150,10 @@ class Broker:
             if self.cfg.auth.realms and realm not in self.cfg.auth.realms:
                 raise Denied(f"realm {realm} not accepted")
             user = identity.resolve_principal(name, realm, self.cfg.auth)
-            raw_user = str_field(msg, "user", required=True)
-            if secret and identity.names_other_account(raw_user, user):
+            if secret and identity.names_other_account(rdp_user, user, self.cfg.auth):
                 # A password delegated for somebody else must not reach pam_sss or MFA.
                 log.warning("principal %s: CredSSP user %r is another account; "
-                            "delegated password not used", principal, raw_user)
+                            "delegated password not used", principal, rdp_user)
                 secret = None
             try:
                 await asyncio.to_thread(pamauth.account_ok, self.cfg.auth.pam_service, user.name, rhost)
@@ -180,7 +181,7 @@ class Broker:
                 raise Denied("web token presented but [web] is disabled")
             if rhost not in self.cfg.web.allowed_clients:
                 raise Denied(f"web token from unexpected client address {rhost}")
-            user = identity.resolve(rdp_user, None, self.cfg.auth)
+            user = identity.resolve_login(rdp_user, self.cfg.auth)
             ok, _ = self.web_tokens.redeem(user.name, secret)
             if not ok:
                 raise Denied(f"invalid or reused web token for {user.name}")
@@ -195,7 +196,7 @@ class Broker:
                 raise Denied("password logins without NLA are disabled")
             if not secret:
                 raise Denied("no password supplied")
-            user = identity.resolve(rdp_user, None, self.cfg.auth)
+            user = identity.resolve_login(rdp_user, self.cfg.auth)
             otp = None
             if self.mfa.wants_otp_in_password and not self.mfa.exempt(user.groups):
                 split = split_otp(secret, self.cfg.mfa)
@@ -249,7 +250,10 @@ class Broker:
                          "; appended OTP not checked" if otp else "")
             else:
                 try:
-                    factor = await self.mfa.verify(user.name, otp, password)
+                    # privacyIDEA knows directory users by their short name, also
+                    # with fully qualified SSSD names ('alice@example.com' -> 'alice').
+                    mfa_user = identity.short_name(user.name, self.cfg.auth)
+                    factor = await self.mfa.verify(mfa_user, otp, password)
                 except MfaDenied as exc:
                     raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
                 log.info("second factor ok for %s via %s", user.name, factor)
@@ -348,8 +352,7 @@ class Broker:
 
     async def _web_user(self, msg: dict) -> tuple[identity.LocalUser, list[dict]]:
         """User named by fastrdp-webgate (OIDC-authenticated) and the desktops it may use."""
-        name = identity.normalize_rdp_user(str_field(msg, "user", required=True))
-        user = identity.resolve(name, None, self.cfg.auth)
+        user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
         if not identity.user_allowed(user, self.cfg.auth):
             raise Denied(f"{user.name} is not in an allowed group", "not_allowed")
         self.require_credential(user, None)  # web logins never carry a password

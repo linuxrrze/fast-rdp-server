@@ -9,7 +9,7 @@ import tomllib
 import unittest
 from unittest import mock
 
-from fastrdp_broker import config, conntype
+from fastrdp_broker import config, conntype, identity
 from fastrdp_broker.backends import Target
 from test_server import EXAMPLE, fake_user, make_cfg, request
 
@@ -115,6 +115,8 @@ class LoginReply(unittest.IsolatedAsyncioTestCase):
                 return_value=Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls"))
         self.patches = [
             mock.patch("fastrdp_broker.identity.resolve", side_effect=lambda n, r, a: fake_user(n)),
+            mock.patch("fastrdp_broker.identity.resolve_login",
+                       side_effect=lambda n, a: fake_user(identity.normalize_rdp_user(n))),
             mock.patch("fastrdp_broker.pamauth.authenticate"),
             mock.patch("fastrdp_broker.pamauth.account_ok"),
         ]

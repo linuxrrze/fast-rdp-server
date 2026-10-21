@@ -31,7 +31,8 @@ see [Kerberos ticket](#kerberos-ticket-tgt)); on every login, so also on a recon
       0711 so the user cannot plant symlinks;
    4. run as the user, inside the user's systemd manager
       (`systemctl start user@<uid>.service`, then
-      `systemd-run --machine=<user>@.host --user --wait --pipe …`):
+      `systemd-run --machine=<uid>@.host --user --wait --pipe …`; the uid, since a
+      fully qualified name like `alice@example.com` has an `@` of its own):
       ```
       grdctl --headless rdp set-tls-cert /var/lib/fastrdp/users/<user>/tls.crt
       grdctl --headless rdp set-tls-key  /var/lib/fastrdp/users/<user>/tls.key
@@ -220,7 +221,7 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
 | Symptom | Checks |
 |---|---|
 | `backend error: GNOME session for USER: …systemd-run…failed` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
-| `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M USER@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=USER@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
+| `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M UID@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=UID@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
 | `port P is held by unexpected uid(s) [...]` | `ss -ltnp 'sport = :P'`: another user's process holds the port; next login picks another port |
 | Session starts but login at g-r-d fails (proxy log: back-end connect error) | credentials mismatch after a manual `grdctl` change: `fastrdpctl logout USER` and log in again |
 | GPO denial | `journalctl -u sssd -g gpo` / `/var/log/sssd/` for denials naming GDM's PAM service |

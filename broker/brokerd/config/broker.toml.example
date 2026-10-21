@@ -21,7 +21,14 @@ session_start_timeout = 90
 
 [auth]
 realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA
-strip_realm = true                # alice@EXAMPLE.COM -> local account "alice"
+# true: SSSD has short names (use_fully_qualified_names = false), alice@EXAMPLE.COM ->
+# "alice" before "alice@example.com"; false: SSSD has fully qualified names, the
+# other way round, so a local account "alice" never shadows the directory user.
+# TLS and web logins ("alice", "DOMAIN\alice", "alice@example.com") follow the same order.
+strip_realm = true
+# SSSD domain names of qualified accounts besides the realms (FreeIPA domain that
+# differs from its realm); group names in this file match "group@<domain>" too.
+#domains = ["example.com"]
 pam_service = "fastrdp"           # password checks (TLS logins) + account checks
 allow_groups = ["rdp-users"]      # empty list = every valid account
 allow_tls_password_login = true   # clients without NLA (password+OTP in one field)

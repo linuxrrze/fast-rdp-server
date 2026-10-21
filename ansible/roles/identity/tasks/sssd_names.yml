@@ -1,0 +1,37 @@
+---
+# Provider "none": does the admin's SSSD configuration give fully qualified names?
+# Read-only. Sets fastrdp_sssd_conf_found and fastrdp_sssd_fqn_found.
+# Like sssd's own merge (sssd.conf(5)): sssd.conf, then conf.d/*.conf in name order,
+# the last use_fully_qualified_names wins. It is not told apart by [domain/...] section
+# (one domain is the usual case); without one, default_domain_suffix qualifies names.
+# fastrdp_sssd_dir: /etc/sssd (tests: another directory).
+- name: SSSD main configuration
+  ansible.builtin.stat:
+    path: "{{ fastrdp_sssd_dir }}/sssd.conf"
+  register: fastrdp_sssd_conf_stat
+
+- name: SSSD configuration snippets
+  ansible.builtin.find:
+    paths: "{{ fastrdp_sssd_dir }}/conf.d"
+    patterns: "*.conf"
+    file_type: file
+  register: fastrdp_sssd_snippets
+
+# sssd.conf may hold an LDAP bind password: never log the content.
+- name: Read the SSSD configuration
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: >-
+    {{ ([fastrdp_sssd_dir ~ '/sssd.conf'] if fastrdp_sssd_conf_stat.stat.exists else [])
+       + (fastrdp_sssd_snippets.files | map(attribute='path') | sort) }}
+  register: fastrdp_sssd_conf_files
+  no_log: true
+
+- name: Fully qualified names in the SSSD configuration
+  vars:
+    texts: "{{ fastrdp_sssd_conf_files.results | map(attribute='content') | map('b64decode') | join('\n') }}"
+    fqn: "{{ texts | regex_findall('(?mi)^[ \t]*use_fully_qualified_names[ \t]*=[ \t]*([^ \t\r\n]+)') }}"
+    suffix: "{{ texts | regex_findall('(?mi)^[ \t]*default_domain_suffix[ \t]*=[ \t]*([^ \t\r\n]+)') }}"
+  ansible.builtin.set_fact:
+    fastrdp_sssd_conf_found: "{{ fastrdp_sssd_conf_stat.stat.exists }}"
+    fastrdp_sssd_fqn_found: "{{ (fqn | last | lower in ['true', 'yes', '1']) if fqn else (suffix | length > 0) }}"
