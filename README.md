@@ -22,7 +22,7 @@ A Windows-RDS-style terminal server for Linux, built from maintained parts:
 first connection), without Ansible: [docs/manual-setup.md](docs/manual-setup.md) ·
 Back-ends: [docs/backends/](docs/backends/README.md) · Tests: [tests/README.md](tests/README.md)
 
-Plan: [docs/plan.md](docs/plan.md) · Design: [docs/architecture.md](docs/architecture.md) ·
+Plan: [docs/plan.md](docs/plan.md), backlog: [docs/backlog.md](docs/backlog.md) · Design: [docs/architecture.md](docs/architecture.md) ·
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
 [docs/desktop-matrix.md](docs/desktop-matrix.md) · Performance: [docs/performance.md](docs/performance.md) ·
 Clients: [docs/client-guide.md](docs/client-guide.md), Windows/Kerberos: [docs/windows-clients.md](docs/windows-clients.md) · Web: [docs/web-access.md](docs/web-access.md) ·
