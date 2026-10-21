@@ -178,6 +178,38 @@ dir=$(packaging/ci/prepare-vendored.sh xrdp /tmp/vendored)   # likewise for fast
    APT repository and force-pushes it as a single commit to `gh-pages`; for tags
    also attaches the `.deb`s and the source archives to a GitHub release.
 
+### Publishing: concurrency and retry
+
+Every publish rebuilds the whole `gh-pages` tree: the channel being published from
+the new packages, the other channel carried over from the current `gh-pages` tip.
+So two publishes must never interleave (the later push would drop the earlier
+one's channel), and no publish may be dropped:
+
+- **One queue.** The publish job is in the concurrency group `apt-repository`
+  with `queue: max`: publishes run one at a time, in the order they reach the
+  job, up to 100 waiting. Without `queue: max` a group holds only one *pending*
+  job and a newer one cancels it: a `main` publish arriving while a tag publish
+  waits would cancel the tag's stable publish and its GitHub release
+  ([GitHub docs: control workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+  [changelog 2026-05-07](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues)).
+  actionlint does not know `queue` yet: `.github/actionlint.yaml` ignores that one
+  message.
+- **Compare-and-swap push.** `packaging/ci/publish-gh-pages.sh` fetches the
+  `gh-pages` tip, runs `publish.sh` against it and pushes with
+  `--force-with-lease=refs/heads/gh-pages:<that tip>`. If `gh-pages` moved in the
+  meantime (anything outside the queue: a manual push, a re-run of an old
+  workflow), the push is rejected and fetch + build + push are repeated, at most
+  `PUBLISH_ATTEMPTS` (3) times; after that the job fails without overwriting
+  anything. A failed `ls-remote` fails the job too: only a branch that does not
+  exist is treated as an empty repository.
+- The workflow-level group `packages-<ref>` is per ref: it serializes the runs of
+  `main` (a newer pending `main` run replaces an older pending one, which is fine:
+  the newer build supersedes it) and has no effect between `main` and tags.
+
+`tests/packaging/test_publish_gh_pages.sh` (`make test-scripts`) runs the script
+against a local bare repository with a concurrent publish of the other channel
+during the build.
+
 ## APT repository
 
 ### Layout

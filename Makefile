@@ -41,10 +41,11 @@ test-proxy-module:
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report
 
-test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/ci/*.sh, TERMSRV helpers; dpkg-dev curl patch xz-utils
+test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/ci/*.sh, TERMSRV helpers; dpkg-dev curl patch xz-utils git
 	tests/packaging/test_fetch.sh
 	tests/packaging/test_build_key.sh
 	tests/packaging/test_ci_scripts.sh
+	tests/packaging/test_publish_gh_pages.sh
 	tests/packaging/test_xrdp_site_config.sh
 	python3 -m unittest -v tests/identity/test_termsrv_helpers.py
 
