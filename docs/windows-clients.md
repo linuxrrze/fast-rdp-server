@@ -432,7 +432,42 @@ for any service while it is valid. That is exactly what Remote Credential Guard
 avoids by keeping the TGT key on the client. For shared hosts, password → own TGT or
 S4U for named services (constrained delegation) are the safer defaults.
 
+**How Remote Credential Guard limits the risk, and what it leaves.** The host gets the
+TGT only with an opaque key blob ([MS-CSSP] note 22: the KRB-CRED key is a
+`KERB_RPC_ENCRYPTION_KEY`, "understood and consumed only by the CredSSP client",
+[MS-RDPEAR] 2.2.1.2.8). Every operation that needs the TGT key is sent back to the
+client over the `Microsoft::Windows::RDS::AuthRedirection` channel; the client acts as
+a key oracle tied to the open connection. Credential Guard on the client is not
+required, it only protects the client side.
+
+| Mode | On the host | Host compromised during the session | After disconnect |
+|---|---|---|---|
+| Password delegation (default) | password, so NT hash, Kerberos keys, TGT | anything as the user, until the password changes | yes |
+| Forwarded TGT (unconstrained delegation) | TGT with its session key | any service as the user, also from other machines | yes, until the TGT ends (renew lifetime) |
+| Remote Credential Guard | TGT with an opaque key; service tickets with their keys; an opaque NTLM blob | any service as the user **while connected**; service tickets obtained can be passed | no new tickets; obtained service tickets until they expire (10 h default) |
+| Restricted Admin | nothing of the user's (host's computer account) | local only | – |
+
+Residual risks of Remote Credential Guard, also named by Microsoft ("Prevent use of
+user's identity during connection" is not covered): a host owned during the session
+acts as the user against any service and can pre-fetch service tickets; with SYSTEM on
+the host, NTLMv1 responses can be obtained and possibly cracked to the NT hash
+(SpecterOps, October 2025, not serviced by Microsoft); the client becomes the target (a
+TGT stolen there can be used for `/remoteGuard` without a password); direct
+connections only, admin-only on RD Session Hosts.
+
+For fastrdp this means: the protections exist only because Windows clients send an
+opaque key. FreeRDP's `/remoteGuard` currently sends the TGT key unencrypted, contrary
+to the spec; keeping that TGT would be unconstrained delegation without any of these
+protections, so fastrdp discards it (identity-only `AcceptRemoteGuard`, the security
+equivalent of Restricted Admin). Equivalent protection would need the server side of
+MS-RDPEAR with a host that never holds the TGT key ([backlog.md](backlog.md), not
+planned).
+
 Sources: [Remote Credential Guard](https://learn.microsoft.com/en-us/windows/security/identity-protection/remote-credential-guard),
+[SpecterOps: Catching Credential Guard off guard](https://specterops.io/blog/2025/10/23/catching-credential-guard-off-guard/),
+[How does Remote Credential Guard work (S. Syfuhs)](https://syfuhs.net/how-does-remote-credential-guard-work),
+[Compass Security: securing connections to your Remote Desktop](https://blog.compass-security.com/2023/06/securing-connections-to-your-remote-desktop/),
+[Pen Test Partners: abusing RCG with Rubeus](https://www.pentestpartners.com/security-blog/abusing-rdps-remote-credential-guard-with-rubeus-ptt/),
 [Credential Guard known issues](https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/considerations-known-issues),
 [CredSSP policy CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp),
 [logon types](https://learn.microsoft.com/en-us/windows-server/identity/securing-privileged-access/reference-tools-logon-types),
