@@ -325,6 +325,15 @@ wrong delegated password counts at the KDC (AD `badPwdCount`) but not in
   (`kcm_renew.c:300-370`: without `tgt_renewal_inherit` the `[kcm]` options are
   read). Renewals start at half the ticket lifetime. `krb5.conf` `renew_lifetime`
   makes `kinit` ask for renewable tickets.
+- **Seeing expiry and renewal:** `sudo fastrdpctl status` (or `fastrdpctl tickets
+  [USER]`) shows the TGT of each session user's default cache: expiry, renew-until and
+  `ok` / `expiring` (< 1 h) / `not_renewable_soon` (renewal ends within 24 h or not
+  renewable) / `expired` / `none`. The broker runs `klist -f` and `klist -l` with the
+  user's ids, without `KRB5CCNAME` and with `LC_ALL=C TZ=UTC` (5 s timeout).
+  A renewing TGT shows an expiry that moves forward every `krb5_renew_interval` once
+  half its lifetime has passed; a TGT whose expiry stays put is not being renewed
+  (`journalctl -u sssd-kcm`). `tests/smoke/check-host.sh USER` checks `[kcm]
+  tgt_renewal`, `krb5_renew_interval`, `renew_lifetime` and that USER's TGT is renewable.
 - **After `renew_till` (7 days)** nothing can renew without a password. Once the
   kernel's GSS context for that user expires (at the end of the `nfs/` service
   ticket, at most the TGT's lifetime), the next upcall fails and every process of

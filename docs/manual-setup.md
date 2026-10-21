@@ -1333,8 +1333,11 @@ Every line must say `ok`; then it prints `fastrdpctl status`. Checks: services
 active, proxy on 3389, xrdp on loopback only, broker and token sockets, nftables
 table, TERMSRV AES keys and keytab readable by the proxy, proxy module and FreeRDP from
 `/opt/fastrdp`, PAM token module, xrdp with x264, `broker.toml` valid, time sync,
-back-end port blocked for other users, and for the test user NSS and the PAM account
-check. On FreeIPA hosts it checks only `TERMSRV/<fqdn>`.
+ticket renewal (sssd-kcm active, effective `[kcm] tgt_renewal = true` and
+`krb5_renew_interval` from `sssd.conf` and `conf.d`, `renew_lifetime` in `krb5.conf`),
+back-end port blocked for other users, and for the test user NSS, the PAM account
+check and a renewable TGT in the user's default cache (`fastrdpctl tickets USER`;
+`skip` without a TGT: log in over RDP with a password first). On FreeIPA hosts it checks only `TERMSRV/<fqdn>`.
 
 ## 14. First connection
 

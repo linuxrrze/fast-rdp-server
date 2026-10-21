@@ -28,6 +28,16 @@ a password (SSO without delegation, Remote Credential Guard, smartcard, web) bef
 Details: [backends/gnome.md](backends/gnome.md#kerberos-ticket-tgt),
 [nfs-kerberos-homes.md](nfs-kerberos-homes.md).
 
+**Who is about to lose Kerberos access:** `sudo fastrdpctl status` lists, for each
+account with a session, the TGT in the user's default credential cache (the cache the
+session's processes use): principal, expiry and renewal limit (UTC, with the time left)
+and a state: `ok`, `expiring` (less than 1 h left), `not_renewable_soon` (not
+renewable, or renewal ends within 24 h: the next login with a password gets a new one),
+`expired`, `none` (no TGT, e.g. SSO or smartcard login) or `unknown` (klist failed).
+`fastrdpctl tickets [USER]` shows only that table, also for an account without a
+session; `--json` for scripts. Only metadata: no ticket or key data
+([nfs-kerberos-homes.md](nfs-kerberos-homes.md#q4-ticket-lifetime-and-renewal)).
+
 YubiKeys work in three ways:
 - **PIV smartcard** (NLA logon via PKINIT);
 - **YubiKey OTP** (44 modhex characters appended to the password, detected

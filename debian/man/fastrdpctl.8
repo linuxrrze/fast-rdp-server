@@ -6,6 +6,14 @@ fastrdpctl \- query and control the fastrdp session broker
 .RB [ \-c
 .IR config ]
 .B status
+.RB [ \-\-json ]
+.br
+.B fastrdpctl
+.RB [ \-c
+.IR config ]
+.B tickets
+.RI [ user ]
+.RB [ \-\-json ]
 .br
 .B fastrdpctl
 .RB [ \-c
@@ -24,8 +32,40 @@ talks to a running
 .BR fastrdp-brokerd (8)
 over its admin socket.
 .TP
-.B status
-List the sessions known to the broker.
+.BR status " [\fB\-\-json\fR]"
+List the sessions known to the broker, the Kerberos TGT of each account with a
+session (see
+.BR tickets )
+and the broker's counters (connections, pending tokens, MFA reconnect grace entries).
+With
+.BR \-\-json ,
+print the broker's reply as JSON instead of tables.
+.TP
+.BR tickets " [\fIuser\fR] [\fB\-\-json\fR]"
+Show the TGT in the default credential cache of each account with a session, or of
+.I user
+(a local account, with or without a session): principal, cache, expiry and renewal
+limit (UTC, with the time left) and a state:
+.B ok
+(renewable for more than 24 hours),
+.B expiring
+(expires within 1 hour),
+.B not_renewable_soon
+(not renewable, or renewal ends within 24 hours: the user must log in again with a
+password, or run
+.BR kinit ),
+.B expired
+(the user has lost Kerberos access, e.g. to Kerberized NFS homes),
+.B none
+(no TGT: login without a password, such as SSO or smartcard),
+.B unknown
+(klist failed or timed out).
+The broker runs
+.BR klist (1)
+with the user's ids and without
+.BR KRB5CCNAME ,
+so it sees the cache the user's session uses (default_ccache_name, normally KCM:).
+Only metadata is shown, never ticket or key data.
 .TP
 .BI logout " user"
 Terminate all sessions of
@@ -49,4 +89,6 @@ used to find the socket.
 .SH FILES
 .I /etc/fastrdp/broker.toml
 .SH SEE ALSO
-.BR fastrdp-brokerd (8)
+.BR fastrdp-brokerd (8),
+.BR klist (1),
+.BR sssd-kcm (8)

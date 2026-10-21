@@ -51,7 +51,13 @@ PAM module -> token.sock (root only):
   {"op": "redeem", "user": str, "token": str} -> {"ok": true, "password": str|null}
 
 Admin (root) -> broker.sock:
-  {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int, ...}
+  {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int, ...,
+                       "tickets": {account: {...}}}
+  {"op": "tickets", "user": str|absent} -> {"ok": true, "tickets": {account: {...}}}
+      TGT metadata of each session user's (or one account's) default credential cache:
+      state ok|expiring|not_renewable_soon|expired|none|unknown, principal, cache,
+      cache_type, expires (UTC ISO), expires_in (s), renewable, renew_until, renew_in,
+      caches (number in the collection), error (tickets.py)
   {"op": "logout", "user": str} -> {"ok": true}
   {"op": "clear_grace", "user": str|absent} -> {"ok": true, "cleared": int}
       forget [mfa] reconnect_grace entries of one local account (absent: all)

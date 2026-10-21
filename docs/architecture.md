@@ -148,4 +148,4 @@ error pages.
 | `/etc/pam.d/{fastrdp,fastrdp-tgt,fastrdp-session,xrdp-sesman}` | PAM stacks (`broker/session/pam/`; `fastrdp-tgt`: session TGT for GNOME/Plasma) |
 | `/run/fastrdp/` | sockets, desktop choice per user, Plasma session env files |
 | `/var/lib/fastrdp/` | session state, per-user back-end certificates |
-| `/usr/lib/fastrdp/python/` | broker package; admin CLI `fastrdpctl status|logout USER|clear-grace [USER]` |
+| `/usr/lib/fastrdp/python/` | broker package; admin CLI `fastrdpctl status|tickets [USER]|logout USER|clear-grace [USER]` (status: sessions and each session user's TGT expiry/renewal, `tickets.py`) |

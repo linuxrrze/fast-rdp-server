@@ -4,7 +4,8 @@
 # Smoke checks on a deployed fastrdp host (run as root). Prints ok/FAIL per check.
 #   sudo tests/smoke/check-host.sh [test-user]
 #   tests/smoke/check-host.sh --ports      print the ports read from the configuration
-# With a test user, also checks NSS/group resolution and asks the broker for status.
+# With a test user, also checks NSS/group resolution and the TGT in the user's default
+# cache (fastrdpctl tickets: renewable), and asks the broker for status.
 # Ports come from the deployed configuration (fastrdp_listen_port, fastrdp_xrdp_port).
 set -uo pipefail
 PROXY_INI=${FASTRDP_PROXY_INI:-/etc/fastrdp/proxy.ini}
@@ -30,6 +31,7 @@ if [ "${1:-}" = --ports ]; then
     exit 0
 fi
 USER_TO_TEST=${1:-}
+CTL=$(command -v /usr/local/sbin/fastrdpctl /usr/sbin/fastrdpctl | head -1)
 fail=0
 ok()   { echo "ok   $*"; }
 bad()  { echo "FAIL $*"; fail=1; }
@@ -58,6 +60,34 @@ chk "proxy can read its keytab"       runuser -u _fastrdp-proxy -- test -r /etc/
 chk "krb5.conf includes /etc/krb5.conf.d (fastrdp snippet)" \
     grep -Eq '^[[:space:]]*includedir[[:space:]]+/etc/krb5\.conf\.d/?[[:space:]]*$' /etc/krb5.conf
 chk "fastrdp Kerberos snippet: KCM ccache" grep -Eq '^[[:space:]]*default_ccache_name[[:space:]]*=[[:space:]]*KCM:' /etc/krb5.conf.d/fastrdp
+# Ticket renewal for long sessions (docs/nfs-kerberos-homes.md, Q4): sssd-kcm renews
+# renewable TGTs in KCM ([kcm] tgt_renewal, krb5_renew_interval; roles/identity
+# fastrdp_kcm_tgt_renewal), and kinit asks for renewable tickets (renew_lifetime).
+# sssd_value SECTION KEY: effective value, sssd.conf then conf.d/*.conf (later files win)
+sssd_value() {
+    awk -v s="[$1]" -v k="$2" '
+        FNR == 1 { in_s = 0 }
+        /^[ \t]*\[/ { t = $0; gsub(/[ \t]/, "", t); in_s = (t == s); next }
+        in_s && /^[ \t]*[^#; \t]/ {
+            key = $0; sub(/=.*/, "", key); gsub(/[ \t]/, "", key)
+            if (key == k && index($0, "=")) { v = substr($0, index($0, "=") + 1); gsub(/^[ \t]+|[ \t]+$/, "", v); val = v }
+        }
+        END { print val }' /etc/sssd/sssd.conf /etc/sssd/conf.d/*.conf 2>/dev/null
+}
+chk "sssd-kcm socket/service active"   bash -c "systemctl is-active --quiet sssd-kcm.socket || systemctl is-active --quiet sssd-kcm.service"
+KCM_RENEWAL=$(sssd_value kcm tgt_renewal)
+KCM_INTERVAL=$(sssd_value kcm krb5_renew_interval)
+if [ "${KCM_RENEWAL,,}" = true ] && [ -n "$KCM_INTERVAL" ] && [ "$KCM_INTERVAL" != 0 ]; then
+    ok "sssd-kcm renews TGTs ([kcm] tgt_renewal = true, krb5_renew_interval = $KCM_INTERVAL)"
+else
+    bad "sssd-kcm TGT renewal off ([kcm] tgt_renewal = ${KCM_RENEWAL:-unset}, krb5_renew_interval = ${KCM_INTERVAL:-unset}): fastrdp_kcm_tgt_renewal, /etc/sssd/conf.d/50-fastrdp.conf"
+fi
+RENEW_LIFETIME=$(grep -Ehs '^[[:space:]]*renew_lifetime[[:space:]]*=' /etc/krb5.conf.d/fastrdp /etc/krb5.conf | head -1 | sed 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')
+if [ -n "$RENEW_LIFETIME" ] && [ "$RENEW_LIFETIME" != 0 ]; then
+    ok "krb5.conf asks for renewable tickets (renew_lifetime = $RENEW_LIFETIME)"
+else
+    bad "krb5.conf has no renew_lifetime: kinit gets non-renewable TGTs (/etc/krb5.conf.d/fastrdp)"
+fi
 if [ -e /etc/ipa/default.conf ]; then
     chk "FreeIPA krb5.conf (PKINIT anchors of the IPA CA)" grep -q /var/lib/ipa-client/pki/ /etc/krb5.conf
 fi
@@ -86,6 +116,20 @@ import sys; sys.path.insert(0, '/usr/lib/fastrdp/python')
 from fastrdp_broker import pamauth
 pamauth.account_ok('fastrdp', '$USER_TO_TEST')
 PY"
+    # The broker runs klist as the user, without KRB5CCNAME: the cache the session uses.
+    tgt=$("${CTL:-fastrdpctl}" tickets --json "$USER_TO_TEST" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    t = next(iter(json.load(sys.stdin)["tickets"].values()))
+except Exception:
+    t = {"state": "unknown", "error": "fastrdpctl tickets failed"}
+print(t.get("state"), str(t.get("renewable", False)).lower(), t.get("renew_until", "-"), t.get("error", ""))')
+    read -r tgt_state tgt_renewable tgt_until tgt_error <<<"$tgt"
+    case $tgt_state in
+        ok) ok "TGT of $USER_TO_TEST renewable until $tgt_until (sssd-kcm renews it)" ;;
+        none) echo "skip TGT of $USER_TO_TEST: none in the default cache (log in over RDP with a password first)" ;;
+        *) bad "TGT of $USER_TO_TEST: $tgt_state (renewable=$tgt_renewable, renew until $tgt_until) $tgt_error" ;;
+    esac
 fi
-echo "--- broker status"; "$(command -v /usr/local/sbin/fastrdpctl /usr/sbin/fastrdpctl | head -1)" status 2>/dev/null | head -40 || true
+echo "--- broker status"; "${CTL:-fastrdpctl}" status 2>/dev/null | head -40 || true
 exit $fail

@@ -51,7 +51,11 @@ def ctl_main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="fastrdpctl")
     ap.add_argument("-c", "--config", type=Path, default=config_mod.DEFAULT_CONFIG_PATH)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("status", help="list sessions known to the broker")
+    st = sub.add_parser("status", help="list sessions known to the broker and their users' Kerberos TGTs")
+    st.add_argument("--json", action="store_true", help="the broker's reply as JSON")
+    tk = sub.add_parser("tickets", help="TGT expiry and renewal limit of each session user, or of USER")
+    tk.add_argument("user", nargs="?", help="local account name (default: every session user)")
+    tk.add_argument("--json", action="store_true", help="the broker's reply as JSON")
     lo = sub.add_parser("logout", help="terminate all sessions of a user")
     lo.add_argument("user")
     cg = sub.add_parser("clear-grace", help="forget MFA reconnect grace ([mfa] reconnect_grace) "
@@ -60,13 +64,20 @@ def ctl_main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     cfg = config_mod.load(args.config)
     req = {"op": args.cmd.replace("-", "_")}
-    if args.cmd in ("logout", "clear-grace") and args.user:
+    if args.cmd in ("logout", "clear-grace", "tickets") and args.user:
         req["user"] = args.user
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.connect(cfg.broker.socket)
         s.sendall(json.dumps(req).encode() + b"\n")
         reply = json.loads(s.makefile().readline())
-    print(json.dumps(reply, indent=2))
+    if args.cmd in ("status", "tickets") and not args.json and reply.get("ok"):
+        from . import tickets
+
+        lines = (tickets.format_status(reply) if args.cmd == "status"
+                 else tickets.format_tickets(reply.get("tickets", {})))
+        print("\n".join(lines))
+    else:
+        print(json.dumps(reply, indent=2))
     return 0 if reply.get("ok") else 1
 
 

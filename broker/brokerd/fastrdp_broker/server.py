@@ -12,7 +12,7 @@ import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from . import conntype, home, identity, pamauth, tgt
+from . import conntype, home, identity, pamauth, tgt, tickets
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
 from .config import Config
 from .grace import GraceKey, ReconnectGrace
@@ -418,7 +418,31 @@ class Broker:
             "pending_tokens": len(self.tokens),
             "pending_web_tokens": len(self.web_tokens),
             "mfa_grace_entries": len(self.grace),
+            "tickets": await self.session_tickets(),
         }
+
+    async def _tickets_of(self, names: list[str]) -> dict[str, dict]:
+        """TGT metadata (tickets.py) of local accounts; unresolvable names say so."""
+        users, out = [], {}
+        for name in names:
+            try:
+                users.append(await asyncio.to_thread(identity.resolve, name, None, self.cfg.auth))
+            except (IdentityError, OSError) as exc:
+                out[name] = {"state": "unknown", "error": f"user lookup: {exc}"}
+        out.update(await tickets.query_all(users))
+        return out
+
+    async def session_tickets(self) -> dict[str, dict]:
+        """The TGT of every account with a session (once per account, not per back-end)."""
+        return await self._tickets_of(sorted({s.user for s in self.state.sessions.values()}))
+
+    async def list_tickets(self, msg: dict) -> dict:
+        """fastrdpctl tickets [USER]: one account (session or not), or every session user."""
+        name = str_field(msg, "user")
+        if name is None:
+            await self.reap()
+            return {"ok": True, "tickets": await self.session_tickets()}
+        return {"ok": True, "tickets": await self._tickets_of([name])}
 
     async def logout(self, msg: dict) -> dict:
         name = str_field(msg, "user", required=True)
@@ -456,6 +480,8 @@ class Broker:
                         reply = await self.web_desktops(msg)
                     elif op == "status" and uid == 0:
                         reply = await self.status()
+                    elif op == "tickets" and uid == 0:
+                        reply = await self.list_tickets(msg)
                     elif op == "logout" and uid == 0:
                         reply = await self.logout(msg)
                     elif op == "clear_grace" and uid == 0:
