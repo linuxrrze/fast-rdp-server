@@ -12,7 +12,7 @@ what it needs, and where CI runs it. CI is one workflow,
 | `build` | builds `fast-rdp-server` (its `dh_auto_test` runs the broker, webgate and PAM tests again) + lintian, installs every package, runs `tests/packaging/check-installed.sh` |
 | `e2e` | installs the `fastrdp-freerdp3` artifact and runs the four proxy e2e suites with `FREERDP_PREFIX=/opt/fastrdp` |
 | `krb5-spnego` | `tests/krb5-spnego/run.sh`, informational |
-| `publish` | needs `tests`, `build` and `e2e` |
+| `publish` | needs `tests`, `build` and `e2e`; `packaging/ci/publish-gh-pages.sh` builds the repository and pushes `gh-pages`, then the job deploys Pages (environment `github-pages`) |
 
 ```sh
 make test       # unit tests, PAM, lint (the old default)

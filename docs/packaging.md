@@ -175,8 +175,10 @@ dir=$(packaging/ci/prepare-vendored.sh xrdp /tmp/vendored)   # likewise for fast
 5. **krb5-spnego** (per distro, informational): reports whether the distribution's
    MIT krb5 has the SPNEGO mechListMIC bug as a warning.
 6. **publish** (push to `main` or tag `v*`, after tests, build and e2e): rebuilds the
-   APT repository and force-pushes it as a single commit to `gh-pages`; for tags
-   also attaches the `.deb`s and the source archives to a GitHub release.
+   APT repository, force-pushes it as a single commit to `gh-pages` and deploys
+   the same tree to GitHub Pages (`actions/deploy-pages`, environment
+   `github-pages`); for tags also attaches the `.deb`s and the source archives to a
+   GitHub release.
 
 ### Publishing: concurrency and retry
 
@@ -263,9 +265,27 @@ The workflow reads the key's fingerprint after importing it and signs with that 
 The fingerprint is printed in the job log and shown on the repository's index page.
 
 Then delete `apt-signing-key.asc` and `$GNUPGHOME` (or keep them offline).
-Settings > Pages: *Deploy from a branch*, branch `gh-pages`, folder `/`. The
-first push to `main` creates the branch. Publishing is skipped in forks
-(`repository_owner` check) and fails loudly if the secret is missing.
+Publishing is skipped in forks (`repository_owner` check) and fails loudly if the
+secret is missing.
+
+### Pages
+
+The publish job deploys the site itself (`actions/configure-pages`,
+`upload-pages-artifact`, `deploy-pages`), right after the `gh-pages` push in the same
+job, so the `apt-repository` queue keeps push and deployment in order. `gh-pages`
+stays the record of the published tree: the next publish reads the other channel from
+it, and the first push to `main` creates it. GitHub must not build Pages from that
+branch (its "pages build and deployment" workflow would publish a second time on
+every push, with an outdated Node.js 20 action). Repository settings:
+
+1. Settings > Pages > Build and deployment > Source: **GitHub Actions**
+   (or `gh api -X PUT repos/linuxrrze/fast-rdp-server/pages -f build_type=workflow`).
+2. Settings > Environments > `github-pages` > Deployment branches and tags: keep
+   `main` and add a **tag** rule `v*`, otherwise a release tag's publish is refused
+   ("not allowed to deploy to github-pages due to environment protection rules").
+
+The deployment leaves out dotfiles (`.nojekyll` is only in the branch; Pages runs no
+Jekyll for an Actions deployment anyway).
 
 Key rotation: publish the new public key next to the old one first (both in
 the clients' `Signed-By` file), then switch the secrets.
