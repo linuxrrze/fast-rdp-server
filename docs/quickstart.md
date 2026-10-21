@@ -38,7 +38,10 @@ compiles FreeRDP and xrdp on the host, which takes another 10-20 minutes unatten
 make setup                  # = scripts/fastrdp-setup
 ```
 
-Press Enter to keep a default. A lab run looks like this:
+Press Enter to keep a default. Your answers (except passwords) are saved after each
+question in `ansible/inventories/.setup-last-answers.json`, also when you cancel with
+Ctrl-C, and are offered as defaults the next time; `scripts/fastrdp-setup --fresh`
+starts from the built-in defaults instead. A lab run looks like this:
 
 ```
 Deployment type (lab / production) [lab]:
@@ -300,6 +303,8 @@ and `make lint`.
 | NLA login fails, client falls back to NTLM or reports *logon attempt failed* | Connect to the **FQDN**, not an IP or alias (`TERMSRV/<fqdn>`); the client must reach a KDC (VPN or KDC proxy, [client-guide.md](client-guide.md)); on the host `klist -k /etc/fastrdp/termsrv.keytab` lists `TERMSRV/` keys (smoke test) |
 | Certificate warning on every connect | Self-signed lab certificate: accept once (`/cert:tofu`) or set a CA certificate (`tls: provided`) |
 | preflight `ports: in use: 3389` | A stock `xrdp` or a system-wide `gnome-remote-desktop` listens there: `sudo ss -ltnp 'sport = :3389'`, then disable or `apt purge xrdp` (fastrdp installs its own) |
+| preflight `sudo`: `Timeout (12s) waiting for privilege escalation prompt` (with `-K`) | The host's `sudo` is **sudo-rs** (Ubuntu 26.04 default), which never shows the password prompt Ansible waits for. Use classic sudo, installed next to it: `ansible_become_exe: sudo.ws` under `vars:` in `hosts.yml` (`fastrdp-setup` asks for it when sudo needs a password), or give the SSH user passwordless sudo |
+| preflight `sudo`: `sudo: interactive authentication is required` / `a password is required` | sudo needs a password and none was given: `make preflight INVENTORY=… ANSIBLE_ARGS=-K` (the same for `make deploy`) |
 | `apt` install: 404 for `InRelease` | The APT repository is not published for your release/channel yet: set `install_method` to `build` (re-run `scripts/fastrdp-setup --set install_method=build --force --answers .../setup-answers.json`) or try channel `testing` |
 | Login accepted, then the session closes | `journalctl -u fastrdp-brokerd -u fastrdp-proxy -u xrdp-sesman -b`; `sudo fastrdpctl status`; is the user in `allow_groups` and allowed by the GPO (`permissive` logs denials in the sssd log)? |
 | MFA push: client waits, then fails | privacyIDEA unreachable from the host (preflight), no service admin for SSO logins, or the push was not approved within `push_timeout` (60 s) |

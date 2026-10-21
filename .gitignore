@@ -13,3 +13,4 @@ tests/perf/rdpbench/perfload
 # example stays tracked.
 ansible/inventories/*/
 !ansible/inventories/lab/
+ansible/inventories/.setup-last-answers.json*

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-"""Tests for scripts/fastrdp-setup (non-interactive mode).
+"""Tests for scripts/fastrdp-setup (non-interactive mode; remembered answers interactively).
 
     python3 -m unittest discover -s scripts/tests      # or: make test-setup
 
@@ -228,7 +228,13 @@ class TestGeneratedInventory(SetupTestCase):
                   "fastrdp_ad_gpo_access_control"):
             self.assertNotIn(k, main)
         self.assertIn("--ask-become-pass", out)
-        self.assertIn("make preflight INVENTORY=", out)
+        # make needs the sudo prompt flag in ANSIBLE_ARGS (it passes it on to ansible-playbook)
+        for target in ("preflight", "deploy"):
+            self.assertIn(f"make {target} INVENTORY={self.out / 'corp'} VAULT_PASSWORD_FILE={self.pwfile} ANSIBLE_ARGS=-K", out)
+        self.assertNotIn("ansible_become_exe", (self.out / "corp" / "hosts.yml").read_text())   # sudo
+        _inv, lab_out = self.generate(LAB)                  # become_password defaults to no
+        self.assertIn("make preflight INVENTORY=", lab_out)
+        self.assertNotIn("ANSIBLE_ARGS", lab_out)
 
     def test_only_known_variables(self):
         corpus = role_corpus()
@@ -449,6 +455,22 @@ class TestValidation(SetupTestCase):
         no_pw.pop("join_password")
         self.assert_rejected(no_pw, "FASTRDP_JOIN_PASSWORD")
 
+    def test_become_exe_for_sudo_rs(self):
+        inv, _ = self.generate(self.production(become_exe="sudo.ws"),
+                               env={"FASTRDP_JOIN_PASSWORD": SECRETS["join_password"]})
+        hosts = (inv / "hosts.yml").read_text()
+        self.assertIn("ansible_become_exe: sudo.ws", hosts)
+        if yaml:
+            hv = yaml.safe_load(hosts)["all"]["children"]["rdp_servers"]["vars"]
+            self.assertEqual(hv, {"ansible_user": "deploy", "ansible_become_exe": "sudo.ws"})
+        rc, _o, err = self.run_tool(self.production(name="x", become_exe="sudo -n"),
+                                    env={"FASTRDP_JOIN_PASSWORD": "x"})
+        self.assertEqual(rc, 2, err)
+        self.assertIn("program name", err)
+        # only asked (and used) when sudo needs a password
+        inv, _ = self.generate(dict(LAB, name="nopw", become_exe="sudo.ws"))
+        self.assertNotIn("ansible_become_exe", (inv / "hosts.yml").read_text())
+
     def test_existing_inventory_needs_force(self):
         self.generate(LAB)
         rc, _o, err = self.run_tool(LAB)
@@ -476,6 +498,114 @@ class TestValidation(SetupTestCase):
             q = setup.yaml_scalar(s)
             self.assertTrue(q.startswith('"'), (s, q))
             self.assertEqual(json.loads(q), s)
+
+
+class FakeTTY(io.StringIO):
+    """stdin of an interactive run: these lines, then Ctrl-D (or Ctrl-C with interrupt=True)."""
+
+    def __init__(self, lines, interrupt=False):
+        super().__init__("".join(line + "\n" for line in lines))
+        self.interrupt = interrupt
+
+    def isatty(self):
+        return True
+
+    def readline(self, *a):
+        line = super().readline(*a)
+        if not line and self.interrupt:
+            raise KeyboardInterrupt
+        return line
+
+
+class TestRememberedAnswers(SetupTestCase):
+    """Interactive answers are saved after every question and offered as defaults next time."""
+
+    def interactive(self, lines, *extra, interrupt=False):
+        out, err = io.StringIO(), io.StringIO()
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("FASTRDP_")}
+        environ["FASTRDP_ANSIBLE_VAULT"] = str(self.stub)
+        with mock.patch.dict(os.environ, environ, clear=True), \
+                mock.patch.object(setup.sys, "stdin", FakeTTY(lines, interrupt)), \
+                mock.patch.object(setup, "probe_apt_repo", return_value=False), \
+                mock.patch.object(setup.getpass, "getpass", return_value=SECRETS["join_password"]), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = setup.main(["--output-dir", str(self.out), "--vault-password-file", str(self.pwfile), *extra])
+        return rc, out.getvalue(), err.getvalue()
+
+    @property
+    def memory(self):
+        return self.out / setup.LAST_ANSWERS
+
+    def remembered(self):
+        return json.loads(self.memory.read_text())
+
+    # profile, hosts, name, ssh_user: then cancelled
+    FIRST = ["production", "rdp1.corp.example.com", "corp", "deploy"]
+
+    def test_cancelled_run_keeps_answers(self):
+        for interrupt in (True, False):         # Ctrl-C, Ctrl-D
+            with self.subTest(interrupt=interrupt):
+                shutil.rmtree(self.out, ignore_errors=True)
+                rc, _o, err = self.interactive(self.FIRST, interrupt=interrupt)
+                self.assertEqual(rc, 130 if interrupt else 2, err)
+                self.assertEqual(self.remembered(), {"profile": "production",
+                                                     "hosts": ["rdp1.corp.example.com"],
+                                                     "name": "corp", "ssh_user": "deploy"})
+                self.assertEqual(stat.S_IMODE(self.memory.stat().st_mode), 0o600)
+                self.assertFalse((self.out / "corp").exists())     # no inventory yet
+
+    def test_next_run_offers_them_as_defaults(self):
+        self.interactive(self.FIRST, interrupt=True)
+        rc, _o, err = self.interactive([], interrupt=True)          # only Ctrl-C at the first question
+        self.assertEqual(rc, 130)
+        self.assertIn("Defaults include your answers from the last run", err)
+        self.assertIn("Deployment type (lab / production) [production]:", err)
+        rc, _o, err = self.interactive(["", ""], interrupt=True)    # Enter, Enter
+        self.assertIn("RDP server(s), fully qualified, comma-separated [rdp1.corp.example.com]:", err)
+        self.assertIn("Inventory name (ansible/inventories/<name>) [corp]:", err)
+        # answers not reached in this run are kept
+        self.assertEqual(self.remembered()["ssh_user"], "deploy")
+
+    def test_complete_run_and_secrets(self):
+        lab = ["lab", "rdp1.lab.example.com", "mylab", "admin"]
+        rc, _o, err = self.interactive(lab + [""] * 60)
+        self.assertEqual(rc, 0, err)
+        mem = self.remembered()
+        self.assertEqual(mem["hosts"], ["rdp1.lab.example.com"])
+        self.assertEqual(mem["identity_provider"], "ad")
+        self.assertNotIn("join_password", mem)
+        self.assertNotIn(SECRETS["join_password"], self.memory.read_text())
+        written = json.loads((self.out / "mylab" / "setup-answers.json").read_text())
+        self.assertEqual({k: mem[k] for k in written if k in setup.REMEMBERED_KEYS},
+                         {k: v for k, v in written.items() if k in setup.REMEMBERED_KEYS})
+        # all defaults now: the same inventory again
+        rc, _o, err = self.interactive([""] * 60, "--force")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads((self.out / "mylab" / "setup-answers.json").read_text()), written)
+
+    def test_fresh_ignores_and_replaces(self):
+        self.interactive(self.FIRST, interrupt=True)
+        rc, _o, err = self.interactive(["lab"], "--fresh", interrupt=True)
+        self.assertNotIn("Defaults include", err)
+        self.assertIn("Deployment type (lab / production) [lab]:", err)
+        self.assertEqual(self.remembered(), {"profile": "lab"})
+
+    def test_invalid_or_broken_memory(self):
+        self.out.mkdir(parents=True)
+        self.memory.write_text(json.dumps({"profile": "staging", "join_password": "x", "colour": 1}))
+        rc, _o, err = self.interactive([], interrupt=True)
+        self.assertIn("Deployment type (lab / production) [lab]:", err)    # invalid: question default
+        self.memory.write_text("{not json")
+        rc, _o, err = self.interactive([], interrupt=True)
+        self.assertEqual(rc, 130)
+        self.assertIn("ignoring", err)
+
+    def test_non_interactive_neither_reads_nor_writes(self):
+        self.out.mkdir(parents=True)
+        self.memory.write_text(json.dumps({"ssh_user": "someone-else"}))
+        inv, _ = self.generate(LAB)
+        self.assertEqual(json.loads((inv / "setup-answers.json").read_text())["ssh_user"], "admin")
+        self.assertEqual(self.remembered(), {"ssh_user": "someone-else"})
 
 
 if __name__ == "__main__":

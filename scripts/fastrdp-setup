@@ -12,6 +12,9 @@ deployment needs, writes
     ansible/inventories/<name>/setup-answers.json        (the answers without secrets, for re-runs)
 
 and prints the next commands (preflight, playbook, smoke test, first connection).
+Interactive runs remember the non-secret answers after every question in
+ansible/inventories/.setup-last-answers.json (also when cancelled) and offer them as
+defaults next time; --fresh ignores them.
 
     scripts/fastrdp-setup                               # interactive
     scripts/fastrdp-setup --answers site.json --non-interactive \\
@@ -205,6 +208,13 @@ def v_user(value, _a=None):
     return v
 
 
+def v_become_exe(value, _a=None):
+    v = _str(value) or "sudo"
+    if not re.match(r"^(/[A-Za-z0-9._/-]+|[A-Za-z0-9._-]+)$", v):
+        raise SetupError("a program name such as sudo or sudo.ws, or an absolute path")
+    return v
+
+
 def v_realm(value, a):
     v = _str(value)
     if not re.match(r"^[A-Z0-9]([A-Z0-9-]*[A-Z0-9])?(\.[A-Z0-9]([A-Z0-9-]*[A-Z0-9])?)+$", v):
@@ -387,6 +397,11 @@ QUESTIONS = [
       lambda a: getpass.getuser()),
     Q("become_password", "Does this user need a password for sudo? (y/n)", _bool,
       lambda a: False, when=lambda a: a.get("ssh_user") != "root"),
+    Q("become_exe", "sudo program on the host(s) (sudo / sudo.ws)", v_become_exe, "sudo",
+      when=lambda a: bool(a.get("become_password")),
+      help="Ubuntu 26.04's sudo is sudo-rs, which never shows the password prompt Ansible waits\n"
+           "for (preflight: 'Timeout waiting for privilege escalation prompt'). Answer sudo.ws\n"
+           "there: classic sudo, installed next to it. Debian 13: sudo."),
     Q("identity_provider", "Directory: ad (Samba/Windows AD) / ipa (FreeIPA) / none (MIT KDC, keytab provided)",
       v_choice("ad", "ipa", "none"), "ad",
       help="ad and ipa join the host automatically. With none you provide the TERMSRV keytab\n"
@@ -472,9 +487,13 @@ EXTRA_KEYS = {"connection", "privacyidea_verify_tls", "vault_password_file"}
 
 # ----------------------------------------------------------------------------- answering
 
-def ask_interactive(q, a, stream_in=sys.stdin, stream_out=sys.stderr):
-    """Ask until the answer validates."""
-    default = q.default_for(a)
+_ROLE_DEFAULT = object()
+
+
+def ask_interactive(q, a, stream_in=sys.stdin, stream_out=sys.stderr, default=_ROLE_DEFAULT):
+    """Ask until the answer validates. default: shown and taken on Enter (else the question's)."""
+    if default is _ROLE_DEFAULT:
+        default = q.default_for(a)
     if q.help:
         print("\n" + q.help, file=stream_out)
     while True:
@@ -507,8 +526,62 @@ def ask_interactive(q, a, stream_in=sys.stdin, stream_out=sys.stderr):
             print(f"  -> {e}", file=stream_out)
 
 
-def resolve(given, interactive, env=os.environ):
-    """Fill and validate all answers. given: dict from answers file / --set."""
+LAST_ANSWERS = ".setup-last-answers.json"
+REMEMBERED_KEYS = {q.key for q in QUESTIONS if not q.secret} - set(VAULT_KEYS)
+
+
+class LastAnswers:
+    """Non-secret answers of the last interactive run, in <output-dir>/.setup-last-answers.json.
+
+    Saved after every answer, so a cancelled run keeps what was entered; offered as the
+    defaults of the next interactive run. Answers not reached in this run are kept."""
+
+    def __init__(self, path, fresh=False):
+        self.path = Path(path)
+        self.values = {} if fresh else self._load()
+        self.failed = False
+
+    def _load(self):
+        try:
+            data = json.loads(self.path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as e:
+            print(f"ignoring {self.path}: {e}", file=sys.stderr)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if k in REMEMBERED_KEYS}
+
+    def default_for(self, q, a):
+        """The remembered answer if it still validates here, else the question's default."""
+        if q.key in self.values:
+            try:
+                return q.validate(self.values[q.key], a)
+            except (SetupError, TypeError, KeyError, AttributeError, IndexError, ValueError):
+                pass
+        return q.default_for(a)
+
+    def save(self, a):
+        if self.failed:
+            return
+        self.values.update({k: v for k, v in a.items() if k in REMEMBERED_KEYS and v is not None})
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + ".")
+            with os.fdopen(fd, "w") as f:       # mkstemp: mode 0600
+                json.dump(self.values, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, self.path)
+        except OSError as e:
+            self.failed = True
+            print(f"  (answers not remembered: {e})", file=sys.stderr)
+
+
+def resolve(given, interactive, env=os.environ, last=None, stream_in=None, stream_out=None):
+    """Fill and validate all answers. given: dict from answers file / --set.
+    last: LastAnswers (interactive runs) for remembered defaults, saved after every answer."""
+    asks = {"stream_in": stream_in or sys.stdin, "stream_out": stream_out or sys.stderr}
     unknown = set(given) - QUESTION_KEYS - EXTRA_KEYS
     if unknown:
         raise SetupError("unknown answer key(s): " + ", ".join(sorted(unknown)))
@@ -533,17 +606,22 @@ def resolve(given, interactive, env=os.environ):
                     if not interactive:
                         raise
                     print(f"{q.key}: {e}", file=sys.stderr)
-                    a[q.key] = ask_interactive(q, a)
+                    a[q.key] = ask_interactive(q, a, **asks)
             elif q.secret and env.get(SECRET_ENV.get(q.key, "")):
                 a[q.key] = v_secret(env[SECRET_ENV[q.key]], a)
             elif interactive and q.ask(a):
-                a[q.key] = ask_interactive(q, a)
+                if last is not None:
+                    a[q.key] = ask_interactive(q, a, default=last.default_for(q, a), **asks)
+                else:
+                    a[q.key] = ask_interactive(q, a, **asks)
             else:
                 default = q.default_for(a)
                 if default is None:
                     hint = f" (or environment variable {SECRET_ENV[q.key]})" if q.key in SECRET_ENV else ""
                     raise SetupError(f"missing answer{hint}")
                 a[q.key] = q.validate(default, a)
+            if last is not None:
+                last.save(a)
         except SetupError as e:
             errors.append(f"{q.key}: {e}")
             a[q.key] = None
@@ -676,6 +754,8 @@ def render_hosts(a):
         hv["ansible_user"] = a["ssh_user"]
     if a.get("connection"):
         hv["ansible_connection"] = a["connection"]
+    if a.get("become_exe", "sudo") != "sudo":
+        hv["ansible_become_exe"] = a["become_exe"]       # sudo.ws: classic sudo next to sudo-rs
     if hv:
         out.append("      vars:")
         out.extend(f"        {k}: {yaml_scalar(v)}" for k, v in hv.items())
@@ -790,6 +870,10 @@ def next_steps(a, inv_dir, vault_mode, password_file):
     f = (" " + " ".join(flags)) if flags else ""
     host = a["hosts"][0]
     make_inv = a["name"] if inv_dir.parent == (ANSIBLE_DIR / "inventories").resolve() else str(inv_dir)
+    if password_file and vault_mode:
+        make_inv += f" VAULT_PASSWORD_FILE={password_file}"
+    if a.get("become_password"):
+        make_inv += " ANSIBLE_ARGS=-K"      # make passes it on to ansible-playbook
     user = "alice"
     lines = [
         "",
@@ -798,11 +882,10 @@ def next_steps(a, inv_dir, vault_mode, password_file):
         "Next steps (from the repository root):",
         f"  1. Review {inv_dir / 'group_vars/all/main.yml'} (comments say what each line does).",
         "  2. Preflight, read-only checks on the target(s):",
-        f"       make preflight INVENTORY={make_inv}" +
-        (f" VAULT_PASSWORD_FILE={password_file}" if password_file and vault_mode else ""),
+        f"       make preflight INVENTORY={make_inv}",
         f"     or: cd ansible && ansible-playbook -i {rel}/hosts.yml preflight.yml{f}",
         "  3. Deploy:",
-        f"       make deploy INVENTORY={make_inv}" + (f" VAULT_PASSWORD_FILE={password_file}" if password_file and vault_mode else ""),
+        f"       make deploy INVENTORY={make_inv}",
         f"     or: cd ansible && ansible-playbook -i {rel}/hosts.yml site.yml{f}",
         "  4. Smoke test on the host(s) with a directory user:",
         f"       cd ansible && ansible -i {rel}/hosts.yml rdp_servers -b{f} \\",
@@ -870,6 +953,9 @@ def main(argv=None):
                    help="allow writing vault.yml unencrypted when ansible-vault is missing")
     p.add_argument("--force", action="store_true", help="overwrite an existing inventory directory")
     p.add_argument("--print-answers", action="store_true", help="only validate and print the answers (no files)")
+    p.add_argument("--fresh", action="store_true",
+                   help="interactive: ignore the answers remembered from the last run "
+                        "(<output-dir>/" + LAST_ANSWERS + ")")
     args = p.parse_args(argv)
 
     try:
@@ -878,9 +964,15 @@ def main(argv=None):
         interactive = not args.non_interactive and sys.stdin.isatty()
         if not interactive and not args.non_interactive:
             raise SetupError("stdin is not a terminal: use --non-interactive with --answers/--set")
+        last = None
         if interactive:
-            print("fast-rdp-server setup. Press Enter to accept the [default].\n", file=sys.stderr)
-        a = resolve(given, interactive)
+            print("fast-rdp-server setup. Press Enter to accept the [default].", file=sys.stderr)
+            last = LastAnswers(Path(args.output_dir) / LAST_ANSWERS, fresh=args.fresh)
+            if last.values:
+                print(f"Defaults include your answers from the last run ({last.path}); "
+                      "--fresh ignores them.", file=sys.stderr)
+            print(file=sys.stderr)
+        a = resolve(given, interactive, last=last)
         if args.print_answers:
             print(json.dumps(public_answers(a), indent=2))
             return 0

@@ -24,8 +24,8 @@
     preflight_required_vars: [fastrdp_realm, fastrdp_domain]
     preflight_realm: "{{ fastrdp_realm | default('') }}"
     preflight_domain: "{{ fastrdp_domain | default('') | lower }}"
-    preflight_idp: "{{ fastrdp_identity_provider | default('') }}"
-    preflight_desktops: "{{ fastrdp_desktops | default([]) }}"
+    preflight_idp: "{{ fastrdp_identity_provider | default(preflight_role_defaults.fastrdp_identity_provider) }}"
+    preflight_desktops: "{{ fastrdp_desktops | default(preflight_role_defaults.fastrdp_desktops) }}"
     preflight_gpu: "{{ fastrdp_gpu | default('auto') }}"
     preflight_mfa_mode: "{{ fastrdp_mfa_mode | default('none') }}"
     preflight_kdc_enforced: >-
@@ -72,8 +72,8 @@
                + (['fastrdp_privacyidea_url'] if preflight_mfa_mode != 'none' else []))
               | difference(query('ansible.builtin.varnames', '^fastrdp_')))
              + (['vault_fastrdp_join_password (vault.yml)']
-                if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default('') | length == 0
-                   and fastrdp_join_password | default('') | length == 0 else [])
+                if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0
+                   and fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0 else [])
              | sort }}
       ansible.builtin.set_fact:
         preflight_results: >-
@@ -90,9 +90,9 @@
              + (['AD realm must be the DNS domain in upper case (' ~ preflight_domain | upper ~ ')']
                 if preflight_idp == 'ad' and preflight_realm != preflight_domain | upper else [])
              + (['join password is empty: is vault.yml loaded (--ask-vault-pass)?']
-                if preflight_idp in ['ad', 'ipa'] and fastrdp_join_password | default('') | length == 0 else [])
+                if preflight_idp in ['ad', 'ipa'] and fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0 else [])
              + (['fastrdp_default_desktop is not in fastrdp_desktops']
-                if fastrdp_default_desktop | default('') not in preflight_desktops else []) }}
+                if fastrdp_default_desktop | default(preflight_role_defaults.fastrdp_default_desktop) not in preflight_desktops else []) }}
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'identity/desktop settings',
@@ -114,25 +114,46 @@
                        ~ ansible_facts.architecture ~ ')',
              'fix': 'install Ubuntu 26.04 or Debian 13 (amd64)'}] }}
 
-    - name: Check privilege escalation (sudo) works
-      block:
-        - name: Run a no-op command as root
-          ansible.builtin.command: /usr/bin/true
-          become: true
-          changed_when: false
-          register: preflight_become
+    # sudo-rs (Ubuntu 26.04's default sudo) does not show Ansible's password prompt: with -K the
+    # task times out (reported as unreachable). Classic sudo is installed next to it as sudo.ws.
+    - name: Which sudo is installed (no privileges needed)
+      ansible.builtin.command: sudo --version
+      register: preflight_sudo_version
+      changed_when: false
+      failed_when: false
 
-        - name: Result - sudo
-          ansible.builtin.set_fact:
-            preflight_results: "{{ preflight_results + [{'check': 'sudo', 'status': 'PASS', 'detail': 'become works', 'fix': ''}] }}"
-      rescue:
-        - name: Result - sudo failed
-          ansible.builtin.set_fact:
-            preflight_become_failed: true
-            preflight_results: >-
-              {{ preflight_results + [{'check': 'sudo', 'status': 'FAIL',
-                 'detail': ansible_failed_result.msg | default('become failed') | split() | join(' ') | truncate(160),
-                 'fix': 'pass --ask-become-pass (-K), or allow the SSH user to sudo'}] }}
+    - name: Look for classic sudo next to sudo-rs
+      ansible.builtin.stat:
+        path: /usr/bin/sudo.ws
+      register: preflight_sudo_ws
+
+    - name: Run a no-op command as root
+      ansible.builtin.command: /usr/bin/true
+      become: true
+      changed_when: false
+      register: preflight_become
+      ignore_errors: true         # evaluated below; a FAIL line instead of an aborted play
+      ignore_unreachable: true    # a privilege escalation timeout counts as unreachable
+
+    - name: Result - sudo
+      vars:
+        become_failed: "{{ preflight_become.failed | default(false) or preflight_become.unreachable | default(false) }}"
+        sudo_rs: "{{ (preflight_sudo_version.stdout | default('')) is search('sudo-rs') }}"
+        sudo_exe: "{{ ansible_become_exe | default('sudo') }}"
+        hints: >-
+          {{ (['sudo is sudo-rs, which never shows the password prompt Ansible waits for: set ansible_become_exe: sudo.ws (classic sudo) in hosts.yml'
+               ~ ('' if preflight_sudo_ws.stat.exists | default(false) else ' (install the sudo package first)')]
+              if sudo_rs and sudo_exe == 'sudo' else [])
+             + ['pass the sudo password: make preflight/deploy ... ANSIBLE_ARGS=-K (ansible-playbook -K)',
+                'or allow the SSH user passwordless sudo'] }}
+      ansible.builtin.set_fact:
+        preflight_become_failed: "{{ become_failed }}"
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'sudo',
+             'status': 'FAIL' if become_failed else 'PASS',
+             'detail': ((preflight_become.msg | default('become failed') | split() | join(' ') | truncate(160)) if become_failed else 'become works')
+                       ~ (' (' ~ ((preflight_sudo_version.stdout_lines | default([])) + ['no sudo found']) | first ~ ', ansible_become_exe ' ~ sudo_exe ~ ')'),
+             'fix': hints | join('; ') if become_failed else ''}] }}
 
     # ------------------------------------------------------------------ name and DNS
     - name: Resolve the FQDN on the target (NSS, as Kerberos and sssd see it)
@@ -442,7 +463,7 @@
              + (['CA file ' ~ preflight_pi_ca_src ~ ' not found on the admin machine']
                 if preflight_pi_ca_src and preflight_pi_ca_src is not file else [])
              + (['service password empty (vault loaded?)'] if fastrdp_privacyidea_service_user | default('') | length > 0
-                and fastrdp_privacyidea_service_password | default('') | length == 0 else []) }}
+                and fastrdp_privacyidea_service_password | default(vault_fastrdp_privacyidea_service_password | default('')) | length == 0 else []) }}
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'privacyIDEA',
@@ -502,7 +523,7 @@
           echo DONE
       environment:
         JOIN_USER: "{{ fastrdp_join_user | default(preflight_role_defaults.fastrdp_join_user) }}"
-        JOIN_PW: "{{ fastrdp_join_password | default('') }}"
+        JOIN_PW: "{{ fastrdp_join_password | default(vault_fastrdp_join_password | default('')) }}"
         FQDN: "{{ ansible_facts.fqdn }}"
       register: preflight_authind
       changed_when: false
@@ -536,7 +557,7 @@
              + (['AD: not verifiable here; you assert an AD policy enforces strong logon'] if state == 'AD' and by_ad_policy else [])
              + (['provider none: not verifiable here; your KDC must require passkey/PKINIT for TERMSRV '
                  ~ '(MIT: kadmin set_string TERMSRV/' ~ ansible_facts.fqdn ~ ' require_auth "pkinit")'] if state == 'NONE' else []) }}
-        fixable: "{{ set_by_role and fastrdp_join_password | default('') | length > 0 }}"
+        fixable: "{{ set_by_role and fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length > 0 }}"
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'KDC-enforced NLA MFA',

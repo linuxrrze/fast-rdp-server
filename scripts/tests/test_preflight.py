@@ -96,6 +96,38 @@ class TestPreflight(unittest.TestCase):
         self.assertIn("'fastrdp_privacyidea_url'", text)
         self.assertIn("vault_fastrdp_join_password", text)
 
+    def test_fallbacks_match_role_defaults(self):
+        # scripts/fastrdp-setup leaves out variables equal to their role default, and this play
+        # does not load role defaults: every `fastrdp_x | default(...)` must mean what the role does
+        defaults = {}
+        for f in sorted((REPO / "ansible" / "roles").glob("*/defaults/main.yml")):
+            defaults.update(yaml.safe_load(f.read_text()) or {})
+        text = PLAYBOOK.read_text()
+        checked = 0
+        for m in re.finditer(r"\b(fastrdp_[a-z0-9_]+) \| default\(", text):
+            name, depth, i = m.group(1), 1, m.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(text[i], 0)
+                i += 1
+            arg = text[m.end():i - 1].strip()
+            if name not in defaults:
+                continue
+            role = defaults[name]
+            with self.subTest(name=name, fallback=arg):
+                literal = re.fullmatch(r"'[^']*'|\[[^]]*\]|\d+", arg)
+                if isinstance(role, str) and "{{" in role:
+                    # templated role default (vault_*, other variables): never a constant here
+                    self.assertFalse(literal, f"role default is {role!r}")
+                    vault = set(re.findall(r"\bvault_fastrdp_[a-z0-9_]+", role))
+                    self.assertTrue(vault <= set(re.findall(r"\bvault_fastrdp_[a-z0-9_]+", arg)),
+                                    f"role default is {role!r}")
+                elif not literal:
+                    pass        # read from preflight_role_defaults, or an equivalent expression
+                else:
+                    self.assertEqual(yaml.safe_load(arg.replace("'", '"')), role)
+                checked += 1
+        self.assertGreater(checked, 15)
+
     def test_syntax_check(self):
         exe = shutil.which("ansible-playbook")
         if not exe:
@@ -111,7 +143,8 @@ class TestPreflight(unittest.TestCase):
     def test_no_ansible_fact_injection(self):
         # INJECT_FACTS_AS_VARS is deprecated: facts via ansible_facts.* only
         text = PLAYBOOK.read_text()
-        allowed = {"ansible_facts", "ansible_failed_result", "ansible_host", "ansible_check_mode"}
+        allowed = {"ansible_facts", "ansible_failed_result", "ansible_host", "ansible_check_mode",
+                   "ansible_become_exe"}   # connection variable (sudo.ws with sudo-rs), not a fact
         used = set(re.findall(r"\b(ansible_[a-z0-9_]+)", text))
         self.assertEqual(used - allowed, set())
 
