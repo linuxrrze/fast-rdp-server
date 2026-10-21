@@ -1,3 +1,18 @@
+fast-rdp-server (0.5.0) unstable; urgency=medium
+
+  * Kerberos NLA from Windows mstsc with AD: user-to-user acceptor
+    (fastrdp-freerdp3 3.32.2-3), machine account entries in the proxy keytab.
+  * Proxy NLA acceptor offers only Kerberos; NTLM attempts logged with a hint.
+  * Session TGTs: default-cache checks and kswitch, ticket visibility
+    (fastrdpctl status/tickets), per-group session_tgt, expiry reminder in
+    sessions (fastrdp_tgt_notify).
+  * SMB/CIFS homes via gssproxy (opt-in), KDC proxy on the web gateway (opt-in),
+    browser SPNEGO policies and a .deb Firefox option (opt-in).
+  * Power actions blocked for users in RDP sessions (polkit rule).
+  * CI: publish queue and lease push to gh-pages, Pages deployed by the workflow.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 23:01:19 +0200
+
 fast-rdp-server (0.4.4) unstable; urgency=medium
 
   * Remote Credential Guard (mstsc /remoteGuard): refused with a negotiation
