@@ -488,6 +488,30 @@ delegation and web users cannot use the server; `fastrdp_session_tgt: required`
 refuses them early. Users must reconnect with a password at least once per renewal
 period (7 days).
 
+When only some users have Kerberized homes, require it for them alone:
+`fastrdp_session_tgt_groups` (broker `[broker.session_tgt_groups]`) maps groups to
+a mode, and everybody in none of the listed groups keeps `fastrdp_session_tgt`:
+
+```yaml
+fastrdp_session_tgt: auto            # everybody else: TGT when there is a password
+fastrdp_session_tgt_groups:
+  nfs-homes: required                # refuse their logins without a password
+  kiosk: "off"                       # quoted: a bare off is YAML false
+```
+
+A member of several listed groups gets the strictest of their modes (`required` >
+`auto` > `off`), whatever the order: a group that only opts out of the TGT step
+(`off`) never removes the refusal another group needs. A listed group also overrides a
+stricter global value (`fastrdp_session_tgt: required` with `local-staff: auto`).
+Group names match as in `fastrdp_allow_groups`: the short name or, with fully
+qualified SSSD names, `nfs-homes@example.com`. The refusal names the group
+(`login without a password, but [broker.session_tgt_groups] nfs-homes = required`),
+and a login whose mode differs from the global one logs
+`USER: session_tgt = required (group nfs-homes; default auto)`. The per-group mode
+applies at the same points as the global one: before MFA (also with reconnect grace,
+`nla_kdc_enforced`, Remote Credential Guard and web logins), and for the GNOME/Plasma
+TGT request.
+
 ### d) Local or cached home directories
 
 Give sessions a local `$HOME` (e.g. `fallback_homedir`/`override_homedir = /home/%u`

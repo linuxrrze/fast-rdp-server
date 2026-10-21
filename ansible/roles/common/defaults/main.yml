@@ -32,6 +32,11 @@ fastrdp_sssd_fully_qualified_names: false
 # without a password (Kerberos SSO without delegation, smartcard, web), e.g. for
 # Kerberized NFS homes without gssproxy impersonation; off. docs/nfs-kerberos-homes.md
 fastrdp_session_tgt: auto
+# fastrdp_session_tgt per group (broker [broker.session_tgt_groups]): {group: mode}, e.g.
+# {nfs-homes: required, kiosk: "off"} (quote "off": YAML reads a bare off as false).
+# Members of listed groups get the strictest mode of their groups (required > auto >
+# off), everybody else fastrdp_session_tgt. Group names as in fastrdp_allow_groups.
+fastrdp_session_tgt_groups: {}
 
 # Other DNS names clients type for THIS host (DNS aliases), e.g. [rdp.example.com].
 # Each gets a TERMSRV/<alias> Kerberos principal (identity role; registering it needs

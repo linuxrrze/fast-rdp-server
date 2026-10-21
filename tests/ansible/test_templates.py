@@ -265,6 +265,16 @@ class BrokerToml(unittest.TestCase):
     def test_session_tgt_required(self):
         self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")
 
+    def test_session_tgt_groups(self):
+        self.assertEqual(broker_config.parse(toml("broker-lab.toml")).broker.session_tgt_groups, {})
+        self.assertNotIn("session_tgt_groups", (OUT / "broker-lab.toml").read_text())  # empty: no table
+        cfg = broker_config.parse(toml("broker-tgt-groups.toml"))
+        self.assertEqual(cfg.broker.session_tgt, "auto")
+        self.assertEqual(cfg.broker.session_tgt_groups, {
+            "nfs-homes": "required", "kiosk": "off", "domain users@example.com": "auto",
+            'grp "quoted"': "required"})
+        self.assertEqual(cfg.broker.home_create_roots, ["/home"])  # [broker] keys before the table
+
     def test_mfa_variant_accepted_by_broker(self):
         cfg = broker_config.parse(toml("broker-mfa.toml"))
         self.assertEqual(cfg.auth.realms, ["LAB.EXAMPLE.COM"])
@@ -389,6 +399,11 @@ class CommonChecks(unittest.TestCase):
             "unknown identity provider": dict(ok, fastrdp_identity_provider="ldap"),
             "xrdp port = front port": dict(ok, fastrdp_xrdp_port=3389),
             "unknown session_tgt": dict(ok, fastrdp_session_tgt="yes"),
+            "session_tgt groups as a list": dict(ok, fastrdp_session_tgt_groups=["nfs-homes"]),
+            "session_tgt group mode unknown": dict(ok, fastrdp_session_tgt_groups={"nfs-homes": "yes"}),
+            "session_tgt group mode unquoted off": dict(ok, fastrdp_session_tgt_groups={"kiosk": False}),
+            "session_tgt group name empty": dict(ok, fastrdp_session_tgt_groups={"": "required"}),
+            "session_tgt group name with a newline": dict(ok, fastrdp_session_tgt_groups={"a\nb": "required"}),
             "unknown GPU stack": dict(ok, fastrdp_gpu="intel"),
             "alias not a DNS name": dict(ok, fastrdp_termsrv_aliases=["rdp;reboot"]),
             "alias list given as a string": dict(ok, fastrdp_termsrv_aliases="rdp.example.com"),
@@ -456,6 +471,11 @@ class CommonChecks(unittest.TestCase):
         for value in (True, False, "true", "false"):
             with self.subTest(value):
                 self.assertEqual(self.run_checks(**ok, fastrdp_sssd_fully_qualified_names=value), 0)
+
+    def test_session_tgt_groups_pass(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        self.assertEqual(self.run_checks(**ok, fastrdp_session_tgt_groups={
+            "nfs-homes": "required", "kiosk": "off", "domain users@example.com": "auto"}), 0)
 
     def test_aliases_pass(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",

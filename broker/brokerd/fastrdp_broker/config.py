@@ -42,6 +42,10 @@ class BrokerSection:
     # "required" = refuse logins without a password, and logins whose TGT step fails.
     # "off" = never. See docs/nfs-kerberos-homes.md.
     session_tgt: str = "auto"
+    # session_tgt per group: {group: mode}. A member of listed groups gets the strictest
+    # of their modes (required > auto > off), whatever session_tgt says; everybody else
+    # gets session_tgt. Names as in allow_groups (short or "group@domain").
+    session_tgt_groups: dict[str, str] = field(default_factory=dict)
     # Home directory of the user before any back-end starts (home.py): "create" = refuse
     # with a clear log line if it is unusable, create it (mkhomedir_helper, mode 0700)
     # if only its last component is missing; "check" = never create; "off" = no check.
@@ -205,6 +209,13 @@ def parse(raw: dict) -> Config:
         raise ConfigError("[broker] home_read_timeout must be a number of seconds in 0..60")
     if broker.session_tgt not in VALID_SESSION_TGT:
         raise ConfigError(f"[broker] session_tgt must be one of {VALID_SESSION_TGT}")
+    if not isinstance(broker.session_tgt_groups, dict):
+        raise ConfigError("[broker] session_tgt_groups must be a table of group = mode")
+    for group, mode in broker.session_tgt_groups.items():
+        if not group.strip() or group != group.strip() or any(ord(c) < 32 for c in group):
+            raise ConfigError(f"[broker.session_tgt_groups] invalid group name {group!r}")
+        if mode not in VALID_SESSION_TGT:
+            raise ConfigError(f"[broker.session_tgt_groups] {group}: mode must be one of {VALID_SESSION_TGT}")
     if broker.home_check not in VALID_HOME_CHECK:
         raise ConfigError(f"[broker] home_check must be one of {VALID_HOME_CHECK}")
     if not isinstance(broker.home_create_roots, list) or not all(

@@ -104,20 +104,30 @@ class Broker:
         return "not_allowed" if proven or self.mfa.exempt(user.groups) else "denied"
 
     # ---------------------------------------------------------------- kerberos
+    def tgt_mode(self, user: LocalUser) -> tuple[str, str | None]:
+        """The user's [broker] session_tgt mode and the session_tgt_groups group it comes
+        from (None: the global session_tgt)."""
+        return identity.session_tgt_mode(self.cfg, user)
+
     def require_credential(self, user: LocalUser, password: str | None) -> None:
-        """[broker] session_tgt = required: refuse, before MFA, logins that cannot give
-        the session a TGT (no password: Kerberos SSO without delegation, Remote Credential
-        Guard, smartcard, web)."""
-        if self.cfg.broker.session_tgt == "required" and not password:
+        """session_tgt = required (globally or for one of the user's groups): refuse,
+        before MFA, logins that cannot give the session a TGT (no password: Kerberos SSO
+        without delegation, Remote Credential Guard, smartcard, web)."""
+        mode, group = self.tgt_mode(user)
+        if group is not None and mode != self.cfg.broker.session_tgt:
+            log.info("%s: session_tgt = %s (group %s; default %s)",
+                     user.name, mode, group, self.cfg.broker.session_tgt)
+        if mode == "required" and not password:
+            source = f"[broker.session_tgt_groups] {group}" if group else "[broker] session_tgt"
             raise Denied(
-                f"{user.name}: login without a password, but [broker] session_tgt = required "
+                f"{user.name}: login without a password, but {source} = required "
                 "(Kerberized home?); log in with NLA and a typed/delegated password, or TLS"
             )
 
     async def session_tgt(self, user: LocalUser, password: str | None, backend: Backend) -> None:
         """TGT for back-ends that never see the password (GNOME, Plasma), before they
         start, on every login: a reconnect with a password refreshes an expiring TGT."""
-        mode = self.cfg.broker.session_tgt
+        mode, _ = self.tgt_mode(user)
         if mode == "off" or backend.obtains_tgt or not password:
             return  # without a password "required" already refused the login
         try:

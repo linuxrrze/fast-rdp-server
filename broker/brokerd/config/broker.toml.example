@@ -28,6 +28,12 @@ session_start_timeout = 90
 # or below one (also with symlinks resolved); never a root or another missing parent.
 # [] = never create.
 #home_create_roots = ["/home"]
+# session_tgt per group (group = mode), e.g. required only for users with Kerberized
+# NFS homes: members of listed groups get the strictest mode of their groups
+# (required > auto > off) instead of session_tgt; group names as in allow_groups.
+#[broker.session_tgt_groups]
+#"nfs-homes" = "required"
+#"kiosk" = "off"
 
 [auth]
 realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA

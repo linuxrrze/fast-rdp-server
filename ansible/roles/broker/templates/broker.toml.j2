@@ -6,6 +6,15 @@ port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range
 session_tgt = "{{ fastrdp_session_tgt }}"
 # Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
 home_create_roots = {{ fastrdp_home_create_roots | map('string') | list | to_json }}
+{% if fastrdp_session_tgt_groups | length > 0 %}
+
+# session_tgt per group (fastrdp_session_tgt_groups): the strictest mode of the
+# user's listed groups (required > auto > off), else session_tgt.
+[broker.session_tgt_groups]
+{% for group, mode in fastrdp_session_tgt_groups.items() %}
+{{ group | string | to_json }} = "{{ mode }}"
+{% endfor %}
+{% endif %}
 
 [auth]
 realms = ["{{ fastrdp_realm | upper }}"]

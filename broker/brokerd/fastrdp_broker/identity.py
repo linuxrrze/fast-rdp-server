@@ -256,6 +256,26 @@ def user_allowed(user: LocalUser, auth: AuthSection) -> bool:
     return not auth.allow_groups or bool(user.groups & set(auth.allow_groups))
 
 
+# [broker] session_tgt_groups: a user in groups with different modes gets the strictest.
+SESSION_TGT_STRICTNESS = {"off": 0, "auto": 1, "required": 2}
+
+
+def session_tgt_mode(cfg: Config, user: LocalUser) -> tuple[str, str | None]:
+    """(effective [broker] session_tgt mode, group it comes from or None = the default).
+
+    Members of groups in session_tgt_groups get the strictest mode of those groups
+    (required > auto > off; ties: the first listed group), others session_tgt. Group
+    names match as for allow_groups (user.groups has the short aliases of qualified
+    names)."""
+    best: tuple[str, str] | None = None
+    for group, mode in cfg.broker.session_tgt_groups.items():
+        if group in user.groups and (
+            best is None or SESSION_TGT_STRICTNESS[mode] > SESSION_TGT_STRICTNESS[best[0]]
+        ):
+            best = (mode, group)
+    return best if best else (cfg.broker.session_tgt, None)
+
+
 def read_desktop_pref(user: LocalUser) -> str | None:
     """Read ~/.config/fastrdp/desktop without following symlinks (we run as root).
 

@@ -47,6 +47,9 @@
       - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push']
       - fastrdp_gpu in ['auto', 'nvidia', 'mesa', 'none']
       - fastrdp_session_tgt in ['auto', 'off', 'required']
+      - fastrdp_session_tgt_groups is mapping
+      - fastrdp_session_tgt_groups.values() | map('string') | difference(['auto', 'off', 'required']) | length == 0
+      - fastrdp_session_tgt_groups.keys() | map('string') | reject('match', '^\S([^\x00-\x1f]*\S)?\Z') | list | length == 0
       - fastrdp_sssd_fully_qualified_names | string | lower in ['true', 'false']
       - fastrdp_mfa_mode == 'none' or fastrdp_privacyidea_url | length > 0
       - fastrdp_backend_port_range | length == 2
@@ -75,7 +78,8 @@
       fastrdp_realm and fastrdp_domain (a DNS domain name) are required; fastrdp_default_desktop,
       fastrdp_group_desktops and fastrdp_desktop_groups may only name desktops from
       fastrdp_desktops; MFA modes other than none need fastrdp_privacyidea_url;
-      fastrdp_session_tgt is auto, off or required; fastrdp_sssd_fully_qualified_names is
+      fastrdp_session_tgt is auto, off or required; fastrdp_session_tgt_groups maps group
+      names to auto, "off" (quoted) or required; fastrdp_sssd_fully_qualified_names is
       true or false; fastrdp_gpu is auto, nvidia, mesa or none;
       fastrdp_termsrv_aliases are plain DNS names; fastrdp_mfa_nla_kdc_enforced needs
       fastrdp_mfa_nla_kdc_auth_indicators from passkey, pkinit, otp, radius, idp (never

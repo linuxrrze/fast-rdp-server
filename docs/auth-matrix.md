@@ -24,7 +24,11 @@
 `fastrdp_session_tgt` (`[broker] session_tgt`): `auto` (default) logs a failed TGT
 request and continues; `required` refuses failed requests and refuses logins without
 a password (SSO without delegation, Remote Credential Guard, smartcard, web) before MFA;
-`off` never asks.
+`off` never asks. `fastrdp_session_tgt_groups` (`[broker.session_tgt_groups]`,
+group = mode) sets the mode per group: members of listed groups get the strictest mode
+of their groups (`required` > `auto` > `off`), everybody else `fastrdp_session_tgt`;
+e.g. `required` only for users with Kerberized homes
+([nfs-kerberos-homes.md](nfs-kerberos-homes.md#c-require-a-typed-password-for-users-with-kerberized-homes)).
 Details: [backends/gnome.md](backends/gnome.md#kerberos-ticket-tgt),
 [nfs-kerberos-homes.md](nfs-kerberos-homes.md).
 
@@ -148,7 +152,8 @@ Security review:
   extended by the period: `fastrdpctl clear-grace` limits that once noticed.
 - **`session_tgt`:** grace does not touch it. A grace login with a password (TLS, NLA
   with delegation) still gets a fresh TGT for GNOME/Plasma; with
-  `session_tgt = "required"` a passwordless login is still refused.
+  `session_tgt = "required"` (globally or for one of the user's
+  `session_tgt_groups`) a passwordless login is still refused.
 - **Recommended values:** `300`–`900` seconds with the address binding on. That covers
   a network drop, a VPN reconnect or moving between meeting rooms, but not the next
   morning. Keep it `0` where every login must show a fresh second factor (e.g. admin
