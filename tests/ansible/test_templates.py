@@ -1497,6 +1497,92 @@ class TgtNotify(unittest.TestCase):
         # wlroots compositors run no XDG autostart: wlroots-in-x starts it
         self.assertIn("/tgt-notify\" &", (REPO / "broker/session/libexec/wlroots-in-x").read_text())
 
+class BrowserSso(unittest.TestCase):
+    """Browsers that reach the session TGT in KCM and their SPNEGO policies (desktops role,
+    fastrdp_firefox_deb, fastrdp_browser_spnego_domains; backlog K9)."""
+
+    ROLE = REPO / "ansible/roles/desktops"
+    MOZILLA_FPR = "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
+
+    def policies(self, name):
+        return json.loads((OUT / name).read_text())["policies"]
+
+    def test_firefox_spnego(self):
+        p = self.policies("firefox-policies-spnego.json")
+        # https only, lower case; Firefox matches the name and hosts below it with a dot boundary
+        self.assertEqual(p, {"Authentication": {"SPNEGO": ["https://lab.example.com", "https://intranet.example.org"]}})
+
+    def test_firefox_extra_policies_merged(self):
+        p = self.policies("firefox-policies-merged.json")
+        self.assertIs(p["DisableTelemetry"], True)
+        self.assertIs(p["Authentication"]["Locked"], False)
+        self.assertEqual(p["Authentication"]["SPNEGO"], ["https://lab.example.com"])   # the domains win
+        self.assertEqual(self.policies("firefox-policies-extra.json"), {"DisableTelemetry": True})
+
+    def test_chromium_allowlist(self):
+        data = json.loads((OUT / "chromium-spnego.json").read_text())
+        self.assertEqual(data, {"AuthServerAllowlist":
+                                "lab.example.com,*.lab.example.com,intranet.example.org,*.intranet.example.org"})
+
+    def test_defaults_off(self):
+        text = (self.ROLE / "defaults/main.yml").read_text()
+        self.assertRegex(text, r"(?m)^fastrdp_firefox_deb: false$")
+        self.assertRegex(text, r"(?m)^fastrdp_browser_spnego_domains: \[\]$")
+        self.assertRegex(text, r"(?m)^fastrdp_firefox_policies: \{\}$")
+        self.assertRegex(text, rf"(?m)^fastrdp_firefox_mozilla_key_fingerprint: {self.MOZILLA_FPR}$")
+        self.assertIn("ansible.builtin.include_tasks: browsers.yml", (self.ROLE / "tasks/main.yml").read_text())
+
+    def test_mozilla_repository_tasks(self):
+        tasks = (self.ROLE / "tasks/browsers.yml").read_text()
+        # the downloaded key is checked before it becomes an APT keyring
+        self.assertLess(tasks.index("name: Browsers - the key is Mozilla's"),
+                        tasks.index("dest: /etc/apt/keyrings/packages.mozilla.org.asc"))
+        self.assertIn("Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc", tasks)
+        self.assertIn("URIs: https://packages.mozilla.org/apt", tasks)
+        # pinned: only Firefox, above Ubuntu's 1:1snap1 transitional package
+        pin = re.search(r"Package: (.*)\n\s*Pin: (.*)\n\s*Pin-Priority: (\d+)", tasks)
+        self.assertEqual(pin.groups(), ("firefox firefox-l10n-*", "origin packages.mozilla.org", "1000"))
+        self.assertIn('Unattended-Upgrade::Origins-Pattern:: "site=packages.mozilla.org";', tasks)
+        self.assertIn("allow_downgrade: true", tasks)
+        # Ubuntu only; Debian gets its own firefox-esr
+        self.assertIn("ansible_facts.distribution == 'Ubuntu'", tasks)
+        self.assertIn("name: firefox-esr", tasks)
+        # snaps are never removed by the role
+        self.assertNotRegex(tasks, r"argv: \[snap, remove")
+        self.assertNotIn("community.general.snap", tasks)
+
+    def test_key_fingerprint_record(self):
+        """The role takes the first fpr record of `gpg --with-colons --show-keys` as the
+        primary key's fingerprint and refuses files with more than one primary key."""
+        gpg = shutil.which("gpg")
+        if not gpg:
+            if os.environ.get("FASTRDP_TESTS_STRICT") == "1":
+                self.fail("gpg not found")
+            self.skipTest("gpg not found")
+        with tempfile.TemporaryDirectory() as home:
+            env = dict(os.environ, GNUPGHOME=home)
+
+            def gpg_run(*args, **kw):
+                return subprocess.run([gpg, "--batch", *args], env=env, capture_output=True, text=True,
+                                      check=True, **kw).stdout
+
+            fprs = []
+            for uid in ("signer@example.com", "other@example.com"):
+                gpg_run("--passphrase", "", "--quick-gen-key", uid, "ed25519", "sign", "never")
+                fpr = re.search(r"(?m)^fpr:+([0-9A-F]{40}):", gpg_run("--with-colons", "--list-keys", uid)).group(1)
+                gpg_run("--passphrase", "", "--quick-add-key", fpr, "cv25519", "encr", "never")   # a subkey with its own fpr
+                fprs.append(fpr)
+            one = Path(home) / "one.asc"
+            one.write_text(gpg_run("--armor", "--export", fprs[0]))
+            both = Path(home) / "both.asc"
+            both.write_text(gpg_run("--armor", "--export", *fprs))
+            lines = gpg_run("--with-colons", "--show-keys", str(one)).splitlines()
+            self.assertEqual(len([s for s in lines if s.startswith("pub:")]), 1)
+            self.assertEqual([s for s in lines if s.startswith("fpr:")][0].split(":")[9], fprs[0])
+            self.assertEqual(len([s for s in lines if s.startswith("fpr:")]), 2)   # the subkey's comes later
+            lines = gpg_run("--with-colons", "--show-keys", str(both)).splitlines()
+            self.assertEqual(len([s for s in lines if s.startswith("pub:")]), 2)
+
     def test_checks(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
         checks = CommonChecks()
@@ -1515,6 +1601,37 @@ class TgtNotify(unittest.TestCase):
                     {"fastrdp_tgt_notify_texts": {"summary": ["x"]}}):
             with self.subTest(bad=bad):
                 self.assertNotEqual(checks.run_checks(**ok, **bad), 0)
+
+        for good in ({}, {"fastrdp_firefox_deb": True},
+                     {"fastrdp_browser_spnego_domains": ["example.com", "intranet.lab-1.example.org"]},
+                     {"fastrdp_firefox_policies": {"DisableTelemetry": True}},
+                     {"fastrdp_firefox_mozilla_key_fingerprint": self.MOZILLA_FPR.lower()}):
+            with self.subTest(good=good):
+                self.assertEqual(checks.run_checks(**ok, **good), 0)
+        bad = {
+            "deb not a bool": {"fastrdp_firefox_deb": "snap"},
+            "domains as a string": {"fastrdp_browser_spnego_domains": "example.com"},
+            "domains as a mapping": {"fastrdp_browser_spnego_domains": {"example.com": True}},
+            "bare TLD": {"fastrdp_browser_spnego_domains": ["com"]},
+            "wildcard": {"fastrdp_browser_spnego_domains": ["*.example.com"]},
+            "leading dot": {"fastrdp_browser_spnego_domains": [".example.com"]},
+            "URL": {"fastrdp_browser_spnego_domains": ["https://intranet.example.com"]},
+            "IP address": {"fastrdp_browser_spnego_domains": ["10.0.0.1"]},
+            "JSON injection": {"fastrdp_browser_spnego_domains": ['example.com","evil.test']},
+            "trailing newline": {"fastrdp_browser_spnego_domains": ["example.com\n"]},
+            "comma list": {"fastrdp_browser_spnego_domains": ["example.com,evil.test"]},
+            "policies as a list": {"fastrdp_firefox_policies": ["DisableTelemetry"]},
+            "short fingerprint": {"fastrdp_firefox_mozilla_key_fingerprint": "DC6315A3"},
+        }
+        for name, extra in bad.items():
+            with self.subTest(name):
+                self.assertNotEqual(checks.run_checks(**ok, **extra), 0)
+
+    def test_smoke_script_hints(self):
+        text = (REPO / "tests/smoke/check-session-tgt.sh").read_text()
+        self.assertIn("fastrdp_firefox_deb: true", text)
+        self.assertIn("fastrdp_browser_spnego_domains", text)
+        self.assertIn("heim_org.h5l.kcm-socket", text)
 
 
 if __name__ == "__main__":

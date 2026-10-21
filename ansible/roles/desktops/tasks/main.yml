@@ -81,3 +81,6 @@
 
 - name: Kerberos login reminder (tgt-notify)
   ansible.builtin.import_tasks: tgt_notify.yml
+
+- name: Browsers for Kerberos SSO (fastrdp_firefox_deb, fastrdp_browser_spnego_domains)
+  ansible.builtin.include_tasks: browsers.yml

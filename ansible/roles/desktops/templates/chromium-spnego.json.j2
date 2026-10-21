@@ -1,0 +1,4 @@
+{#- Chromium/Chrome managed policy: integrated authentication (SPNEGO) only for these
+    servers, "example.com,*.example.com" = the domain and every host below it. -#}
+{%- set hosts = fastrdp_browser_spnego_domains | map('lower') | map('regex_replace', '^(.*)$', '\\1,*.\\1') | list -%}
+{{ {'AuthServerAllowlist': hosts | join(',')} | to_nice_json(indent=2) }}

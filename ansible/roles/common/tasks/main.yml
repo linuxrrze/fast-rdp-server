@@ -108,6 +108,28 @@
       summary, body, expired_summary, expired_body (each optional, non-empty text), using
       only the placeholders {left}, {deadline} and {principal}
       (docs/nfs-kerberos-homes.md#long-running-sessions).
+
+# Role desktops' defaults (browsers, backlog K9). The domains go into browser policies
+# as host patterns: DNS names with at least one dot (no bare TLD, no wildcard, no URL).
+- name: Browser settings (desktops role)
+  vars:
+    domains: "{{ fastrdp_browser_spnego_domains | default([]) }}"
+    domain_list: "{{ domains if domains is sequence and domains is not string and domains is not mapping else [] }}"
+  ansible.builtin.assert:
+    that:
+      - fastrdp_firefox_deb | default(false) | string | lower in ['true', 'false']
+      - fastrdp_firefox_mozilla_key_fingerprint | default('35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3') | string
+        is match('^[0-9A-Fa-f]{40}\Z')
+      - domains is sequence and domains is not string and domains is not mapping
+      - domain_list | map('string') | reject('match', '^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?\Z')
+        | list | length == 0
+      - fastrdp_firefox_policies | default({}) is mapping
+    fail_msg: >-
+      fastrdp_firefox_deb is true or false; fastrdp_firefox_mozilla_key_fingerprint is 40 hex
+      digits; fastrdp_browser_spnego_domains is a list of DNS domains with at least one dot,
+      e.g. [example.com] (the domain and every host below it; no "*.", no URL);
+      fastrdp_firefox_policies is a mapping of Firefox enterprise policies
+      (docs/desktop-matrix.md#browsers-and-kerberos-sso).
     quiet: true
 
 # Role web_gateway's defaults. The KDCs go into kdcproxy.conf as they are (one

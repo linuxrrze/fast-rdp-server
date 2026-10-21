@@ -27,3 +27,27 @@ fastrdp_wlroots_desktops: [sway, labwc, wayfire]
 # launcher (wlroots-in-x) and clipboard bridge needs
 fastrdp_wlroots_common_packages: [xwayland, wlr-randr, wl-clipboard, xclip, x11-utils, x11-xkb-utils, python3]
 fastrdp_desktop_common_packages: [dbus-x11, xauth, x11-xserver-utils, xdg-utils, fonts-noto-core]
+
+# ---------------------------------------------------------------- browsers (Kerberos SSO)
+# Session TGTs live in KCM (identity role). Snap browsers cannot reach the KCM socket,
+# and on Ubuntu the "firefox" and "chromium" packages only install snaps. .deb browsers
+# and Flathub's Firefox can. docs/desktop-matrix.md#browsers-and-kerberos-sso (backlog K9)
+# true = install a Firefox .deb: firefox-esr on Debian; on Ubuntu Firefox from Mozilla's
+# APT repository (packages.mozilla.org, signing key fingerprint checked, firefox pinned
+# above Ubuntu's snap transitional package, origin allowed for unattended-upgrades).
+# An installed Firefox snap stays; removing it is your decision (snap remove firefox).
+fastrdp_firefox_deb: false
+# Mozilla's repository signing key (support.mozilla.org, "Install Firefox on Linux").
+fastrdp_firefox_mozilla_key_fingerprint: 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3
+# Intranet DNS domains whose web servers get Kerberos (SPNEGO) logins from the browsers,
+# each with every host below it, e.g. [example.com] or [intranet.example.com]. Firefox:
+# /etc/firefox/policies/policies.json (Authentication.SPNEGO, https:// only, locked;
+# read by Debian's firefox-esr, Mozilla's .deb and the snap). Chromium and Chrome:
+# AuthServerAllowlist in /etc/chromium/policies/managed/ and /etc/opt/chrome/policies/managed/.
+# No ticket delegation. [] = no browser policy written (an existing policies.json stays).
+fastrdp_browser_spnego_domains: []
+# Other Firefox enterprise policies for the same file (Firefox reads one policies.json),
+# e.g. {DisableTelemetry: true}. With this or fastrdp_browser_spnego_domains set, the
+# role owns /etc/firefox/policies/policies.json. The domains win for
+# Authentication.SPNEGO; {Authentication: {Locked: false}} lets users add their own.
+fastrdp_firefox_policies: {}

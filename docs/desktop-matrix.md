@@ -163,6 +163,110 @@ earlier because other users are logged in, so that message proves nothing. Not c
 on their own after an update (e.g. PackageKit offline updates triggered by an admin), and the physical
 power button (logind `HandlePowerKey`).
 
+## Browsers and Kerberos SSO
+
+A session's TGT is in KCM (`default_ccache_name = KCM:`, sssd-kcm on the socket
+`/run/.heim_org.h5l.kcm-socket`; [nfs-kerberos-homes.md](nfs-kerberos-homes.md#which-cache-the-session-uses)).
+A browser logs in to intranet sites with it (SPNEGO, "Negotiate") only when it can reach that socket
+and the site is on its SPNEGO list. Whether it can reach the socket depends on how the browser is
+packaged:
+
+| Browser | Debian 13 | Ubuntu 26.04 | Reaches KCM |
+|---|---|---|---|
+| Firefox ESR `.deb` (`firefox-esr`, Debian) | default package | – | yes: system libgssapi/libkrb5, `/etc/krb5.conf` |
+| Firefox `.deb` from Mozilla's APT repository | possible | `fastrdp_firefox_deb: true` | yes, the same |
+| Firefox snap | – | what `apt install firefox` installs (the `firefox` package `1:1snap1` is a transitional package) | **no** |
+| Firefox from Flathub (`org.mozilla.firefox`) | possible | possible | yes, by design (not tested on a host) |
+| Chromium | `.deb` (`chromium`) | snap only (`chromium-browser` is transitional) | `.deb` yes, snap **no** |
+| Google Chrome `.deb` | possible | possible | yes |
+
+**Why snaps cannot** [verified in source: snapd `master` 2026-10, store assertions 2026-10; the
+failure itself is inferred, not reproduced on a host]:
+
+- snapd's `kerberos-tickets` interface (`interfaces/builtin/kerberos_tickets.go`) only allows
+  `owner /var/lib/snapd/hostfs/tmp/krb5cc*` (`FILE:` caches, and `DIR:` caches since October 2026).
+  `snap run` maps `KRB5CCNAME` to that path only for `FILE:`/`DIR:` caches in `/tmp`
+  (`cmd/snapd/cli/cmd_run.go`, `exposeKerberosTickets`); for `KRB5CCNAME=KCM:` (xrdp sessions) it
+  logs "Unsupported KRB5CCNAME", without `KRB5CCNAME` (GNOME, Plasma) it does nothing.
+- The interface is no longer the problem: its base declaration denies auto-connection, but the
+  store's snap declarations for `firefox` (revision 41) and `chromium` (revision 23) allow it, and
+  the Firefox snap plugs it. The snap bundles its own libkrb5 and reads `/etc/krb5.conf` and
+  `/etc/krb5.conf.d/` (AppArmor `abstractions/kerberosclient` through the `network` interface), so it
+  sees `default_ccache_name = KCM:`.
+- No snapd interface and no part of the AppArmor template grants the KCM socket, so the connection
+  is denied and GSSAPI finds no credentials. Pointing the user at a `FILE:/tmp/krb5cc_…` cache instead
+  (sssd `krb5_ccname_template`) would work for the snap but gives up what KCM provides here (one
+  cache for all session processes, sssd-kcm renewal, the broker's checks): not supported.
+
+**Flathub's Firefox** declares `--filesystem=/run/.heim_org.h5l.kcm-socket` (Flathub metadata of
+`org.mozilla.firefox`), and its BaseApp ships libkrb5 1.22 with its own `/app/etc/krb5.conf`
+(`default_ccache_name = KCM:`, no realm) [verified in source]. The host's `/etc/krb5.conf` is not
+visible; the realm comes from the cache's principal and the KDCs from DNS SRV records [inferred].
+Policies for it go to
+`/var/lib/flatpak/extension/org.mozilla.firefox.systemconfig/<arch>/stable/policies/policies.json`
+(Mozilla bug 1814897), not `/etc/firefox`.
+
+**Ansible** (desktops role, all off by default; checked by the common role):
+
+- `fastrdp_firefox_deb: true` installs a Firefox `.deb`: `firefox-esr` on Debian; on Ubuntu Firefox
+  from `https://packages.mozilla.org/apt`. The role downloads Mozilla's signing key, refuses it unless
+  its fingerprint is `fastrdp_firefox_mozilla_key_fingerprint` (`35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3`),
+  writes `/etc/apt/keyrings/packages.mozilla.org.asc`, `/etc/apt/sources.list.d/fastrdp-mozilla.sources`,
+  pins `firefox firefox-l10n-*` from that origin at priority 1000 (`/etc/apt/preferences.d/fastrdp-mozilla`;
+  1000 because the transitional package's epoch makes its version higher), allows the origin in
+  unattended-upgrades (`/etc/apt/apt.conf.d/52fastrdp-mozilla-unattended-upgrades`,
+  `site=packages.mozilla.org`) and replaces the transitional package. An installed Firefox **snap stays**:
+  the role only reports it. Remove it yourself when nobody needs it (`snap remove firefox`: users'
+  snap profiles in `~/snap/firefox` are not migrated to `~/.mozilla`).
+- `fastrdp_browser_spnego_domains: [example.com]` allows SPNEGO for `example.com` and every host below it:
+  Firefox `/etc/firefox/policies/policies.json` (`Authentication.SPNEGO`: `https://example.com`, so https
+  only; locked, Firefox's default for this policy), Chromium/Chrome `AuthServerAllowlist`
+  (`example.com,*.example.com`) in `/etc/chromium/policies/managed/fastrdp-spnego.json` and
+  `/etc/opt/chrome/policies/managed/fastrdp-spnego.json`. No delegation of the TGT to the web servers.
+- Firefox reads a single `policies.json`. Once domains or `fastrdp_firefox_policies` are set, the
+  role owns `/etc/firefox/policies/policies.json`: put other Firefox policies into
+  `fastrdp_firefox_policies` (e.g. `{DisableTelemetry: true}`, or
+  `{Authentication: {Locked: false}}` to let users add sites). With both empty the role leaves an
+  existing file alone, also one it wrote earlier.
+
+Firefox looks for `/etc/<application name in lower case>/policies/policies.json` before the
+`distribution/` directory of its installation (`EnterprisePoliciesParent.sys.mjs`,
+`SpecialSystemDirectory.cpp`, enabled unless built with `--disable-system-policies`) [verified in
+source]. The application name is `Firefox` for Mozilla's `.deb`, Debian's `firefox-esr` and the snap
+(which reads `/etc/firefox/policies` through an auto-connected `system-files` plug), so the path is
+`/etc/firefox/policies`, not `/etc/firefox-esr/...` [Debian's name inferred from reports]. Under
+Flatpak the base is `/app/etc`.
+
+Without Ansible (Ubuntu 26.04, as root):
+
+```sh
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /tmp/mozilla.asc
+gpg --show-keys --with-colons /tmp/mozilla.asc | grep -c '^pub:'          # 1
+gpg --show-keys --with-colons /tmp/mozilla.asc | grep -m1 '^fpr:'         # ...:35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3:
+install -m 0644 /tmp/mozilla.asc /etc/apt/keyrings/packages.mozilla.org.asc
+cat > /etc/apt/sources.list.d/fastrdp-mozilla.sources <<'EOF'
+Types: deb
+URIs: https://packages.mozilla.org/apt
+Suites: mozilla
+Components: main
+Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc
+EOF
+printf 'Package: firefox firefox-l10n-*\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' \
+    > /etc/apt/preferences.d/fastrdp-mozilla
+echo 'Unattended-Upgrade::Origins-Pattern:: "site=packages.mozilla.org";' \
+    > /etc/apt/apt.conf.d/52fastrdp-mozilla-unattended-upgrades
+apt update && apt install --allow-downgrades firefox
+apt-cache policy firefox                    # installed: <version>~build<N> from packages.mozilla.org
+install -d -m 0755 /etc/firefox/policies
+echo '{"policies": {"Authentication": {"SPNEGO": ["https://example.com"]}}}' \
+    > /etc/firefox/policies/policies.json
+```
+
+Check in a session: `tests/smoke/check-session-tgt.sh -s HTTP/intranet.example.com` (warns about
+browser snaps, checks the policy), then `about:policies` in Firefox and an intranet page; with
+`MOZ_LOG=negotiateauth:5 firefox` the log shows `gss_init_sec_context` succeeding.
+
 ## Validation items before production
 
 1. **Plasma headless:** `fastrdp-plasma@USER` reaches a usable desktop, KRdp streams

@@ -1,0 +1,196 @@
+---
+# Browsers that find the session TGT in KCM, and their Kerberos SSO (SPNEGO) policies
+# (backlog K9, docs/desktop-matrix.md#browsers-and-kerberos-sso). Snap browsers cannot
+# connect to the KCM socket, whatever their kerberos-tickets plug says.
+
+- name: Browsers - Firefox ESR from Debian
+  ansible.builtin.apt:
+    name: firefox-esr
+    state: present
+  when:
+    - fastrdp_firefox_deb | bool
+    - ansible_facts.distribution != 'Ubuntu'
+
+# Ubuntu's "firefox" package (1:1snap1) installs the snap; Mozilla's own .deb replaces
+# it once pinned above it (its version is lower because of the epoch).
+- name: Browsers - Firefox from Mozilla's APT repository (Ubuntu)
+  when:
+    - fastrdp_firefox_deb | bool
+    - ansible_facts.distribution == 'Ubuntu'
+  block:
+    - name: Browsers - gpg for the key check
+      ansible.builtin.apt:
+        name: gpg
+        state: present
+
+    - name: Browsers - staging directory for the signing key
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: fastrdp-mozilla.
+      register: fastrdp_mozilla_tmp
+
+    - name: Browsers - download Mozilla's signing key
+      ansible.builtin.get_url:
+        url: https://packages.mozilla.org/apt/repo-signing-key.gpg
+        dest: "{{ fastrdp_mozilla_tmp.path }}/key.asc"
+        mode: "0644"
+      changed_when: false
+
+    - name: Browsers - read the key's fingerprint
+      ansible.builtin.command:
+        argv: [gpg, --batch, --with-colons, --show-keys, "{{ fastrdp_mozilla_tmp.path }}/key.asc"]
+      environment:
+        GNUPGHOME: "{{ fastrdp_mozilla_tmp.path }}"
+      register: fastrdp_mozilla_key
+      changed_when: false
+
+    # exactly one primary key, and it is Mozilla's (the first fpr record after pub)
+    - name: Browsers - the key is Mozilla's
+      ansible.builtin.assert:
+        that:
+          - fastrdp_mozilla_key.stdout_lines | select('match', '^pub:') | list | length == 1
+          - (fastrdp_mozilla_key.stdout_lines | select('match', '^fpr:') | first).split(':')[9]
+            == fastrdp_firefox_mozilla_key_fingerprint | upper
+        fail_msg: >-
+          https://packages.mozilla.org/apt/repo-signing-key.gpg is not the key with fingerprint
+          {{ fastrdp_firefox_mozilla_key_fingerprint }} (fastrdp_firefox_mozilla_key_fingerprint);
+          nothing was changed.
+        quiet: true
+
+    - name: Browsers - keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Browsers - Mozilla's signing key
+      ansible.builtin.copy:
+        src: "{{ fastrdp_mozilla_tmp.path }}/key.asc"
+        remote_src: true
+        dest: /etc/apt/keyrings/packages.mozilla.org.asc
+        owner: root
+        group: root
+        mode: "0644"
+      register: fastrdp_mozilla_keyring
+
+    - name: Browsers - Mozilla APT source
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/fastrdp-mozilla.sources
+        content: |
+          # Ansible managed (fast-rdp-server, fastrdp_firefox_deb): local changes are overwritten
+          Types: deb
+          URIs: https://packages.mozilla.org/apt
+          Suites: mozilla
+          Components: main
+          Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc
+        owner: root
+        group: root
+        mode: "0644"
+      register: fastrdp_mozilla_source
+
+    # Only Firefox (and its language packs) from Mozilla, above Ubuntu's snap
+    # transitional package; >= 1000 also allows the switch to the lower version.
+    - name: Browsers - pin Firefox to Mozilla's repository
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/fastrdp-mozilla
+        content: |
+          # Ansible managed (fast-rdp-server, fastrdp_firefox_deb): local changes are overwritten
+          Package: firefox firefox-l10n-*
+          Pin: origin packages.mozilla.org
+          Pin-Priority: 1000
+        owner: root
+        group: root
+        mode: "0644"
+      register: fastrdp_mozilla_pin
+
+    # Ubuntu's 50unattended-upgrades only allows Ubuntu's archives; a browser on a
+    # multi-user host needs its security updates.
+    - name: Browsers - unattended-upgrades also for Mozilla's repository
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52fastrdp-mozilla-unattended-upgrades
+        content: |
+          // Ansible managed (fast-rdp-server, fastrdp_firefox_deb): local changes are overwritten
+          Unattended-Upgrade::Origins-Pattern:: "site=packages.mozilla.org";
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Browsers - refresh package lists  # noqa: no-handler - installed right below
+      ansible.builtin.apt:
+        update_cache: true
+      when: fastrdp_mozilla_keyring is changed or fastrdp_mozilla_source is changed or fastrdp_mozilla_pin is changed
+
+    - name: Browsers - Firefox .deb from Mozilla (replaces the snap transitional package)
+      ansible.builtin.apt:
+        name: firefox
+        state: latest      # noqa: package-latest - the switch from 1:1snap1 needs it; also security updates
+        allow_downgrade: true
+
+    - name: Browsers - Firefox snap still installed
+      ansible.builtin.command:
+        argv: [snap, list, firefox]
+      register: fastrdp_firefox_snap
+      changed_when: false
+      failed_when: false
+
+    - name: Browsers - Firefox snap left installed
+      ansible.builtin.debug:
+        msg: >-
+          The Firefox snap is still installed next to the .deb: menus may show two Firefox
+          entries, and the snap finds no session TGT (KCM). Remove it when no one needs it:
+          snap remove firefox.
+      when: fastrdp_firefox_snap.rc == 0
+  always:
+    - name: Browsers - remove the staging directory
+      ansible.builtin.file:
+        path: "{{ fastrdp_mozilla_tmp.path }}"
+        state: absent
+      when: fastrdp_mozilla_tmp.path is defined
+
+- name: Browsers - Firefox policy directory
+  ansible.builtin.file:
+    path: /etc/firefox/policies
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: fastrdp_browser_spnego_domains | length > 0 or fastrdp_firefox_policies | length > 0
+
+- name: Browsers - Firefox policies (SPNEGO domains, fastrdp_firefox_policies)
+  ansible.builtin.template:
+    src: firefox-policies.json.j2
+    dest: /etc/firefox/policies/policies.json
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_browser_spnego_domains | length > 0 or fastrdp_firefox_policies | length > 0
+
+# Chromium reads every file in managed/; this one is ours alone, so it goes with [].
+- name: Browsers - Chromium and Chrome policy directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [/etc/chromium/policies/managed, /etc/opt/chrome/policies/managed]
+  when: fastrdp_browser_spnego_domains | length > 0
+
+- name: Browsers - Chromium and Chrome SPNEGO allowlist
+  ansible.builtin.template:
+    src: chromium-spnego.json.j2
+    dest: "{{ item }}/fastrdp-spnego.json"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [/etc/chromium/policies/managed, /etc/opt/chrome/policies/managed]
+  when: fastrdp_browser_spnego_domains | length > 0
+
+- name: Browsers - no Chromium and Chrome SPNEGO allowlist
+  ansible.builtin.file:
+    path: "{{ item }}/fastrdp-spnego.json"
+    state: absent
+  loop: [/etc/chromium/policies/managed, /etc/opt/chrome/policies/managed]
+  when: fastrdp_browser_spnego_domains | length == 0

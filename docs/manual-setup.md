@@ -817,6 +817,14 @@ notify_expired = true          # fastrdp_tgt_notify_expired
 
 Check as a user in a session: `/usr/libexec/fastrdp/tgt-notify --status`.
 
+**Browsers for Kerberos SSO** (optional; `fastrdp_firefox_deb`, `fastrdp_browser_spnego_domains`).
+Snap browsers cannot reach the session TGT in KCM. On Debian, `apt install firefox-esr`. On Ubuntu,
+`apt install firefox` installs the snap, so use Mozilla's APT repository instead. Then list the
+intranet domains in `/etc/firefox/policies/policies.json` (and for Chromium/Chrome
+`/etc/chromium/policies/managed/fastrdp-spnego.json`, `/etc/opt/chrome/policies/managed/fastrdp-spnego.json`).
+The commands and the reasons are in
+[desktop-matrix.md](desktop-matrix.md#browsers-and-kerberos-sso).
+
 ## 8. Tuning
 
 Role `tuning`, defaults ([performance.md](performance.md#tuning-knobs-ansible-role-tuning)).

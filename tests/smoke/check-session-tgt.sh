@@ -185,9 +185,29 @@ else
 fi
 
 # ---------------------------------------------------------------- applications
-if [ -x /snap/bin/firefox ] && snap list firefox >/dev/null 2>&1; then
-    warn "Firefox is a snap: its confinement allows only FILE caches in /tmp (kerberos-tickets interface), not KCM; SPNEGO will not find the TGT"
-    hint "Firefox from a .deb (Mozilla's APT repository) for Kerberos SSO"
+# Browsers for Kerberos SSO (backlog K9, docs/desktop-matrix.md#browsers-and-kerberos-sso)
+for s in firefox chromium; do
+    if [ -x "/snap/bin/$s" ] && snap list "$s" >/dev/null 2>&1; then
+        warn "$s is a snap: snapd lets snaps reach only FILE/DIR caches in /tmp (kerberos-tickets interface), not the KCM socket; SPNEGO will not find the TGT"
+        hint "a .deb browser (Ansible: fastrdp_firefox_deb: true) or Flathub's Firefox; snap remove $s when unused"
+    fi
+done
+if command -v firefox-esr >/dev/null 2>&1 || dpkg-query -W -f='${Version}' firefox 2>/dev/null | grep -qv snap; then
+    ok "Firefox from a .deb installed (uses the system's GSSAPI library and KCM)"
+fi
+if command -v flatpak >/dev/null 2>&1 && flatpak info org.mozilla.firefox >/dev/null 2>&1; then
+    if flatpak info --show-permissions org.mozilla.firefox 2>/dev/null | grep -q 'heim_org.h5l.kcm-socket'; then
+        ok "Flatpak Firefox can reach the KCM socket"
+    else
+        warn "Flatpak Firefox without access to /run/.heim_org.h5l.kcm-socket (overridden?)"
+        hint "flatpak override --reset org.mozilla.firefox, or --filesystem=/run/.heim_org.h5l.kcm-socket"
+    fi
+fi
+if [ -r /etc/firefox/policies/policies.json ] && grep -q '"SPNEGO"' /etc/firefox/policies/policies.json; then
+    ok "Firefox SPNEGO domains set (/etc/firefox/policies/policies.json)"
+elif command -v firefox >/dev/null 2>&1 || command -v firefox-esr >/dev/null 2>&1; then
+    warn "no Firefox SPNEGO policy: Firefox sends Kerberos tickets to no site"
+    hint "Ansible: fastrdp_browser_spnego_domains: [example.com]"
 fi
 home=$(getent passwd "$U" | cut -d: -f6)
 if [ -n "$home" ] && findmnt -n -T "$home" -o FSTYPE,OPTIONS 2>/dev/null | grep -Eq '^nfs4? .*sec=krb5'; then

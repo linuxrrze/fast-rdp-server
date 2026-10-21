@@ -455,6 +455,23 @@
           summary: "Kerberos-Anmeldung endet in {left}"
           body: "Ab {deadline} kein Zugriff auf \"H:\\\" ({principal}).\nNeu verbinden: Ä"
 
+    - name: Browser SSO policies (desktops role, fastrdp_browser_spnego_domains)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/desktops/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_browser_spnego_domains: "{{ item.domains }}"
+        fastrdp_firefox_policies: "{{ item.policies }}"
+      loop:
+        - {src: firefox-policies.json.j2, dest: firefox-policies-spnego.json, domains: [Lab.Example.com, intranet.example.org], policies: {}}
+        - src: firefox-policies.json.j2
+          dest: firefox-policies-merged.json
+          domains: [lab.example.com]
+          policies: {DisableTelemetry: true, Authentication: {Locked: false, SPNEGO: [https://other.example.net]}}
+        - {src: firefox-policies.json.j2, dest: firefox-policies-extra.json, domains: [], policies: {DisableTelemetry: true}}
+        - {src: chromium-spnego.json.j2, dest: chromium-spnego.json, domains: [Lab.Example.com, intranet.example.org], policies: {}}
+
 # A new site sets only what is required: everything else must come from role
 # defaults (roles/common), and the common checks must pass.
 - name: Render with a minimal inventory (role defaults + realm/domain)

@@ -295,9 +295,10 @@ with `tests/smoke/check-session-tgt.sh`]
 - **Applications:** `klist`, GSSAPI (Firefox `negotiate`, `smbclient -k`, gvfs smb,
   `ssh -K`) and `rpc.gssd` (forks with the uid, default cache) use the primary KCM
   cache. Not with a sandbox that blocks the KCM socket: the Firefox **snap**'s
-  `kerberos-tickets` interface allows only `FILE` caches in `/tmp` (snapd
+  `kerberos-tickets` interface allows only `FILE`/`DIR` caches in `/tmp` (snapd
   `interfaces/builtin/kerberos_tickets.go`), so SPNEGO in snap Firefox finds no TGT;
-  use Firefox from a `.deb` [inferred].
+  use Firefox from a `.deb` or Flathub
+  ([desktop-matrix.md](desktop-matrix.md#browsers-and-kerberos-sso)).
 - So no session environment change is needed as long as nothing sets another
   `KRB5CCNAME` (`/etc/environment`, profile scripts, a FILE `krb5_ccname_template`).
 

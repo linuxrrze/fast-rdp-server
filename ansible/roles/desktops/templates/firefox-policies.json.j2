@@ -1,0 +1,6 @@
+{#- Firefox enterprise policies, /etc/firefox/policies/policies.json (JSON: no comments).
+    Authentication.SPNEGO sets network.negotiate-auth.trusted-uris; "https://example.com"
+    matches example.com and *.example.com, https only (Firefox HttpAuthUtils.cpp). -#}
+{%- set spnego = fastrdp_browser_spnego_domains | map('lower') | map('regex_replace', '^', 'https://') | list -%}
+{%- set ours = {'Authentication': {'SPNEGO': spnego}} if spnego else {} -%}
+{{ {'policies': fastrdp_firefox_policies | combine(ours, recursive=True)} | to_nice_json(indent=2) }}
