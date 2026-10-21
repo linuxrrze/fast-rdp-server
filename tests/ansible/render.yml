@@ -70,6 +70,27 @@
         - {src: gssproxy-nfs-client.conf.j2, dest: gssproxy-nfs-client-own.conf, keytab: /etc/gssproxy/nfs.keytab}
         - {src: nfs-gssd.conf.j2, dest: nfs-gssd.conf, keytab: /etc/krb5.keytab}
 
+    - name: Kerberized SMB homes (gssproxy impersonation for cifs.upcall)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/identity/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        fastrdp_smb_krb5_homes: true
+        fastrdp_smb_gssproxy_keytab: "{{ item.keytab }}"
+        fastrdp_smb_mounts: "{{ item.mounts }}"
+      loop:
+        - {src: gssproxy-smb-client.conf.j2, dest: gssproxy-smb-client.conf, keytab: /etc/krb5.keytab, mounts: []}
+        - {src: gssproxy-smb-client.conf.j2, dest: gssproxy-smb-client-own.conf, keytab: /etc/gssproxy/smb.keytab, mounts: []}
+        - {src: request-key-cifs-spnego.conf.j2, dest: request-key-cifs-spnego.conf, keytab: /etc/krb5.keytab, mounts: []}
+        - {src: fstab-smb.j2, dest: fstab-smb-none, keytab: /etc/krb5.keytab, mounts: []}
+        - src: fstab-smb.j2
+          dest: fstab-smb
+          keytab: /etc/krb5.keytab
+          mounts:
+            - {what: //fs1.lab.example.com/users$, where: /smb/users}
+            - {what: //fs1.lab.example.com/projects/it, where: /smb/projects, options: "vers=3.1.1,seal,sec=krb5i"}
+
     - name: Kerberos client and sssd renewal settings per identity provider
       ansible.builtin.template:
         src: "{{ roles_dir }}/identity/templates/{{ item.src }}"

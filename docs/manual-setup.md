@@ -1435,6 +1435,20 @@ Web path: 15.2. RDP path (passkey → TGT → NLA) and KDC-enforced MFA for NLA 
 `[mfa] nla_kdc_enforced = true`): [passkeys.md](passkeys.md#kdc-enforced-strong-authentication-for-nla).
 The role refuses this on AD unless an AD policy guarantees it.
 
+### 15.6 Kerberized SMB home directories and shares
+
+`roles/identity/tasks/smb_krb5.yml`, background and the directory-side delegation to
+`cifs/<server>` in [smb-kerberos-homes.md](smb-kerberos-homes.md):
+`apt install cifs-utils keyutils gssproxy` (cifs-utils 7.0 or later);
+`/etc/gssproxy/91-fastrdp-smb-client.conf` and
+`/etc/request-key.d/fastrdp-cifs.spnego.conf` (both `root:root 0644`) exactly as
+shown there; leave cifs-utils' own `/etc/request-key.d/cifs.spnego.conf` alone (the
+fastrdp line is preferred). `systemctl enable --now gssproxy`, then
+`systemctl restart gssproxy`. Mounts: `sec=krb5,multiuser` in `/etc/fstab`
+(`x-systemd.automount`, then `systemctl daemon-reload` and start the `.automount`
+unit) or an autofs map, by the server's FQDN. The keytab `/etc/krb5.keytab` must
+exist (join first).
+
 ## Updates
 
 - `apt upgrade` updates the packages. Then restart the fastrdp daemons

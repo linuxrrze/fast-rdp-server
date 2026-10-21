@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# cifs.upcall with gssproxy (fastrdp_smb_krb5_homes, docs/smb-kerberos-homes.md).
+# request-key cannot set environment variables, so env does. The description pattern
+# "ver=0x*" matches every cifs.spnego key the kernel asks for ("ver=0x2;host=...") and
+# is less wild than the "*" of cifs-utils' own /etc/request-key.d/cifs.spnego.conf:
+# request-key prefers this line whatever the order it reads the files in.
+# cifs.upcall uses GSSAPI (hence gssproxy) only when the user has no valid TGT.
+create  cifs.spnego  ver=0x*  *  /usr/bin/env GSS_USE_PROXY=yes /usr/sbin/cifs.upcall %k

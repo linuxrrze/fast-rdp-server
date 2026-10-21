@@ -59,6 +59,8 @@
     preflight_drm_device: "{{ fastrdp_xorgxrdp_drm_device | default(preflight_role_defaults.fastrdp_xorgxrdp_drm_device) }}"
     preflight_override_homedir: "{{ fastrdp_sssd_override_homedir | default(preflight_role_defaults.fastrdp_sssd_override_homedir) }}"
     preflight_autofs: "{{ fastrdp_autofs | default(preflight_role_defaults.fastrdp_autofs) }}"
+    preflight_smb_homes: "{{ fastrdp_smb_krb5_homes | default(preflight_role_defaults.fastrdp_smb_krb5_homes) | bool }}"
+    preflight_smb_mounts: "{{ fastrdp_smb_mounts | default(preflight_role_defaults.fastrdp_smb_mounts) }}"
     # Rough sizing of the server itself; sessions need more (detail line of the check).
     preflight_heavy_desktops: "{{ preflight_desktops | intersect(['gnome', 'plasma', 'plasma-x11', 'cinnamon']) | length > 0 }}"
     preflight_min_ram_mb: "{{ 4096 if preflight_heavy_desktops else 2048 }}"
@@ -464,6 +466,62 @@
              'fix': 'set up the automounter (fastrdp_autofs: sssd for directory maps, or files) so the home paths '
                     ~ 'from the directory exist, or use local homes (fastrdp_sssd_override_homedir: /home/%u); '
                     ~ 'docs/nfs-kerberos-homes.md#where-homes-are'}] }}
+
+    # ------------------------------------------------------------------ SMB homes
+    # fastrdp_smb_krb5_homes: cifs.upcall falls back to GSSAPI (gssproxy) since cifs-utils
+    # 7.0; the file servers must resolve by the name of their cifs/ principal.
+    - name: Look at the SMB client packages and file servers
+      ansible.builtin.shell:
+        cmd: |
+          set -uo pipefail
+          ver() { apt-cache policy "$1" 2>/dev/null | awk -v k="$2:" '$1 == k { print $2; exit }'; }
+          v=$(ver cifs-utils Installed)
+          [ -z "$v" ] || [ "$v" = "(none)" ] && v=$(ver cifs-utils Candidate)
+          if [ -z "$v" ] || [ "$v" = "(none)" ]; then
+              echo "FAIL cifs-utils not available from the configured APT sources"
+          elif ! dpkg --compare-versions "$v" ge 2:7.0; then
+              echo "FAIL cifs-utils $v: cifs.upcall has no GSSAPI fallback (needs 7.0 or later)"
+          elif [ "$v" = "2:7.4-1+deb13u1" ]; then
+              # CVE-2026-12505 fix without its follow-up "fix regression with krb5 + creduid"
+              echo "WARN cifs-utils $v takes the uid from the process that triggers the upcall," \
+                  "not from the key: reconnects by kernel threads may use root's credentials"
+          else
+              echo "INFO cifs-utils $v"
+          fi
+          g=$(ver gssproxy Candidate)
+          [ -z "$g" ] || [ "$g" = "(none)" ] && echo "FAIL gssproxy not available from the configured APT sources"
+          for s in $SERVERS; do
+              if getent ahosts "$s" >/dev/null 2>&1; then
+                  echo "INFO $s resolves"
+              else
+                  echo "FAIL file server $s does not resolve on the host"
+              fi
+          done
+          [ "$FQN" = "true" ] && echo "WARN fastrdp_sssd_fully_qualified_names: gssproxy impersonates <user@domain>@<realm>; test it, or use short names"
+          exit 0
+      environment:
+        SERVERS: "{{ preflight_smb_mounts | map(attribute='what', default='') | map('regex_replace', '^//([^/]+)/.*$', '\\1') | unique | join(' ') }}"
+        FQN: "{{ fastrdp_sssd_fully_qualified_names | default(preflight_role_defaults.fastrdp_sssd_fully_qualified_names) | string | lower }}"
+      register: preflight_smb
+      changed_when: false
+      failed_when: false
+      when: preflight_smb_homes
+
+    - name: Result - SMB homes
+      vars:
+        out: "{{ preflight_smb.stdout_lines | default([]) }}"
+        errs: "{{ out | select('match', '^FAIL ') | map('regex_replace', '^FAIL ', '') | list }}"
+        warns: "{{ out | select('match', '^WARN ') | map('regex_replace', '^WARN ', '') | list }}"
+        infos: "{{ out | select('match', '^INFO ') | map('regex_replace', '^INFO ', '') | list }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'SMB homes',
+             'status': 'FAIL' if errs else ('WARN' if warns else 'PASS'),
+             'detail': ((errs + warns) if (errs + warns) else infos) | join('; ')
+                       or 'not checked: ' ~ (preflight_smb.stderr | default('no output') | truncate(120)),
+             'fix': 'cifs-utils 7.0 or later (Debian 13, Ubuntu 26.04), file servers by FQDN in DNS; the delegation '
+                    ~ 'to cifs/<server> is set in the directory: docs/smb-kerberos-homes.md'}] }}
+      when: preflight_smb_homes
 
     # ------------------------------------------------------------------ ports
     - name: List listening TCP ports (/proc/net, no iproute2 needed)

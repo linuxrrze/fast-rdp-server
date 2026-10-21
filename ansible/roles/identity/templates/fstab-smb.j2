@@ -1,0 +1,9 @@
+{# Lines for the fastrdp block in /etc/fstab (fastrdp_smb_mounts, docs/smb-kerberos-homes.md).
+   multiuser: one SMB session per local uid that touches the mount, each with that
+   user's Kerberos identity (own TGT, else gssproxy impersonation); the mount itself
+   (root) uses the host's credentials. Values are checked by roles/common. #}
+{% for m in fastrdp_smb_mounts %}
+{%   set extra = (m.options | default('') | string).split(',') | select | list %}
+{%   set sec = [] if extra | select('match', '^sec=') | list else ['sec=krb5'] %}
+{{ m.what }} {{ m.where }} cifs {{ (sec + ['multiuser', 'nosuid', 'nodev', '_netdev', 'nofail', 'x-systemd.automount', 'x-systemd.after=gssproxy.service'] + extra) | join(',') }} 0 0
+{% endfor %}

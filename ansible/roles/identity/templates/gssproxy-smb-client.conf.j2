@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# SMB client credentials for cifs.upcall (fastrdp_smb_krb5_homes, docs/smb-kerberos-homes.md).
+# cifs.upcall switches to the uid that touches the mount; without a TGT in that uid's
+# cache it calls GSSAPI, and with GSS_USE_PROXY=yes (/etc/request-key.d/fastrdp-cifs.spnego.conf)
+# those calls come here. gssproxy maps the uid to its user name (getpwuid + default
+# realm), gets a ticket to itself for that user with the host keytab (S4U2Self), then
+# a ticket to cifs/<server> (S4U2Proxy). The KDC decides which SMB servers this host
+# may impersonate users to. Root (the mount itself, uid == euid, trusted) gets the
+# host's own credentials from the keytab.
+[service/fastrdp-smb-client]
+mechs = krb5
+cred_store = keytab:{{ fastrdp_smb_gssproxy_keytab }}
+cred_store = ccache:FILE:/var/lib/gssproxy/clients/krb5cc_smb_%U
+cred_usage = initiate
+allow_any_uid = yes
+impersonate = yes
+trusted = yes
+euid = 0
+# Only cifs.upcall may use this service (default socket, like rpc.gssd's service).
+program = /usr/sbin/cifs.upcall

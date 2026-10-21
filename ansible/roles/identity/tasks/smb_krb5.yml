@@ -1,0 +1,98 @@
+---
+# Kerberized SMB homes and shares (fastrdp_smb_krb5_homes): cifs.upcall + gssproxy
+# impersonation (docs/smb-kerberos-homes.md). The directory side (delegation to
+# cifs/<server>) stays manual.
+- name: SMB client, key request tools and gssproxy packages
+  ansible.builtin.apt:
+    name: [cifs-utils, keyutils, gssproxy]
+    state: present
+
+# The GSSAPI fallback of cifs.upcall (and GSS_USE_PROXY) exists since cifs-utils 7.0.
+- name: Installed cifs-utils version
+  ansible.builtin.command: dpkg-query -W -f=${Version} cifs-utils
+  register: fastrdp_smb_cifs_utils
+  changed_when: false
+  failed_when: false        # check mode on a new host: not installed yet
+  check_mode: false
+
+- name: Cifs-utils new enough for gssproxy
+  ansible.builtin.assert:
+    that: >-
+      fastrdp_smb_cifs_utils.stdout | regex_replace('^[0-9]+:', '') | regex_search('^[0-9]+(\.[0-9]+)*')
+      is version('7.0', '>=')
+    fail_msg: >-
+      cifs-utils {{ fastrdp_smb_cifs_utils.stdout }} has no GSSAPI fallback in cifs.upcall
+      (added in 7.0): users without a TGT would get no SMB credentials.
+    quiet: true
+  when: fastrdp_smb_cifs_utils.rc == 0
+
+- name: Impersonation keytab for SMB
+  ansible.builtin.stat:
+    path: "{{ fastrdp_smb_gssproxy_keytab }}"
+  register: fastrdp_smb_keytab
+
+- name: Impersonation keytab for SMB present
+  ansible.builtin.assert:
+    that: fastrdp_smb_keytab.stat.exists
+    fail_msg: >-
+      {{ fastrdp_smb_gssproxy_keytab }} is missing: gssproxy needs the host keytab for the
+      mount (host credentials) and for impersonation. Join the domain first.
+
+- name: Gssproxy service for cifs.upcall
+  ansible.builtin.template:
+    src: gssproxy-smb-client.conf.j2
+    dest: /etc/gssproxy/91-fastrdp-smb-client.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart gssproxy
+
+# Read by request-key at every upcall: no restart.
+- name: Cifs.upcall asks gssproxy (request-key)
+  ansible.builtin.template:
+    src: request-key-cifs-spnego.conf.j2
+    dest: /etc/request-key.d/fastrdp-cifs.spnego.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Gssproxy running
+  ansible.builtin.systemd_service:
+    name: gssproxy
+    enabled: true
+    state: started
+
+# Before the mounts: the first access may come right after the automount starts.
+- name: Apply the gssproxy configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Static SMB mounts (fstab)
+  ansible.builtin.blockinfile:
+    path: /etc/fstab
+    marker: "# {mark} fastrdp SMB mounts (fastrdp_smb_mounts)"
+    block: "{{ lookup('ansible.builtin.template', 'fstab-smb.j2') }}"
+    state: "{{ 'present' if fastrdp_smb_mounts | length > 0 else 'absent' }}"
+  register: fastrdp_smb_fstab
+  notify: Reload systemd units from fstab
+
+# systemd-fstab-generator turns the lines into units at daemon-reload. Changed options
+# of a mounted share apply after it is unmounted (reboot, or systemctl stop <unit>.mount).
+- name: Units for the changed fstab
+  ansible.builtin.meta: flush_handlers
+
+- name: Automount unit names of the SMB mounts
+  ansible.builtin.command:
+    argv: [systemd-escape, --path, --suffix=automount, "{{ item.where }}"]
+  loop: "{{ fastrdp_smb_mounts }}"
+  register: fastrdp_smb_units
+  changed_when: false
+  check_mode: false
+
+- name: SMB automounts started
+  ansible.builtin.systemd_service:
+    name: "{{ item.stdout }}"
+    state: started
+  loop: "{{ fastrdp_smb_units.results }}"
+  loop_control:
+    label: "{{ item.stdout }}"
+  when: not (ansible_check_mode and fastrdp_smb_fstab is changed)   # units do not exist yet

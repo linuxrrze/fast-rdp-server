@@ -572,6 +572,101 @@ class NfsKrb5Homes(unittest.TestCase):
         self.assertEqual(dict(cp["gssd"]), {"use-gss-proxy": "1"})
 
 
+class SmbKrb5Homes(unittest.TestCase):
+    """fastrdp_smb_krb5_homes: gssproxy service for cifs.upcall, request-key line,
+    static multiuser mounts in /etc/fstab, and their common checks."""
+
+    gssproxy = NfsKrb5Homes.gssproxy
+
+    def test_gssproxy_impersonation_service(self):
+        sections, pairs = self.gssproxy("gssproxy-smb-client.conf")
+        self.assertEqual(sections, ["[service/fastrdp-smb-client]"])
+        opts = dict(pairs)
+        self.assertEqual(opts["mechs"], "krb5")
+        self.assertEqual(opts["cred_usage"], "initiate")  # never accept with the host keytab
+        # trusted: root (the mount) gets the host's own credential from the keytab
+        for flag in ("allow_any_uid", "impersonate", "trusted"):
+            self.assertEqual(opts[flag], "yes", flag)
+        self.assertEqual(opts["euid"], "0")
+        # default socket, like rpc.gssd's service: gssproxy refuses two allow_any_uid
+        # services with the same socket and program, so the program must differ
+        self.assertNotIn("socket", opts)
+        self.assertEqual(opts["program"], "/usr/sbin/cifs.upcall")
+        _, nfs = self.gssproxy("gssproxy-nfs-client.conf")
+        self.assertNotEqual(dict(nfs)["program"], opts["program"])
+        # own impersonated caches, not rpc.gssd's
+        self.assertEqual([v for k, v in pairs if k == "cred_store"],
+                         ["keytab:/etc/krb5.keytab", "ccache:FILE:/var/lib/gssproxy/clients/krb5cc_smb_%U"])
+        self.assertNotIn(("cred_store", "ccache:FILE:/var/lib/gssproxy/clients/krb5cc_%U"), pairs)
+
+    def test_own_keytab(self):
+        _, pairs = self.gssproxy("gssproxy-smb-client-own.conf")
+        self.assertIn(("cred_store", "keytab:/etc/gssproxy/smb.keytab"), pairs)
+
+    def test_request_key_line(self):
+        lines = [line for line in (OUT / "request-key-cifs-spnego.conf").read_text().splitlines()
+                 if line.strip() and not line.startswith("#")]
+        self.assertEqual(len(lines), 1)
+        op, ktype, desc, callout, *cmd = lines[0].split()
+        self.assertEqual((op, ktype, callout), ("create", "cifs.spnego", "*"))
+        # less wild than cifs-utils' "*" (keyutils request-key.c match(): wildness is the
+        # number of characters the "*" skips), and it matches the kernel's description
+        self.assertEqual(desc, "ver=0x*")
+        self.assertTrue("ver=0x2;host=fs1.lab.example.com;ip4=192.0.2.5;sec=krb5;uid=0x0;creduid=0x4e8;pid=0x1f"
+                        .startswith(desc[:-1]))
+        # request-key runs the program with execv: the variable needs env
+        self.assertEqual(cmd, ["/usr/bin/env", "GSS_USE_PROXY=yes", "/usr/sbin/cifs.upcall", "%k"])
+
+    def test_fstab(self):
+        self.assertEqual((OUT / "fstab-smb-none").read_text().strip(), "")
+        lines = (OUT / "fstab-smb").read_text().splitlines()
+        self.assertEqual(len(lines), 2)
+        what, where, fstype, opts, dump, passno = lines[0].split()
+        self.assertEqual((what, where, fstype, dump, passno), ("//fs1.lab.example.com/users$", "/smb/users", "cifs", "0", "0"))
+        self.assertEqual(opts.split(","), ["sec=krb5", "multiuser", "nosuid", "nodev", "_netdev", "nofail",
+                                           "x-systemd.automount", "x-systemd.after=gssproxy.service"])
+        opts = lines[1].split()[3].split(",")
+        # sec from the options replaces the default, extra options come last
+        self.assertEqual([o for o in opts if o.startswith("sec=")], ["sec=krb5i"])
+        self.assertEqual(opts[-3:], ["vers=3.1.1", "seal", "sec=krb5i"])
+        self.assertIn("multiuser", opts)
+
+    def test_checks(self):
+        run = HomeDirectories.run_checks
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        users = {"what": "//fs1.example.com/users$", "where": "/smb/users"}
+        self.assertEqual(run(self, **ok, fastrdp_smb_krb5_homes=True), 0)
+        self.assertEqual(run(self, **ok, fastrdp_smb_krb5_homes=True, fastrdp_smb_mounts=[
+            users, {"what": "//FS1.Example.com/projects/it", "where": "/srv/smb/projects",
+                    "options": "vers=3.1.1,seal,sec=krb5i"}]), 0)
+        bad = {
+            "mounts without the option": {"fastrdp_smb_mounts": [users]},
+            "not a bool": {"fastrdp_smb_krb5_homes": "yes please"},
+            "a mapping": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": users},
+            "a string": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": "//fs1.example.com/users$"},
+            "unknown key": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [dict(users, opts="seal")]},
+            "short server name": {"fastrdp_smb_krb5_homes": True,
+                                  "fastrdp_smb_mounts": [dict(users, what="//fs1/users$")]},
+            "no share": {"fastrdp_smb_krb5_homes": True,
+                         "fastrdp_smb_mounts": [dict(users, what="//fs1.example.com")]},
+            "backslashes": {"fastrdp_smb_krb5_homes": True,
+                            "fastrdp_smb_mounts": [dict(users, what="\\\\fs1.example.com\\users$")]},
+            "space in share": {"fastrdp_smb_krb5_homes": True,
+                               "fastrdp_smb_mounts": [dict(users, what="//fs1.example.com/my users")]},
+            "relative where": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [dict(users, where="smb")]},
+            "where /": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [dict(users, where="/")]},
+            "where ..": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [dict(users, where="/smb/../etc")]},
+            "where twice": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [users, users]},
+            "no where": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [{"what": users["what"]}]},
+            "space in options": {"fastrdp_smb_krb5_homes": True,
+                                 "fastrdp_smb_mounts": [dict(users, options="seal 0 0\n/dev/sda1")]},
+            "password sec": {"fastrdp_smb_krb5_homes": True, "fastrdp_smb_mounts": [dict(users, options="sec=ntlmssp")]},
+        }
+        for name, extra in bad.items():
+            with self.subTest(name):
+                self.assertNotEqual(run(self, **ok, **extra), 0)
+
+
 class TicketRenewal(unittest.TestCase):
     """sssd-kcm renews every TGT in KCM (kinit in sessions too); FreeIPA's sssd.conf
     (written by ipa-client-install) gets the domain renewal options AD already has."""

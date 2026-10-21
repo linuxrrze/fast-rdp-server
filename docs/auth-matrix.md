@@ -243,7 +243,9 @@ split in the wrong place.
   qualified with the realm/domain, in the same order as 1.
 - Home directories on NFS with `sec=krb5`/`krb5i`/`krb5p` need a TGT (or gssproxy
   impersonation) before the session starts: see
-  [nfs-kerberos-homes.md](nfs-kerberos-homes.md) for which logins work.
+  [nfs-kerberos-homes.md](nfs-kerberos-homes.md) for which logins work. SMB homes and
+  shares with `sec=krb5,multiuser` likewise (gssproxy for `cifs.upcall`,
+  `fastrdp_smb_krb5_homes`): [smb-kerberos-homes.md](smb-kerberos-homes.md).
 - Sessions use `KCM:` credential caches. sssd renews TGTs for up to 7 days
   (`krb5_renewable_lifetime`), which is long enough for long-running terminal-server
   sessions. sssd-kcm also renews TGTs that users get with `kinit` in a session

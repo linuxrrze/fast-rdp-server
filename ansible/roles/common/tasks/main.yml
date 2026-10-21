@@ -33,6 +33,37 @@
       [/home] or [] (docs/nfs-kerberos-homes.md).
     quiet: true
 
+# Role identity's defaults; the lines go into /etc/fstab as they are (fstab-smb.j2).
+- name: SMB home settings
+  vars:
+    smb_mounts: "{{ fastrdp_smb_mounts | default([]) }}"
+    smb_mount_list: "{{ smb_mounts if smb_mounts is sequence and smb_mounts is not string and smb_mounts is not mapping else [] }}"
+  ansible.builtin.assert:
+    that:
+      - fastrdp_smb_krb5_homes | default(false) | string | lower in ['true', 'false']
+      - smb_mounts is sequence and smb_mounts is not string and smb_mounts is not mapping
+      - smb_mount_list | reject('mapping') | list | length == 0
+      - smb_mount_list | select('mapping') | map('list') | flatten | difference(['what', 'where', 'options']) | length == 0
+      - smb_mount_list | length == 0 or fastrdp_smb_krb5_homes | default(false) | bool
+      # //<FQDN>/<share>[/<path>]: the name of the cifs/ principal
+      - smb_mount_list | select('mapping') | map(attribute='what', default='') | map('string')
+        | reject('match', '^//[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(/[A-Za-z0-9._$@+-]+)+\Z') | list | length == 0
+      - smb_mount_list | select('mapping') | map(attribute='where', default='') | map('string')
+        | reject('match', '^(/[A-Za-z0-9._@+-]+)+\Z') | list | length == 0
+      - smb_mount_list | select('mapping') | map(attribute='where', default='') | map('string')
+        | select('search', '(^|/)\.\.?(/|$)') | list | length == 0
+      - smb_mount_list | select('mapping') | map(attribute='where', default='') | unique | list | length == smb_mount_list | length
+      - smb_mount_list | select('mapping') | map(attribute='options', default='') | map('string')
+        | reject('match', '^[A-Za-z0-9_.:=,/-]*\Z') | list | length == 0
+      - smb_mount_list | select('mapping') | map(attribute='options', default='') | map('string')
+        | select('search', '(^|,)sec=(?!krb5i?(,|$))') | list | length == 0
+    fail_msg: >-
+      fastrdp_smb_krb5_homes is true or false; fastrdp_smb_mounts (only with
+      fastrdp_smb_krb5_homes: true) is a list of {what: //<server FQDN>/<share>, where:
+      <absolute path>, options: <optional mount.cifs options without spaces, sec only
+      krb5 or krb5i>}, each "where" once (docs/smb-kerberos-homes.md).
+    quiet: true
+
 - name: Required site settings are present and consistent
   ansible.builtin.assert:
     that:

@@ -27,3 +27,8 @@
   ansible.builtin.systemd_service:
     name: autofs
     state: restarted
+
+# fastrdp_smb_mounts: systemd-fstab-generator writes the .mount/.automount units.
+- name: Reload systemd units from fstab
+  ansible.builtin.systemd_service:
+    daemon_reload: true

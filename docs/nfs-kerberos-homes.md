@@ -13,6 +13,10 @@ Ansible option, `fastrdp_nfs_krb5_homes`. Sites without impersonation can refuse
 logins that cannot work, early and with a clear log message:
 `fastrdp_session_tgt: required`.
 
+SMB/CIFS homes and shares (`sec=krb5,multiuser`) use the same impersonation through
+`cifs.upcall`: [smb-kerberos-homes.md](smb-kerberos-homes.md),
+`fastrdp_smb_krb5_homes`.
+
 This page is based on reading the code. It has **not** been tested against a real
 Kerberized NFS server; see [Lab test plan](#lab-test-plan). Statements are marked
 **[verified]** when they were checked in source code (file:line, versions below) and

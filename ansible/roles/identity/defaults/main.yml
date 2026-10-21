@@ -47,3 +47,21 @@ fastrdp_nfs_gssproxy_keytab: /etc/krb5.keytab
 # fastrdp_autofs: sssd on FreeIPA: the automount location whose maps sssd serves
 # (ipa automountlocation-find; FreeIPA's own default location is "default").
 fastrdp_autofs_ipa_location: default
+
+# Homes and shares on SMB/CIFS with sec=krb5 (docs/smb-kerberos-homes.md).
+# true: cifs.upcall asks gssproxy (GSS_USE_PROXY=yes, /etc/request-key.d) when the
+# user has no TGT, and gssproxy obtains cifs/<server> tickets for every local user by
+# impersonation (S4U2Self + S4U2Proxy) with the host keytab, as for NFS above. Users
+# with a TGT (typed password) keep using their own. The directory must allow
+# constrained delegation from this host to cifs/<server> first (AD:
+# msDS-AllowedToDelegateTo or RBCD; FreeIPA: delegation rule). Needs cifs-utils >= 7.0.
+fastrdp_smb_krb5_homes: false
+# Keytab whose FIRST entry is the impersonating principal (as fastrdp_nfs_gssproxy_keytab).
+fastrdp_smb_gssproxy_keytab: /etc/krb5.keytab
+# Optional static multiuser mounts (/etc/fstab, mounted by systemd on first access), e.g.
+#   - {what: //fs1.example.com/users$, where: /smb/users}
+#   - {what: //fs1.example.com/projects, where: /smb/projects, options: "vers=3.1.1,seal"}
+# Always added: sec=krb5 (unless options say sec=krb5i), multiuser, nosuid, nodev,
+# _netdev, nofail, x-systemd.automount. The server name is the FQDN of its cifs/
+# principal. Automounted per-user homes instead: fastrdp_autofs with cifs map entries.
+fastrdp_smb_mounts: []
