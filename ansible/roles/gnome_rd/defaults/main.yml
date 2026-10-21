@@ -8,3 +8,4 @@ fastrdp_gnome_packages:
   - gnome-console
   - nautilus
   - xwayland
+  - dconf-cli          # dconf update (system database below)

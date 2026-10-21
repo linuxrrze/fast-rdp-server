@@ -28,6 +28,35 @@
     state: stopped
   failed_when: false
 
+# Settings in /etc/dconf/db/local.d apply only when the user profile reads the "local"
+# database; Ubuntu and Debian ship neither the directory nor /etc/dconf/profile/user.
+- name: Dconf directories for the system database
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [/etc/dconf/profile, /etc/dconf/db/local.d]
+
+- name: Dconf user profile (kept if the site has one)
+  ansible.builtin.copy:
+    dest: /etc/dconf/profile/user
+    content: |
+      user-db:user
+      system-db:local
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Compile dconf database
+
+- name: Dconf user profile reads the local database
+  ansible.builtin.lineinfile:
+    path: /etc/dconf/profile/user
+    line: system-db:local
+  notify: Compile dconf database
+
 - name: Session defaults for remote GNOME (no screen lock, no idle blank)
   ansible.builtin.copy:
     dest: /etc/dconf/db/local.d/50-fastrdp

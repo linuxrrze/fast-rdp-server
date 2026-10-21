@@ -101,11 +101,12 @@ implements; **none of these is tested through fastrdp**.
 
 | Path / unit | From |
 |---|---|
-| packages `fastrdp_gnome_packages`: `gdm3, gnome-shell, gnome-session, gnome-remote-desktop, gnome-control-center, gnome-console, nautilus, xwayland` | role `gnome_rd` |
+| packages `fastrdp_gnome_packages`: `gdm3, gnome-shell, gnome-session, gnome-remote-desktop, gnome-control-center, gnome-console, nautilus, xwayland, dconf-cli` | role `gnome_rd` |
 | `/usr/lib/systemd/system/gnome-headless-session@.service` | GDM 50+ (the role asserts it exists) |
 | `gdm.service` | enabled and started by the role |
 | `gnome-remote-desktop.service` (system) | disabled and stopped by the role |
 | `gnome-remote-desktop-headless.service` (user unit) | g-r-d package; enabled per user by the broker in `/run/user/<uid>/systemd/user` (`--runtime`) |
+| `/etc/dconf/profile/user` | role, if missing: `user-db:user` + `system-db:local` (an existing profile only gets the `system-db:local` line); without it the `local.d` settings below are ignored |
 | `/etc/dconf/db/local.d/50-fastrdp` | role: `lock-enabled=false`, `idle-delay=uint32 0`, `enable-animations=false`; compiled by `dconf update` |
 | `/var/lib/fastrdp/users/<user>/tls.{crt,key}` | broker |
 | `/var/lib/fastrdp/sessions.json` (0600 root) | broker: port, `rdp_user`, `rdp_password` |

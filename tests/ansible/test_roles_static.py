@@ -39,6 +39,16 @@ class RolesStatic(unittest.TestCase):
             with self.subTest(file=str(p.relative_to(REPO))):
                 self.assertEqual(used, set(), "use ansible_facts.<name> (or fastrdp_fqdn / fastrdp_hostname)")
 
+    def test_gnome_dconf_database_is_read(self):
+        # copy does not create /etc/dconf/db/local.d, and without a user profile naming
+        # system-db:local the settings in it are ignored (neither exists on Ubuntu/Debian)
+        role = ANSIBLE / "roles" / "gnome_rd"
+        tasks = (role / "tasks" / "main.yml").read_text()
+        self.assertLess(tasks.index("/etc/dconf/db/local.d]"), tasks.index("dest: /etc/dconf/db/local.d/50-fastrdp"))
+        self.assertIn("system-db:local", tasks)
+        self.assertIn("dest: /etc/dconf/profile/user", tasks)
+        self.assertIn("dconf-cli", (role / "defaults" / "main.yml").read_text())
+
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         self.assertIn('fastrdp_fqdn: "{{ ansible_facts.fqdn }}"', text)

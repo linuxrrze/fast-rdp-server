@@ -635,13 +635,23 @@ table in `broker.toml` (section 9):
 
 ```sh
 apt install --no-install-recommends gdm3 gnome-shell gnome-session gnome-remote-desktop \
-    gnome-control-center gnome-console nautilus xwayland
+    gnome-control-center gnome-console nautilus xwayland dconf-cli
 test -f /usr/lib/systemd/system/gnome-headless-session@.service
 systemctl enable --now gdm.service
 systemctl disable --now gnome-remote-desktop.service   # the broker starts per-user headless g-r-d
 ```
 
-`/etc/dconf/db/local.d/50-fastrdp` (`root:root 0644`), then `dconf update`:
+The system dconf database is read only through a user profile that names it. If
+`/etc/dconf/profile/user` does not exist, create it (`root:root 0644`); if it exists,
+make sure it contains the `system-db:local` line:
+
+```
+user-db:user
+system-db:local
+```
+
+`/etc/dconf/db/local.d/50-fastrdp` (`root:root 0644`, `mkdir -p /etc/dconf/db/local.d`
+first), then `dconf update`:
 
 ```ini
 [org/gnome/desktop/screensaver]
