@@ -93,9 +93,9 @@ GNOME and Plasma sessions ignore the connection type
 
 | You type | Kerberos principal FreeRDP uses | Notes |
 |---|---|---|
-| `/u:alice /d:LAB.EXAMPLE.COM` | `alice@LAB.EXAMPLE.COM` | recommended. `/d` is the realm; FreeRDP upper-cases it and makes it the default realm for this login. **Exception:** if `default_realm` in the client's `krb5.conf` is set to *another* realm, FreeRDP treats a dotted `/d` as a UPN suffix (row 3); then use `/u:alice@LAB.EXAMPLE.COM` |
+| `/u:alice /d:LAB.EXAMPLE.COM` | `alice@LAB.EXAMPLE.COM` | recommended. `/d` is the realm; FreeRDP upper-cases it and makes it the default realm for this login. **Exception** (FreeRDP 3.32.2 and later; Ubuntu 26.04's 3.24.2 and 3.32.1 always build `alice@<D>`): if `default_realm` in the client's `krb5.conf` is set to *another* realm, FreeRDP treats a dotted `/d` as a UPN suffix (row 3); then use `/u:alice@LAB.EXAMPLE.COM` |
 | `/u:alice@LAB.EXAMPLE.COM` (no `/d`) | `alice@LAB.EXAMPLE.COM` | FreeRDP upper-cases the part after `@`, so `/u:alice@lab.example.com` also works when realm = DNS domain |
-| `/u:marcel.ritter /d:corp.example.com` (UPN suffix ≠ realm) | enterprise principal `marcel.ritter\@corp.example.com@<default_realm>` | when `/d` contains a dot and differs from `default_realm` in `krb5.conf`, FreeRDP builds an enterprise name, as Windows does. Needs `default_realm` = the AD realm. [lab] |
+| `/u:marcel.ritter /d:corp.example.com` (UPN suffix ≠ realm) | enterprise principal `marcel.ritter\@corp.example.com@<default_realm>` (FreeRDP ≥ 3.32.2; older: `marcel.ritter@CORP.EXAMPLE.COM`, which fails) | when `/d` contains a dot and differs from `default_realm` in `krb5.conf`, FreeRDP builds an enterprise name, as Windows does. Needs `default_realm` = the AD realm. [lab] |
 | `/u:marcel.ritter@corp.example.com` (UPN suffix ≠ realm) | `marcel.ritter@CORP.EXAMPLE.COM` | **fails**: `CORP.EXAMPLE.COM` is no realm. Use the row above |
 | `/u:LAB\alice` | `alice@LAB` | **fails** unless `krb5.conf` knows a realm `LAB`. NetBIOS names are no realms |
 
@@ -123,6 +123,9 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
    exit; your own cache is untouched unless you name one with `/kerberos:cache:` (§7).
    If a valid TGT for that principal is already in your default cache, FreeRDP uses it
    and the typed password is not needed for Kerberos (`kerberos.c:492-581`).
+   The client then never checks the typed password: a wrong one still logs in through
+   Kerberos, but fastrdp gets the wrong password, so the session has no TGT
+   (`fastrdp_session_tgt: auto`) or the login is refused (`required`).
 2. It authenticates to `TERMSRV/rdp1.lab.example.com` (Kerberos, mutual authentication).
 3. It then delegates `TSPasswordCreds` (user, domain, password) to fastrdp
    (`nla.c:1836-1849`).
@@ -194,6 +197,9 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /p /sec:nla /auth-
     by `krb5_cc_default`).
   - Make the right one primary first: `kswitch -p alice@LAB.EXAMPLE.COM`. Otherwise
     FreeRDP falls back to a password login as above.
+  - With a typed password in that case, FreeRDP stores the new TGT in your primary
+    cache (`krb5glue_mit.c` `set_out_ccache`), which then holds the other principal's
+    tickets no longer [inferred from MIT ccache semantics].
 - `/kerberos:cache:<ccache>` sets the default cache for this connection (§7).
 
 **What the server gets.**

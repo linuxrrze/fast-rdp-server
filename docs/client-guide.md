@@ -12,12 +12,14 @@ back to RFX/progressive at several times the bandwidth. See
 [performance.md](performance.md).
 
 ```sh
-# Kerberos NLA, desktop from server defaults, GFX/H.264 AVC444, adaptive network
+# Kerberos NLA, desktop from server defaults, GFX/H.264 AVC444, adaptive network.
+# Prompts for the password even with a valid ticket (intended: the password gives the session a TGT)
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM \
     /sec:nla /auth-pkg-list:'kerberos,!ntlm' \
     /gfx:avc444 /network:auto /dynamic-resolution +clipboard
 
-# single sign-on with the ticket from kinit or your desktop login: empty /p, no prompt
+# single sign-on with the ticket from kinit or your desktop login: empty /p, no prompt,
+# but the session gets no Kerberos TGT (run kinit inside it for Kerberized homes/shares)
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /p \
     /sec:nla /auth-pkg-list:'kerberos,!ntlm'
 

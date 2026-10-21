@@ -138,7 +138,10 @@ Every line must say `ok`. Then connect **to the FQDN** (details in
 [client-guide.md](client-guide.md)):
 
 ```sh
-# FreeRDP 3 (Linux/macOS), Kerberos NLA; /cert:tofu accepts the self-signed certificate once
+# FreeRDP 3 (Linux/macOS), Kerberos NLA; /cert:tofu accepts the self-signed certificate once.
+# It asks for the password even when you have a Kerberos ticket: typing it gives the session
+# a TGT (NFS/SMB homes). Single sign-on without a prompt: add /p (no TGT in the session),
+# see client-guide.md.
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /cert:tofu \
     /gfx:avc444 /network:auto /dynamic-resolution +clipboard
 
