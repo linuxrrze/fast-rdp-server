@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# python3-kdcproxy (KDCPROXY_CONFIG of fastrdp-kdcproxy.service). Only the site's realm,
+# only these servers: a request naming any other realm has no section here and gets 503.
+# Section names are case-sensitive: the realm also in lower case, in case a client sends
+# it that way (same servers). use_dns = false: without it kdcproxy looks up the
+# _kerberos SRV records of whatever realm the client names and forwards there (an open
+# proxy). The unit refuses to start without this line. "configs" stays unset:
+# "configs = mit" would add every realm of /etc/krb5.conf.
+[global]
+use_dns = false
+{% for realm in [fastrdp_realm] + ([fastrdp_realm | lower] if fastrdp_realm != fastrdp_realm | lower else []) %}
+
+[{{ realm }}]
+kerberos = {{ fastrdp_web_kdcproxy_kdc_servers | map('regex_replace', '^', 'kerberos+tcp://') | join(' ') }}
+{% if fastrdp_web_kdcproxy_kpasswd_servers | length > 0 %}
+kpasswd = {{ fastrdp_web_kdcproxy_kpasswd_servers | map('regex_replace', '^', 'kpasswd+tcp://') | join(' ') }}
+{% endif %}
+{% endfor %}

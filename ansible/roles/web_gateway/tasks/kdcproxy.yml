@@ -1,0 +1,62 @@
+---
+# KDC proxy (MS-KKDCP, fastrdp_web_kdcproxy): python3-kdcproxy under gunicorn, started by
+# systemd socket activation on /run/fastrdp-kdcproxy.sock (group www-data: nginx), as a
+# dynamic unprivileged user. nginx forwards POST /KdcProxy (nginx-fastrdp-web.conf.j2).
+# Both packages: Debian 13 main, Ubuntu 26.04 universe.
+- name: KDC proxy packages
+  ansible.builtin.apt:
+    name: [python3-kdcproxy, gunicorn]
+    state: present
+
+# python3-kdcproxy depends on dnspython, which the lookup uses (the host's resolver).
+- name: KDCs of the realm from DNS (fastrdp_web_kdcproxy_kdcs is empty)
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/fastrdp_kdcproxy_srv.py {{ fastrdp_realm | lower | quote }}"
+    executable: /usr/bin/python3
+  register: fastrdp_kdcproxy_srv
+  changed_when: false
+  check_mode: false
+  when: fastrdp_web_kdcproxy_kdcs | length == 0
+
+- name: The KDC proxy has KDCs for the realm
+  ansible.builtin.assert:
+    that: fastrdp_web_kdcproxy_kdc_servers | length > 0
+    fail_msg: >-
+      No _kerberos._tcp.{{ fastrdp_realm | lower }} SRV records on this host: set
+      fastrdp_web_kdcproxy_kdcs to the realm's KDCs (docs/web-access.md#kdc-proxy).
+    quiet: true
+
+- name: KDC proxy configuration (only fastrdp_realm, no DNS lookups)
+  ansible.builtin.template:
+    src: kdcproxy.conf.j2
+    dest: /etc/fastrdp/kdcproxy.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fastrdp-kdcproxy
+
+- name: KDC proxy gunicorn settings
+  ansible.builtin.template:
+    src: kdcproxy-gunicorn.conf.py.j2
+    dest: /etc/fastrdp/kdcproxy-gunicorn.conf.py
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fastrdp-kdcproxy
+
+- name: KDC proxy socket and service units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]
+  notify: Restart fastrdp-kdcproxy
+
+- name: KDC proxy socket listening
+  ansible.builtin.systemd_service:
+    name: fastrdp-kdcproxy.socket
+    state: started
+    enabled: true
+    daemon_reload: true

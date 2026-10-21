@@ -151,6 +151,114 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
 - **Images** are pulled from Docker Hub by tag (`fastrdp_guacamole_version`). Mirror
   or pin by digest for production.
 
+## KDC proxy
+
+Optional, for **native RDP clients** outside the internal network: with
+`fastrdp_web_kdcproxy: true` the same nginx also serves `https://<fqdn>/KdcProxy`, a
+Kerberos KDC proxy (MS-KKDCP). Clients send their Kerberos requests there over HTTPS
+and can do Kerberos NLA without a VPN. Without a reachable KDC, Windows falls back to
+NTLM, which fastrdp refuses; the other ways out are a VPN, TLS logins (password + OTP)
+or the browser path above ([windows-clients.md](windows-clients.md) §3.10).
+
+```
+mstsc / FreeRDP / kinit ──https POST /KdcProxy──▶ nginx :443   (POST only, 128 KiB, limit_req per address)
+   ──▶ /run/fastrdp-kdcproxy.sock ──▶ gunicorn + python3-kdcproxy (DynamicUser)
+   ──TCP 88 (kpasswd 464)──▶ KDCs of fastrdp_realm only
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `fastrdp_web_kdcproxy` | `false` | switch; needs `fastrdp_web_enabled: true` |
+| `fastrdp_web_kdcproxy_kdcs` | `[]` | KDCs as `host` or `host:port` (port 88 if none). `[]`: the SRV records `_kerberos._tcp.<realm in lower case>`, looked up on the host at every run (run the playbook again when the KDCs change) |
+| `fastrdp_web_kdcproxy_kpasswd` | `true` | also forward password changes (kpasswd, e.g. `kinit` with an expired password): `_kpasswd._tcp` SRV records, else port 464 of the KDCs |
+| `fastrdp_web_kdcproxy_rate_per_minute`, `fastrdp_web_kdcproxy_burst` | `60`, `20` | nginx `limit_req` per client address; more gets HTTP 429. A login takes about 3 to 6 requests. Clients behind one NAT address share the limit |
+
+Packages: `python3-kdcproxy` (1.0.0) and `gunicorn` (Debian 13: 23.0.0, main; Ubuntu
+26.04: 25.1.0, **universe**). The preflight checks that both are installable and that
+the KDCs answer on TCP from the host.
+
+**Only the site's realm.** `/etc/fastrdp/kdcproxy.conf` has one section for
+`fastrdp_realm` (and the same in lower case, as realm names are case-sensitive there)
+naming the KDCs, and `use_dns = false`. Verified with python-kdcproxy 1.0.0 and a fake
+KDC (`tests/ansible/kdcproxy_check.py`):
+- A request for any other realm, a differently cased realm or no realm gets HTTP 503
+  and nothing is sent anywhere.
+- With DNS lookups on (kdcproxy's default), the proxy would look up `_kerberos._tcp`
+  of whatever realm a client names and forward there: an open proxy into every network
+  the host can reach.
+- kdcproxy silently ignores a missing or unreadable config file and then uses DNS. The
+  unit therefore refuses to start unless it can read the file and finds
+  `use_dns = false` in it.
+- Only messages that parse as AS-REQ, TGS-REQ or kpasswd requests are forwarded, over
+  TCP, to the listed servers. kdcproxy does not compare the realm inside the request
+  with the one the client names; such a request still only reaches your KDCs, which
+  answer with an error.
+
+**nginx** forwards `/KdcProxy` from the HTTPS server only (port 80 only redirects),
+POST only (other methods: 403), at most 128 KiB per request (kdcproxy's own limit;
+larger: 413), rate-limited per client address (429). The service runs as a dynamic
+user without capabilities or secrets; only nginx (`www-data`) may connect to its
+socket.
+
+**Exposure: read before enabling.** Anyone who can reach the web gateway can now send
+Kerberos requests to your KDCs:
+- **Password guessing** through pre-authentication, and **account enumeration**
+  (unknown principal vs. pre-authentication required).
+- **AS-REP roasting** of accounts that do not require pre-authentication (AD: "Do not
+  require Kerberos preauthentication"; MIT: principals without `+requires_preauth`): the
+  KDC hands out a reply encrypted with the user's key for offline cracking, and logs a
+  successful issue, not a failure.
+- **Kerberoasting** by any user who knows one password: service tickets for accounts
+  with weak passwords, now from the internet.
+
+What helps:
+- An **account lockout policy** at the KDC (AD: account lockout threshold; FreeIPA:
+  `ipa pwpolicy-mod --maxfail --failinterval --lockouttime`; MIT: `maxfailure` in the
+  password policy). Lockout also lets an attacker lock users out; choose the threshold
+  with that in mind.
+- Pre-authentication required for every account; strong passwords for service accounts.
+- The nginx rate limit: it slows one address, not a distributed attack.
+- Monitoring: nginx logs every request with the real client address
+  (`/var/log/nginx/fastrdp-web.log`, 429 = rate limit), for example for fail2ban. The KDC
+  sees the web gateway's address as the client (AD event 4771 for failed
+  pre-authentication).
+- Smartcards or passkeys instead of passwords where possible
+  ([smartcard-nla.md](smartcard-nla.md), [passkeys.md](passkeys.md)).
+
+TLS between client and proxy also hides the Kerberos exchange from network observers,
+which plain TCP/UDP 88 does not.
+
+**Certificate.** nginx uses the front certificate (`fastrdp_front_cert_src`). Clients
+must trust it and its name must match the host in the proxy URL; the self-signed lab
+certificate only works for MIT clients with `http_anchors`.
+
+**Clients** ([client-guide.md](client-guide.md), details:
+[freerdp-client.md](freerdp-client.md) §7, [windows-clients.md](windows-clients.md) §3.10):
+- Windows: GPO *Computer Configuration → Administrative Templates → System → Kerberos →
+  Specify KDC proxy servers for Kerberos clients*: realm → `<https rdp1.example.com:443:KdcProxy />`.
+- Linux (MIT krb5, also what FreeRDP uses): in `/etc/krb5.conf`
+  ```
+  [realms]
+      EXAMPLE.COM = {
+          kdc = https://rdp1.example.com/KdcProxy
+          kpasswd_server = https://rdp1.example.com/KdcProxy
+      }
+  ```
+  and the package `krb5-k5tls` (Debian/Ubuntu; only suggested by `krb5-user`). Without
+  it MIT reports `Cannot contact any KDC for realm ...`; `KRB5_TRACE=/dev/stderr` shows
+  `Could not find tls plugin module named 'k5tls'`.
+- FreeRDP additionally has `/kerberos:kdc-url:rdp1.example.com` (the host, not a URL), but
+  it covers only the first ticket: the `krb5.conf` entry is needed anyway.
+
+**Tested** without systemd and Windows (scratch, not CI): MIT `kinit` + `kvno
+TERMSRV/...` (krb5 1.22.1, `krb5-k5tls`) → the rendered nginx site (nginx 1.28.3,
+Ubuntu 26.04 package) → gunicorn 23.0.0 and 25.1.0 → python-kdcproxy 1.0.0 → a scratch
+MIT KDC. A wrong password reached the KDC as `PREAUTH_FAILED`; another realm failed
+with `Cannot contact any KDC`; GET 403, 200 KiB 413, more than the burst 429. A
+malformed body gets HTTP 500 with a Python traceback in the journal (a bug in
+kdcproxy 1.0.0's error path), not 400. Open: the systemd units on a host, the Windows
+GPO path with mstsc, AD as the KDC, kpasswd through the proxy.
+
 ## Files and services
 
 | | |
@@ -161,3 +269,5 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
 | `/etc/fastrdp/guacamole-json.key` | 128-bit key shared by webgate and Guacamole (generated once) |
 | `/etc/fastrdp/webgate-cookie.secret` | signs the webgate's session cookies (generated once) |
 | `/etc/nginx/sites-enabled/fastrdp-web.conf` | TLS front (same certificate as the RDP front-end) |
+| `fastrdp-kdcproxy.socket`, `fastrdp-kdcproxy.service` | KDC proxy (opt-in): socket `/run/fastrdp-kdcproxy.sock` (`root:www-data 0660`), gunicorn as a dynamic user |
+| `/etc/fastrdp/kdcproxy.conf`, `/etc/fastrdp/kdcproxy-gunicorn.conf.py` | KDC proxy: realm and KDCs, gunicorn settings (removed again with `fastrdp_web_kdcproxy: false`) |

@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# gunicorn settings of fastrdp-kdcproxy.service. No bind: the listening socket comes
+# from systemd (fastrdp-kdcproxy.socket, /run/fastrdp-kdcproxy.sock).
+wsgi_app = "kdcproxy:application"
+# kdcproxy blocks while it waits for the KDCs (up to about 30 s when they are down):
+# threads, so slow requests do not starve the others
+worker_class = "gthread"
+workers = 2
+threads = 16
+timeout = 60
+graceful_timeout = 10
+# gunicorn 25.1+ (Ubuntu 26.04) would open a control socket (gunicorn.ctl) in the working
+# directory; gunicorn 23 (Debian 13) ignores the unknown setting
+control_socket_disable = True
+# nginx logs the requests (/var/log/nginx/fastrdp-web.log); kdcproxy's warnings go to the journal
+accesslog = None
+errorlog = "-"
+loglevel = "warning"

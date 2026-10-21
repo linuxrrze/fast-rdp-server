@@ -350,15 +350,28 @@ Confidence medium; real card + AD + mstsc is lab test L7.
 - Without a reachable KDC, Windows cannot get the TERMSRV ticket and falls back to NTLM,
   which is refused. Options:
   1. **VPN** (simplest).
-  2. **KDC proxy (MS-KKDCP).** Run an HTTPS KDC proxy in front of the DCs, for example
-     `python-kdcproxy` behind Apache/nginx, or the Windows *KPS* service. Configure clients
-     with GPO *Computer Configuration → Administrative Templates → System → Kerberos →
-     Specify KDC proxy servers for Kerberos clients*: realm `LAB.EXAMPLE.COM` →
-     `<https kdcproxy.lab.example.com:443:KdcProxy />`.
-     - The proxy's TLS certificate must be trusted.
-     - FreeRDP clients use `/kerberos:kdc-url:` ([client-guide.md](client-guide.md)).
-     - fastrdp does not need to implement this. An optional Ansible role that deploys
-       `python-kdcproxy` on the web gateway host would be a reasonable addition (gap).
+  2. **KDC proxy (MS-KKDCP).** An HTTPS endpoint that forwards Kerberos messages to the
+     DCs: fastrdp's own (`fastrdp_web_kdcproxy: true`, python3-kdcproxy behind the web
+     gateway's nginx at `https://<fqdn>/KdcProxy`, only for `fastrdp_realm`;
+     [web-access.md](web-access.md#kdc-proxy)), the Windows *KPS* service, or another
+     python-kdcproxy.
+     - Clients: GPO *Computer Configuration → Administrative Templates → System →
+       Kerberos → Specify KDC proxy servers for Kerberos clients* (enabled), entry: value
+       name = realm (`LAB.EXAMPLE.COM`), value = `<https rdp1.lab.example.com:443:KdcProxy />`.
+       Windows uses the proxy when it cannot reach a DC itself. [doc]
+     - The proxy's TLS certificate must be trusted by the client and match the name.
+       Windows also checks its revocation; the GPO *Disable revocation checking for the
+       SSL certificate of KDC proxy servers* (same folder) turns that off, e.g. for an
+       internal CA without a reachable CRL. [doc]
+     - FreeRDP and other MIT krb5 clients: `kdc = https://rdp1.lab.example.com/KdcProxy`
+       in `krb5.conf` plus the package `krb5-k5tls`; FreeRDP's `/kerberos:kdc-url:` alone
+       only covers the first ticket ([freerdp-client.md](freerdp-client.md) §7).
+     - Exposure: the endpoint lets anyone on the internet send pre-authentication
+       attempts (password guesses) to the DCs. Account lockout policy, pre-authentication
+       for every account and the nginx rate limit matter
+       ([web-access.md](web-access.md#kdc-proxy)).
+     - mstsc through fastrdp's proxy, with AD as the KDC, is untested (lab); the MIT path
+       is tested with a scratch KDC.
   3. **RD Gateway (MS-TSGU):** fastrdp has no gateway; FreeRDP has no RD Gateway server.
      - A Windows Server RD Gateway can tunnel to fastrdp:3389 like to any RDP host.
      - The RD Gateway's built-in KDC proxy feature can carry the Kerberos traffic.
@@ -527,7 +540,7 @@ non-joined clients not `LAB\alice`.
 | 5 | Identity role: no AES enctype setting/check, no alias SPNs, FreeIPA without short name | gap | **fixed:** `fastrdp_termsrv_enctypes`, `fastrdp_termsrv_aliases`, FreeIPA short-name alias, `fastrdp-termsrv-check` in the role and in `check-host.sh` |
 | 6 | Base role: self-signed cert covers only the FQDN | gap | **fixed:** SAN = FQDN, short name, aliases; internal CA via `fastrdp_front_cert_src` |
 | 7 | Broker principal/user match fails for UPN ≠ sAMAccountName (§3.6) | probable bug | **fixed:** the principal is authoritative for NLA |
-| 8 | No KDC proxy offering (§3.10) | gap | optional `kdcproxy` role |
+| 8 | No KDC proxy offering (§3.10) | gap | **implemented, Windows lab pending:** `fastrdp_web_kdcproxy` (python3-kdcproxy behind the web gateway's nginx, [web-access.md](web-access.md#kdc-proxy)) |
 | 9 | auth-matrix.md / client-guide.md: SSO row lacks Credential Guard/Restricted Admin; `LAB\alice` advice for non-joined clients | docs | **done** (UPN and FQDN recommended); revisit after the lab |
 
 ## 6. What only a Windows lab can settle
@@ -542,7 +555,9 @@ non-joined clients not `LAB\alice`.
 5. Restricted Admin TSCredentials layout, and mstsc's behaviour with it against a
    non-Windows server.
 6. Smartcard/WHfB delegation format from a real card.
-7. KDC proxy from a non-joined, off-network client.
+7. KDC proxy from a non-joined, off-network client: the GPO (or `kdcproxyname` in the
+   `.rdp` file) against `fastrdp_web_kdcproxy`, which realm spelling Windows sends, and
+   the certificate/revocation checks (§3.10).
 
 ## 7. Lab test plan
 

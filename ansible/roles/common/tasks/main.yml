@@ -78,6 +78,39 @@
       (docs/desktop-matrix.md#host-safety-power-actions).
     quiet: true
 
+# Role web_gateway's defaults. The KDCs go into kdcproxy.conf as they are (one
+# space-separated line), and the realm becomes its section name.
+- name: KDC proxy settings (web_gateway role)
+  vars:
+    kdcproxy: "{{ fastrdp_web_kdcproxy | default(false) }}"
+    kdcs: "{{ fastrdp_web_kdcproxy_kdcs | default([]) }}"
+    kdc_list: "{{ kdcs if kdcs is sequence and kdcs is not string and kdcs is not mapping else [] }}"
+    rate: "{{ fastrdp_web_kdcproxy_rate_per_minute | default(60) | string }}"
+    burst: "{{ fastrdp_web_kdcproxy_burst | default(20) | string }}"
+  ansible.builtin.assert:
+    that:
+      - kdcproxy | string | lower in ['true', 'false']
+      - fastrdp_web_kdcproxy_kpasswd | default(true) | string | lower in ['true', 'false']
+      - kdcs is sequence and kdcs is not string and kdcs is not mapping
+      - kdc_list | map('string') | reject('match', '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?\Z') | list | length == 0
+      - kdc_list | map('string') | select('search', ':') | map('regex_replace', '^[^:]*:', '') | map('int')
+        | reject('ge', 1) | list | length == 0
+      - kdc_list | map('string') | select('search', ':') | map('regex_replace', '^[^:]*:', '') | map('int')
+        | reject('le', 65535) | list | length == 0
+      - rate is match('^[0-9]+\Z') and rate | int >= 1
+      - burst is match('^[0-9]+\Z')
+      - not kdcproxy | bool or fastrdp_web_enabled | bool
+      - not kdcproxy | bool or (fastrdp_realm is match('^[A-Za-z0-9][A-Za-z0-9._-]*\Z') and fastrdp_realm | lower != 'global')
+    fail_msg: >-
+      fastrdp_web_kdcproxy and fastrdp_web_kdcproxy_kpasswd are true or false;
+      fastrdp_web_kdcproxy needs fastrdp_web_enabled (the proxy runs behind the web
+      gateway's nginx) and a realm of letters, digits, ".", "_" and "-";
+      fastrdp_web_kdcproxy_kdcs is a list of KDC host names or IPv4 addresses with an
+      optional port 1-65535, e.g. [dc1.example.com, "dc2.example.com:88"] ([] = DNS SRV);
+      fastrdp_web_kdcproxy_rate_per_minute is a whole number of at least 1 and
+      fastrdp_web_kdcproxy_burst a whole number (docs/web-access.md#kdc-proxy).
+    quiet: true
+
 - name: Required site settings are present and consistent
   ansible.builtin.assert:
     that:

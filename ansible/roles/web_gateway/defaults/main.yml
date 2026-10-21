@@ -59,3 +59,38 @@ fastrdp_web_passkeys_mediation: conditional   # conditional (autofill) | optiona
 # delete passkeys registered earlier: the list is only checked at registration.
 fastrdp_web_passkeys_hardware_only: false
 fastrdp_web_passkeys_aaguids: []
+
+# ---------------------------------------------------------------- KDC proxy (MS-KKDCP)
+# Opt-in: python3-kdcproxy under gunicorn (unprivileged, systemd socket on
+# /run/fastrdp-kdcproxy.sock) behind this nginx at https://<fastrdp_fqdn>/KdcProxy, so
+# clients without a route to the KDCs (no VPN) can still do Kerberos NLA: FreeRDP
+# /kerberos:kdc-url:<fqdn> plus krb5.conf "kdc = https://<fqdn>/KdcProxy", Windows via the
+# GPO "Specify KDC proxy servers for Kerberos clients" (docs/web-access.md#kdc-proxy).
+# Only fastrdp_realm is proxied, only to its KDCs (never DNS lookups for other realms).
+# Exposure: anyone on the internet can then send pre-authentication attempts (password
+# guessing) to the KDCs through it: account lockout policy and the rate limit matter.
+fastrdp_web_kdcproxy: false
+# KDCs as host or host:port (IPv6 as [addr]:port), e.g. [dc1.example.com, dc2.example.com:88].
+# [] = the SRV records _kerberos._tcp.<realm in lower case>, looked up on the host at each
+# run (re-run the playbook when the KDCs change). TCP only.
+fastrdp_web_kdcproxy_kdcs: []
+# Password changes (kpasswd, e.g. kinit with an expired password) through the proxy:
+# SRV _kpasswd._tcp.<realm>, or port 464 of the listed KDCs. false = AS/TGS requests only.
+fastrdp_web_kdcproxy_kpasswd: true
+# nginx limit_req per client address: requests per minute and burst. One login takes
+# about 3-6 requests (AS-REQ twice with pre-authentication, TGS-REQ for TERMSRV).
+# Clients behind one NAT address share the limit.
+fastrdp_web_kdcproxy_rate_per_minute: 60
+fastrdp_web_kdcproxy_burst: 20
+# Derived, normally not set: the servers kdcproxy.conf names (host:port). The listed KDCs
+# (port 88 added) or the SRV records tasks/kdcproxy.yml looked up (fastrdp_kdcproxy_srv);
+# kpasswd: the _kpasswd._tcp SRV records, else port 464 of the KDC hosts.
+fastrdp_web_kdcproxy_kdc_servers: >-
+  {{ (fastrdp_web_kdcproxy_kdcs | map('string') | map('regex_replace', '^([^:]+)$', '\1:88') | list)
+     if fastrdp_web_kdcproxy_kdcs | length > 0
+     else (fastrdp_kdcproxy_srv.stdout | default('{}', true) | from_json).kerberos | default([]) }}
+fastrdp_web_kdcproxy_kpasswd_servers: >-
+  {{ [] if not fastrdp_web_kdcproxy_kpasswd | bool
+     else ((((fastrdp_kdcproxy_srv.stdout | default('{}', true) | from_json).kpasswd | default([]))
+            if fastrdp_web_kdcproxy_kdcs | length == 0 else [])
+           or (fastrdp_web_kdcproxy_kdc_servers | map('regex_replace', ':[0-9]+$', ':464') | unique | list)) }}

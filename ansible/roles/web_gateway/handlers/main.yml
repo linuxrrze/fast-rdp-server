@@ -12,6 +12,14 @@
     daemon_reload: true
   loop: [fastrdp-guacd.service, fastrdp-guacamole.service]
 
+# Socket first: a restarted socket is a new file, and only a restarted service gets it.
+- name: Restart fastrdp-kdcproxy
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop: [fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]
+
 - name: Reload nginx
   ansible.builtin.systemd_service:
     name: nginx.service

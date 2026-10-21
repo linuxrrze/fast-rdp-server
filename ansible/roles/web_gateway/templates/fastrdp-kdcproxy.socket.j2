@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# KDC proxy (MS-KKDCP) socket: only nginx (www-data) connects; it forwards POST /KdcProxy.
+[Unit]
+Description=fastrdp Kerberos KDC proxy socket
+
+[Socket]
+ListenStream=/run/fastrdp-kdcproxy.sock
+SocketUser=root
+SocketGroup=www-data
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

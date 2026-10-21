@@ -162,6 +162,14 @@
     mode: "0644"
   notify: Reload nftables
 
+- name: KDC proxy for off-network Kerberos clients (opt-in, fastrdp_web_kdcproxy)
+  ansible.builtin.include_tasks: kdcproxy.yml
+  when: fastrdp_web_kdcproxy | bool
+
+- name: No KDC proxy left from an earlier run
+  ansible.builtin.include_tasks: kdcproxy_absent.yml
+  when: not fastrdp_web_kdcproxy | bool
+
 - name: Reverse proxy
   ansible.builtin.template:
     src: nginx-fastrdp-web.conf.j2

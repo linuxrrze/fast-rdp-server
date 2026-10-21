@@ -458,8 +458,17 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
       }
   ```
   Then `kinit` and FreeRDP both work off-network, with or without `/kerberos:kdc-url:`.
-  The proxy's TLS certificate must be trusted by the client's OpenSSL. [lab]
-- fastrdp does not ship a KDC proxy ([windows-clients.md](windows-clients.md) §3.10).
+  Add `kpasswd_server = https://kdcproxy.lab.example.com/KdcProxy` for password changes.
+- MIT needs its TLS plugin for `https://` KDCs: on Debian/Ubuntu the package
+  `krb5-k5tls` (`krb5-user` only suggests it). Without it every request fails with
+  `Cannot contact any KDC for realm ...`, and `KRB5_TRACE=/dev/stderr` shows `Could not
+  find tls plugin module named 'k5tls'`. [lab: krb5 1.22.1]
+- The proxy's TLS certificate must be trusted by the client's OpenSSL and match the
+  host in the URL; for a private CA add `http_anchors = FILE:/path/ca.pem` to the realm.
+- fastrdp's own KDC proxy: `fastrdp_web_kdcproxy: true` on the web gateway; the URL is
+  `https://<rdp-fqdn>/KdcProxy`, so `/kerberos:kdc-url:<rdp-fqdn>`
+  ([web-access.md](web-access.md#kdc-proxy)). It forwards only the site's realm. Tested
+  with `kinit`/`kvno` against a scratch MIT KDC; FreeRDP itself through it is a lab item.
 
 **Realm mapping.**
 - FreeRDP builds the service name with `krb5_sname_to_principal(<host>, "TERMSRV",
@@ -669,8 +678,9 @@ The tag names come from the `TAG` definitions of the files cited above.
 1. Smartcard logon with real PIV cards and YubiKey PIV (OpenSC and `libykcs11`) against
    AD PKI. Also the `/u`/`/d` filter behaviour with real UPNs.
 2. FreeIPA passkey → TGT → SSO (method 4), and `--auth-ind` on `TERMSRV`.
-3. A KDC proxy (python-kdcproxy or Windows KPS): `/kerberos:kdc-url:` alone vs. the
-   `krb5.conf` entry (§7).
+3. A KDC proxy (`fastrdp_web_kdcproxy`, or Windows KPS): xfreerdp3 with
+   `/kerberos:kdc-url:` alone vs. the `krb5.conf` entry (§7). `kinit`/`kvno` through
+   fastrdp's proxy work (scratch MIT KDC).
 4. A real push with a 60-second approval delay through xfreerdp3, sdl-freerdp3 and
    Remmina (§6).
 5. The enterprise-principal form `/u:<upn-prefix> /d:<upn-suffix>` against AD with a UPN

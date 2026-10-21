@@ -30,12 +30,25 @@ xfreerdp3 /v:rdp1.lab.example.com /sec:nla /auth-pkg-list:'kerberos,!ntlm' \
 # pick a desktop for this session
 xfreerdp3 ... /shell:fastrdp:gnome
 
-# outside the VPN: KDC proxy (MS-KKDCP). Give the host; FreeRDP adds https://.../KdcProxy.
-# It only covers the first ticket: also put the proxy into krb5.conf (freerdp-client.md §7)
-xfreerdp3 ... /kerberos:kdc-url:kdcproxy.lab.example.com
+# outside the VPN: KDC proxy (MS-KKDCP), if the administrator enabled it on the server
+# (https://rdp1.lab.example.com/KdcProxy). Give the host; FreeRDP adds https://.../KdcProxy.
+# It only covers the first ticket: also put the proxy into krb5.conf (below)
+xfreerdp3 ... /kerberos:kdc-url:rdp1.lab.example.com
 
 # password + OTP in one field (server must allow TLS logins); type "Secret123456" at the prompt
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /sec:tls /gfx:avc444
+```
+
+Off-network through the server's KDC proxy, `kinit` and every FreeRDP login method
+need it in `/etc/krb5.conf`, and the package `krb5-k5tls` (Debian/Ubuntu; without it:
+`Cannot contact any KDC`):
+
+```
+[realms]
+    LAB.EXAMPLE.COM = {
+        kdc = https://rdp1.lab.example.com/KdcProxy
+        kpasswd_server = https://rdp1.lab.example.com/KdcProxy
+    }
 ```
 
 `/network:auto` lets the server choose the video bitrate profile of X11 (xrdp) sessions:
@@ -97,7 +110,10 @@ connection type:i:7
   passed MFA from the same address within it
   ([auth-matrix.md](auth-matrix.md#reconnect-grace)).
 - Outside the network the KDC must be reachable (VPN), or set a KDC proxy in group
-  policy ([windows-clients.md](windows-clients.md) §3.10).
+  policy: *Computer Configuration → Administrative Templates → System → Kerberos →
+  Specify KDC proxy servers for Kerberos clients*, realm `LAB.EXAMPLE.COM` →
+  `<https rdp1.lab.example.com:443:KdcProxy />`, if the administrator enabled the
+  server's KDC proxy ([windows-clients.md](windows-clients.md) §3.10).
 
 ## When the server refuses the login
 

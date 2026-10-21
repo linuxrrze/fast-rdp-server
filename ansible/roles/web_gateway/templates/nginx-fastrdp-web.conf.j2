@@ -1,6 +1,10 @@
 # {{ ansible_managed }}
 # Paths only in the access log: query strings carry OIDC codes and Guacamole data blobs.
 log_format fastrdp_web '$remote_addr [$time_local] "$request_method $uri" $status $body_bytes_sent';
+{% if fastrdp_web_kdcproxy | bool %}
+# KDC proxy: requests per client address (each one can be a password guess at the KDC)
+limit_req_zone $binary_remote_addr zone=fastrdp-kdcproxy:10m rate={{ fastrdp_web_kdcproxy_rate_per_minute | int }}r/m;
+{% endif %}
 
 server {
     listen 443 ssl;
@@ -31,6 +35,21 @@ server {
         proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 1h;
     }
+{% if fastrdp_web_kdcproxy | bool %}
+
+    # KDC proxy (MS-KKDCP), HTTPS only: Kerberos messages for {{ fastrdp_realm }}, forwarded
+    # to its KDCs only (/etc/fastrdp/kdcproxy.conf). FreeRDP and Windows use this path.
+    location = /KdcProxy {
+        limit_except POST { deny all; }
+        limit_req zone=fastrdp-kdcproxy burst={{ fastrdp_web_kdcproxy_burst | int }} nodelay;
+        limit_req_status 429;
+        client_max_body_size 128k;      # python3-kdcproxy's own limit (MAX_LENGTH)
+        client_body_buffer_size 128k;
+        proxy_pass http://unix:/run/fastrdp-kdcproxy.sock;
+        proxy_set_header Host $host;
+        proxy_read_timeout 60s;         # kdcproxy waits up to about 30 s for the KDCs
+    }
+{% endif %}
 }
 
 server {

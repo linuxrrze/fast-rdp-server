@@ -363,6 +363,60 @@
           color-depth: 32
           resize-method: display-update
 
+    - name: Nginx site without and with the KDC proxy (web_gateway)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/nginx-fastrdp-web.conf.j2"
+        dest: "{{ render_out }}/nginx-{{ item.name }}.conf"
+        mode: "0644"
+      vars:
+        fastrdp_web_enabled: true
+        fastrdp_web_kdcproxy: "{{ item.kdcproxy }}"
+        fastrdp_web_kdcproxy_rate_per_minute: "{{ item.rate }}"
+        fastrdp_web_kdcproxy_burst: "{{ item.burst }}"
+      loop:
+        - {name: web, kdcproxy: false, rate: 60, burst: 20}
+        - {name: web-kdcproxy, kdcproxy: true, rate: 30, burst: 10}
+
+    # fastrdp_kdcproxy_srv: what tasks/kdcproxy.yml registers from fastrdp_kdcproxy_srv.py
+    - name: Kdcproxy.conf from a KDC list, from SRV records, without kpasswd (web_gateway)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/kdcproxy.conf.j2"
+        dest: "{{ render_out }}/kdcproxy-{{ item.name }}.conf"
+        mode: "0644"
+      vars:
+        fastrdp_web_kdcproxy: true
+        fastrdp_web_kdcproxy_kdcs: "{{ item.kdcs }}"
+        fastrdp_web_kdcproxy_kpasswd: "{{ item.kpasswd }}"
+        fastrdp_kdcproxy_srv: {stdout: "{{ item.srv | to_json }}"}
+      loop:
+        - name: list
+          kdcs: [dc1.lab.example.com, "dc2.lab.example.com:1088", 192.0.2.10, "dc1.lab.example.com:750"]
+          kpasswd: true
+          srv: {}
+        - name: srv
+          kdcs: []
+          kpasswd: true
+          srv: {kerberos: ["dc2.lab.example.com:88", "dc1.lab.example.com:88"], kpasswd: ["dc1.lab.example.com:464"]}
+        - name: srv-no-kpasswd-records
+          kdcs: []
+          kpasswd: true
+          srv: {kerberos: ["dc1.lab.example.com:88", "dc2.lab.example.com:88"], kpasswd: []}
+        - name: no-kpasswd
+          kdcs: [dc1.lab.example.com]
+          kpasswd: false
+          srv: {}
+        - name: local      # kdcproxy_check.py's fake KDC
+          kdcs: ["127.0.0.1:18088"]
+          kpasswd: true
+          srv: {}
+
+    - name: KDC proxy gunicorn settings and units (web_gateway)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/{{ item }}.j2"
+        dest: "{{ render_out }}/{{ item }}"
+        mode: "0644"
+      loop: [kdcproxy-gunicorn.conf.py, fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]
+
     - name: Polkit power rule (base role) with the defaults
       ansible.builtin.template:
         src: "{{ roles_dir }}/base/templates/40-fastrdp-power.rules.j2"

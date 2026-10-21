@@ -1,0 +1,29 @@
+---
+# fastrdp_web_kdcproxy is false: remove a KDC proxy an earlier run set up (packages stay).
+- name: Look for the KDC proxy socket unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/fastrdp-kdcproxy.socket
+  register: fastrdp_kdcproxy_unit
+
+- name: KDC proxy stopped and disabled
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]
+  when: fastrdp_kdcproxy_unit.stat.exists
+
+- name: KDC proxy files removed
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/fastrdp-kdcproxy.socket
+    - /etc/systemd/system/fastrdp-kdcproxy.service
+    - /etc/fastrdp/kdcproxy.conf
+    - /etc/fastrdp/kdcproxy-gunicorn.conf.py
+
+- name: Systemd forgets the KDC proxy units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: fastrdp_kdcproxy_unit.stat.exists

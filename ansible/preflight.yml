@@ -51,6 +51,9 @@
     preflight_web_issuer: "{{ fastrdp_web_oidc_issuer | default(preflight_role_defaults.fastrdp_web_oidc_issuer) | regex_replace('/+$', '') }}"
     preflight_web_ca_src: "{{ fastrdp_web_oidc_ca_src | default(preflight_role_defaults.fastrdp_web_oidc_ca_src) }}"
     preflight_web_secret: "{{ fastrdp_web_oidc_client_secret | default(vault_fastrdp_web_oidc_client_secret | default('')) }}"
+    preflight_kdcproxy: "{{ fastrdp_web_kdcproxy | default(preflight_role_defaults.fastrdp_web_kdcproxy) | bool }}"
+    preflight_kdcproxy_kdcs: "{{ fastrdp_web_kdcproxy_kdcs | default(preflight_role_defaults.fastrdp_web_kdcproxy_kdcs) }}"
+    preflight_kdcproxy_kpasswd: "{{ fastrdp_web_kdcproxy_kpasswd | default(preflight_role_defaults.fastrdp_web_kdcproxy_kpasswd) | bool }}"
     preflight_pi_url: "{{ fastrdp_privacyidea_url | default('') | regex_replace('/+$', '') }}"
     preflight_pi_ca_src: "{{ fastrdp_privacyidea_ca_src | default('') }}"
     preflight_pi_verify: "{{ fastrdp_privacyidea_verify_tls | default(preflight_role_defaults.fastrdp_privacyidea_verify_tls) | bool }}"
@@ -698,6 +701,97 @@
              'detail': problems | join('; ') if problems else preflight_web_issuer ~ ' discovery ok',
              'fix': 'fastrdp_web_oidc_issuer must be the realm URL exactly as Keycloak reports it; see docs/web-access.md'}] }}
       when: preflight_web_enabled
+
+    # ------------------------------------------------------------------ KDC proxy
+    # fastrdp_web_kdcproxy: the web gateway forwards MS-KKDCP requests to the realm's KDCs
+    # over TCP, from this host: the packages must be installable and the KDCs reachable.
+    - name: Look at the KDC proxy packages and probe the KDCs from the host
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          cand() { apt-cache policy "$1" 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }'; }
+          for p in python3-kdcproxy gunicorn; do
+              c=$(cand "$p")
+              if [ -z "$c" ] || [ "$c" = "(none)" ]; then
+                  echo "FAIL $p not available from the configured APT sources (Ubuntu: universe)"
+              fi
+          done
+          lookup() {
+              if command -v dig >/dev/null 2>&1; then dig +short +time=3 +tries=1 SRV "$1"
+              elif command -v host >/dev/null 2>&1; then host -W 3 -t SRV "$1"
+              elif command -v resolvectl >/dev/null 2>&1; then resolvectl query --legend=no -t SRV "$1" 2>/dev/null
+              elif command -v nslookup >/dev/null 2>&1; then nslookup -type=SRV "$1"
+              else echo NOTOOL; fi
+          }
+          # "<prio> <weight> <port> <target>" in the output of every tool -> host:port
+          srv() {
+              local out
+              out=$(lookup "$1")
+              if [ "$out" = NOTOOL ]; then echo NOTOOL; return; fi
+              grep -oE '[0-9]+ [0-9]+ [0-9]+ [A-Za-z0-9._-]+' <<<"$out" | head -n 10 \
+                  | while read -r _ _ port target; do echo "${target%.}:$port"; done
+          }
+          probe() {
+              local host=${1%:*} port=${1##*:}
+              timeout 3 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null
+          }
+          kdcs=() kp=()
+          if [ -n "$KDCS" ]; then
+              for k in $KDCS; do
+                  case $k in *:*) ;; *) k=$k:88 ;; esac
+                  kdcs+=("$k") kp+=("${k%:*}:464")
+              done
+          else
+              mapfile -t kdcs < <(srv "_kerberos._tcp.$REALM")
+              mapfile -t kp < <(srv "_kpasswd._tcp.$REALM")
+              if [ "${kdcs[*]}" = NOTOOL ]; then
+                  echo "WARN no SRV lookup tool (dig/host/resolvectl/nslookup) on the host: KDCs not probed"
+                  kdcs=() kp=()
+              elif [ ${#kdcs[@]} -eq 0 ]; then
+                  echo "FAIL no _kerberos._tcp.$REALM SRV records on the host: set fastrdp_web_kdcproxy_kdcs"
+              elif [ ${#kp[@]} -eq 0 ]; then
+                  for k in "${kdcs[@]}"; do kp+=("${k%:*}:464"); done
+              fi
+          fi
+          open=0
+          for k in "${kdcs[@]}"; do
+              if probe "$k"; then open=$((open + 1)); echo "INFO KDC $k"; else echo "WARN KDC $k not reachable on TCP"; fi
+          done
+          [ ${#kdcs[@]} -gt 0 ] && [ "$open" -eq 0 ] && echo "FAIL none of the KDCs is reachable on TCP from the host"
+          if [ "$KPASSWD" = true ]; then
+              for k in "${kp[@]}"; do
+                  probe "$k" || echo "WARN kpasswd $k not reachable on TCP (password changes through the proxy)"
+              done
+          fi
+          exit 0
+      environment:
+        REALM: "{{ preflight_realm | lower }}"
+        KDCS: "{{ preflight_kdcproxy_kdcs | map('string') | join(' ') }}"
+        KPASSWD: "{{ preflight_kdcproxy_kpasswd | string | lower }}"
+      register: preflight_kdcproxy_probe
+      changed_when: false
+      failed_when: false
+      when: preflight_kdcproxy and preflight_web_enabled and preflight_realm | length > 0
+
+    - name: Result - KDC proxy
+      vars:
+        out: "{{ preflight_kdcproxy_probe.stdout_lines | default([]) }}"
+        errs: >-
+          {{ (['fastrdp_web_kdcproxy needs fastrdp_web_enabled: true (it runs behind the web gateway)'] if not preflight_web_enabled else [])
+             + (['fastrdp_realm not set'] if not preflight_realm else [])
+             + (out | select('match', '^FAIL ') | map('regex_replace', '^FAIL ', '') | list) }}
+        warns: "{{ out | select('match', '^WARN ') | map('regex_replace', '^WARN ', '') | list }}"
+        infos: "{{ out | select('match', '^INFO ') | map('regex_replace', '^INFO ', '') | list }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'KDC proxy',
+             'status': 'FAIL' if errs else ('WARN' if warns else 'PASS'),
+             'detail': ((errs + warns) if (errs + warns) else infos) | join('; ')
+                       or 'not checked: ' ~ (preflight_kdcproxy_probe.stderr | default('no output') | truncate(120)),
+             'fix': 'open TCP 88 (and 464 for kpasswd) from this host to the KDCs, or list them in fastrdp_web_kdcproxy_kdcs; '
+                    ~ 'Ubuntu needs universe for python3-kdcproxy and gunicorn; docs/web-access.md#kdc-proxy'}] }}
+      when: preflight_kdcproxy
 
     # ------------------------------------------------------------------ KDC-enforced NLA MFA
     # fastrdp_mfa_nla_kdc_enforced: the broker skips privacyIDEA for Kerberos NLA logins, so

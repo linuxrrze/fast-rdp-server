@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import tomllib
 import unittest
 from pathlib import Path
@@ -1224,6 +1225,231 @@ class PowerRule(unittest.TestCase):
                     {"fastrdp_block_power_actions": "maybe"}, {"fastrdp_power_allow_local_console": "yes please"}):
             with self.subTest(bad=bad):
                 self.assertNotEqual(checks.run_checks(**ok, **bad), 0)
+
+
+class KdcProxy(unittest.TestCase):
+    """KDC proxy (MS-KKDCP) on the web gateway (fastrdp_web_kdcproxy; backlog K6):
+    python3-kdcproxy under gunicorn behind nginx, only for fastrdp_realm and its KDCs."""
+
+    ROLE = REPO / "ansible/roles/web_gateway"
+    REALM = "LAB.EXAMPLE.COM"     # lab inventory
+
+    def kdcproxy_conf(self, name):
+        """Read like kdcproxy 1.0 does (KDCProxyConfig: ConfigParser defaults, servers split on " ")."""
+        cp = configparser.ConfigParser()
+        cp.read(OUT / f"kdcproxy-{name}.conf")
+        return cp
+
+    @staticmethod
+    def servers(cp, realm, service):
+        try:
+            return cp.get(realm, service).strip().split(" ")
+        except configparser.Error:
+            return []
+
+    @staticmethod
+    def block(text, start):
+        """The {...} block that starts at the first line containing start."""
+        i = text.index(start)
+        depth, j = 0, text.index("{", i)
+        while True:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+            if depth == 0:
+                return text[i:j]
+
+    def test_nginx_off_by_default(self):
+        text = (OUT / "nginx-web.conf").read_text()
+        self.assertNotIn("KdcProxy", text)
+        self.assertNotIn("limit_req", text)
+        self.assertNotIn("fastrdp-kdcproxy", text)
+
+    def test_nginx_location(self):
+        text = (OUT / "nginx-web-kdcproxy.conf").read_text()
+        servers = text.split("\nserver {")
+        self.assertEqual(len(servers), 3)            # http-level directives, 443, 80
+        http_level, tls, plain = servers
+        # the zone is defined at http level (the site file is included inside http {})
+        self.assertIn("limit_req_zone $binary_remote_addr zone=fastrdp-kdcproxy:10m rate=30r/m;", http_level)
+        # HTTPS only: the port-80 server only redirects
+        self.assertIn("listen 443 ssl;", tls)
+        self.assertNotIn("KdcProxy", plain)
+        self.assertIn("return 301 https://$host$request_uri;", plain)
+        loc = self.block(tls, "location = /KdcProxy")       # exact match; FreeRDP appends /KdcProxy
+        lines = [line.split("#")[0].strip() for line in loc.splitlines()]
+        for want in ("limit_except POST { deny all; }",
+                     "limit_req zone=fastrdp-kdcproxy burst=10 nodelay;",
+                     "limit_req_status 429;",
+                     "client_max_body_size 128k;",
+                     "proxy_pass http://unix:/run/fastrdp-kdcproxy.sock;"):
+            self.assertIn(want, lines)
+        # the socket nginx uses is the one systemd listens on
+        sock = ini("fastrdp-kdcproxy.socket")["Socket"]
+        self.assertEqual(sock["ListenStream"], "/run/fastrdp-kdcproxy.sock")
+        self.assertEqual((sock["SocketUser"], sock["SocketGroup"], sock["SocketMode"]), ("root", "www-data", "0660"))
+
+    def test_only_the_realm_and_no_dns(self):
+        for name in ("list", "srv", "srv-no-kpasswd-records", "no-kpasswd", "local"):
+            with self.subTest(name):
+                cp = self.kdcproxy_conf(name)
+                # the realm also in lower case (section names are case-sensitive), same servers
+                self.assertEqual(cp.sections(), ["global", self.REALM, self.REALM.lower()])
+                self.assertEqual(dict(cp[self.REALM]), dict(cp[self.REALM.lower()]))
+                self.assertEqual(dict(cp["global"]), {"use_dns": "false"})   # no "configs = mit"
+                self.assertIs(cp.getboolean("global", "use_dns"), False)
+                # the unit's ExecStartPre looks for exactly this line
+                self.assertIn("\nuse_dns = false\n", (OUT / f"kdcproxy-{name}.conf").read_text())
+                self.assertEqual(self.servers(cp, "OTHER.EXAMPLE.NET", "kerberos"), [])
+                self.assertEqual(self.servers(cp, "Lab.Example.Com", "kerberos"), [])
+
+    def test_servers(self):
+        cp = self.kdcproxy_conf("list")
+        self.assertEqual(self.servers(cp, self.REALM, "kerberos"),
+                         ["kerberos+tcp://dc1.lab.example.com:88", "kerberos+tcp://dc2.lab.example.com:1088",
+                          "kerberos+tcp://192.0.2.10:88", "kerberos+tcp://dc1.lab.example.com:750"])
+        self.assertEqual(self.servers(cp, self.REALM, "kpasswd"),
+                         ["kpasswd+tcp://dc1.lab.example.com:464", "kpasswd+tcp://dc2.lab.example.com:464",
+                          "kpasswd+tcp://192.0.2.10:464"])
+        # kdcproxy takes scheme, host and port from each URL
+        from urllib.parse import urlparse
+        url = urlparse("kerberos+tcp://dc2.lab.example.com:1088")
+        self.assertEqual((url.scheme, url.hostname, url.port), ("kerberos+tcp", "dc2.lab.example.com", 1088))
+        # from SRV records, in their order; kpasswd records, else port 464 of the KDCs
+        cp = self.kdcproxy_conf("srv")
+        self.assertEqual(self.servers(cp, self.REALM, "kerberos"),
+                         ["kerberos+tcp://dc2.lab.example.com:88", "kerberos+tcp://dc1.lab.example.com:88"])
+        self.assertEqual(self.servers(cp, self.REALM, "kpasswd"), ["kpasswd+tcp://dc1.lab.example.com:464"])
+        cp = self.kdcproxy_conf("srv-no-kpasswd-records")
+        self.assertEqual(self.servers(cp, self.REALM, "kpasswd"),
+                         ["kpasswd+tcp://dc1.lab.example.com:464", "kpasswd+tcp://dc2.lab.example.com:464"])
+        self.assertEqual(self.servers(self.kdcproxy_conf("no-kpasswd"), self.REALM, "kpasswd"), [])
+
+    def test_units_and_gunicorn(self):
+        unit = (OUT / "fastrdp-kdcproxy.service").read_text()
+        for line in ("Type=notify", "DynamicUser=yes", "Requires=fastrdp-kdcproxy.socket",
+                     "Environment=KDCPROXY_CONFIG=/etc/fastrdp/kdcproxy.conf",
+                     'ExecStartPre=/usr/bin/grep -qxF "use_dns = false" /etc/fastrdp/kdcproxy.conf',
+                     "ExecStart=/usr/bin/gunicorn --config /etc/fastrdp/kdcproxy-gunicorn.conf.py",
+                     "NoNewPrivileges=yes", "CapabilityBoundingSet=", "ProtectHome=yes"):
+            self.assertIn(line + "\n", unit)
+        self.assertNotRegex(unit, r"(?m)^User=|^--bind")
+        tasks = (self.ROLE / "tasks/kdcproxy.yml").read_text()
+        for dest in ("/etc/fastrdp/kdcproxy.conf", "/etc/fastrdp/kdcproxy-gunicorn.conf.py",
+                     '"/etc/systemd/system/{{ item }}"'):
+            self.assertIn(f"dest: {dest}\n", tasks)
+        self.assertIn("name: [python3-kdcproxy, gunicorn]", tasks)
+        # the settings file is Python; no bind (systemd's socket), the WSGI app of python3-kdcproxy
+        settings = {}
+        exec(compile((OUT / "kdcproxy-gunicorn.conf.py").read_text(), "kdcproxy-gunicorn.conf.py", "exec"), settings)
+        settings = {k: v for k, v in settings.items() if not k.startswith("__")}
+        self.assertEqual(settings["wsgi_app"], "kdcproxy:application")
+        self.assertEqual(settings["worker_class"], "gthread")
+        self.assertIs(settings["control_socket_disable"], True)
+        self.assertNotIn("bind", settings)
+        self.assertGreater(settings["timeout"], 30)
+
+    def test_role_wiring(self):
+        main = (self.ROLE / "tasks/main.yml").read_text()
+        self.assertIn("include_tasks: kdcproxy.yml\n  when: fastrdp_web_kdcproxy | bool", main)
+        self.assertIn("include_tasks: kdcproxy_absent.yml\n  when: not fastrdp_web_kdcproxy | bool", main)
+        self.assertLess(main.index("include_tasks: kdcproxy.yml"), main.index("src: nginx-fastrdp-web.conf.j2"))
+        handlers = (self.ROLE / "handlers/main.yml").read_text()
+        self.assertIn("loop: [fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]", handlers)
+        defaults = (self.ROLE / "defaults/main.yml").read_text()
+        self.assertIn("\nfastrdp_web_kdcproxy: false\n", defaults)
+        self.assertIn("\nfastrdp_web_kdcproxy_kdcs: []\n", defaults)
+
+    def test_srv_lookup_script(self):
+        """files/fastrdp_kdcproxy_srv.py with a stub dnspython."""
+        stub = textwrap.dedent("""
+            import sys, types
+            class NXDOMAIN(Exception): pass
+            class NoAnswer(Exception): pass
+            class DNSException(Exception): pass
+            class Rec:
+                def __init__(self, p, w, port, t): self.priority, self.weight, self.port, self.target = p, w, port, t
+            ANSWERS = {
+                "_kerberos._tcp.lab.example.com": [Rec(10, 0, 88, "DC2.lab.example.com."), Rec(0, 50, 88, "dc3.lab.example.com."),
+                                                   Rec(0, 100, 88, "dc1.lab.example.com."), Rec(20, 0, 88, ".")],
+            }
+            def resolve(name, rdtype):
+                assert rdtype == "SRV"
+                if name.startswith("_kpasswd"): raise NoAnswer()
+                if name not in ANSWERS: raise NXDOMAIN()
+                return ANSWERS[name]
+            dns = types.ModuleType("dns"); dns.exception = types.ModuleType("dns.exception")
+            dns.resolver = types.ModuleType("dns.resolver")
+            dns.exception.DNSException = DNSException
+            dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.resolve = NXDOMAIN, NoAnswer, resolve
+            sys.modules.update({"dns": dns, "dns.exception": dns.exception, "dns.resolver": dns.resolver})
+            exec(compile(open(SCRIPT).read(), SCRIPT, "exec"), {"__name__": "__main__"})
+        """)
+        code = f"SCRIPT = {str(self.ROLE / 'files/fastrdp_kdcproxy_srv.py')!r}\n" + stub
+        res = subprocess.run([sys.executable, "-I", "-c", code, "LAB.Example.COM"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout), {
+            "kerberos": ["dc1.lab.example.com:88", "dc3.lab.example.com:88", "dc2.lab.example.com:88"],
+            "kpasswd": []})
+        res = subprocess.run([sys.executable, "-I", "-c", code, "OTHER.TEST"], capture_output=True, text=True)
+        self.assertEqual(json.loads(res.stdout), {"kerberos": [], "kpasswd": []})
+
+    def test_real_kdcproxy(self):
+        """The rendered files with the real kdcproxy (+ gunicorn, socket-activated) and a fake KDC:
+        the realm is forwarded, other realms get 503. Needs an interpreter with kdcproxy:
+        python3 (python3-kdcproxy, gunicorn) or FASTRDP_KDCPROXY_PYTHON (a venv with
+        pip install kdcproxy gunicorn); skipped otherwise."""
+        python = os.environ.get("FASTRDP_KDCPROXY_PYTHON", sys.executable)
+        if subprocess.run([python, "-c", "import kdcproxy"], capture_output=True).returncode != 0:
+            self.skipTest(f"kdcproxy not importable by {python}")
+        res = subprocess.run([python, "-I", str(HERE / "kdcproxy_check.py"), str(OUT / "kdcproxy-local.conf"),
+                              self.REALM, "18088", str(OUT / "kdcproxy-gunicorn.conf.py")],
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        r = json.loads(res.stdout)
+        self.assertEqual(r["resolvers"], ["KDCProxyConfig"])            # no DNSResolver
+        self.assertEqual(r["own"], {"status": "200 OK", "reply": "7e023000", "kdc_got": ["6a023000"]})
+        self.assertEqual(r["lower"], {"status": "200 OK", "kdc_got": ["6a023000"]})
+        for name in ("other", "mixed", "none"):
+            self.assertEqual(r[name], {"status": "503 Service Unavailable", "kdc_got": []}, name)
+        self.assertEqual(r["get"], "405 Method Not Allowed")
+        self.assertEqual(r["kpasswd"], ["kpasswd+tcp://127.0.0.1:464"])
+        # why the unit refuses to start without the file: kdcproxy then asks DNS for any realm
+        self.assertIn("DNSResolver", r["resolvers_without_file"])
+        if r["gunicorn"] is not None:
+            g = r["gunicorn"]
+            self.assertEqual((g.get("own"), g.get("other")), ("HTTP/1.1 200 OK", "HTTP/1.1 503 Service Unavailable"),
+                             g)
+            self.assertEqual(g["files"], [])            # no gunicorn.ctl (gunicorn 25.1+)
+
+    def test_checks(self):
+        run = HomeDirectories.run_checks
+        ok = {"fastrdp_realm": "LAB.EXAMPLE.COM", "fastrdp_domain": "lab.example.com"}
+        web = dict(ok, fastrdp_web_enabled=True, fastrdp_web_kdcproxy=True)
+        for good in ({}, {"fastrdp_web_kdcproxy_kdcs": ["dc1.lab.example.com", "dc2.lab.example.com:88", "192.0.2.10"]},
+                     {"fastrdp_web_kdcproxy_kpasswd": False, "fastrdp_web_kdcproxy_rate_per_minute": 120,
+                      "fastrdp_web_kdcproxy_burst": 0}):
+            with self.subTest(good=good):
+                self.assertEqual(run(self, **web, **good), 0)
+        self.assertEqual(run(self, **ok, fastrdp_web_kdcproxy=False), 0)
+        bad = {
+            "without the web gateway": dict(ok, fastrdp_web_kdcproxy=True),
+            "not a bool": dict(web, fastrdp_web_kdcproxy="yes please"),
+            "kpasswd not a bool": dict(web, fastrdp_web_kdcproxy_kpasswd="maybe"),
+            "kdcs as a string": dict(web, fastrdp_web_kdcproxy_kdcs="dc1.lab.example.com"),
+            "kdc as a URL": dict(web, fastrdp_web_kdcproxy_kdcs=["kerberos://dc1.lab.example.com"]),
+            "two kdcs in one entry": dict(web, fastrdp_web_kdcproxy_kdcs=["dc1.lab.example.com dc2.lab.example.com"]),
+            "kdc with a newline": dict(web, fastrdp_web_kdcproxy_kdcs=["dc1.lab.example.com\n[EVIL.TEST]"]),
+            "port 0": dict(web, fastrdp_web_kdcproxy_kdcs=["dc1.lab.example.com:0"]),
+            "port too big": dict(web, fastrdp_web_kdcproxy_kdcs=["dc1.lab.example.com:88888"]),
+            "rate 0": dict(web, fastrdp_web_kdcproxy_rate_per_minute=0),
+            "rate with a unit": dict(web, fastrdp_web_kdcproxy_rate_per_minute="10r/s"),
+            "burst negative": dict(web, fastrdp_web_kdcproxy_burst=-1),
+            "realm not a section name": dict(web, fastrdp_realm="LAB.EXAMPLE.COM]\n[global"),
+            "realm named like kdcproxy's own section": dict(web, fastrdp_realm="GLOBAL"),
+        }
+        for name, extra in bad.items():
+            with self.subTest(name):
+                self.assertNotEqual(run(self, **extra), 0)
 
 
 if __name__ == "__main__":

@@ -1513,6 +1513,46 @@ fastrdp line is preferred). `systemctl enable --now gssproxy`, then
 unit) or an autofs map, by the server's FQDN. The keytab `/etc/krb5.keytab` must
 exist (join first).
 
+### 15.7 KDC proxy for off-network clients (MS-KKDCP)
+
+`roles/web_gateway/tasks/kdcproxy.yml` (`fastrdp_web_kdcproxy`), on top of 15.2. Design,
+exposure (password guessing from the internet: set an account lockout policy first)
+and the client settings: [web-access.md](web-access.md#kdc-proxy).
+
+1. `apt install python3-kdcproxy gunicorn` (Ubuntu: universe).
+2. The realm's KDCs: `dig +short SRV _kerberos._tcp.example.com` (and `_kpasswd._tcp`).
+3. `/etc/fastrdp/kdcproxy.conf` (`root:root 0644`), only your realm, DNS lookups off
+   (without `use_dns = false` kdcproxy forwards any realm a client names to the KDCs
+   DNS gives for it):
+   ```ini
+   [global]
+   use_dns = false
+
+   [EXAMPLE.COM]
+   kerberos = kerberos+tcp://dc1.example.com:88 kerberos+tcp://dc2.example.com:88
+   kpasswd = kpasswd+tcp://dc1.example.com:464 kpasswd+tcp://dc2.example.com:464
+
+   [example.com]
+   kerberos = kerberos+tcp://dc1.example.com:88 kerberos+tcp://dc2.example.com:88
+   kpasswd = kpasswd+tcp://dc1.example.com:464 kpasswd+tcp://dc2.example.com:464
+   ```
+4. `/etc/fastrdp/kdcproxy-gunicorn.conf.py` from `kdcproxy-gunicorn.conf.py.j2` (no
+   template variables), `/etc/systemd/system/fastrdp-kdcproxy.socket` and
+   `fastrdp-kdcproxy.service` from the role templates (`root:root 0644`). The service
+   runs gunicorn as a dynamic user on the socket systemd opens
+   (`/run/fastrdp-kdcproxy.sock`, `root:www-data 0660`) and refuses to start without
+   the `use_dns = false` line.
+5. The nginx site (15.2, step 9) rendered with `fastrdp_web_kdcproxy: true`: a
+   `limit_req_zone` line before the first `server` block and `location = /KdcProxy` in
+   the HTTPS server (POST only, `client_max_body_size 128k`, `limit_req`, `proxy_pass
+   http://unix:/run/fastrdp-kdcproxy.sock;`).
+6. `systemctl daemon-reload`; `systemctl enable --now fastrdp-kdcproxy.socket`;
+   `nginx -t && systemctl reload nginx`.
+7. Check from a client with `krb5-k5tls` and `kdc = https://rdp1.example.com/KdcProxy`
+   in its `krb5.conf`: `KRB5_TRACE=/dev/stderr kinit alice` shows `Sending HTTPS
+   request`; `curl -s -o /dev/null -w '%{http_code}\n' https://rdp1.example.com/KdcProxy`
+   gives 403 (GET is refused).
+
 ## Updates
 
 - `apt upgrade` updates the packages. Then restart the fastrdp daemons
