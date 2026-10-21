@@ -3,6 +3,7 @@
 # Wayland back-ends (GNOME headless, Plasma + KRdp).
 - name: Fast RDP terminal servers
   hosts: rdp_servers
+  force_handlers: true     # also without ansible.cfg: a failed run must not drop service restarts
   roles:
     - role: base
       tags: [base]

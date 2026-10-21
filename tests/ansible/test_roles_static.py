@@ -49,6 +49,15 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("dest: /etc/dconf/profile/user", tasks)
         self.assertIn("dconf-cli", (role / "defaults" / "main.yml").read_text())
 
+    def test_restarts_survive_a_failed_run(self):
+        # Handlers run at the end of a play and not at all when it fails; the next run finds
+        # the files unchanged and never restarts (sssd kept realm join's config: GPO denied).
+        self.assertRegex((ANSIBLE / "ansible.cfg").read_text(), r"(?m)^force_handlers = True$")
+        self.assertRegex((ANSIBLE / "site.yml").read_text(), r"(?m)^  force_handlers: true\b")
+        identity = (ANSIBLE / "roles" / "identity" / "tasks" / "main.yml").read_text()
+        self.assertIn("ansible.builtin.meta: flush_handlers", identity)
+        self.assertIn("sss_cache -E", (ANSIBLE / "roles" / "identity" / "handlers" / "main.yml").read_text())
+
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         # the inventory name first (reverse DNS can give the bare domain), the fact as fallback

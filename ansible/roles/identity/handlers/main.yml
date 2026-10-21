@@ -1,8 +1,9 @@
 ---
+# The cache first: entries looked up under realm join's settings keep their name format
+# (user@domain with use_fully_qualified_names) until they expire.
 - name: Restart sssd
-  ansible.builtin.service:
-    name: sssd
-    state: restarted
+  ansible.builtin.shell: sss_cache -E || true; systemctl restart sssd
+  changed_when: true
 
 # KCM keeps its caches in /var/lib/sss/secrets; a restart loses no tickets.
 - name: Restart sssd-kcm
