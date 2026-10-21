@@ -79,7 +79,7 @@ GNOME and Plasma sessions ignore the connection type
 - Without it, WinPR's Negotiate offers Kerberos U2U, Kerberos and NTLM, in that order
   (`negotiate.c:109-113`, defaults `negotiate.c:319-338`).
 - fastrdp refuses NTLM after NLA: the proxy logs `NLA without Kerberos refused`
-  (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:481-486`).
+  (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:580-584`).
 - With `!ntlm`, a Kerberos problem (no KDC, wrong name) fails at once with the Kerberos
   error. Without it, FreeRDP falls back to NTLM, which fastrdp refuses only after NLA,
   with a less helpful error on the client.
@@ -541,7 +541,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 - `/shell:` sets the alternate shell (`cmdline.c:5196-5200`); `.rdp`:
   `alternate shell:s:fastrdp:gnome`.
 - The module sends it to the broker as a hint and never forwards it to the back-end
-  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:630`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:749-750`).
+  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:733`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:852-853`).
 - The `fastrdp:` prefix is optional (`identity.py` `hinted_desktop`).
 - Order (`choose_desktop`):
   1. the hint, if that desktop exists and the user may use it (`fastrdp_desktop_groups`);
@@ -559,7 +559,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 | Switch | FreeRDP | fastrdp |
 |---|---|---|
 | `/restricted-admin` | sets `RESTRICTED_ADMIN_MODE_REQUIRED` in the negotiation and sends empty `TSPasswordCreds` (`cmdline.c:5034-5040`, `nego.c:1203-1204`, `nla.c:1836-1849`). Also sets the console-session flag. Kerberos credentials are still needed: typed password (only used locally) or `/p` + ticket | **accepted**: the proxy advertises Restricted Admin support ([windows-clients.md](windows-clients.md) §3.4). Kerberos login, **no TGT** in the session, push MFA. No "must be administrator" check |
-| `/remoteGuard` | Remote Credential Guard: `REDIRECTED_AUTHENTICATION_MODE_REQUIRED`, credentials via MS-RDPEAR. **Only in builds with `CHANNEL_RDPEAR_CLIENT`** (`cmdline.h:426-429`; `-DCHANNEL_RDPEAR=ON`, default off: `channels/rdpear/ChannelOptions.cmake`). fastrdp's vendored build does not enable it | **refused** at protocol negotiation: proxy log `RDP_NEG_REQ::flags REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled` (`nego.c:1335-1360`) |
+| `/remoteGuard` | Remote Credential Guard: `REDIRECTED_AUTHENTICATION_MODE_REQUIRED`, then `TSRemoteGuardCreds` instead of a password. Unlike mstsc, FreeRDP sends a **complete TGT**: a `HOST/<target>` service ticket plus the TGT as KRB-CRED from `krb5_fwd_tgt_creds` (`kerberos.c:1989-2061`), which needs a **forwardable** TGT in the client's cache; the MS-RDPEAR channel is loaded too. **Only in builds with `CHANNEL_RDPEAR_CLIENT`** (`cmdline.h:426-429`; `-DCHANNEL_RDPEAR=ON`, default off: `channels/rdpear/ChannelOptions.cmake`). fastrdp's vendored build does not enable it | **Default: refused** with a negotiation response without RCG support (`patches/freerdp/0002`); the client stops with `remote credential guard requested but not supported, terminating`, proxy log `REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled, answering without ...`. **`fastrdp_accept_remote_guard: true`**: Kerberos NLA login, identity only. The proxy module zeroes and discards the forwarded TGT, so the session has **no TGT**, and push MFA applies as for SSO. Using the forwarded credentials ("phase 1") is not implemented. Tested with the e2e client (`tests/proxy-e2e/run_nla.sh`) |
 | `-credentials-delegation` | empty `TSPasswordCreds`, without the Restricted Admin flag | as Restricted Admin: login works, no TGT |
 
 ## 12. WebAuthn redirection (MS-RDPEWA)

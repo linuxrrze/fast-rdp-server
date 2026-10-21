@@ -29,7 +29,10 @@ Kerberos NLA if all of the following hold:
 
 These cases always fail, by design:
 - NTLM (IP address, no KDC, Entra-only devices);
-- Remote Credential Guard.
+- Remote Credential Guard, by default. The proxy now answers with a negotiation response
+  that says "not supported", so mstsc can show its own message instead of a network
+  error. With `fastrdp_accept_remote_guard: true` it logs in **identity only**: the
+  forwarded Kerberos tickets are discarded and the session has no TGT (§3.11, §3.12).
 
 Single sign-on without a typed password works as an NLA login. Such sessions get **no
 Kerberos TGT** unless Windows delegates the password, and with Credential Guard (on by
@@ -43,8 +46,8 @@ default on Windows 11 22H2+ Enterprise) Windows does not delegate the logon pass
 | AD-joined, FQDN, SSO, GPO *Allow delegating default credentials* = `TERMSRV/*`, no Credential Guard | works without a prompt | yes / no | medium |
 | AD-joined, FQDN, SSO, Credential Guard on (Win 11 22H2+ Enterprise default) | mstsc prompts for the password (SSO delegation blocked), then as row 1 | yes / no | documented by MS, lab pending |
 | AD-joined, FQDN, **`mstsc /restrictedAdmin`** | works **without a prompt**: Kerberos with the logged-on user, empty TSPasswordCreds | no / no | medium |
-| AD-joined, `mstsc /remoteGuard` or GPO "Require Remote Credential Guard" | **refused** at protocol negotiation (fastrdp does not advertise RCG) | – | high (code) |
-| GPO "Restrict credential delegation" (RCG *or* Restricted Admin) | falls back to Restricted Admin, works | no / no | medium |
+| AD-joined, `mstsc /remoteGuard` or GPO "Require Remote Credential Guard" | default: **refused cleanly**, RDP_NEG_RSP without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED, mstsc reports the missing support itself (dialog: lab L6). With `fastrdp_accept_remote_guard: true`: **works, identity only** (Kerberos principal; tickets discarded) | – / – (default); no / no (option) | high (code, e2e with FreeRDP); mstsc lab pending |
+| GPO "Restrict credential delegation" (RCG *or* Restricted Admin) | default: falls back to Restricted Admin, works. With `fastrdp_accept_remote_guard: true` the proxy offers both and mstsc presumably picks RCG: identity only, as above | no / no | medium |
 | AD-joined, short name (`rdp1`) | works (Identity role registers `TERMSRV/RDP1`); certificate name warning unless the short name is in the SAN | as above | medium |
 | Any client, **IP address** | **refused**: no ticket → NTLM → module rejects NLA without Kerberos | – | high |
 | DNS alias / load-balancer name not registered as SPN | **refused** (NTLM fallback) | – | high |
@@ -88,7 +91,7 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
   kerberos OID" (negotiate.c:1157).
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
   MS-KRB5. The module sees package `Kerberos`
-  (`nla_used_kerberos()`, `broker/proxy-module/fastrdp_plugin.c:142-161`).
+  (`nla_used_kerberos()`, `broker/proxy-module/fastrdp_plugin.c:168-187`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -139,11 +142,11 @@ safe). Still worth a robustness fix upstream (§5).
   - Windows asks for `TERMSRV/<ip>`, which does not exist, and falls back to NTLM.
   - The WinPR NTLM acceptor has no SAM/hash callback in the proxy, so NTLM fails at
     `ntlm_compute.c:285` (SamOpen) or at the latest in the module:
-    `fastrdp_server_peer_logon()` (`fastrdp_plugin.c:481-486`) refuses NLA that is not Kerberos.
+    `fastrdp_server_peer_logon()` (`fastrdp_plugin.c:580-584`) refuses NLA that is not Kerberos.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:611-616`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:713-718`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -222,9 +225,9 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:513-539`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:527-537`; broker `server.py:72-77`) | no TGT |
-  | TSRemoteGuardCreds | Remote Credential Guard | never reached: RDP_NEG_REQ with REDIRECTED_AUTHENTICATION_MODE_REQUIRED is refused because the proxy does not set `RemoteCredentialGuard` (`nego.c:1335-1360`) | refused |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:608-636`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:622-634`; broker `server.py:72-77`) | no TGT |
+  | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
   (`server.py:58-78`); the Kerberos principal decides who the user is. A wrong delegated
@@ -240,7 +243,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:479-506`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:578-601`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`mfa.py:58-65`).
@@ -375,7 +378,7 @@ Confidence medium; real card + AD + mstsc is lab test L7.
 | Duplicate acceptor mechListMIC (§3.3) | NegoEx-first mstsc, if Windows omits negState | **open**, found here |
 | MS-KRB5 OID in the AP-REQ framing rejected (§3.1) | only if Windows used it (unlikely) | **open**, found here |
 | No RFC 4757 (RC4) Wrap/MIC tokens (§3.4) | RC4 environments | **open**, found here |
-| Server-side Remote Credential Guard | RCG clients | partly in FreeRDP 3.32.2: negotiation and parsing of `TSRemoteGuardCreds` into a `RemoteCredentials` callback exist (`nego.c`, `nla.c`, `peer.h`), but the server side of the MS-RDPEAR channel is not built; fastrdp refuses RCG (§3.12). Client side: PR #13675 (open), #13778 |
+| Server-side Remote Credential Guard | RCG clients | partly in FreeRDP 3.32.2: negotiation and parsing of `TSRemoteGuardCreds` into a `RemoteCredentials` callback exist (`nego.c`, `nla.c`, `peer.h`), but the server side of the MS-RDPEAR channel is not built. Two server bugs, fixed in fastrdp's build: an unsupported RCG request dropped the TCP connection (`patches/freerdp/0002`), and `TSRemoteGuardCreds` without the optional `supplementalCreds` (all FreeRDP clients) were rejected (`0003`). fastrdp refuses RCG by default and accepts it identity-only with `AcceptRemoteGuard=true` (§3.12). Using the forwarded credentials (phase 1: a session TGT through MS-RDPEAR) is **not implemented**. Client side: PR #13675 (open), #13778 |
 
 Most related reports concern gnome-remote-desktop, which uses the same server NLA. Their
 failures are keytab permissions (GNOME Discourse t/34451) and NTLMv1 (g-r-d #244), not
@@ -421,7 +424,7 @@ The same logins on fastrdp:
 | xfreerdp3 without `/p` (password typed) | **yes** | as above |
 | xfreerdp3 `/p` (empty, SSO from the client's ticket), smartcard, browser | **no** (no password reaches the server) | Windows Restricted Admin falls back to `HOST$`; fastrdp has gssproxy S4U for NFS (`fastrdp_nfs_krb5_homes`, constrained delegation, [nfs-kerberos-homes.md](nfs-kerberos-homes.md)) or `kinit` in the session; `fastrdp_session_tgt: required` refuses such logins |
 | `mstsc /restrictedAdmin` | **no** | accepted (row in §2) |
-| `mstsc /remoteGuard` | – | **refused** at protocol negotiation (§2, R4 in [rdp-spec-conformance.md](rdp-spec-conformance.md)) |
+| `mstsc /remoteGuard` | default: – ; `fastrdp_accept_remote_guard: true`: **no** | default: **refused** with a negotiation response the client can report (R4 in [rdp-spec-conformance.md](rdp-spec-conformance.md)). With the option: identity only, like Restricted Admin. The proxy module zeroes and discards the `KERB_TICKET_LOGON` (service ticket + TGT); nothing is logged, kept or forwarded. Without MS-RDPEAR the TGT is useless to the host anyway (mstsc keeps its session key), and a FreeRDP client's complete TGT would be unconstrained delegation (below). gssproxy S4U for NFS still works; `fastrdp_session_tgt: required` refuses these logins |
 
 Why not simply forward the TGT: on a multi-user terminal server a forwarded TGT is
 *unconstrained delegation*. Root on the host could use every connected user's TGT
@@ -535,7 +538,7 @@ non-joined clients not `LAB\alice`.
 | L3 | W10, W11 | capture the negTokenInit: mechTypes order, optimistic token type; look for `NegoEx` first. If the MIC path is used: check that the client's last negTokenResp lacks negState and whether the login hangs | Kerberos first: 1-round SPNEGO. NegoEx first: unpatched → hang/failure (§3.3), patched → success |
 | L4 | W11 (Credential Guard) | same as L2 | prompt appears (SSO blocked); after typing: success with TGT |
 | L5 | W10, W11 | `mstsc /restrictedAdmin /v:rdp1.lab.example.com` | success without prompt, no TGT, broker log user = principal |
-| L6 | W10, W11 | `mstsc /remoteGuard`; GPO "Require Remote Credential Guard"; GPO "Restrict credential delegation" | first two: connection refused (proxy log "REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled"); third: Restricted Admin, success |
+| L6 | W10, W11 | `mstsc /remoteGuard`; GPO "Require Remote Credential Guard"; GPO "Restrict credential delegation"; then the same with `fastrdp_accept_remote_guard: true` | default, first two: mstsc's own "Remote Credential Guard not supported" style error, not a network error (proxy log "REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled, answering without"); record the dialog text. Third: Restricted Admin, success. With the option: success without a password prompt, proxy log "Remote Credential Guard: identity only", broker log "remote credential guard: identity only, credentials discarded", no TGT in the session; record whether mstsc sends supplementalCreds (FreeRDP log level DEBUG) and the third case's choice (RCG or Restricted Admin) |
 | L7 | W10 | smartcard/YubiKey PIV user, mstsc, select smart card, PIN | success, `smartcard: true`, no PIN in broker log, no TGT |
 | L8 | W10, W11-WG | self-signed lab cert vs internal-CA cert; FQDN vs short name | record certificate prompts (Kerberos vs not) |
 | L9 | any | connect by IP address | failure ("authentication error"/"logon attempt failed"); proxy log "NLA without Kerberos refused" or NTLM SAM error |

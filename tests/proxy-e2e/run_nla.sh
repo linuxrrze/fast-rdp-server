@@ -4,9 +4,16 @@
 # Kerberos NLA end-to-end test: throwaway MIT KDC + freerdp-proxy + fastrdp module.
 # Checks that the module reports the Kerberos-authenticated principal to the broker
 # and that failed Kerberos logins never reach the broker.
+# Remote Credential Guard (client with E2E_REMOTE_GUARD=1, like mstsc /remoteGuard):
+#   proxy p (default, AcceptRemoteGuard unset) answers the X.224 request with a
+#   negotiation response without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED, so the client
+#   stops on its own instead of seeing a dropped connection (patches/freerdp/0002);
+#   proxy g (AcceptRemoteGuard=true) takes the login identity-only: the broker gets the
+#   principal, "remote_guard": true and no password (patches/freerdp/0003).
 #
 # Needs krb5-kdc, krb5-admin-server, krb5-user (or KRB5_SYSROOT with them extracted)
-# plus everything run.sh needs.
+# plus everything run.sh needs. The Remote Credential Guard checks need a FreeRDP built
+# with Kerberos (WITH_KRB5) and patches/freerdp/0002 + 0003 (fastrdp-freerdp3 3.32.2-2).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -14,6 +21,13 @@ KRB5_SYSROOT=${KRB5_SYSROOT:-}
 MA=$(gcc -print-multiarch)
 LIBDIR=$SYSROOT/usr/lib/$MA
 KB=$KRB5_SYSROOT/usr/sbin
+# kinit for the forwardable TGT of the Remote Credential Guard client (Debian's krb5-user
+# installs kinit.mit behind an alternatives link, which an extracted sysroot lacks)
+KINIT=${KINIT:-}
+for k in ${KRB5_SYSROOT:+"$KRB5_SYSROOT/usr/bin/kinit" "$KRB5_SYSROOT/usr/bin/kinit.mit"} "$(command -v kinit || true)"; do
+    [ -z "$KINIT" ] && [ -x "$k" ] && KINIT=$k
+done
+[ -n "$KINIT" ] || { echo "run_nla.sh: kinit not found (krb5-user)" >&2; exit 2; }
 W=$(mktemp -d /tmp/fastrdp-nla.XXXXXX)
 trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
 export LD_LIBRARY_PATH="${KRB5_SYSROOT:+$KRB5_SYSROOT/usr/lib/$MA:}$LIBDIR:$LIBDIR/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -61,17 +75,22 @@ if [ -n "$KRB5_SYSROOT" ]; then
 fi
 export KRB5_CONFIG=$W/krb5.conf KRB5_KDC_PROFILE=$W/kdc.conf KRB5CCNAME=FILE:$W/none.cc
 "$KB/kdb5_util" create -s -r TEST.FASTRDP -P masterpw >/dev/null 2>&1
+# HOST/localhost: Remote Credential Guard clients send a service ticket for HOST/<server>
+# (upper case, as WinPR asks for it; MIT principal names are case-sensitive).
 for q in "addprinc -pw alicepw alice" "addprinc -randkey TERMSRV/localhost" \
-         "ktadd -k $W/termsrv.keytab TERMSRV/localhost"; do
+         "ktadd -k $W/termsrv.keytab TERMSRV/localhost" "addprinc -randkey HOST/localhost" \
+         "ktadd -norandkey -k $W/alice.keytab alice"; do
     "$KB/kadmin.local" -r TEST.FASTRDP -q "$q" >/dev/null 2>&1
 done
 "$KB/krb5kdc" -n > kdc.out 2>&1 &
 
-# --- proxy (NLA only) + recording broker that refuses everything (no back-end needed)
-cat > p.ini <<EOT
+# --- proxies (NLA only) + recording brokers that refuse everything (no back-end needed)
+# p: defaults (no Remote Credential Guard); g: AcceptRemoteGuard=true
+mkproxy() { # name port broker-socket [extra [FastRDP] line]
+cat > "$1.ini" <<EOT
 [Server]
 Host=127.0.0.1
-Port=23489
+Port=$2
 [Target]
 FixedTarget=false
 CertificatePolicy=allow
@@ -88,29 +107,69 @@ Required=fastrdp
 CertificateFile=$W/cert.pem
 PrivateKeyFile=$W/key.pem
 [FastRDP]
-BrokerSocket=b.sock
+BrokerSocket=$3
 Timeout=10
+${4:-}
 EOT
+}
+mkproxy p 23489 b.sock
+mkproxy g 23490 g.sock AcceptRemoteGuard=true
 python3 "$HERE/fake_broker.py" b.sock b.log 1 > b.out 2>&1 &
+python3 "$HERE/fake_broker.py" g.sock g.log 1 > g.out 2>&1 &
 KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" p.ini > proxy.log 2>&1 &
-for _ in $(seq 50); do grep -q ready b.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23489) 2>/dev/null && break; sleep 0.2; done
+KRB5_KTNAME=FILE:$W/termsrv.keytab LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
+for _ in $(seq 50); do grep -q ready b.out g.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23489) 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23490) 2>/dev/null && break; sleep 0.2; done
 
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice alicepw "" >/dev/null 2>&1 || true
 E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23489 alice wrongpw "" >/dev/null 2>&1 || true
+# Remote Credential Guard: forwardable TGT in a ccache, no password at the client
+KRB5CCNAME=FILE:$W/alice.cc "$KINIT" -f -k -t "$W/alice.keytab" alice@TEST.FASTRDP > kinit.out 2>&1
+RCG=(env E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP E2E_REMOTE_GUARD=1 "KRB5CCNAME=FILE:$W/alice.cc")
+"${RCG[@]}" timeout 20 ./client localhost 23489 alice "" "" > rcg-refused.out 2>&1 || true
+"${RCG[@]}" timeout 20 ./client localhost 23490 alice "" "" > rcg.out 2>&1 || true
+# the option changes nothing for password logins
+E2E_NLA=1 E2E_DOMAIN=TEST.FASTRDP timeout 20 ./client localhost 23490 alice alicepw "" >/dev/null 2>&1 || true
 sleep 1
 
 fail=0
-check() {
+check() { # description python-expression over logins (proxy p) and glogins (proxy g)
     if python3 - "$2" <<'PY'
 import json, os, sys
-logins = [json.loads(l) for l in open("b.log")] if os.path.exists("b.log") else []
-logins = [r for r in logins if r["op"] == "login"]
+load = lambda f: [r for r in (json.loads(l) for l in open(f)) if r["op"] == "login"] if os.path.exists(f) else []
+logins, glogins = load("b.log"), load("g.log")
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
+logged() { # description file fixed-string
+    if grep -qF -- "$3" "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
+}
 check "exactly one login reached the broker (wrong password stopped at NLA)" 'len(logins) == 1'
 check "method is nla with the Kerberos principal"   'logins[0]["method"] == "nla" and logins[0]["principal"] == "alice@TEST.FASTRDP"'
-check "CredSSP user and delegated password passed" 'logins[0]["user"] == "alice" and logins[0]["password"] == "alicepw"'
-if [ $fail -ne 0 ]; then echo "--- proxy log:"; grep -E "fastrdp|nla|NLA|krb|Kerberos|ERROR" proxy.log | tail -25; fi
+check "CredSSP user and delegated password passed" 'logins[0]["user"] == "alice" and logins[0]["password"] == "alicepw" and logins[0]["remote_guard"] is False'
+# R4: Remote Credential Guard required, not offered
+logged "RCG not offered: the client got a negotiation response without RCG support" rcg-refused.out \
+    "remote credential guard requested but not supported"
+logged "RCG not offered: proxy answered instead of dropping the connection" proxy.log \
+    "REDIRECTED_AUTHENTICATION_MODE_REQUIRED but disabled, answering without"
+check "RCG not offered: no login reached the broker" 'len(logins) == 1'
+# AcceptRemoteGuard=true: identity only
+check "RCG accepted: one login with the Kerberos principal, flagged remote_guard" \
+    'len(rg := [r for r in glogins if r["remote_guard"]]) == 1 and rg[0]["method"] == "nla" and rg[0]["principal"] == "alice@TEST.FASTRDP"'
+check "RCG accepted: no password and no smartcard flag reach the broker" \
+    'all(r["password"] is None and r["smartcard"] is False for r in glogins if r["remote_guard"])'
+logged "RCG accepted: proxy logged identity only, credentials discarded" proxy-g.log \
+    "Remote Credential Guard: identity only, forwarded Kerberos credentials discarded"
+logged "RCG accepted: the client reached the broker's refusal (Set Error Info 0x7)" rcg.out "errinfo=0x00000007"
+check "AcceptRemoteGuard=true: password NLA login unchanged" \
+    'len(pw := [r for r in glogins if not r["remote_guard"]]) == 1 and pw[0]["password"] == "alicepw"'
+if [ $fail -ne 0 ]; then
+    for f in proxy.log proxy-g.log; do
+        echo "--- $f:"; grep -E "fastrdp|nla|NLA|krb|Kerberos|ERROR|REDIRECTED" "$f" | tail -25
+    done
+    echo "--- client (RCG, proxy p):"; tail -5 rcg-refused.out
+    echo "--- client (RCG, proxy g):"; tail -5 rcg.out
+    echo "--- kinit:"; cat kinit.out
+fi
 exit $fail

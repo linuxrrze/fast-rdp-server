@@ -32,10 +32,14 @@
  *   AllowTls     = false      ; accept non-NLA logins (password [+OTP] in client info)
  *   AllowTlsFrom =            ; non-NLA logins only from these peers: comma-separated
  *                             ; addresses/CIDRs (fastrdp_addr.h); empty = any peer
+ *   AcceptRemoteGuard = false ; offer Remote Credential Guard, identity only: the
+ *                             ; forwarded Kerberos tickets are discarded
+ *                             ; (fastrdp_remote_credentials())
  */
 
 #include <errno.h>
 #include <poll.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -57,6 +61,9 @@
 #include <freerdp/server/proxy/proxy_config.h>
 #include <freerdp/server/proxy/proxy_context.h>
 #include <freerdp/server/proxy/proxy_modules_api.h>
+/* pServerContext: the proxyData of a freerdp_peer in peer callbacks that have no proxy
+ * hook (peer->RemoteCredentials). The module is built against exactly one FreeRDP. */
+#include <freerdp/private/proxy_server.h>
 
 #include "fastrdp_addr.h"
 
@@ -71,7 +78,8 @@
 typedef struct
 {
 	BOOL nla;
-	BOOL smartcard; /* TSSmartCardCreds: the "password" is the card PIN */
+	BOOL smartcard;    /* TSSmartCardCreds: the "password" is the card PIN */
+	BOOL remote_guard; /* TSRemoteGuardCreds (Remote Credential Guard), discarded */
 	char* user;
 	char* domain;
 	char* password;
@@ -109,9 +117,27 @@ static void session_free(fastrdpSession* s)
 	free(s);
 }
 
+/* Set at load time; for callbacks without a proxyPlugin argument. */
+static proxyPluginsManager* fastrdp_mgr = NULL;
+
 static fastrdpSession* get_session(proxyPlugin* plugin, proxyData* pdata)
 {
 	return (fastrdpSession*)plugin->mgr->GetPluginData(plugin->mgr, PLUGIN_NAME, pdata);
+}
+
+/* The session state, created on first use. Normally that is ServerPeerLogon; with
+ * Remote Credential Guard it is the RemoteCredentials callback during NLA, just before.
+ * Once registered, ServerSessionEnd frees it. */
+static fastrdpSession* session_for(proxyPluginsManager* mgr, proxyData* pdata, BOOL* created)
+{
+	fastrdpSession* s = (fastrdpSession*)mgr->GetPluginData(mgr, PLUGIN_NAME, pdata);
+	*created = FALSE;
+	if (s)
+		return s;
+	s = calloc(1, sizeof(*s));
+	if (s)
+		*created = TRUE;
+	return s;
 }
 
 static const char* config_str(const proxyData* pdata, const char* key, const char* def)
@@ -456,6 +482,69 @@ static BOOL tls_peer_allowed(const proxyData* pdata)
 	return ok != 0;
 }
 
+/* ------------------------------------------------- Remote Credential Guard */
+
+/* Zero the redirected credentials in place. FreeRDP owns the buffers (the tickets point
+ * into the decrypted TSCredentials, suppCreds is its own allocation) and frees them
+ * after this callback without reading them again (libfreerdp/core/nla.c). */
+static void discard_remote_credentials(KERB_TICKET_LOGON* logon,
+                                       MSV1_0_REMOTE_SUPPLEMENTAL_CREDENTIAL* supp)
+{
+	if (logon)
+	{
+		if (logon->ServiceTicket && logon->ServiceTicketLength)
+			memset(logon->ServiceTicket, 0, logon->ServiceTicketLength);
+		if (logon->TicketGrantingTicket && logon->TicketGrantingTicketLength)
+			memset(logon->TicketGrantingTicket, 0, logon->TicketGrantingTicketLength);
+		logon->ServiceTicketLength = logon->TicketGrantingTicketLength = 0;
+	}
+	if (supp)
+		memset(supp, 0,
+		       offsetof(MSV1_0_REMOTE_SUPPLEMENTAL_CREDENTIAL, EncryptedCreds) +
+		           supp->EncryptedCredsSize);
+}
+
+/* peer->RemoteCredentials: the client sent TSRemoteGuardCreds ([MS-CSSP] 2.2.1.2.3)
+ * instead of a password, after Kerberos NLA authenticated it. They hold a service ticket
+ * for HOST/<proxy> and a forwarded TGT (KRB-CRED); a Windows client keeps the TGT's
+ * session key and expects the server to send its Kerberos requests back over
+ * [MS-RDPEAR], which fastrdp does not implement. So: identity only. The login goes on
+ * like a Restricted Admin or SSO login without a password (no session TGT; the broker
+ * gets "remote_guard": true), and the tickets are never logged, kept or forwarded.
+ * Installed for every connection: with AcceptRemoteGuard=false the proxy does not
+ * offer the mode, and such credentials sent anyway are refused here. */
+static BOOL fastrdp_remote_credentials(freerdp_peer* peer, KERB_TICKET_LOGON* logon,
+                                       MSV1_0_REMOTE_SUPPLEMENTAL_CREDENTIAL* supp)
+{
+	BOOL rc = FALSE;
+	pServerContext* ps = (peer && peer->context) ? (pServerContext*)peer->context : NULL;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	discard_remote_credentials(logon, supp);
+	if (!pdata || !fastrdp_mgr)
+		return FALSE;
+	if (!config_bool(pdata, "AcceptRemoteGuard", FALSE))
+	{
+		WLog_WARN(TAG, "[%s] Remote Credential Guard credentials refused (AcceptRemoteGuard=false)",
+		          pdata->session_id);
+		return FALSE;
+	}
+	BOOL created = FALSE;
+	fastrdpSession* s = session_for(fastrdp_mgr, pdata, &created);
+	if (!s)
+		return FALSE;
+	s->remote_guard = TRUE;
+	if (created && !fastrdp_mgr->SetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata, s))
+		session_free(s);
+	else
+		rc = TRUE;
+	if (rc)
+		WLog_INFO(TAG,
+		          "[%s] Remote Credential Guard: identity only, forwarded Kerberos credentials "
+		          "discarded",
+		          pdata->session_id);
+	return rc;
+}
+
 /* ------------------------------------------------------------------ hooks */
 
 static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, void* param)
@@ -466,23 +555,32 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 	WINPR_ASSERT(info);
 	WINPR_ASSERT(info->identity);
 
-	fastrdpSession* s = calloc(1, sizeof(*s));
+	BOOL created = FALSE;
+	fastrdpSession* s = session_for(plugin->mgr, pdata, &created);
 	if (!s)
 		return FALSE;
 
 	const SEC_WINNT_AUTH_IDENTITY* id = info->identity;
 	s->nla = info->automatic;
+	wipe_free(&s->user);
+	wipe_free(&s->domain);
+	wipe_free(&s->password);
 	s->user = identity_string(id, id->User, id->UserLength);
 	s->domain = identity_string(id, id->Domain, id->DomainLength);
 	s->password = identity_string(id, id->Password, id->PasswordLength);
+
+	if (s->remote_guard && !s->nla)
+	{
+		WLog_WARN(TAG, "[%s] Remote Credential Guard without NLA, refusing", pdata->session_id);
+		goto refuse;
+	}
 
 	if (s->nla)
 	{
 		if (!nla_used_kerberos(pdata->ps))
 		{
 			WLog_WARN(TAG, "[%s] NLA without Kerberos refused", pdata->session_id);
-			session_free(s);
-			return FALSE;
+			goto refuse;
 		}
 
 		/* Who did the KDC say this is? Never trust the CredSSP user name alone. */
@@ -493,16 +591,13 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 		{
 			WLog_WARN(TAG, "[%s] NLA without Kerberos identity (status 0x%08" PRIx32 "), denied",
 			          pdata->session_id, (UINT32)st);
-			session_free(s);
-			return FALSE;
+			goto refuse;
 		}
 		const size_t plen = strlen(ai.User) + strlen(ai.Domain) + 2;
+		wipe_free(&s->principal);
 		s->principal = calloc(1, plen);
 		if (!s->principal)
-		{
-			session_free(s);
-			return FALSE;
-		}
+			goto refuse;
 		(void)_snprintf(s->principal, plen, "%s@%s", ai.User, ai.Domain);
 
 		/* The delegated TSCredentials (user, domain, password typed by the user) land in
@@ -533,26 +628,33 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 			wipe_free(&s->password);
 			s->password = _strdup(tp);
 		}
-		if (s->smartcard)
+		/* Remote Credential Guard: TSRemoteGuardCreds carry no password (and were
+		 * discarded, fastrdp_remote_credentials()). Nothing else counts as one. */
+		if (s->smartcard || s->remote_guard)
 			wipe_free(&s->password);
 		if (!s->user)
 			s->user = _strdup(ai.User);
 		WLog_INFO(TAG, "[%s] NLA logon: principal %s, rdp user %s%s", pdata->session_id,
-		          s->principal, s->user ? s->user : "(none)", s->smartcard ? " (smartcard)" : "");
+		          s->principal, s->user ? s->user : "(none)",
+		          s->smartcard      ? " (smartcard)"
+		          : s->remote_guard ? " (Remote Credential Guard, identity only)"
+		                            : "");
 	}
 	else if (!config_bool(pdata, "AllowTls", FALSE))
 	{
 		WLog_WARN(TAG, "[%s] non-NLA connection refused (AllowTls=false)", pdata->session_id);
-		session_free(s);
-		return FALSE;
+		goto refuse;
 	}
 
-	if (!plugin->mgr->SetPluginData(plugin->mgr, PLUGIN_NAME, pdata, s))
-	{
-		session_free(s);
-		return FALSE;
-	}
+	if (created && !plugin->mgr->SetPluginData(plugin->mgr, PLUGIN_NAME, pdata, s))
+		goto refuse;
 	return TRUE;
+
+refuse:
+	/* A session registered earlier (fastrdp_remote_credentials()) is freed at session end. */
+	if (created)
+		session_free(s);
+	return FALSE;
 }
 
 static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* param)
@@ -627,6 +729,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	add_str(req, "password", s->password);
 	add_str(req, "principal", s->principal);
 	cJSON_AddBoolToObject(req, "smartcard", s->smartcard);
+	cJSON_AddBoolToObject(req, "remote_guard", s->remote_guard);
 	add_str(req, "desktop_hint", freerdp_settings_get_string(front, FreeRDP_AlternateShell));
 	/* The socket's peer address, not FreeRDP_ClientAddress: the latter comes from the
 	 * client's own Client Info PDU and can be anything. */
@@ -757,6 +860,9 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, FALSE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_PasswordIsSmartcardPin, FALSE) ||
 	    !freerdp_settings_set_bool(settings, FreeRDP_SmartcardLogon, FALSE) ||
+	    /* AcceptRemoteGuard sets this on the front; as a client setting it would require
+	     * Remote Credential Guard from the back-end */
+	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteCredentialGuard, FALSE) ||
 	    !freerdp_settings_set_pointer_len(settings, FreeRDP_LoadBalanceInfo, NULL, 0))
 		return FALSE;
 	if (s->target_nla &&
@@ -792,16 +898,24 @@ static BOOL fastrdp_client_redirect(proxyPlugin* plugin, proxyData* pdata, void*
  * multitransport (TS_UD_SC_MULTITRANSPORT) and send an Initiate Multitransport Request
  * ([MS-RDPBCGR] 2.2.15.1), then wait until the client gives up on UDP and answers
  * E_ABORT. Not offering it keeps the connection on TCP from the start; the back-end
- * connection inherits this setting. */
+ * connection inherits this setting.
+ * Remote Credential Guard: freerdp_peer_initialize() (client->Initialize, right after
+ * this hook) passes FreeRDP_RemoteCredentialGuard to the X.224 negotiation, which then
+ * answers REDIRECTED_AUTHENTICATION_MODE_SUPPORTED ([MS-RDPBCGR] 2.2.1.2.1). Without it a
+ * client that requires the mode gets a negotiation response without that flag and
+ * disconnects itself (patches/freerdp/0002). */
 static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, void* custom)
 {
 	WINPR_UNUSED(plugin);
 	WINPR_UNUSED(custom);
-	if (!pdata || !pdata->ps)
+	if (!pdata || !pdata->ps || !pdata->ps->peer)
 		return FALSE;
 	rdpSettings* front = pdata->ps->settings;
+	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
-	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0);
+	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0) &&
+	       freerdp_settings_set_bool(front, FreeRDP_RemoteCredentialGuard,
+	                                 config_bool(pdata, "AcceptRemoteGuard", FALSE));
 }
 
 static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* custom)
@@ -838,6 +952,7 @@ FREERDP_API FREERDP_ENTRY_POINT(BOOL proxy_module_entry_point(proxyPluginsManage
                                                              void* userdata))
 {
 	proxyPlugin plugin = { 0 };
+	fastrdp_mgr = mgr;
 	plugin.name = PLUGIN_NAME;
 	plugin.description = PLUGIN_DESC;
 	plugin.PluginUnload = fastrdp_unload;

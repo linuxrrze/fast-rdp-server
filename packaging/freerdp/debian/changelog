@@ -1,3 +1,14 @@
+fastrdp-freerdp3 (3.32.2-2) unstable; urgency=medium
+
+  * patches/freerdp: core/nego: answer a Remote Credential Guard request the
+    server does not support with an RDP_NEG_RSP without
+    REDIRECTED_AUTHENTICATION_MODE_SUPPORTED instead of dropping the TCP
+    connection (mstsc /remoteGuard).
+  * patches/freerdp: core/nla: accept TSRemoteGuardCreds without the optional
+    supplementalCreds (FreeRDP clients never send them).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 17:00:00 +0200
+
 fastrdp-freerdp3 (3.32.2-1) unstable; urgency=medium
 
   * FreeRDP 3.32.2 for fastrdp, installed under /opt/fastrdp.

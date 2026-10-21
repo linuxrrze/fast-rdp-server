@@ -49,7 +49,9 @@
 # so new roles never configure an old broker. The broker role checks the result.
 - name: Installed fastrdp packages
   ansible.builtin.command:
-    argv: "{{ ['dpkg-query', '-W', '-f=${Package} ${Version} ${db:Status-Abbrev}\\n'] + fastrdp_apt_own_packages }}"
+    argv: >-
+      {{ ['dpkg-query', '-W', '-f=${Package} ${Version} ${db:Status-Abbrev}\\n']
+         + fastrdp_apt_own_packages + (fastrdp_apt_vendored_versions | list) }}
   register: fastrdp_installed_pkgs
   changed_when: false
   failed_when: fastrdp_installed_pkgs.rc > 1     # 1: some are not installed
@@ -58,7 +60,7 @@
   vars:
     installed: >-
       {{ fastrdp_installed_pkgs.stdout_lines | map('split') | selectattr('2', 'defined')
-         | selectattr('2', 'match', '^ii') | list }}
+         | selectattr('2', 'match', '^ii') | selectattr('0', 'in', fastrdp_apt_own_packages) | list }}
     # name -> upstream version without the ~<distro> / +git suffix
     versions: >-
       {{ dict(installed | map(attribute='0') | zip(installed | map(attribute='1') | map('regex_replace', '[~+].*$', ''))) }}
@@ -72,3 +74,23 @@
     cache_valid_time: 0
   when: older | length > 0
   notify: [Restart fastrdp-brokerd, Restart fastrdp-proxy]
+
+# The vendored FreeRDP/xrdp packages have their own versions (packaging/*/debian/changelog
+# of this checkout): a patch-only change bumps their revision, which the fastrdp packages'
+# dependency ranges do not force.
+- name: Upgrade vendored packages older than these roles
+  vars:
+    installed: >-
+      {{ fastrdp_installed_pkgs.stdout_lines | map('split') | selectattr('2', 'defined')
+         | selectattr('2', 'match', '^ii') | selectattr('0', 'in', fastrdp_apt_vendored_versions | list) | list }}
+  ansible.builtin.apt:
+    name: "{{ item.0 }}"
+    state: latest
+    only_upgrade: true
+    update_cache: true
+    cache_valid_time: 0
+  loop: "{{ installed }}"
+  loop_control:
+    label: "{{ item.0 }} {{ item.1 }}"
+  when: (item.1 | regex_replace('~(deb|ubuntu)[0-9.]+$', '')) is version(fastrdp_apt_vendored_versions[item.0], '<')
+  notify: [Restart fastrdp-proxy, Restart xrdp]

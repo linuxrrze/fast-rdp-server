@@ -168,7 +168,7 @@ class XrdpIni(unittest.TestCase):
 
 
 class ProxyIni(unittest.TestCase):
-    def check(self, name, tls_allowed, tls_from=""):
+    def check(self, name, tls_allowed, tls_from="", remote_guard="false"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -185,6 +185,8 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual(p["FastRDP"]["BrokerSocket"], "/run/fastrdp/broker.sock")
         self.assertEqual(p["FastRDP"]["Timeout"], "120")
         self.assertEqual(p["Channels"]["PassthroughIsBlacklist"], "true")
+        # Remote Credential Guard: off unless fastrdp_accept_remote_guard (fastrdp_plugin.c)
+        self.assertEqual(p["FastRDP"]["AcceptRemoteGuard"], remote_guard)
 
     def test_tls_logins(self):
         self.check("proxy-lab.ini", "true")
@@ -197,6 +199,9 @@ class ProxyIni(unittest.TestCase):
 
     def test_nla_only(self):
         self.check("proxy-nla-only.ini", "false")
+
+    def test_remote_guard(self):
+        self.check("proxy-rcg.ini", "true", remote_guard="true")
 
 
 class GpuPackages(unittest.TestCase):
@@ -410,6 +415,8 @@ class CommonChecks(unittest.TestCase):
             "fully qualified names not a bool": dict(ok, fastrdp_sssd_fully_qualified_names="maybe"),
             "fully qualified names as a domain": dict(ok, fastrdp_sssd_fully_qualified_names="example.com"),
             "domain not a DNS name": dict(ok, fastrdp_domain="exa_mple.com"),
+            "accept remote guard not a bool": dict(ok, fastrdp_accept_remote_guard="maybe"),
+            "accept remote guard as a list": dict(ok, fastrdp_accept_remote_guard=["true"]),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -430,6 +437,12 @@ class CommonChecks(unittest.TestCase):
         self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[
             "127.0.0.1", "::1", "10.0.0.0/8", "2001:db8::/32"]), 0)
         self.assertEqual(self.run_checks(**ok, fastrdp_tls_login_sources=[]), 0)
+
+    def test_accept_remote_guard_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for value in (True, False, "true", "False"):
+            with self.subTest(value):
+                self.assertEqual(self.run_checks(**ok, fastrdp_accept_remote_guard=value), 0)
 
     def test_reconnect_grace_passes(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

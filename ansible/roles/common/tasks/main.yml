@@ -66,6 +66,7 @@
       - fastrdp_lan_networks is sequence and fastrdp_lan_networks is not string
       # shape only; the broker parses them strictly (host bits set, prefix range) at start-up
       - fastrdp_lan_networks | map('string') | reject('match', '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)(/[0-9]{1,3})?$') | list | length == 0
+      - fastrdp_accept_remote_guard | string | lower in ['true', 'false']
       - fastrdp_tls_login_sources is sequence and fastrdp_tls_login_sources is not string
       # \Z, not $: a trailing newline would end the proxy.ini line
       - fastrdp_tls_login_sources | map('string') | reject('match', '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)(/[0-9]{1,3})?\Z') | list | length == 0
@@ -83,5 +84,6 @@
       fastrdp_mfa_reconnect_grace_same_address true or false (docs/auth-matrix.md);
       fastrdp_xrdp_autodetect_profile is lan, wan, broadband_high, satellite, broadband_low,
       modem or default; fastrdp_lan_networks is a list of CIDRs (docs/performance.md);
-      fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md).
+      fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md);
+      fastrdp_accept_remote_guard is true or false (docs/windows-clients.md §3.11).
     quiet: true

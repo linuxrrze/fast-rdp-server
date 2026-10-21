@@ -4,14 +4,21 @@
 
 Proxy module -> broker.sock:
   {"op": "login", "session_id": str, "method": "nla"|"tls", "user": str, "domain": str,
-   "password": str|null, "principal": str|null, "smartcard": bool, "desktop_hint": str|null,
-   "client_address": str|null, "width": int|null, "height": int|null}
+   "password": str|null, "principal": str|null, "smartcard": bool, "remote_guard": bool,
+   "desktop_hint": str|null, "client_address": str|null, "width": int|null,
+   "height": int|null, "connection_type": int}
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
                  "domain": str, "security": "tls"|"nla"}}
   -> {"ok": false, "error": str, "reason": str}
 
   {"op": "end", "session_id": str}  -> {"ok": true}
+
+  "smartcard": NLA with TSSmartCardCreds; "password" then holds the PIN and is ignored.
+  "remote_guard": NLA with TSRemoteGuardCreds (Remote Credential Guard, mstsc /remoteGuard;
+  proxy.ini [FastRDP] AcceptRemoteGuard). The module discarded the forwarded Kerberos
+  tickets; "password" is null. Identity only: the principal is the identity, there is no
+  session TGT. Both flags are false for TLS logins and are absent from older modules.
 
   The module closes the connection without waiting for the "login" reply when its RDP
   client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the

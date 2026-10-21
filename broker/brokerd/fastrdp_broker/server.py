@@ -106,7 +106,8 @@ class Broker:
     # ---------------------------------------------------------------- kerberos
     def require_credential(self, user: LocalUser, password: str | None) -> None:
         """[broker] session_tgt = required: refuse, before MFA, logins that cannot give
-        the session a TGT (no password: Kerberos SSO without delegation, smartcard, web)."""
+        the session a TGT (no password: Kerberos SSO without delegation, Remote Credential
+        Guard, smartcard, web)."""
         if self.cfg.broker.session_tgt == "required" and not password:
             raise Denied(
                 f"{user.name}: login without a password, but [broker] session_tgt = required "
@@ -164,6 +165,16 @@ class Broker:
                 # never reach pam_sss or the MFA server. The flag itself is client-supplied, so
                 # it does not replace MFA; exempt groups whose accounts *require* smartcards.
                 log.info("smartcard logon for %s", user.name)
+                secret = None
+            if msg.get("remote_guard") is True:
+                # Remote Credential Guard (mstsc /remoteGuard, proxy.ini AcceptRemoteGuard): the
+                # client sent Kerberos tickets instead of a password and the proxy module
+                # discarded them. The identity is the principal as for any NLA login; like
+                # Restricted Admin or SSO without delegation there is no password, so no
+                # session TGT ([broker] session_tgt = required refuses the login). MFA as for
+                # SSO: the flag is client-driven and never replaces a second factor.
+                log.info("%s: remote credential guard: identity only, credentials discarded "
+                         "(principal %s)", user.name, principal)
                 secret = None
             if self.cfg.mfa.nla_kdc_enforced and self.cfg.mfa.mode != "none" and realm in self.cfg.auth.realms:
                 # The ticket for TERMSRV came from this realm's KDC, which (operator

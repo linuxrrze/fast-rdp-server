@@ -11,7 +11,12 @@
  * E2E_CONNECTION_TYPE=N: connectionType 1..7 in the Client Core Data (FreeRDP default 7).
  * E2E_GIVE_UP_S=N: exit after N seconds wherever the client is (like closing mstsc while
  *   the server still waits for an MFA push); prints "client: gave up".
- * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."). */
+ * E2E_REMOTE_GUARD=1: require Remote Credential Guard (RDP_NEG_REQ flag
+ *   REDIRECTED_AUTHENTICATION_MODE_REQUIRED, like mstsc /remoteGuard); with E2E_NLA=1 send
+ *   TSRemoteGuardCreds (HOST/<server> ticket + forwarded TGT) instead of a password. An
+ *   empty PASSWORD makes the client take a forwardable TGT from KRB5CCNAME.
+ * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x...")
+ * and, if freerdp_connect failed, the connect error ("connect_error=0x..."). */
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
 #include <inttypes.h>
@@ -37,7 +42,8 @@ int main(int argc, char** argv)
 	freerdp_settings_set_string(s, FreeRDP_ServerHostname, argv[1]);
 	freerdp_settings_set_uint32(s, FreeRDP_ServerPort, (UINT32)atoi(argv[2]));
 	freerdp_settings_set_string(s, FreeRDP_Username, argv[3]);
-	freerdp_settings_set_string(s, FreeRDP_Password, argv[4]);
+	if (argv[4][0])
+		freerdp_settings_set_string(s, FreeRDP_Password, argv[4]);
 	freerdp_settings_set_string(s, FreeRDP_AlternateShell, argv[5]);
 	freerdp_settings_set_bool(s, FreeRDP_AutoLogonEnabled, TRUE);
 	/* RNS_UD_CS_SUPPORT_ERRINFO_PDU like mstsc; the library default for clients is off */
@@ -57,6 +63,8 @@ int main(int argc, char** argv)
 		freerdp_settings_set_uint32(s, FreeRDP_ConnectionType,
 		                            (UINT32)atoi(getenv("E2E_CONNECTION_TYPE")));
 	const BOOL nla = getenv("E2E_NLA") && strcmp(getenv("E2E_NLA"), "1") == 0;
+	if (getenv("E2E_REMOTE_GUARD")) /* the RDP_NEG_REQ flag is sent with TLS, too */
+		freerdp_settings_set_bool(s, FreeRDP_RemoteCredentialGuard, TRUE);
 	freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, nla);
 	freerdp_settings_set_bool(s, FreeRDP_RdpSecurity, FALSE);
 	freerdp_settings_set_bool(s, FreeRDP_TlsSecurity, !nla);
@@ -85,6 +93,9 @@ int main(int argc, char** argv)
 	}
 	BOOL ok = freerdp_connect(inst);
 	printf("client: freerdp_connect=%d\n", ok);
+	if (!ok)
+		printf("client: connect_error=0x%08" PRIX32 " (%s)\n", freerdp_get_last_error(inst->context),
+		       freerdp_get_last_error_name(freerdp_get_last_error(inst->context)));
 	/* keep the session alive so the proxy reaches post-connect and contacts the back-end */
 	for (int i = 0; ok && i < 40 && !freerdp_shall_disconnect_context(inst->context); i++)
 	{

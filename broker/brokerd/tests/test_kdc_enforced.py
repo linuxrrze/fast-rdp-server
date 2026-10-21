@@ -66,6 +66,17 @@ class KdcEnforcedLoginTests(unittest.IsolatedAsyncioTestCase):
         self.broker.mfa.pi.trigger_challenge.assert_not_called()
         self.assertIsNone(self.ensure.call_args.args[0].password)
 
+    async def test_remote_guard_like_sso(self):
+        # Remote Credential Guard logins are Kerberos NLA logins without a password: the KDC
+        # vouches for them as for SSO, and without nla_kdc_enforced they get the push.
+        reply = await request(self.cfg.broker.socket, self.nla("k7", remote_guard=True))
+        self.assertTrue(reply["ok"], reply)
+        self.broker.mfa.pi.trigger_challenge.assert_not_called()
+        self.broker.cfg.mfa.nla_kdc_enforced = False
+        reply = await request(self.cfg.broker.socket, self.nla("k8", remote_guard=True))
+        self.assertFalse(reply["ok"])                     # push refused
+        self.broker.mfa.pi.trigger_challenge.assert_called_once()
+
     async def test_off_still_pushes(self):
         self.broker.cfg.mfa.nla_kdc_enforced = False
         reply = await request(self.cfg.broker.socket, self.nla("k3"))

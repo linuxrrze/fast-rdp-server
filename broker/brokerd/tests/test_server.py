@@ -105,6 +105,20 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply["ok"], reply)
         self.assertIsNone(self.ensure.call_args.args[0].password)
 
+    async def test_remote_guard_identity_only(self):
+        # Remote Credential Guard: the proxy module discarded the forwarded Kerberos tickets.
+        # The principal is the identity; a password sent along anyway is never used.
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            reply = await request(self.cfg.broker.socket, {
+                "op": "login", "session_id": "rg", "method": "nla", "user": "alice",
+                "principal": "alice@EXAMPLE.COM", "password": "pw", "remote_guard": True,
+            })
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(reply["user"], "alice")
+        self.assertIsNone(self.ensure.call_args.args[0].password)
+        self.assertTrue(any("remote credential guard: identity only, credentials discarded" in line
+                            and "alice@EXAMPLE.COM" in line for line in logs.output), logs.output)
+
     async def test_nla_principal_is_the_identity(self):
         # The CredSSP user name never selects the account (tests/test_principal.py).
         reply = await request(self.cfg.broker.socket, {

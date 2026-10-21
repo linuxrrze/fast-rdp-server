@@ -67,3 +67,7 @@ AllowTls={{ (fastrdp_allow_tls_logins | bool or fastrdp_web_enabled | bool) | lo
 ; TLS logins only from these peers (addresses/CIDRs, empty = any): loopback only when TLS
 ; is there just for guacd (web path without fastrdp_allow_tls_logins).
 AllowTlsFrom={{ fastrdp_tls_login_sources | join(',') }}
+; Remote Credential Guard (mstsc /remoteGuard): false = not offered (the client gets a
+; negotiation response without support and reports it); true = accepted identity only,
+; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
+AcceptRemoteGuard={{ fastrdp_accept_remote_guard | bool | lower }}

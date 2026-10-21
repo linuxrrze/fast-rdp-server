@@ -53,9 +53,10 @@ class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
     async def test_no_password_no_tgt_step(self):
         self.assertTrue((await self.gnome(password=None))["ok"])               # SSO, no delegation
         self.assertTrue((await self.gnome(smartcard=True))["ok"])              # PIN is not a password
+        self.assertTrue((await self.gnome(password=None, remote_guard=True))["ok"])  # tickets discarded
         self.establish.assert_not_called()
         self.klist.assert_not_awaited()
-        self.assertEqual(self.ensure.await_count, 2)
+        self.assertEqual(self.ensure.await_count, 3)
 
     async def test_xrdp_gets_tgt_itself(self):
         self.assertTrue((await self.nla(password=PW))["ok"])
@@ -98,6 +99,7 @@ class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.nla(password=None), self.DENIED)                # SSO, xrdp too
         self.assertEqual(await self.gnome(password=None), self.DENIED)
         self.assertEqual(await self.gnome(smartcard=True), self.DENIED)
+        self.assertEqual(await self.nla(password=None, remote_guard=True), self.DENIED)  # RCG
         web = await self._request({"op": "web_token", "user": "alice"})
         self.assertFalse(web["ok"])
         pi.trigger_challenge.assert_not_called()   # no push for a login that will be refused

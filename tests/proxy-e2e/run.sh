@@ -100,6 +100,10 @@ E2E_SC_PIN=1 timeout 20 ./client 127.0.0.1 23389 pinuser 1234 "" > pin.out 2>&1 
 timeout 20 ./client 127.0.0.1 23389 lanuser good "" >/dev/null 2>&1 || true
 timeout 20 ./client 127.0.0.1 23389 bogususer good "" >/dev/null 2>&1 || true
 E2E_CONNECTION_TYPE=2 timeout 20 ./client 127.0.0.1 23389 slowuser good "" >/dev/null 2>&1 || true
+# Remote Credential Guard required (mstsc /remoteGuard) but not offered: the proxy answers
+# with a negotiation response without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED instead of
+# dropping the TCP connection (patches/freerdp/0002), the client gives up on its own
+E2E_REMOTE_GUARD=1 timeout 20 ./client 127.0.0.1 23389 rcguser good "" > rcg.out 2>&1 || true
 # TLS login from an address outside AllowTlsFrom: refused before the broker
 timeout 20 ./client 127.0.0.1 23392 outsider good "" > outsider.out 2>&1 || true
 # The user closes the client while the broker waits for an MFA push (fake broker: 8 s).
@@ -134,6 +138,7 @@ expect "connection type from the broker reaches the back-end" 'ct(lb, "lanuser")
 expect "no or unknown broker connection type: client's kept" 'ct(lb, "alice") == [7] and ct(lb, "bogususer") == [7] and ct(lb, "slowuser") == [2]'
 expect "session end reported to the broker"           'any(r["op"] == "end" and r["session_id"] == la[0]["session_id"] for r in a)'
 expect "TLS login outside AllowTlsFrom never reached the broker" 'not any(r["user"] == "outsider" for r in la)'
+expect "Remote Credential Guard required: login never reached the broker" 'not any(r["user"] == "rcguser" for r in la)'
 expect "client gone during the MFA wait: broker connection closed early" \
     'len(pw := [r for r in a if r["op"] == "pushwait"]) == 1 and pw[0]["closed"] and pw[0]["waited"] < 4'
 errinfo() { # description client-output expected-code
@@ -157,6 +162,8 @@ logged "AllowTlsFrom refusal logged with the socket peer address" proxy-c.log \
     "non-NLA login from 127.0.0.1 refused (AllowTlsFrom="
 logged "proxy abandoned the broker request when the client went away" proxy-a.log \
     "front connection closed while waiting for the broker"
+logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
+    rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
    ! grep -q -- "--> CONNECTION_STATE_MULTITRANSPORT_BOOTSTRAPPING_RESPONSE" proxy-a.log; then
     echo "ok   no multitransport offered (no UDP listener): no Initiate Multitransport Request"

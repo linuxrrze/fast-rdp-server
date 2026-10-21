@@ -116,8 +116,10 @@ check "set-version: version gets the distro suffix" \
 check "set-version: distribution" test "$(cd "$fdir" && dpkg-parsechangelog -S Distribution)" = trixie
 check "set-version: source name from debian/control" \
     test "$(cd "$fdir" && dpkg-parsechangelog -S Source)" = fastrdp-freerdp3
+# the entry below the new one is the top of the repository's vendored changelog (3.32.2-2, ...)
+fcv=$(dpkg-parsechangelog -l "$REPO/packaging/freerdp/debian/changelog" -S Version)
 check "set-version: previous entries kept" \
-    test "$(cd "$fdir" && dpkg-parsechangelog -o 1 -c 1 -S Version)" = "$fv-1"
+    test "$(cd "$fdir" && dpkg-parsechangelog -o 1 -c 1 -S Version)" = "$fcv"
 for pair in "0.2.0~deb13 0.2.0+git20261019120000.abc1234~deb13" \
             "0.2.0+git20261019120000.abc1234~deb13 0.2.0+git20261019130000.abc1234~deb13" \
             "0.2.0+git20261019120000.abc1234~deb13 0.2.1~deb13" \

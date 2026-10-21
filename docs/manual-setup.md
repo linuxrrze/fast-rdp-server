@@ -1270,6 +1270,10 @@ AllowTls=true
 ; TLS logins only from these peers (addresses/CIDRs, empty = any): loopback only when TLS
 ; is there just for guacd (web path without fastrdp_allow_tls_logins).
 AllowTlsFrom=
+; Remote Credential Guard (mstsc /remoteGuard): false = not offered (the client gets a
+; negotiation response without support and reports it); true = accepted identity only,
+; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
+AcceptRemoteGuard=false
 ```
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)
@@ -1283,6 +1287,14 @@ client claims, before anything reaches the broker, and refuses others with Set E
 nothing. NLA logins are not affected. `Timeout` (`fastrdp_proxy_broker_timeout`)
 must exceed the MFA push timeout; a login whose client disconnects while the broker
 still waits (MFA push) is abandoned at once, and the broker stops waiting.
+`AcceptRemoteGuard` (`fastrdp_accept_remote_guard`, default `false`): with `false`, a
+client that requires Remote Credential Guard (`mstsc /remoteGuard`, GPO "Require Remote
+Credential Guard") gets a negotiation response without REDIRECTED_AUTHENTICATION_MODE_SUPPORTED
+and disconnects with its own message (needs `fastrdp-freerdp3` ≥ 3.32.2-2; older builds drop
+the connection). With `true` the proxy offers the mode, takes the user from the Kerberos NLA
+as usual, and zeroes and discards the forwarded tickets: the broker receives
+`"remote_guard": true` and no password, so the session has no TGT and
+`session_tgt = required` refuses the login ([windows-clients.md](windows-clients.md) §3.12).
 `Port` = `fastrdp_listen_port`.
 
 ## 12. Start the services

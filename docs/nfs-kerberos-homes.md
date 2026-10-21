@@ -403,10 +403,16 @@ Security implications:
 
 - CredSSP ([MS-CSSP] 2.2.1.2 TSCredentials) carries a password (`TSPasswordCreds`),
   smartcard PIN + CSP data (`TSSmartCardCreds`), or Remote Credential Guard data
-  (`TSRemoteGuardCreds`). None of them is a TGT. Remote Credential Guard keeps the
-  credentials on the client and sends Kerberos requests back over the MS-RDPEAR
-  virtual channel; a Linux server would have to implement that channel and a krb5
-  plugin around it. Not realistic.
+  (`TSRemoteGuardCreds`). Only the last contains a TGT, and from mstsc it is useless on
+  its own: Remote Credential Guard keeps the TGT's session key on the client and sends
+  Kerberos requests back over the MS-RDPEAR virtual channel; a Linux server would have
+  to implement that channel and a krb5 plugin around it. Not realistic. FreeRDP's
+  `/remoteGuard` does forward a complete TGT, which would be unconstrained delegation.
+  fastrdp therefore refuses Remote Credential Guard by default and, with
+  `fastrdp_accept_remote_guard: true`, accepts it **identity only**: the tickets are
+  discarded, so these logins behave like SSO without delegation (option a) works,
+  `fastrdp_session_tgt: required` refuses them) ([windows-clients.md](windows-clients.md)
+  §3.12).
 - A forwarded TGT inside the Kerberos AP-REQ (GSS checksum delegation field) would need
   the `TERMSRV` account to be trusted for **unconstrained** delegation and a client
   that asks for it. FreeRDP 3.32.2's Kerberos SSP ignores it on the server side: the

@@ -210,6 +210,14 @@
         fastrdp_web_enabled: true
         fastrdp_tls_login_sources: [127.0.0.1, "::1", 10.1.2.0/24, "2001:db8::/32"]
 
+    - name: Proxy.ini, Remote Credential Guard accepted (fastrdp_accept_remote_guard)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-rcg.ini"
+        mode: "0644"
+      vars:
+        fastrdp_accept_remote_guard: true
+
     - name: Broker.toml, lab defaults
       ansible.builtin.template:
         src: "{{ roles_dir }}/broker/templates/broker.toml.j2"

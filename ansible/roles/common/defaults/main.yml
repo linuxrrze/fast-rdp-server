@@ -52,6 +52,12 @@ fastrdp_allow_tls_logins: true
 # docs/backends/web.md
 fastrdp_tls_login_sources: >-
   {{ ['127.0.0.1', '::1'] if (fastrdp_web_enabled | bool and not fastrdp_allow_tls_logins | bool) else [] }}
+# Remote Credential Guard (mstsc /remoteGuard, policy "Require Remote Credential Guard"):
+# proxy.ini [FastRDP] AcceptRemoteGuard. false: not offered; such a client gets a negotiation
+# response without support and shows its own error. true: accepted identity only, the
+# forwarded Kerberos tickets are discarded, so the session has no TGT (like Restricted
+# Admin; fastrdp_session_tgt: required refuses these logins). docs/windows-clients.md §3.11
+fastrdp_accept_remote_guard: false
 
 # ---------------------------------------------------------------- MFA
 fastrdp_mfa_mode: none               # none | otp | push | otp_or_push (docs/auth-matrix.md)
@@ -145,3 +151,13 @@ fastrdp_roles_version: >-
 # fastrdp's own packages (one source package, one version); the vendored FreeRDP/xrdp
 # packages have their own versions and follow as dependencies.
 fastrdp_apt_own_packages: [fastrdp-broker, libpam-fastrdp-token, fastrdp-session, fastrdp-proxy-module, fastrdp-webgate]
+# Derived: the vendored packages (own version numbers) these roles need, from their
+# changelogs in the checkout; the base role upgrades installed ones that are older.
+fastrdp_apt_vendored_versions:
+  fastrdp-freerdp3: >-
+    {{ lookup('ansible.builtin.file', playbook_dir ~ '/../packaging/freerdp/debian/changelog').splitlines()[0]
+       | regex_replace('^[^(]*[(]([^)]+)[)].*$', '\1') }}
+  fastrdp-xrdp: >-
+    {{ lookup('ansible.builtin.file', playbook_dir ~ '/../packaging/xrdp/debian/changelog').splitlines()[0]
+       | regex_replace('^[^(]*[(]([^)]+)[)].*$', '\1') }}
+

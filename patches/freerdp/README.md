@@ -62,3 +62,87 @@ been submitted.
 
 **Drop it when** a FreeRDP release with the fix is the vendored version, or when
 fastrdp stops shipping its own client binaries.
+
+## 0002 – [core,nego] answer an unsupported Remote Credential Guard request
+
+**Problem.** A client that *requires* Remote Credential Guard sets
+REDIRECTED_AUTHENTICATION_MODE_REQUIRED in its RDP_NEG_REQ ([MS-RDPBCGR] 2.2.1.1.1):
+`mstsc /remoteGuard`, or any mstsc under the policy "Restrict delegation of credentials
+to remote servers: Require Remote Credential Guard". When the server does not support the
+mode, `nego_process_negotiation_request()` in `libfreerdp/core/nego.c` failed, and the
+server closed the TCP connection without an X.224 Connection Confirm. The client could only
+report a generic network error.
+
+**Who is affected.** Every FreeRDP server with `FreeRDP_RemoteCredentialGuard` off, so
+freerdp-proxy with the fastrdp module unless `[FastRDP] AcceptRemoteGuard=true`. The case
+where the client sets both RESTRICTED_ADMIN_MODE_REQUIRED and the Remote Credential Guard
+flag ("either mode") already fell back to Restricted Admin and is unchanged.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp server, default (`AcceptRemoteGuard=false`) | **yes**, for a clear refusal of `/remoteGuard` clients instead of a dropped connection ([rdp-spec-conformance.md](../../docs/rdp-spec-conformance.md) R4) |
+| `AcceptRemoteGuard=true` | no: the server then supports the mode |
+| fastrdp's regression suite | **yes**: `run.sh` and `run_nla.sh` check that a `/remoteGuard` client gets a negotiation response |
+
+**Fix.** Choice per [MS-RDPBCGR]:
+- 2.2.1.2.1: the server states support with REDIRECTED_AUTHENTICATION_MODE_SUPPORTED in
+  the RDP_NEG_RSP. Leaving the flag out *is* the answer "not supported".
+- 2.2.1.2.2: none of the RDP_NEG_FAILURE codes (SSL/HYBRID required, certificate missing,
+  inconsistent flags, Entra ID) describes the case; a failure code would give the client a
+  wrong message.
+- 3.3.5.3.2: the server sends an RDP_NEG_RSP when it supports one of the requested
+  security protocols, which it does.
+
+So the server goes on and answers with an RDP_NEG_RSP without the flag. A client that
+requires the mode disconnects on its own and can say why. The FreeRDP client logs
+`remote credential guard requested but not supported, terminating`
+(`nego_process_negotiation_response()`). mstsc's dialog is still to be recorded
+([rdp-spec-conformance.md](../../docs/rdp-spec-conformance.md) lab S2). The server-side
+state (`RemoteCredsGuardActive`) stays off. TSRemoteGuardCreds a client might send anyway
+reach `peer->RemoteCredentials`; the fastrdp module refuses them unless
+`AcceptRemoteGuard=true`.
+
+**Regression test.** `tests/proxy-e2e/run.sh` (TLS proxy, client with
+`E2E_REMOTE_GUARD=1`) and `run_nla.sh` (NLA proxy without `AcceptRemoteGuard`). Both check
+the client's message. Without the patch the client sees the connection close and the
+checks fail (checked against an unpatched 3.32.2 build: `run.sh` 29/30, `run_nla.sh` 6/11).
+
+**Status upstream.** Still present in 3.32.2. Not submitted ([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** a FreeRDP release answers the request without dropping the connection.
+
+## 0003 – [core,nla] accept TSRemoteGuardCreds without supplementalCreds
+
+**Problem.** `supplementalCreds` in TSRemoteGuardCreds is OPTIONAL ([MS-CSSP] 2.2.1.2.3).
+When it is absent it is also the last element. `nla_read_ts_credentials()` in
+`libfreerdp/core/nla.c` then called `WinPrAsn1DecReadContextualSequence()` on an empty
+decoder, which reports an error, and rejected the credentials ("invalid
+supplementalCreds"). FreeRDP's own client never sends `supplementalCreds`
+(`nla_encode_ts_remoteguard_credentials()`: "TODO: compute the NTLM supplemental creds").
+So a FreeRDP server with Remote Credential Guard enabled refused every FreeRDP client
+using `/remoteGuard`.
+
+**Who is affected.** fastrdp with `[FastRDP] AcceptRemoteGuard=true` and FreeRDP clients
+(xfreerdp built with the rdpear channel, the e2e client). Whether mstsc sends
+`supplementalCreds` is not recorded yet (lab S2). It parses either way.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| `AcceptRemoteGuard=false` (default) | no |
+| `AcceptRemoteGuard=true` with FreeRDP clients | **yes** |
+| fastrdp's regression suite (`run_nla.sh`, Remote Credential Guard accepted) | **yes**; the login fails at NLA without it |
+
+**Fix.** Peek at the next tag first, as `set_creds_octetstring_to_settings()` does for the
+optional TSSmartCardCreds fields, and read `supplementalCreds` only when it is there.
+Malformed `supplementalCreds` are still refused.
+
+**Regression test.** `tests/proxy-e2e/run_nla.sh` (local MIT KDC): the "RCG accepted"
+checks.
+
+**Status upstream.** Still present in 3.32.2. Not submitted.
+
+**Drop it when** a FreeRDP release parses TSRemoteGuardCreds without `supplementalCreds`.

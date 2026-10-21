@@ -69,6 +69,11 @@ class RolesStatic(unittest.TestCase):
         repo = (ANSIBLE / "roles" / "base" / "tasks" / "apt_repo.yml").read_text()
         self.assertIn("Upgrade fastrdp packages older than these roles", repo)
         self.assertIn("only_upgrade: true", repo)
+        # vendored FreeRDP/xrdp: own versions from packaging/*/debian/changelog
+        self.assertIn("Upgrade vendored packages older than these roles", repo)
+        common = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
+        for f in ("packaging/freerdp/debian/changelog", "packaging/xrdp/debian/changelog"):
+            self.assertIn(f, common)
         self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
