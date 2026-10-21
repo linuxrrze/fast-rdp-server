@@ -8,24 +8,35 @@
 test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototypes lint
 
 # Everything that runs locally without root (missing tools: SKIP, or FAIL with
-# FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, python3-cryptography, ansible-core,
+# FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, libcjson-dev, python3-cryptography, ansible-core,
 # ansible-lint, shellcheck, dpkg-dev, curl, reprepro, gnupg, apt.
 test-all: test test-scripts test-publish test-ansible
 
 test-broker:
 	cd broker/brokerd && python3 -m unittest discover -s tests
 
-test-webgate:   # needs python3-cryptography
-	cd broker/webgate && python3 -m unittest discover -s tests
+# run_if NAME, CHECK, MISSING, COMMAND: COMMAND if CHECK succeeds; otherwise SKIP, or FAIL with
+# FASTRDP_TESTS_STRICT=1 (as in CI), like need() in tests/lib.sh
+run_if = if ( $(2) ) >/dev/null 2>&1; then $(4); \
+	elif [ "$${FASTRDP_TESTS_STRICT:-0}" = 1 ]; then echo "FAIL $(1): missing $(strip $(3))"; exit 1; \
+	else echo "SKIP $(1): missing $(strip $(3))"; fi
+comma := ,
+# with_tool NAME, TOOL, COMMAND: COMMAND if TOOL is installed (run_if on command -v)
+with_tool = $(call run_if,$(1),command -v $(2),$(2),$(3))
 
-test-pam:
-	$(MAKE) -C broker/pam_fastrdp_token check
+test-webgate:   # needs python3-cryptography
+	@$(call run_if,test-webgate,python3 -c 'import cryptography',python3-cryptography,\
+	  cd broker/webgate && python3 -m unittest discover -s tests)
+
+test-pam:       # needs libpam0g-dev, libcjson-dev, pkg-config
+	@$(call run_if,test-pam,pkg-config --exists libcjson && echo '#include <security/pam_appl.h>' | $(CC) -E -x c -,\
+	  libpam0g-dev libcjson-dev pkg-config,$(MAKE) -C broker/pam_fastrdp_token check)
 
 # AllowTlsFrom address lists of the proxy module (fastrdp_addr.h); gcc only, no FreeRDP
 test-proxy-module:
-	mkdir -p build
-	$(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_addr tests/proxy-module/test_addr.c
-	build/test_addr
+	@$(call with_tool,test-proxy-module,$(CC),mkdir -p build && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_addr tests/proxy-module/test_addr.c && \
+	  build/test_addr)
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report
@@ -41,7 +52,7 @@ test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg
 	tests/packaging/test_publish.sh
 
 test-ansible:   # ansible-core; syntax check + role templates rendered and parsed; Keycloak script (offline)
-	cd ansible && ansible-playbook --syntax-check site.yml
+	@$(call with_tool,test-ansible,ansible-playbook,cd ansible && ansible-playbook --syntax-check site.yml)
 	python3 -m unittest -v tests/ansible/test_templates.py
 	python3 -m unittest -v tests/keycloak/test_keycloak_passkeys.py
 
@@ -95,15 +106,16 @@ test-prototypes:
 check-krb5-spnego:   # libwinpr3-dev libkrb5-dev krb5-kdc krb5-admin-server; exit 1 = affected
 	tests/krb5-spnego/run.sh
 
-lint:
-	cd ansible && ansible-lint site.yml
-	shellcheck -x broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
+lint:   # ansible-lint, shellcheck (missing: SKIP, or FAIL with FASTRDP_TESTS_STRICT=1)
+	@$(call with_tool,lint ansible,ansible-lint,cd ansible && ansible-lint site.yml)
+	@$(call with_tool,lint shell,shellcheck,\
+	  shellcheck -x broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
 		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
 		tests/proxy-e2e/*.sh tests/krb5-spnego/run.sh tests/smoke/*.sh tests/perf/*.sh patches/xrdp/test/run_test.sh \
-		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh
-	shellcheck -e SC1090,SC2015 tests/wlroots/run.sh
-	shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* \
-		packaging/xrdp/debian/fastrdp-xrdp.postinst packaging/xrdp/debian/fastrdp-xrdp.postrm
+		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh && \
+	  shellcheck -e SC1090$(comma)SC2015 tests/wlroots/run.sh && \
+	  shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* \
+		packaging/xrdp/debian/fastrdp-xrdp.postinst packaging/xrdp/debian/fastrdp-xrdp.postrm)
 	packaging/ci/check-build-deps.sh
 
 lint-ci:   # actionlint (https://github.com/rhysd/actionlint)
@@ -144,7 +156,7 @@ test-setup:   # PyYAML and ansible-vault are used when installed; shellcheck/ans
 	python3 -m unittest discover -s scripts/tests
 
 lint-setup:
-	cd ansible && ansible-lint --profile production preflight.yml
+	@$(call with_tool,lint-setup,ansible-lint,cd ansible && ansible-lint --profile production preflight.yml)
 
 test: test-setup
 lint: lint-setup
