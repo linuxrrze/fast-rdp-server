@@ -318,7 +318,9 @@ class GraceLoginTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pushes, 3)
 
     async def test_clear_is_root_only(self):
-        reply = await self.login(op="clear_grace")
+        # a non-root caller even when the tests run as root (CI containers)
+        with mock.patch("fastrdp_broker.server.peer_uid", return_value=65534):
+            reply = await self.login(op="clear_grace")
         self.assertEqual(reply["error"], "not permitted")
 
 
