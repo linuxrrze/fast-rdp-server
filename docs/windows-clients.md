@@ -375,11 +375,68 @@ Confidence medium; real card + AD + mstsc is lab test L7.
 | Duplicate acceptor mechListMIC (§3.3) | NegoEx-first mstsc, if Windows omits negState | **open**, found here |
 | MS-KRB5 OID in the AP-REQ framing rejected (§3.1) | only if Windows used it (unlikely) | **open**, found here |
 | No RFC 4757 (RC4) Wrap/MIC tokens (§3.4) | RC4 environments | **open**, found here |
-| Server-side Remote Credential Guard | RCG clients | not supported by the proxy (only the client side is in progress: #13778, PR #13675) |
+| Server-side Remote Credential Guard | RCG clients | partly in FreeRDP 3.32.2: negotiation and parsing of `TSRemoteGuardCreds` into a `RemoteCredentials` callback exist (`nego.c`, `nla.c`, `peer.h`), but the server side of the MS-RDPEAR channel is not built; fastrdp refuses RCG (§3.12). Client side: PR #13675 (open), #13778 |
 
 Most related reports concern gnome-remote-desktop, which uses the same server NLA. Their
 failures are keytab permissions (GNOME Discourse t/34451) and NTLMv1 (g-r-d #244), not
 mstsc Kerberos.
+
+### 3.12 Where a Windows RDP host's Kerberos credentials come from (comparison)
+
+How a **Windows** RDP host gets Kerberos credentials for the user when mstsc logs in
+with Kerberos (NLA), and how fastrdp compares. In short: the user's **TGT is not
+forwarded**. In the normal case the client delegates the **password**, and the host
+obtains its **own** TGT with it. Remote Credential Guard is the only mode without a
+password, and even there the TGT's session key stays on the client.
+
+CredSSP (MS-CSSP `TSCredentials`) knows only three kinds of credentials: password
+(`TSPasswordCreds`), smartcard (`TSSmartCardCreds`) and Remote Credential Guard
+(`TSRemoteGuardCreds`). There is no "here is my TGT" credential type. [MS-CSSP 2.2.1.2]
+
+| mstsc → Windows RDP host | Credentials the host receives | Valid TGT for the user on the host? | Network access (SMB home, profiles) as |
+|---|---|---|---|
+| NLA, password typed | the **password** (`TSPasswordCreds`); LSA logs on (logon type 10, RemoteInteractive) | **yes**, obtained by the host from the DC | the user |
+| NLA single sign-on, GPO "Allow delegating default credentials" (`TERMSRV/…`), **no** Credential Guard on the client | the logged-on user's password from the client's LSA | **yes** | the user |
+| NLA single sign-on, **Credential Guard on** the client (default on Windows 11 22H2+ / Server 2025, Enterprise/Education) | nothing for SSO: mstsc prompts, then as row 1 | **yes**, after the prompt | the user |
+| Smartcard (NLA) | `TSSmartCardCreds` (PIN + card data); the host runs PKINIT with the redirected card | yes [inferred] | the user |
+| `mstsc /restrictedAdmin` (needs local admin on the host) | nothing reusable | **no** | the host's **computer account** (`HOST$`): homes/profiles with user ACLs fail |
+| `mstsc /remoteGuard` (Remote Credential Guard) | `TSRemoteGuardCreds`: `KERB_TICKET_LOGON` with a service ticket and the TGT, **without the TGT's session key** | effectively yes, **while connected**: every operation that needs the TGT key is sent back to the client over the RDP channel MS-RDPEAR | the user, until disconnect |
+
+Consequences on Windows:
+
+- **Long sessions:** with a delegated password, LSA keeps a password-derived key and
+  silently gets a new TGT when the old one expires. This key is what Credential Guard
+  protects and what LSASS dumping targets.
+- **Remote Credential Guard** constraints: Kerberos only, classic mstsc, AD-joined
+  target, not through RD Gateway or Connection Broker, on an RD Session Host only for
+  administrators; nothing can be refreshed after disconnecting.
+- **Profiles:** roaming profiles and FSLogix open the share as the **user** (they fail
+  under Restricted Admin); User Profile Disks use the hosts' computer accounts.
+
+The same logins on fastrdp:
+
+| Login | Session TGT on the fastrdp host | Notes |
+|---|---|---|
+| mstsc NLA with the password delegated (typed, or SSO without Credential Guard) | **yes**: xrdp via `pam_sss`, GNOME/Plasma via the broker's `fastrdp-tgt` | same as Windows; renewal up to `krb5_renewable_lifetime` (default 7 days), no silent re-acquisition after that |
+| xfreerdp3 without `/p` (password typed) | **yes** | as above |
+| xfreerdp3 `/p` (empty, SSO from the client's ticket), smartcard, browser | **no** (no password reaches the server) | Windows Restricted Admin falls back to `HOST$`; fastrdp has gssproxy S4U for NFS (`fastrdp_nfs_krb5_homes`, constrained delegation, [nfs-kerberos-homes.md](nfs-kerberos-homes.md)) or `kinit` in the session; `fastrdp_session_tgt: required` refuses such logins |
+| `mstsc /restrictedAdmin` | **no** | accepted (row in §2) |
+| `mstsc /remoteGuard` | – | **refused** at protocol negotiation (§2, R4 in [rdp-spec-conformance.md](rdp-spec-conformance.md)) |
+
+Why not simply forward the TGT: on a multi-user terminal server a forwarded TGT is
+*unconstrained delegation*. Root on the host could use every connected user's TGT
+for any service while it is valid. That is exactly what Remote Credential Guard
+avoids by keeping the TGT key on the client. For shared hosts, password → own TGT or
+S4U for named services (constrained delegation) are the safer defaults.
+
+Sources: [Remote Credential Guard](https://learn.microsoft.com/en-us/windows/security/identity-protection/remote-credential-guard),
+[Credential Guard known issues](https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/considerations-known-issues),
+[CredSSP policy CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-credssp),
+[logon types](https://learn.microsoft.com/en-us/windows-server/identity/securing-privileged-access/reference-tools-logon-types),
+[MS-CSSP TSCredentials](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/94a1ab00-5500-42fd-8d3d-7a84e6c2cf03),
+[MS-RDPEAR](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpear/a32e17ec-5869-4fad-bdae-d35f342fcb6f),
+[Kerberos credentials cache (LSA key refresh)](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961958(v=technet.10)),
+[RDS user data storage (UPD)](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/rds-plan-secure-data-storage).
 
 ## 4. Required AD / client settings
 

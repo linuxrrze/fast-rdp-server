@@ -416,6 +416,9 @@ Security implications:
   patching WinPR, passing the KRB-CRED from the proxy module to the broker, and storing
   it in the user's KCM. Whether mstsc requests delegation in CredSSP is not verified.
   Unconstrained delegation is a larger risk than option a).
+- How a Windows RDP host gets Kerberos credentials in each mstsc mode (password
+  delegation, Restricted Admin, Remote Credential Guard), compared with fastrdp:
+  [windows-clients.md](windows-clients.md) §3.12.
 
 ### c) Require a typed password for users with Kerberized homes
 
