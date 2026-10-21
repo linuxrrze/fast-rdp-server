@@ -120,6 +120,15 @@ check "set-version: source name from debian/control" \
 fcv=$(dpkg-parsechangelog -l "$REPO/packaging/freerdp/debian/changelog" -S Version)
 check "set-version: previous entries kept" \
     test "$(cd "$fdir" && dpkg-parsechangelog -o 1 -c 1 -S Version)" = "$fcv"
+# lintian error latest-changelog-entry-without-new-date: the CI entry (dated now) must be
+# newer than the entry below it, so no repository changelog may be dated in the future.
+check "set-version: new entry dated after the previous one" \
+    test "$(cd "$fdir" && dpkg-parsechangelog -S Timestamp)" -gt \
+         "$(cd "$fdir" && dpkg-parsechangelog -o 1 -c 1 -S Timestamp)"
+for cl in debian/changelog packaging/freerdp/debian/changelog packaging/xrdp/debian/changelog; do
+    check "changelog not dated in the future: $cl" \
+        test "$(dpkg-parsechangelog -l "$REPO/$cl" -S Timestamp)" -lt "$(date +%s)"
+done
 for pair in "0.2.0~deb13 0.2.0+git20261019120000.abc1234~deb13" \
             "0.2.0+git20261019120000.abc1234~deb13 0.2.0+git20261019130000.abc1234~deb13" \
             "0.2.0+git20261019120000.abc1234~deb13 0.2.1~deb13" \

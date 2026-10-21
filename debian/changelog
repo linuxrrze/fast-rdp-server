@@ -5,10 +5,10 @@ fast-rdp-server (0.4.4) unstable; urgency=medium
     opt-in proxy.ini [FastRDP] AcceptRemoteGuard (Ansible
     fastrdp_accept_remote_guard) accepts it identity-only, discarding the
     forwarded Kerberos tickets; the broker gets "remote_guard": true.
-
   * Deploys also upgrade the vendored FreeRDP/xrdp packages when they are older
     than the checkout's packaging (fastrdp-freerdp3 3.32.2-2).
- -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 17:00:00 +0200
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 21 Oct 2026 15:49:57 +0200
 
 fast-rdp-server (0.4.3) unstable; urgency=medium
 
