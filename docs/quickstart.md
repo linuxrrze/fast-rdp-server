@@ -30,7 +30,7 @@ One host, self-signed certificate, an existing AD, XFCE.
 *10 minutes* is the time you spend. With `install method: build` the playbook also
 compiles FreeRDP and xrdp on the host, which takes another 10-20 minutes unattended.
 `apt` skips that, but only once the APT repository is published for your release
-(`fastrdp-setup` checks and tells you; see [packaging.md](packaging.md)).
+(`scripts/fastrdp-setup` checks and tells you; see [packaging.md](packaging.md)).
 
 ### 1. Answer the questions
 
@@ -300,7 +300,7 @@ and `make lint`.
 | NLA login fails, client falls back to NTLM or reports *logon attempt failed* | Connect to the **FQDN**, not an IP or alias (`TERMSRV/<fqdn>`); the client must reach a KDC (VPN or KDC proxy, [client-guide.md](client-guide.md)); on the host `klist -k /etc/fastrdp/termsrv.keytab` lists `TERMSRV/` keys (smoke test) |
 | Certificate warning on every connect | Self-signed lab certificate: accept once (`/cert:tofu`) or set a CA certificate (`tls: provided`) |
 | preflight `ports: in use: 3389` | A stock `xrdp` or a system-wide `gnome-remote-desktop` listens there: `sudo ss -ltnp 'sport = :3389'`, then disable or `apt purge xrdp` (fastrdp installs its own) |
-| `apt` install: 404 for `InRelease` | The APT repository is not published for your release/channel yet: set `install_method` to `build` (re-run `fastrdp-setup --set install_method=build --force --answers .../setup-answers.json`) or try channel `testing` |
+| `apt` install: 404 for `InRelease` | The APT repository is not published for your release/channel yet: set `install_method` to `build` (re-run `scripts/fastrdp-setup --set install_method=build --force --answers .../setup-answers.json`) or try channel `testing` |
 | Login accepted, then the session closes | `journalctl -u fastrdp-brokerd -u fastrdp-proxy -u xrdp-sesman -b`; `sudo fastrdpctl status`; is the user in `allow_groups` and allowed by the GPO (`permissive` logs denials in the sssd log)? |
 | MFA push: client waits, then fails | privacyIDEA unreachable from the host (preflight), no service admin for SSO logins, or the push was not approved within `push_timeout` (60 s) |
 | Black screen or no GPU acceleration with NVIDIA | Reboot after the first run (driver + `nvidia-drm modeset=1`); Secure Boot needs the module key enrolled |
