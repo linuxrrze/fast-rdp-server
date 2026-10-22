@@ -1454,9 +1454,9 @@ as usual, and zeroes and discards the forwarded tickets: the broker receives
 `WaitingScreen` (`fastrdp_proxy_waiting_screen`, default `true`; also the module's default
 when the key is missing): shows a panel in the client's window while the broker works on
 the login (push or web approval with countdown, approval URL, login code and a QR code of
-the page for this login, session start), drawn with Bitmap Updates and painted black before
-the desktop arrives; texts from the broker's `[ui]`. `false`: the client shows only its own
-"connecting" state or a black window, and no desktop picker. With the broker's `[broker] desktop_picker` the same panel also lists
+the page for this login, session start), drawn with Bitmap Updates and painted over in the
+background grey before the desktop arrives; texts from the broker's `[ui]`. `false`: the
+client shows only its own "connecting" state or a black window, and no desktop picker. With the broker's `[broker] desktop_picker` the same panel also lists
 the user's desktops and takes keys and clicks before the session starts (needs
 `fastrdp-freerdp3` ≥ 3.32.2-6; the module offers the picker only then and adds its
 countdown to `Timeout`). `StatusInfo` (`fastrdp_proxy_status_info`, default `false`) also sends

@@ -1,110 +1,194 @@
 #!/usr/bin/python3 -I
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-"""Writes fastrdp_font.h (the waiting screen's font, fastrdp_panel.h) from Spleen's
-spleen-8x16.bdf: printable Latin-1 plus the few typographic characters the broker's
-default texts use (dashes become hyphens).
+"""Writes fastrdp_font.h (the waiting screen's font, fastrdp_panel.h) from Roboto 2.138
+(Apache-2.0, like fastrdp): antialiased glyphs (4-bit coverage) of printable Latin-1 plus
+the typographic characters the broker's texts use, in three styles (title: Medium, body
+and small: Regular) at two sizes (fastrdp_panel_layout() takes the larger from
+3200x1800). Needs freetype-py only to regenerate the header; the module draws from it.
 
-  curl -fLO https://github.com/fcambus/spleen/releases/download/2.1.0/spleen-2.1.0.tar.gz
-  sha256sum spleen-2.1.0.tar.gz   # 8b47c56f1a6eb858fbcf9e34530557404b02fbb3455e38e64fb84473fd0c372f
-  tar xzf spleen-2.1.0.tar.gz
-  python3 -I gen_font.py spleen-2.1.0/spleen-8x16.bdf > fastrdp_font.h
+  curl -fLO https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-unhinted.zip
+  sha256sum roboto-unhinted.zip   # 70f64c718510a601fbcf752aafe644314dacaeb85474dc689c89787c4a72a728
+  unzip -q roboto-unhinted.zip -d roboto
+  python3 -m venv venv && venv/bin/pip install freetype-py==2.5.1
+  venv/bin/python -I gen_font.py roboto > fastrdp_font.h
+
+Each glyph's coverage rows (left to right, top to bottom) are one run of tokens in a
+string, one printable character per token (fastrdp_font_token()): 0..15 a pixel of that
+coverage, then runs of 2..38 pixels of 0 and of 15. Advances are FreeType's unhinted
+ones in 1/64 pixel; the glyphs are hinted vertically only (FT_LOAD_TARGET_LIGHT).
 """
 
 import sys
 
+import freetype
+
 # Beyond Latin-1, in this order after the 191 Latin-1 glyphs (fastrdp_font_index()).
-EXTRA = (0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026, 0x20AC)
+EXTRA = (0x2009, 0x2010, 0x2011, 0x2013, 0x2014, 0x2018, 0x2019, 0x201A, 0x201C, 0x201D,
+         0x201E, 0x2022, 0x2026, 0x2039, 0x203A, 0x202F, 0x20AC)
 CODEPOINTS = [*range(0x20, 0x7F), *range(0xA0, 0x100), *EXTRA]
+# (file, pixel size) per style (title, body, small) and size step
+FACES = ((("Roboto-Medium.ttf", 26), ("Roboto-Regular.ttf", 18), ("Roboto-Regular.ttf", 15)),
+         (("Roboto-Medium.ttf", 39), ("Roboto-Regular.ttf", 27), ("Roboto-Regular.ttf", 22)))
+# token characters: '#'..'~' without '?' (trigraphs) and '\'
+ALPHABET = "".join(c for c in map(chr, range(0x23, 0x7F)) if c not in "?\\")
+RUN_MAX = 38  # 2..38: 37 codes each for runs of 0 and of 15, after the 16 levels
+assert len(ALPHABET) == 16 + 2 * (RUN_MAX - 1)
 
 
-def glyphs(path: str) -> dict[int, list[int]]:
-    out: dict[int, list[int]] = {}
-    code, rows, in_bitmap = None, [], False
-    with open(path, encoding="ascii") as fh:
-        for line in fh:
-            word, _, rest = line.strip().partition(" ")
-            if word == "ENCODING":
-                code = int(rest)
-            elif word == "BBX" and rest != "8 16 0 -4":
-                raise SystemExit(f"glyph {code}: unexpected BBX {rest}")
-            elif word == "BITMAP":
-                rows, in_bitmap = [], True
-            elif word == "ENDCHAR":
-                if len(rows) != 16:
-                    raise SystemExit(f"glyph {code}: {len(rows)} rows")
-                out[code] = rows
-                in_bitmap = False
-            elif in_bitmap:
-                rows.append(int(word, 16))
-    return out
+def tokens(levels: list[int]) -> str:
+    out = []
+    i = 0
+    while i < len(levels):
+        v = levels[i]
+        j = i + 1
+        if v in (0, 15):
+            while j < len(levels) and levels[j] == v and j - i < RUN_MAX:
+                j += 1
+        if j - i == 1:
+            out.append(ALPHABET[v])
+        else:
+            out.append(ALPHABET[16 + (0 if v == 0 else RUN_MAX - 1) + j - i - 2])
+        i = j
+    return "".join(out)
+
+
+def face(path: str, px: int) -> tuple[dict, list[tuple], str]:
+    f = freetype.Face(path)
+    f.set_pixel_sizes(0, px)
+    m = f.size
+    info = {"size": px, "ascent": m.ascender // 64, "descent": -m.descender // 64}
+    glyphs, data = [], []
+    at = 0
+    for cp in CODEPOINTS:
+        if not f.get_char_index(cp):
+            if cp != 0xAD:  # a soft hyphen the font lacks stays invisible
+                raise SystemExit(f"{path}: U+{cp:04X} missing")
+            glyphs.append((0, 0, 0, 0, 0, at, cp))
+            continue
+        f.load_char(cp, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_LIGHT)
+        g = f.glyph
+        b = g.bitmap
+        if b.pixel_mode != freetype.FT_PIXEL_MODES["FT_PIXEL_MODE_GRAY"] and b.rows:
+            raise SystemExit(f"U+{cp:04X}: pixel mode {b.pixel_mode}")
+        levels = [(b.buffer[y * b.pitch + x] * 15 + 127) // 255
+                  for y in range(b.rows) for x in range(b.width)]
+        adv = (g.linearHoriAdvance + 512) >> 10  # 16.16 pixels, unhinted, to 1/64 pixel
+        if not (0 <= adv < 65536 and b.width < 256 and b.rows < 256 and
+                -128 <= g.bitmap_left < 128 and -128 <= g.bitmap_top < 128):
+            raise SystemExit(f"U+{cp:04X}: out of range")
+        t = tokens(levels)
+        glyphs.append((adv, b.width, b.rows, g.bitmap_left, g.bitmap_top, at, cp))
+        data.append(t)
+        at += len(t)
+    return info, glyphs, "".join(data)
+
+
+def c_string(s: str, indent: str = "\t") -> str:
+    return "\n".join(f'{indent}"{s[i:i + 96]}"' for i in range(0, len(s), 96)) or f'{indent}""'
+
+
+LICENSE = """/* SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2011 Google Inc.
+ *
+ * Generated by gen_font.py from Roboto 2.138 (https://github.com/googlefonts/roboto),
+ * do not edit: glyphs of Roboto-Regular.ttf and Roboto-Medium.ttf rasterised with
+ * FreeType. Roboto: Copyright 2011 Google Inc. All Rights Reserved. Licensed under the
+ * Apache License, Version 2.0 (the "License"); you may not use this file except in
+ * compliance with the License. You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under
+ * the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied. See the License for the specific language governing
+ * permissions and limitations under the License.
+ */"""
 
 
 def main() -> None:
-    font = glyphs(sys.argv[1])
-    print("""/* SPDX-License-Identifier: BSD-2-Clause
- * SPDX-FileCopyrightText: 2018-2024 Frederic Cambus
- *
- * Generated by gen_font.py from Spleen 2.1.0 spleen-8x16.bdf (https://github.com/fcambus/spleen),
- * do not edit. Spleen is released under the BSD 2-Clause license:
- *
- * Copyright (c) 2018-2024, Frederic Cambus
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS
- * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-#ifndef FASTRDP_FONT_DATA_H
+    ttf = sys.argv[1].rstrip("/")
+    faces = [[face(f"{ttf}/{name}", px) for name, px in step] for step in FACES]
+    print(LICENSE)
+    print(f"""#ifndef FASTRDP_FONT_DATA_H
 #define FASTRDP_FONT_DATA_H
 
-/* 8x16 cells, one byte per row, most significant bit left. Index: fastrdp_font_index(). */
-#define FASTRDP_FONT_W 8
-#define FASTRDP_FONT_H 16
-#define FASTRDP_FONT_GLYPHS %d
+#define FASTRDP_FONT_GLYPHS {len(CODEPOINTS)}
+#define FASTRDP_FONT_STEPS {len(FACES)}  /* sizes, smallest first */
+#define FASTRDP_FONT_STYLES {len(FACES[0])} /* fastrdpFontStyle */
 
-static const unsigned int fastrdp_font_extra[] = { %s };
+typedef enum
+{{
+	FASTRDP_FONT_TITLE,
+	FASTRDP_FONT_BODY,
+	FASTRDP_FONT_SMALL
+}} fastrdpFontStyle;
 
-static const unsigned char fastrdp_font[FASTRDP_FONT_GLYPHS][FASTRDP_FONT_H] = {""" % (
-        len(CODEPOINTS), ", ".join(f"0x{c:04X}" for c in EXTRA)))
-    for c in CODEPOINTS:
-        if c not in font:
-            raise SystemExit(f"U+{c:04X} missing")
-        print("\t{ " + ", ".join(f"0x{r:02x}" for r in font[c]) + f" }}, /* U+{c:04X} */")
-    print("""};
+/* One glyph: advance in 1/64 pixel (unhinted, so that text keeps its widths), coverage
+ * bitmap w x h placed x pixels right of the pen and y pixels above the baseline, its
+ * tokens from data[off] on (fastrdp_font_token()). */
+typedef struct
+{{
+	unsigned short adv64;
+	unsigned char w, h;
+	signed char x, y;
+	unsigned int off;
+}} fastrdpGlyph;
+
+typedef struct
+{{
+	unsigned size, ascent, descent; /* pixels */
+	const fastrdpGlyph* glyphs;     /* FASTRDP_FONT_GLYPHS, fastrdp_font_index() */
+	const char* data;
+}} fastrdpFace;
+
+static const unsigned int fastrdp_font_extra[] = {{ {", ".join(f"0x{c:04X}" for c in EXTRA)} }};
+""")
+    for s, step in enumerate(faces):
+        for k, (info, glyphs, data) in enumerate(step):
+            name, px = FACES[s][k]
+            print(f"/* {name} {px} px */")
+            print(f"static const fastrdpGlyph fastrdp_glyphs_{s}_{k}[FASTRDP_FONT_GLYPHS] = {{")
+            for i in range(0, len(glyphs), 4):  # four per line, the first one's code point
+                row = " ".join(f"{{ {adv}, {w}, {h}, {x}, {y}, {off} }},"
+                               for adv, w, h, x, y, off, _ in glyphs[i:i + 4])
+                print(f"\t{row} /* U+{glyphs[i][6]:04X} */")
+            print("};")
+            print(f"static const char fastrdp_data_{s}_{k}[] =")
+            print(c_string(data) + ";")
+            print()
+    print("static const fastrdpFace fastrdp_faces[FASTRDP_FONT_STEPS][FASTRDP_FONT_STYLES] = {")
+    for s, step in enumerate(faces):
+        print("\t{")
+        for k, (info, _, _) in enumerate(step):
+            print(f"\t\t{{ {info['size']}, {info['ascent']}, {info['descent']}, "
+                  f"fastrdp_glyphs_{s}_{k}, fastrdp_data_{s}_{k} }},")
+        print("\t},")
+    print(f"""}};
+
+/* Token character to its code (0..{len(ALPHABET) - 1}), see gen_font.py. */
+static unsigned fastrdp_font_token(char c)
+{{
+	unsigned v = (unsigned)(unsigned char)c - 0x23;
+	if (c > '?')
+		v--;
+	if (c > '\\\\')
+		v--;
+	return v;
+}}
 
 /* Glyph index of a code point; -1 if the font has none. */
 static int fastrdp_font_index(unsigned int cp)
-{
+{{
 	if (cp >= 0x20 && cp < 0x7f)
 		return (int)(cp - 0x20);
 	if (cp >= 0xa0 && cp <= 0xff)
 		return (int)(cp - 0xa0 + 0x5f);
-	if (cp == 0x2013 || cp == 0x2014) /* en and em dash: Spleen 8x16 has none */
-		return '-' - 0x20;
 	for (unsigned i = 0; i < sizeof(fastrdp_font_extra) / sizeof(fastrdp_font_extra[0]); i++)
 		if (fastrdp_font_extra[i] == cp)
 			return (int)(0x5f + 0x60 + i);
 	return -1;
-}
+}}
 
 #endif /* FASTRDP_FONT_DATA_H */""")
 

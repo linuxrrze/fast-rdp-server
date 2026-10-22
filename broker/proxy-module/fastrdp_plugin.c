@@ -425,8 +425,8 @@ typedef struct
  * (pf_server.c), so the module fills in every field of the bitmap data itself.
  * The desktop is cut into 64x64 tiles, compressed like the shadow server does it
  * (shadow_client_send_bitmap_update()): planar at 32 bpp, interleaved RLE at 15/16/24 bpp.
- * Before the hook returns a granted login, the panel is painted over in black, so nothing
- * of it stays should the back-end not repaint the whole desktop after the reactivation.
+ * Before the hook returns a granted login, the panel is painted over in the screen colour,
+ * so nothing of it stays should the back-end not repaint the whole desktop afterwards.
  * [FastRDP] StatusInfo additionally sends Server Status Info PDUs ([MS-RDPBCGR] 2.2.5.2)
  * to clients that announced RNS_UD_CS_SUPPORT_STATUSINFO_PDU (none of FreeRDP's do).
  * Drawing errors only stop the screen; they never fail the login. */
@@ -498,12 +498,17 @@ static BOOL ws_flush(waitingScreen* ws)
 }
 
 /* The pixels of the desktop tile at (x, y), bw x bh (bw a multiple of 4, may reach past
- * the desktop's right edge), into ws->tile: black, and the panel where it is visible. */
+ * the desktop's right edge), into ws->tile: FASTRDP_COLOR_SCREEN, and the panel where it
+ * is visible. */
 static void ws_compose(waitingScreen* ws, UINT32 x, UINT32 y, UINT32 bw, UINT32 bh)
 {
-	memset(ws->tile, 0, (size_t)bw * bh * 4); /* FASTRDP_COLOR_SCREEN */
-	for (size_t i = 3; i < (size_t)bw * bh * 4; i += 4)
-		ws->tile[i] = 0xff;
+	for (size_t i = 0; i < (size_t)bw * bh * 4; i += 4)
+	{
+		ws->tile[i] = FASTRDP_COLOR_SCREEN & 0xff;
+		ws->tile[i + 1] = (FASTRDP_COLOR_SCREEN >> 8) & 0xff;
+		ws->tile[i + 2] = (FASTRDP_COLOR_SCREEN >> 16) & 0xff;
+		ws->tile[i + 3] = 0xff;
+	}
 	const fastrdpRect t = { (int)x, (int)y, bw, bh };
 	fastrdpRect o;
 	if (!ws->visible || !fastrdp_rect_intersect(t, ws->panel->rect, &o))
@@ -771,6 +776,7 @@ static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
 		ws->deadline.tv_sec += (time_t)timeout->valuedouble;
 		const char* label = json_str(msg, "countdown");
 		fastrdp_panel_set_countdown(ws->panel, label ? label : "");
+		fastrdp_panel_set_countdown_total(ws->panel, (unsigned)timeout->valuedouble);
 	}
 	else
 		fastrdp_panel_set_countdown(ws->panel, NULL);
@@ -1447,6 +1453,7 @@ static void ws_picker_start(waitingScreen* ws, const cJSON* msg)
 	fastrdp_panel_set_options(ws->panel, labels, pk->n, pk->sel, json_str(msg, "hint"));
 	const char* label = json_str(msg, "countdown");
 	fastrdp_panel_set_countdown(ws->panel, label ? label : "");
+	fastrdp_panel_set_countdown_total(ws->panel, (unsigned)t->valuedouble);
 	ws->countdown = TRUE;
 	clock_gettime(CLOCK_MONOTONIC, &ws->deadline);
 	ws->deadline.tv_sec += (time_t)t->valuedouble;

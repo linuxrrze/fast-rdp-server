@@ -147,7 +147,12 @@ static void send_keys(freerdp* inst, const char* list)
 	printf("client: sent keys %s at %ld ms\n", list, elapsed_ms());
 }
 /* E2E_CLICK=+N: the accent-filled (selected) picker row on the decoded screen is the
- * first accent run taller than 10 pixels; click N rows below it */
+ * first run of FASTRDP_COLOR_ACCENT (fastrdp_panel.h) taller than 20 pixels (the lock icon
+ * and the countdown bar are lower); click N rows below it */
+static BOOL is_accent(const BYTE* px)
+{
+	return px[2] == 0x2b && px[1] == 0x63 && px[0] == 0xd9;
+}
 static void click_row(freerdp* inst, int rows_below)
 {
 	const rdpGdi* gdi = inst->context->gdi;
@@ -157,15 +162,12 @@ static void click_row(freerdp* inst, int rows_below)
 		for (UINT32 x = 0; x < gdi->width; x++)
 		{
 			const BYTE* px = gdi->primary_buffer + (size_t)y * gdi->stride + (size_t)x * 4;
-			const BYTE* above = px - gdi->stride;
-			const BOOL accent = px[2] == 0x2f && px[1] == 0x6d && px[0] == 0xb5;
-			if (!accent || (above[2] == 0x2f && above[1] == 0x6d && above[0] == 0xb5))
+			if (!is_accent(px) || is_accent(px - gdi->stride))
 				continue;
 			UINT32 h = 0;
-			while (y + h < gdi->height && px[(size_t)h * gdi->stride + 2] == 0x2f &&
-			       px[(size_t)h * gdi->stride + 1] == 0x6d && px[(size_t)h * gdi->stride] == 0xb5)
+			while (y + h < gdi->height && is_accent(px + (size_t)h * gdi->stride))
 				h++;
-			if (h <= 10)
+			if (h <= 20)
 				continue;
 			const UINT16 cx = (UINT16)(x + 4);
 			const UINT16 cy = (UINT16)(y + (UINT32)rows_below * h + h / 2);

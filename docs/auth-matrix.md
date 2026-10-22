@@ -330,9 +330,9 @@ must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bi
 | push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
 | web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the [login-bound link](#login-bound-link-qr-code) `<URL>?login=<id>` ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
 | `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
-| desktop picker (`fastrdp_desktop_picker`, after the second factor) | "Choose your desktop", one row per desktop ("[1] Xfce", "[2] GNOME (running)"), the preselected row filled, a hint line and a countdown of `fastrdp_desktop_picker_timeout`; keys 1-9, arrow keys and Enter, a click, Esc ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
+| desktop picker (`fastrdp_desktop_picker`, after the second factor) | "Choose your desktop", one row per desktop (key badge and label: "1 Xfce", "2 GNOME (running)"), the preselected row filled, a hint line and a countdown of `fastrdp_desktop_picker_timeout`; keys 1-9, arrow keys and Enter, a click, Esc ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
-| login granted | the panel is painted over in black just before the back-end's desktop arrives |
+| login granted | the panel is painted over in the screen colour just before the back-end's desktop arrives |
 | refused, timed out | the client's own error message (Set Error Info, as without the screen) |
 
 No push or approval panel appears when no second factor is due (exempt groups,
@@ -371,8 +371,14 @@ is `fastrdp_ui_approve_url` (default `<fastrdp_web_public_url>/web/approve` with
 gateway, else none: no URL, no QR code; `https://`, at most 184 characters, so that the
 QR code with `?login=<id>` stays within 57 × 57 modules); `fastrdp_ui_qr_code: false`
 leaves the code out.
-The font covers Latin-1 (and `…`, `€`, typographic quotes); other characters are drawn
-as `?`.
+The panel is a white card with rounded corners and a soft shadow on a dark grey screen:
+a lock icon and the first line of the text as the title (semibold), the other lines
+below it (a line that is a URL in the accent colour), the QR code on the right and the
+countdown with a shrinking bar at the bottom. Text is antialiased Roboto (Apache-2.0,
+rasterised once by `gen_font.py` into `fastrdp_font.h`, so the module needs no font
+library) and wrapped by its width; desktops from 3200×1800 get larger sizes, small ones
+smaller paddings. The font covers Latin-1 (and `…`, `€`, dashes, typographic quotes
+including `„`); other characters are drawn as `?`.
 
 **Why on by default:** without the panel a user waiting for MFA sees a black window and
 no hint where to approve the login (the first test with a real client showed exactly
