@@ -4,8 +4,10 @@
 #
 # Passkeys on the web path, end to end and without root (docs/passkeys.md, recipe A):
 #   1. Keycloak 26.x in dev mode (in-memory database) on 127.0.0.1:$KC_PORT;
-#   2. a fixture realm (kc_fixture.py): client fastrdp-web, alice (password + TOTP),
-#      carol (password only), an unrelated client profile/policy and ACR map entry;
+#   2. the sample client docs/examples/keycloak-fastrdp-web-client.json imported as is and
+#      read back (Keycloak keeps every field); a fixture realm (kc_fixture.py): client
+#      fastrdp-web made from that sample, alice (password + TOTP), carol (password only),
+#      an unrelated client profile/policy and ACR map entry;
 #   3. the web_gateway role's Keycloak tasks (fastrdp_web_passkeys: true) through
 #      ansible-playbook: check mode, apply, apply again (must not change anything),
 #      merge checks, and a Cookie step injected into the flow is removed again;
@@ -98,6 +100,8 @@ else
     finish
 fi
 
+check "sample client docs/examples/keycloak-fastrdp-web-client.json stored as given" \
+    python3 "$HERE/kc_fixture.py" check-sample "$KC" admin "$ADMIN_PW"
 check "fixture realm created" python3 "$HERE/kc_fixture.py" setup "$KC" "http://localhost:$GATE_PORT" \
     "http://localhost:$PROBE_PORT/cb" admin "$ADMIN_PW"
 

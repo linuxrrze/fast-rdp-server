@@ -62,11 +62,12 @@ test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/c
 test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg-dev apt
 	tests/packaging/test_publish.sh
 
-test-ansible:   # ansible-core, nodejs; syntax check + role templates rendered and parsed; Keycloak script (offline)
+test-ansible:   # ansible-core, nodejs; syntax check + role templates rendered and parsed; Keycloak script + sample client (offline)
 	@$(call with_tool,test-ansible,ansible-playbook,cd ansible && ansible-playbook --syntax-check site.yml)
 	python3 -m unittest -v tests/ansible/test_roles_static.py
 	python3 -m unittest -v tests/ansible/test_templates.py
 	python3 -m unittest -v tests/keycloak/test_keycloak_passkeys.py
+	python3 -m unittest -v tests/keycloak/test_keycloak_examples.py
 
 # FreeRDP switches in docs/freerdp-client.md, docs/client-guide.md and docs/manual-setup.md
 # vs. FreeRDP's own switch table. Downloads the vendored FreeRDP source (network, or FASTRDP_SOURCES_CACHE);

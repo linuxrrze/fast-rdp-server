@@ -13,6 +13,7 @@
     # roles/common checks these; the Keycloak tasks do not use them
     fastrdp_realm: EXAMPLE.TEST
     fastrdp_domain: example.test
+    fastrdp_fqdn: rdp1.example.test   # default: inventory_hostname or the fqdn fact (not gathered)
   tasks:
     - name: Keycloak tasks of the web_gateway role
       ansible.builtin.include_role:

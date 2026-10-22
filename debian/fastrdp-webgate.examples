@@ -1,1 +1,2 @@
 broker/webgate/config/webgate.toml.example
+docs/examples/keycloak-fastrdp-web-client.json

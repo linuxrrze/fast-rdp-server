@@ -3,12 +3,15 @@
 """Test fixture for tests/keycloak/run.sh: a throwaway realm in a dev-mode Keycloak.
 
 Creates realm REALM with
-  - client fastrdp-web (confidential, redirect to the test webgate) with an existing
-    acr.loa.map entry and an unrelated client profile/policy, so the run can prove that
-    the role merges instead of replacing them;
+  - client fastrdp-web from docs/examples/keycloak-fastrdp-web-client.json (host replaced
+    by the test webgate, a known secret, the probe's redirect URI) with another
+    acr.loa.map entry instead of mfa -> 2, and an unrelated client profile/policy, so the
+    run can prove that the role adds mfa and merges instead of replacing;
   - alice: password + TOTP (secret below), required action to register a passkey;
   - carol: password only;
   - a non-default passwordless RP entity name, which the role must keep.
+check-sample imports the sample client unchanged into a realm of its own and compares
+what Keycloak stores with the file (no field dropped or rewritten).
 Standard library only.
 """
 
@@ -23,7 +26,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
+SAMPLE = Path(__file__).resolve().parents[2] / "docs" / "examples" / "keycloak-fastrdp-web-client.json"
+SAMPLE_URL = "https://rdp1.lab.example.com"   # the sample's webgate public_url
+SAMPLE_REALM = "fastrdp-sample"
 REALM = "fastrdp-test"
 CLIENT_ID = "fastrdp-web"
 CLIENT_SECRET = "webgate-test-secret"
@@ -61,6 +68,48 @@ class Admin:
         return json.loads(raw) if raw else None
 
 
+def sample_client(webgate_url: str = SAMPLE_URL) -> dict:
+    """The sample client with its host replaced by webgate_url (scheme://host[:port])."""
+    raw = SAMPLE.read_text()
+    if SAMPLE_URL not in raw:
+        raise SystemExit(f"{SAMPLE}: {SAMPLE_URL} not found")
+    return json.loads(raw.replace(SAMPLE_URL, webgate_url.rstrip("/")))
+
+
+def sample_mismatches(want: dict, got: dict) -> list[str]:
+    """Fields of the sample that Keycloak did not store as given (lists as sets)."""
+    out = []
+    for key, value in want.items():
+        if key == "attributes":
+            attrs = got.get("attributes") or {}
+            out += [f"attributes.{k}: {attrs.get(k)!r} != {v!r}" for k, v in value.items() if attrs.get(k) != v]
+        elif isinstance(value, list):
+            if sorted(got.get(key) or []) != sorted(value):
+                out.append(f"{key}: {got.get(key)!r} != {value!r}")
+        elif got.get(key) != value:
+            out.append(f"{key}: {got.get(key)!r} != {value!r}")
+    return out
+
+
+def check_sample(base: str, admin_user: str, admin_password: str) -> int:
+    a = Admin(base, admin_user, admin_password)
+    if any(r["realm"] == SAMPLE_REALM for r in a.call("GET", "/realms")):
+        a.call("DELETE", f"/realms/{SAMPLE_REALM}")
+    a.call("POST", "/realms", {"realm": SAMPLE_REALM, "enabled": True})
+    try:
+        want = sample_client()
+        a.call("POST", f"/realms/{SAMPLE_REALM}/clients", want)
+        got = a.call("GET", f"/realms/{SAMPLE_REALM}/clients?clientId={want['clientId']}")[0]
+        bad = sample_mismatches(want, got)
+        if not got.get("secret"):
+            bad.append("no client secret generated")
+    finally:
+        a.call("DELETE", f"/realms/{SAMPLE_REALM}")
+    for line in bad:
+        print(line, file=sys.stderr)
+    return 1 if bad else 0
+
+
 def setup(base: str, webgate_url: str, probe_url: str, admin_user: str, admin_password: str) -> None:
     a = Admin(base, admin_user, admin_password)
     if any(r["realm"] == REALM for r in a.call("GET", "/realms")):
@@ -74,15 +123,11 @@ def setup(base: str, webgate_url: str, probe_url: str, admin_user: str, admin_pa
         "webAuthnPolicyPasswordlessRpEntityName": "fastrdp test",
         "bruteForceProtected": False,
     })
-    a.call("POST", f"/realms/{REALM}/clients", {
-        "clientId": CLIENT_ID, "enabled": True, "protocol": "openid-connect",
-        "publicClient": False, "secret": CLIENT_SECRET, "standardFlowEnabled": True,
-        "directAccessGrantsEnabled": False,
-        # the webgate, and a probe relying party without acr_values (tests/keycloak/e2e.py)
-        "redirectUris": [webgate_url.rstrip("/") + "/web/callback", probe_url],
-        "attributes": {"acr.loa.map": json.dumps({"other": 5}),
-                       "post.logout.redirect.uris": webgate_url.rstrip("/") + "/web/"},
-    })
+    client = sample_client(webgate_url)
+    client["secret"] = CLIENT_SECRET
+    client["redirectUris"].append(probe_url)   # a probe relying party without acr_values (e2e.py)
+    client["attributes"]["acr.loa.map"] = json.dumps({"other": 5})   # the role adds mfa -> 2
+    a.call("POST", f"/realms/{REALM}/clients", client)
     a.call("PUT", f"/realms/{REALM}/client-policies/profiles", {"profiles": [{
         "name": OTHER_PROFILE, "description": "must survive",
         "executors": [{"executor": "pkce-enforcer", "configuration": {"auto-configure": "false"}}]}]})
@@ -156,6 +201,8 @@ def main(argv: list[str]) -> int:
     cmd, base = argv[1], argv[2]
     if cmd == "setup":
         setup(base, argv[3], argv[4], argv[5], argv[6])
+    elif cmd == "check-sample":
+        return check_sample(base, argv[3], argv[4])
     elif cmd == "state":
         print(json.dumps(state(base, argv[3], argv[4])))
     elif cmd == "add-cookie":

@@ -188,6 +188,9 @@ Authentication Flow"). Step-up LoA sub-flows do not fit passkeys:
 **Automated:** `fastrdp_web_passkeys: true` in the inventory makes the web_gateway
 role apply steps 1–4 through the admin REST API, idempotently, merging client
 profiles/policies and the ACR map instead of replacing them ([web-access.md](web-access.md#passkeys-through-ansible-opt-in)).
+Without Ansible the same script runs by hand, and the client itself is importable as
+JSON; Keycloak's partial import cannot carry flows or client policies
+([web-access.md](web-access.md#sample-client-json-import)).
 
 Manual admin REST equivalent (replace `lab`; **these PUTs replace all existing client
 profiles and policies**, which the automation avoids by merging):
@@ -526,10 +529,11 @@ Keycloak 26.8.1 in dev mode, applies the role's Keycloak tasks with
 `ansible-playbook`, then drives headless Chromium with a CDP virtual authenticator
 (CTAP 2.1, resident keys, user verification) against the **real webgate code**
 (config parser, OIDC provider, HTTP handler; a fake broker answers the desktop list).
-Result on 2026-10-20: 24 passed, 0 failed.
+Result on 2026-10-22: 25 passed, 0 failed.
 
 | Case | Result |
 |---|---|
+| Sample client [keycloak-fastrdp-web-client.json](examples/keycloak-fastrdp-web-client.json) imported and read back unchanged; the test client is made from it | ✔ |
 | Role: check mode lists the changes, writes nothing; first run changes; second run `changed=0` | ✔ |
 | Role: unrelated client profile/policy, other ACR map entry and RP entity name kept | ✔ |
 | Role: a Cookie step added to `fastrdp-mfa` is detected and the flow rebuilt | ✔ |

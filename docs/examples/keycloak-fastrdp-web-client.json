@@ -1,0 +1,31 @@
+{
+  "clientId": "fastrdp-web",
+  "name": "fastrdp web gateway",
+  "description": "fastrdp webgate (browser access, web approval, notifications): OIDC code flow + PKCE, confidential. docs/web-access.md",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "clientAuthenticatorType": "client-secret",
+  "bearerOnly": false,
+  "consentRequired": false,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": false,
+  "fullScopeAllowed": false,
+  "baseUrl": "https://rdp1.lab.example.com/web/",
+  "redirectUris": ["https://rdp1.lab.example.com/web/callback"],
+  "webOrigins": [],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "acr.loa.map": "{\"mfa\":2}",
+    "post.logout.redirect.uris": "https://rdp1.lab.example.com/web/",
+    "oauth2.device.authorization.grant.enabled": "false",
+    "oidc.ciba.grant.enabled": "false",
+    "require.pushed.authorization.requests": "false",
+    "use.refresh.tokens": "false"
+  },
+  "defaultClientScopes": ["acr", "basic", "profile"],
+  "optionalClientScopes": ["email"]
+}

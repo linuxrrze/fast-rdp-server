@@ -82,6 +82,8 @@ Residual risks:
    - Valid redirect URI: `https://<rdp-fqdn>/web/callback`.
    - Post-logout redirect URI: `https://<rdp-fqdn>/web/`.
    - Put the client secret into `vault_fastrdp_web_oidc_client_secret`.
+   - Or import the sample client (all of the above, PKCE, ACR map):
+     [Sample client](#sample-client-json-import).
 2. MFA via step-up (recommended):
    - Client → Advanced → **ACR to LoA mapping**: `mfa` → `2`.
    - Browser flow with **Condition – Level Of Authentication**: level 1 = username
@@ -138,6 +140,59 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
 3. User names: the `preferred_username` claim must equal the Linux account name (as
    SSSD resolves it). A `@realm` suffix is stripped. Use `fastrdp_web_username_claim`
    for a different claim.
+
+### Sample client (JSON import)
+
+[docs/examples/keycloak-fastrdp-web-client.json](examples/keycloak-fastrdp-web-client.json)
+(packaged: `/usr/share/doc/fastrdp-webgate/examples/`) is the client `fastrdp-web` as
+the webgate needs it. Import it into the realm of `fastrdp_web_oidc_issuer`:
+- admin console: *Clients → Import client*, choose the file, *Save*;
+- or `kcadm.sh create clients -r <realm> -f keycloak-fastrdp-web-client.json`.
+
+Before importing, replace the host `rdp1.lab.example.com` (the placeholder of
+webgate.toml.example) with your `fastrdp_web_public_url` host; it occurs in
+`redirectUris`, `baseUrl` and `post.logout.redirect.uris`. The file has no secret:
+Keycloak generates one on import. Copy it (*Credentials* tab, or
+`kcadm.sh get clients/<id>/client-secret -r <realm>`) into
+`vault_fastrdp_web_oidc_client_secret`.
+
+| Field | Value | |
+|---|---|---|
+| `publicClient`, `clientAuthenticatorType` | `false`, `client-secret` | essential: confidential client |
+| `standardFlowEnabled` | `true`; implicit, direct access grants, service accounts, device flow, CIBA off | essential: code flow only |
+| `redirectUris` | `https://<host>/web/callback` | essential (the webgate's `<public_url>/web/callback`) |
+| `post.logout.redirect.uris` | `https://<host>/web/` | essential for the logout button |
+| `pkce.code.challenge.method` | `S256` | essential: Keycloak refuses logins without PKCE; the webgate always sends S256 |
+| `acr.loa.map` | `{"mfa":2}` | essential with `fastrdp_web_required_acr: [mfa]` (the default) |
+| `defaultClientScopes` | `acr`, `basic`, `profile` | essential: claims `acr`, `sub`/`auth_time`, `preferred_username` |
+| `optionalClientScopes` | `email` | default; not used by fastrdp |
+| `consentRequired`, `fullScopeAllowed` | `false`, `false` | defaults chosen here: no consent screen, no realm roles in tokens |
+| `frontchannelLogout`, `webOrigins`, `use.refresh.tokens` | `false`, none, `false` | the webgate has no logout channel, no CORS and uses no refresh token |
+
+A claim other than `preferred_username` (`fastrdp_web_username_claim`) needs its own
+mapper or client scope; keep it directory-backed (see Hardening).
+
+The client alone gives MFA only together with a realm flow that sets level 2 (step 2).
+`fastrdp_web_passkeys: true` configures that flow, the client policy and the ACR map
+entry ([above](#passkeys-through-ansible-opt-in)), but not the client itself: import
+it first. Keycloak's *Partial import* (realm settings) cannot carry the flow or the
+client policies (it covers users, groups, clients, roles and identity providers only;
+checked on 26.8.1), so there is no JSON for them. Without Ansible, run the role's
+script by hand; it only needs python3 and an admin login:
+
+```sh
+echo '{"admin_url": "https://keycloak.lab.example.com", "realm": "lab",
+       "admin_user": "admin", "admin_password": "…", "check": true}' |
+  python3 ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py
+```
+
+`"check": true` lists the changes; drop it to apply. Settings and defaults: the
+script's `settings()` (flow `fastrdp-mfa`, `acr` `mfa`, `loa` 2, …). After an import of
+the sample client the ACR map entry is already there and the script leaves it alone.
+
+`make test-keycloak` imports the sample into Keycloak 26.8.1 and compares what Keycloak
+stores with the file, then runs the browser logins of the end-to-end test against a
+client made from it.
 
 ## RDP apps
 
