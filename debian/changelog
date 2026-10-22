@@ -1,3 +1,18 @@
+fast-rdp-server (0.5.3) unstable; urgency=medium
+
+  * Includes 0.5.2, which was tagged but never published (a broker test
+    assumed a non-root uid and failed in CI, where the tests run as root;
+    fixed).
+  * Waiting screen during the second factor (proxy [FastRDP] WaitingScreen,
+    Ansible fastrdp_proxy_waiting_screen, default off): the RDP window shows
+    what to do (push, web approval with URL and QR code, countdown) and
+    "Connecting to your desktop…"; texts per language in [ui.<lang>];
+    optional Status Info PDUs ([FastRDP] StatusInfo, default off).
+  * fastrdp-freerdp3 3.32.2-5: the proxy forwards Server Status Info PDUs
+    only to clients that announce support (patches/freerdp/0006).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 15:16:59 +0200
+
 fast-rdp-server (0.5.2) unstable; urgency=medium
 
   * Proxy broker timeout 180 s (was 120): room for the session start after a
