@@ -1,3 +1,19 @@
+fast-rdp-server (0.6.0) unstable; urgency=medium
+
+  * Approval notifications for web approval (opt in at /web/notify): ntfy
+    (per-user topic) and Web Push (installable web app, iOS 16.4+ from the
+    home screen); the notification only links to /web/approve, approving
+    still needs the fresh sign-in. Two-digit login code in notifications,
+    on the approval page and on the waiting screen. Off by default
+    (fastrdp_web_notify_backends).
+  * Desktop picker in the RDP waiting screen ([broker] desktop_picker,
+    default never): users with more than one allowed desktop choose with
+    digits, arrows + Enter or a click; never with a single desktop or a
+    client hint; needs the waiting screen. fastrdp-freerdp3 3.32.2-6
+    (patches/freerdp/0007: input while the proxy waits for the broker).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 17:28:15 +0200
+
 fast-rdp-server (0.5.3) unstable; urgency=medium
 
   * Includes 0.5.2, which was tagged but never published (a broker test
