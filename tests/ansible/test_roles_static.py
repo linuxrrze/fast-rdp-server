@@ -83,6 +83,17 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
+    def test_cross_role_handlers_guarded(self):
+        # the base role's package upgrade notifies the web gateway's restart on every host;
+        # without the guard a host without the web gateway fails in the handler (no unit)
+        repo = (ANSIBLE / "roles" / "base" / "tasks" / "apt_repo.yml").read_text()
+        self.assertIn("Restart fastrdp-webgate", repo)
+        handlers = (ANSIBLE / "roles" / "web_gateway" / "handlers" / "main.yml").read_text()
+        block = handlers.split("- name: Restart fastrdp-webgate", 1)[1].split("\n- name:", 1)[0]
+        self.assertIn("when: fastrdp_web_enabled | bool", block)
+        site = (ANSIBLE / "site.yml").read_text()
+        self.assertIn("when: fastrdp_web_enabled | bool", site.split("role: web_gateway", 1)[1].split("- role:", 1)[0])
+
     def test_join_passwords_never_on_a_command_line(self):
         # /proc/<pid>/cmdline is world-readable: join passwords go on stdin or into the
         # environment of the task, never into the command (security review)

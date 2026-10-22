@@ -1,9 +1,13 @@
 ---
+# Also notified by the base role's package upgrade (apt_repo.yml), which runs on every host;
+# this role's handlers are loaded even when site.yml skips the role (fastrdp_web_enabled
+# false), and then there is no fastrdp-webgate.service to restart.
 - name: Restart fastrdp-webgate
   ansible.builtin.systemd_service:
     name: fastrdp-webgate.service
     state: restarted
     daemon_reload: true
+  when: fastrdp_web_enabled | bool
 
 - name: Restart guacamole
   ansible.builtin.systemd_service:
