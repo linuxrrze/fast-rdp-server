@@ -26,7 +26,8 @@
  *
  * The broker call can take as long as an MFA push. It is abandoned as soon as the front
  * client closes its connection or the proxy aborts the session (broker_call()), so a
- * user who gives up does not hold the proxy's thread until the timeout.
+ * user who gives up does not hold the proxy's thread until the timeout. Meanwhile the
+ * client can show what the login waits for ([FastRDP] WaitingScreen, waitingScreen).
  *
  * Refusals after the RDP connection is up carry a Set Error Info PDU
  * ([MS-RDPBCGR] 2.2.5.1.1) so that clients such as mstsc can show a reason instead of a
@@ -42,6 +43,10 @@
  *   AcceptRemoteGuard = false ; offer Remote Credential Guard, identity only: the
  *                             ; forwarded Kerberos tickets are discarded
  *                             ; (fastrdp_remote_credentials())
+ *   WaitingScreen = false     ; show the broker's progress (MFA push, web approval with
+ *                             ; QR code, session start) while the login waits
+ *                             ; (waitingScreen)
+ *   StatusInfo    = false     ; also Server Status Info PDUs, to clients that ask for them
  */
 
 #include <errno.h>
@@ -63,11 +68,15 @@
 #include <winpr/stream.h>
 #include <winpr/synch.h>
 
+#include <freerdp/codec/color.h>
+#include <freerdp/codec/interleaved.h>
+#include <freerdp/codec/planar.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
 #include <freerdp/transport_io.h>
+#include <freerdp/update.h>
 #include <freerdp/server/proxy/proxy_config.h>
 #include <freerdp/server/proxy/proxy_context.h>
 #include <freerdp/server/proxy/proxy_modules_api.h>
@@ -78,6 +87,7 @@
 #include <freerdp/private/proxy_client.h>
 
 #include "fastrdp_addr.h"
+#include "fastrdp_panel.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
 #if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
 #define FASTRDP_KDC_EVIDENCE 1
@@ -345,6 +355,399 @@ static void kdc_evidence_summary(const cJSON* list, char* out, size_t size)
 	"(not an IP address or an alias without TERMSRV SPN) and gives the user name as UPN "   \
 	"(user@domain)"
 
+/* ------------------------------------------------------------ waiting screen */
+
+static const char* json_str(const cJSON* obj, const char* key);
+
+/* TS_BITMAP_DATA flags ([MS-RDPBCGR] 2.2.9.1.1.3.1.2.2); libfreerdp keeps its own private */
+#define WS_BITMAP_COMPRESSION 0x0001
+#define WS_NO_BITMAP_COMPRESSION_HDR 0x0400
+#define WS_TILE 64          /* tile edge, as the shadow server's Bitmap Updates */
+#define WS_BATCH 64         /* tiles per Bitmap Update */
+#define WS_MAX_UPDATE (256 * 1024) /* bytes per Bitmap Update, at most */
+#define WS_MAX_PROGRESS 32  /* progress messages per login */
+#define WS_MAX_TIMEOUT 3600 /* seconds a countdown may show */
+#define WS_GENERIC_TEXT "Signing you in\xe2\x80\xa6"
+
+/* The front connection while the broker works on the login ([FastRDP] WaitingScreen):
+ * a panel with the broker's progress texts (MFA push, web approval with a QR code of the
+ * approval URL, session start), drawn by fastrdp_panel.h and sent as Bitmap Updates
+ * ([MS-RDPBCGR] 2.2.9.1.1.3.1.2), the one graphics output every client must accept.
+ * This runs in the proxy's ServerPostConnect on the peer thread: the front connection is
+ * active, the proxy's back-end client does not exist yet, so the module is the only
+ * writer. Nothing else is possible then: GFX (drdynvc) starts only after PostConnect, and
+ * the proxy turns off drawing orders and FreeRDP's automatic bitmap fields
+ * (pf_server.c), so the module fills in every field of the bitmap data itself.
+ * The desktop is cut into 64x64 tiles, compressed like the shadow server does it
+ * (shadow_client_send_bitmap_update()): planar at 32 bpp, interleaved RLE at 15/16/24 bpp.
+ * Before the hook returns a granted login, the panel is painted over in black, so nothing
+ * of it stays should the back-end not repaint the whole desktop after the reactivation.
+ * [FastRDP] StatusInfo additionally sends Server Status Info PDUs ([MS-RDPBCGR] 2.2.5.2)
+ * to clients that announced RNS_UD_CS_SUPPORT_STATUSINFO_PDU (none of FreeRDP's do).
+ * Drawing errors only stop the screen; they never fail the login. */
+typedef struct
+{
+	proxyData* pdata;
+	BOOL draw;        /* WaitingScreen: Bitmap Updates */
+	BOOL status_info; /* StatusInfo, and the client accepts the PDU */
+	UINT32 width, height, bpp;
+	BOOL no_compression_hdr; /* the client's NoBitmapCompressionHeader */
+	UINT32 budget;           /* bytes per Bitmap Update */
+	fastrdpPanel* panel;
+	BYTE* img; /* the panel, BGRX, panel->rect.w * panel->rect.h */
+	size_t img_size;
+	BOOL visible;      /* the panel belongs on the screen */
+	fastrdpRect shown; /* where the client has it now */
+	BITMAP_PLANAR_CONTEXT* planar;
+	BITMAP_INTERLEAVED_CONTEXT* interleaved;
+	BYTE tile[WS_TILE * WS_TILE * 4];
+	BOOL countdown;
+	struct timespec deadline;
+	long shown_left; /* seconds the countdown shows */
+	unsigned progress;
+	unsigned updates; /* Bitmap Updates sent */
+	/* the Bitmap Update being filled */
+	BITMAP_DATA rects[WS_BATCH];
+	UINT32 nrects;
+	size_t batch_bytes;
+} waitingScreen;
+
+static long ws_ms_until(const struct timespec* t)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (t->tv_sec - now.tv_sec) * 1000 + (t->tv_nsec - now.tv_nsec) / 1000000;
+}
+
+/* Seconds the countdown shows: rounded up, so it reaches 0:00 at the deadline. */
+static long ws_seconds_left(const waitingScreen* ws)
+{
+	const long ms = ws_ms_until(&ws->deadline);
+	return ms <= 0 ? 0 : (ms + 999) / 1000;
+}
+
+static void ws_stop(waitingScreen* ws, const char* why)
+{
+	if (ws->draw)
+		WLog_WARN(TAG, "[%s] waiting screen stopped: %s", ws->pdata->session_id, why);
+	ws->draw = FALSE;
+}
+
+static BOOL ws_flush(waitingScreen* ws)
+{
+	BOOL ok = TRUE;
+	if (ws->nrects > 0)
+	{
+		rdpUpdate* update = ws->pdata->ps->update;
+		BITMAP_UPDATE bu = { .number = ws->nrects, .rectangles = ws->rects, .skipCompression = FALSE };
+		ok = update && update->BitmapUpdate && update->BitmapUpdate(ws->pdata->ps, &bu);
+		ws->updates++;
+	}
+	for (UINT32 i = 0; i < ws->nrects; i++)
+		free(ws->rects[i].bitmapDataStream);
+	memset(ws->rects, 0, sizeof(ws->rects));
+	ws->nrects = 0;
+	ws->batch_bytes = 0;
+	return ok;
+}
+
+/* The pixels of the desktop tile at (x, y), bw x bh (bw a multiple of 4, may reach past
+ * the desktop's right edge), into ws->tile: black, and the panel where it is visible. */
+static void ws_compose(waitingScreen* ws, UINT32 x, UINT32 y, UINT32 bw, UINT32 bh)
+{
+	memset(ws->tile, 0, (size_t)bw * bh * 4); /* FASTRDP_COLOR_SCREEN */
+	for (size_t i = 3; i < (size_t)bw * bh * 4; i += 4)
+		ws->tile[i] = 0xff;
+	const fastrdpRect t = { (int)x, (int)y, bw, bh };
+	fastrdpRect o;
+	if (!ws->visible || !fastrdp_rect_intersect(t, ws->panel->rect, &o))
+		return;
+	const fastrdpRect p = ws->panel->rect;
+	for (unsigned row = 0; row < o.h; row++)
+		memcpy(ws->tile + ((size_t)(o.y - t.y + (int)row) * bw + (size_t)(o.x - t.x)) * 4,
+		       ws->img + ((size_t)(o.y - p.y + (int)row) * p.w + (size_t)(o.x - p.x)) * 4,
+		       (size_t)o.w * 4);
+}
+
+static BOOL ws_add_tile(waitingScreen* ws, UINT32 x, UINT32 y)
+{
+	const UINT32 w = MIN(WS_TILE, ws->width - x);
+	const UINT32 h = MIN(WS_TILE, ws->height - y);
+	const UINT32 bw = (w + 3) & ~3u; /* interleaved needs a multiple of 4; the client clips */
+	const UINT32 bytes_pp = (ws->bpp + 7) / 8;
+	BYTE* data = NULL;
+	UINT32 size = 0;
+	ws_compose(ws, x, y, bw, h);
+	if (ws->bpp == 32)
+		data = freerdp_bitmap_compress_planar(ws->planar, ws->tile, PIXEL_FORMAT_BGRX32, bw, h,
+		                                      bw * 4, NULL, &size);
+	else
+	{
+		size = WS_TILE * WS_TILE * 4;
+		data = malloc(size);
+		if (data && !interleaved_compress(ws->interleaved, data, &size, bw, h, ws->tile,
+		                                  PIXEL_FORMAT_BGRX32, bw * 4, 0, 0, NULL, ws->bpp))
+		{
+			free(data);
+			data = NULL;
+		}
+	}
+	if (!data)
+		return FALSE;
+	/* TS_BITMAP_DATA header and the update's own header */
+	const size_t cost = (size_t)size + 26;
+	if (cost + 32 > ws->budget || cost > UINT16_MAX)
+	{
+		free(data);
+		return FALSE;
+	}
+	if ((ws->nrects == WS_BATCH || ws->batch_bytes + cost + 32 > ws->budget) && !ws_flush(ws))
+	{
+		free(data);
+		return FALSE;
+	}
+	BITMAP_DATA* b = &ws->rects[ws->nrects++];
+	b->destLeft = x;
+	b->destTop = y;
+	b->destRight = x + w - 1;
+	b->destBottom = y + h - 1;
+	b->width = bw;
+	b->height = h;
+	b->bitsPerPixel = ws->bpp;
+	b->compressed = TRUE;
+	b->flags = WS_BITMAP_COMPRESSION | (ws->no_compression_hdr ? WS_NO_BITMAP_COMPRESSION_HDR : 0);
+	b->bitmapLength = size;
+	b->cbCompFirstRowSize = 0;
+	b->cbCompMainBodySize = size;
+	b->cbScanWidth = bw * bytes_pp;
+	b->cbUncompressedSize = bw * h * bytes_pp;
+	b->bitmapDataStream = data;
+	ws->batch_bytes += cost;
+	return TRUE;
+}
+
+/* Sends every tile that overlaps r (desktop coordinates). */
+static BOOL ws_send(waitingScreen* ws, fastrdpRect r)
+{
+	const fastrdpRect desk = { 0, 0, ws->width, ws->height };
+	fastrdpRect c;
+	if (!ws->draw || !fastrdp_rect_intersect(r, desk, &c))
+		return TRUE;
+	for (UINT32 y = ((UINT32)c.y / WS_TILE) * WS_TILE; y < (UINT32)c.y + c.h; y += WS_TILE)
+		for (UINT32 x = ((UINT32)c.x / WS_TILE) * WS_TILE; x < (UINT32)c.x + c.w; x += WS_TILE)
+			if (!ws_add_tile(ws, x, y))
+			{
+				(void)ws_flush(ws);
+				ws_stop(ws, "a tile could not be compressed or sent");
+				return FALSE;
+			}
+	if (!ws_flush(ws))
+	{
+		ws_stop(ws, "Bitmap Update not sent");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* Lays out and draws the panel; sends what changed on the screen. */
+static void ws_redraw(waitingScreen* ws, BOOL whole_desktop)
+{
+	if (!ws->draw)
+		return;
+	if (!fastrdp_panel_layout(ws->panel, ws->width, ws->height))
+	{
+		ws_stop(ws, "the desktop is too small");
+		return;
+	}
+	const fastrdpRect p = ws->panel->rect;
+	const size_t need = (size_t)p.w * p.h * 4;
+	if (need > ws->img_size)
+	{
+		BYTE* img = realloc(ws->img, need);
+		if (!img)
+		{
+			ws_stop(ws, "out of memory");
+			return;
+		}
+		ws->img = img;
+		ws->img_size = need;
+	}
+	ws->shown_left = ws->countdown ? ws_seconds_left(ws) : 0;
+	fastrdp_panel_draw(ws->panel, ws->img, p.w * 4, ws->shown_left);
+	const fastrdpRect desk = { 0, 0, ws->width, ws->height };
+	if (ws_send(ws, whole_desktop ? desk : fastrdp_rect_union(ws->shown, p)))
+		ws->shown = p;
+}
+
+static void waiting_screen_free(waitingScreen* ws, BOOL clear)
+{
+	if (!ws)
+		return;
+	if (clear && ws->draw && ws->shown.w > 0)
+	{
+		ws->visible = FALSE;
+		if (ws_send(ws, ws->shown))
+			WLog_DBG(TAG, "[%s] waiting screen cleared", ws->pdata->session_id);
+	}
+	if (ws->updates > 0)
+		WLog_INFO(TAG, "[%s] waiting screen: %u Bitmap Updates sent", ws->pdata->session_id,
+		          ws->updates);
+	freerdp_bitmap_planar_context_free(ws->planar);
+	bitmap_interleaved_context_free(ws->interleaved);
+	free(ws->panel);
+	free(ws->img);
+	free(ws);
+}
+
+static void ws_status_info(waitingScreen* ws, UINT32 status)
+{
+	rdpUpdate* update = ws->pdata->ps->update;
+	if (ws->status_info && update && update->ServerStatusInfo &&
+	    !update->ServerStatusInfo(ws->pdata->ps, status))
+		WLog_WARN(TAG, "[%s] Status Info PDU 0x%04" PRIx32 " not sent", ws->pdata->session_id,
+		          status);
+}
+
+/* NULL if neither [FastRDP] WaitingScreen nor StatusInfo applies to this client. Shows
+ * the generic panel at once; the broker's progress messages replace its text. */
+static waitingScreen* waiting_screen_new(proxyData* pdata)
+{
+	const rdpSettings* front = pdata->ps->settings;
+	BOOL draw = config_bool(pdata, "WaitingScreen", FALSE);
+	const BOOL status_info = config_bool(pdata, "StatusInfo", FALSE) &&
+	                         freerdp_settings_get_bool(front, FreeRDP_SupportStatusInfoPdu);
+	const UINT32 bpp = freerdp_settings_get_uint32(front, FreeRDP_ColorDepth);
+	if (draw && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32)
+	{
+		WLog_INFO(TAG, "[%s] no waiting screen at %" PRIu32 " bpp", pdata->session_id, bpp);
+		draw = FALSE;
+	}
+	if (!draw && !status_info)
+		return NULL;
+	waitingScreen* ws = calloc(1, sizeof(*ws));
+	if (!ws)
+		return NULL;
+	ws->pdata = pdata;
+	ws->draw = draw;
+	ws->status_info = status_info;
+	ws->width = freerdp_settings_get_uint32(front, FreeRDP_DesktopWidth);
+	ws->height = freerdp_settings_get_uint32(front, FreeRDP_DesktopHeight);
+	ws->bpp = bpp;
+	ws->no_compression_hdr = freerdp_settings_get_bool(front, FreeRDP_NoBitmapCompressionHeader);
+	ws->budget = MIN(freerdp_settings_get_uint32(front, FreeRDP_MultifragMaxRequestSize),
+	                 WS_MAX_UPDATE);
+	ws->visible = TRUE;
+	ws_status_info(ws, TS_STATUS_FINDING_DESTINATION);
+	if (!ws->draw)
+		return ws;
+	ws->panel = calloc(1, sizeof(*ws->panel));
+	if (bpp == 32)
+		ws->planar = freerdp_bitmap_planar_context_new(
+		    PLANAR_FORMAT_HEADER_NA | PLANAR_FORMAT_HEADER_RLE, WS_TILE, WS_TILE);
+	else
+		ws->interleaved = bitmap_interleaved_context_new(TRUE);
+	if (!ws->panel || (bpp == 32 ? !ws->planar : !ws->interleaved))
+	{
+		ws_stop(ws, "out of memory");
+		return ws;
+	}
+	/* a client without the multifragment capability takes 16256 bytes per update
+	 * (FASTPATH_FRAGMENT_SAFE_SIZE); a compressed 64x64 tile stays below that */
+	if (ws->budget < 0x3F80 || ws->width > 8192 || ws->height > 8192)
+	{
+		ws_stop(ws, "unusable client limits");
+		return ws;
+	}
+	static const char* const generic[] = { WS_GENERIC_TEXT };
+	fastrdp_panel_init(ws->panel);
+	fastrdp_panel_set_text(ws->panel, generic, ARRAYSIZE(generic));
+	ws_redraw(ws, TRUE);
+	return ws;
+}
+
+/* One {"progress": ...} message from the broker (protocol.py): new text, QR code and
+ * countdown. Malformed parts are left out. */
+static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
+{
+	const char* kind = json_str(msg, "progress");
+	WLog_DBG(TAG, "[%s] broker progress: %s", ws->pdata->session_id, kind ? kind : "?");
+	if (kind && strcmp(kind, "session_start") == 0)
+		ws_status_info(ws, TS_STATUS_BRINGING_SESSION_ONLINE);
+	if (!ws->draw)
+		return;
+
+	const cJSON* lines = cJSON_GetObjectItemCaseSensitive(msg, "lines");
+	if (cJSON_IsArray(lines))
+	{
+		const char* text[FASTRDP_PANEL_MAX_LINES] = { 0 };
+		unsigned n = 0;
+		const cJSON* line = NULL;
+		cJSON_ArrayForEach(line, lines)
+		{
+			if (n == FASTRDP_PANEL_MAX_LINES)
+				break;
+			text[n++] = cJSON_GetStringValue(line); /* NULL: empty line */
+		}
+		fastrdp_panel_set_text(ws->panel, text, n);
+	}
+
+	/* every message names its QR code; none: the previous one goes */
+	const cJSON* qr = cJSON_GetObjectItemCaseSensitive(msg, "qr");
+	const char* rows[FASTRDP_QR_MAX + 1] = { 0 };
+	unsigned nrows = 0;
+	const cJSON* it = NULL;
+	cJSON_ArrayForEach(it, qr)
+	{
+		rows[nrows++] = cJSON_GetStringValue(it);
+		if (nrows > FASTRDP_QR_MAX)
+			break;
+	}
+	if (!fastrdp_panel_set_qr(ws->panel, rows, nrows))
+		WLog_WARN(TAG, "[%s] malformed QR code from the broker left out", ws->pdata->session_id);
+
+	const cJSON* timeout = cJSON_GetObjectItemCaseSensitive(msg, "timeout_s");
+	ws->countdown = cJSON_IsNumber(timeout) && timeout->valuedouble >= 1 &&
+	                timeout->valuedouble <= WS_MAX_TIMEOUT;
+	if (ws->countdown)
+	{
+		clock_gettime(CLOCK_MONOTONIC, &ws->deadline);
+		ws->deadline.tv_sec += (time_t)timeout->valuedouble;
+		const char* label = json_str(msg, "countdown");
+		fastrdp_panel_set_countdown(ws->panel, label ? label : "");
+	}
+	else
+		fastrdp_panel_set_countdown(ws->panel, NULL);
+	ws_redraw(ws, FALSE);
+}
+
+/* Milliseconds until the countdown shows the next second; -1 without a countdown. */
+static int waiting_screen_next_ms(const waitingScreen* ws)
+{
+	if (!ws || !ws->draw || !ws->countdown)
+		return -1;
+	const long ms = ws_ms_until(&ws->deadline);
+	if (ms <= 0)
+		return -1;
+	const long next = ms % 1000;
+	return (int)((next == 0 ? 1000 : next) + 5);
+}
+
+/* Redraws the countdown's tiles when its second changed. */
+static void waiting_screen_tick(waitingScreen* ws)
+{
+	if (!ws || !ws->draw || !ws->countdown)
+		return;
+	const long left = ws_seconds_left(ws);
+	if (left == ws->shown_left)
+		return;
+	ws->shown_left = left;
+	const fastrdpPanel* p = ws->panel;
+	fastrdp_panel_draw_countdown(p, ws->img, p->rect.w * 4, left);
+	const fastrdpRect r = { p->rect.x + p->countdown_rect.x, p->rect.y + p->countdown_rect.y,
+		                    p->countdown_rect.w, p->countdown_rect.h };
+	(void)ws_send(ws, r);
+}
+
 /* --------------------------------------------------------------- broker IPC */
 
 static BOOL write_all(int fd, const char* buf, size_t len)
@@ -410,9 +813,12 @@ static nfds_t abort_fds(proxyData* pdata, struct pollfd* fds, nfds_t max)
 /* Sends one JSON line and waits for the one-line reply (parsed into *reply, caller frees).
  * With `abort_on`, the wait ends early when that session's front connection closes or
  * its abort event is set (abort_fds()); the broker sees its connection closed and stops
- * working on the request (MFA push wait). Without it (session end), it does not. */
+ * working on the request (MFA push wait). Without it (session end), it does not.
+ * With `screen` (the request asked for "progress"), lines with a "progress" field before
+ * the reply update the waiting screen, at most WS_MAX_PROGRESS of them, each within
+ * MAX_REPLY like the reply; the countdown is redrawn once a second meanwhile. */
 static brokerCallResult broker_call(const char* path, const cJSON* request, int timeout_s,
-                                    proxyData* abort_on, cJSON** reply)
+                                    proxyData* abort_on, waitingScreen* screen, cJSON** reply)
 {
 	brokerCallResult rc = BROKER_FAILED;
 	char* text = cJSON_PrintUnformatted(request);
@@ -458,7 +864,8 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			rc = BROKER_TIMED_OUT;
 			goto out;
 		}
-		const int pr = poll(fds, nfds, (int)left_ms);
+		const int next_ms = waiting_screen_next_ms(screen);
+		const int pr = poll(fds, nfds, (next_ms >= 0 && next_ms < left_ms) ? next_ms : (int)left_ms);
 		if (pr < 0 && errno == EINTR)
 			continue;
 		if (pr < 0)
@@ -466,6 +873,7 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			WLog_ERR(TAG, "[%s] poll on broker socket failed: %s", sid, strerror(errno));
 			goto out;
 		}
+		waiting_screen_tick(screen);
 		if (pr == 0)
 			continue;
 		for (nfds_t i = 1; i < nfds; i++)
@@ -491,6 +899,28 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 		if (n <= 0)
 			break;
 		used += (size_t)n;
+		/* progress lines (only if asked for); the first other line is the reply */
+		const char* nl = NULL;
+		while (screen && (nl = memchr(buf, '\n', used)) != NULL)
+		{
+			const size_t len = (size_t)(nl - buf) + 1;
+			cJSON* msg = cJSON_ParseWithLength(buf, len);
+			const BOOL progress = cJSON_IsObject(msg) && cJSON_HasObjectItem(msg, "progress");
+			if (progress && ++screen->progress <= WS_MAX_PROGRESS)
+				waiting_screen_progress(screen, msg);
+			cJSON_Delete(msg);
+			if (!progress)
+				break;
+			if (screen->progress > WS_MAX_PROGRESS)
+			{
+				WLog_ERR(TAG, "[%s] more than %d progress messages from the broker", sid,
+				         WS_MAX_PROGRESS);
+				goto out;
+			}
+			memmove(buf, buf + len, used - len);
+			used -= len;
+			memset(buf + used, 0, len);
+		}
 		if (memchr(buf, '\n', used))
 			break;
 	}
@@ -846,6 +1276,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 
 	rdpSettings* front = pdata->ps->settings;
 	cJSON* reply = NULL;
+	waitingScreen* screen = NULL;
 	UINT32 errinfo = ERRINFO_SERVER_DENIED_CONNECTION;
 	BOOL rc = FALSE;
 
@@ -937,11 +1368,22 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	cJSON_AddNumberToObject(req, "connection_type",
 	                        freerdp_settings_get_uint32(front, FreeRDP_ConnectionType));
 
+	/* [FastRDP] WaitingScreen/StatusInfo: the broker may send progress lines first. The
+	 * keyboard layout lets it pick the language of its texts. */
+	screen = waiting_screen_new(pdata);
+	if (screen)
+	{
+		cJSON_AddNumberToObject(req, "progress", 1);
+		cJSON_AddNumberToObject(req, "keyboard_layout",
+		                        freerdp_settings_get_uint32(front, FreeRDP_KeyboardLayout));
+	}
+
 	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);
 	if (timeout <= 0 || timeout > 600)
 		timeout = DEFAULT_TIMEOUT_S;
-	const brokerCallResult called = broker_call(
-	    config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout, pdata, &reply);
+	const brokerCallResult called =
+	    broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout, pdata,
+	                screen, &reply);
 
 	/* the request held the user's password */
 	cJSON* pw = cJSON_GetObjectItemCaseSensitive(req, "password");
@@ -999,6 +1441,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	rc = TRUE;
 
 out:
+	/* a granted login: no trace of the panel before the back-end's first frame */
+	waiting_screen_free(screen, rc);
 	if (!rc)
 	{
 		free(ev->target_address);
@@ -1285,7 +1729,7 @@ static BOOL fastrdp_session_end(proxyPlugin* plugin, proxyData* pdata, void* cus
 			/* not abortable: the front connection is usually gone by now */
 			cJSON* reply = NULL;
 			(void)broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, 5, NULL,
-			                  &reply);
+			                  NULL, &reply);
 			cJSON_Delete(reply);
 			cJSON_Delete(req);
 		}

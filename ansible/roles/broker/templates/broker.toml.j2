@@ -87,6 +87,20 @@ gateway_user = "_fastrdp-web"
 # guacd runs with host networking and connects to the proxy via loopback
 allowed_clients = ["127.0.0.1", "::1"]
 
+# Texts of the proxy's waiting screen (fastrdp_proxy_waiting_screen)
+[ui]
+language = {{ fastrdp_ui_language | string | to_json }}
+language_from_keyboard = {{ fastrdp_ui_language_from_keyboard | bool | lower }}
+approve_url = {{ fastrdp_ui_approve_url | string | to_json }}
+qr_code = {{ fastrdp_ui_qr_code | bool | lower }}
+{% for lang, texts in fastrdp_ui_texts.items() %}
+
+[ui.{{ lang }}]
+{% for key, text in texts.items() %}
+{{ key }} = {{ text | string | to_json }}
+{% endfor %}
+{% endfor %}
+
 [backends.xrdp]
 port = {{ fastrdp_xrdp_port }}
 listener_user = "root"   # xrdp binds as root, then drops to runtime_user

@@ -11,6 +11,11 @@ licensed like the code they modify:
                     https://web.mit.edu/kerberos/krb5-latest/doc/mitK5license.html);
                     reference only, not built
 
+broker/proxy-module/fastrdp_font.h holds the glyphs of the Spleen 8x16 font
+(https://github.com/fcambus/spleen), Copyright (c) 2018-2024 Frederic Cambus,
+BSD 2-Clause license (the full text is in that file and in debian/copyright).
+It is built into fastrdp-proxy-module for the proxy's waiting screen.
+
 Binary packages built by this project (fastrdp-freerdp3, fastrdp-xrdp) are
 combined works with the distributions' GPL-licensed FFmpeg and x264 and are
 distributed under GPL-3.0-or-later terms. Their corresponding source is

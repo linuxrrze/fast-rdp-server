@@ -148,6 +148,24 @@ class NetworkSection:
 
 
 @dataclass
+class UiSection:
+    """Texts of the proxy's waiting screen (proxy.ini [FastRDP] WaitingScreen; ui.py)."""
+    # Language of the texts: a built-in one (ui.BUILTIN_TEXTS: en, de) or one with its own
+    # [ui.<language>] table.
+    language: str = "en"
+    # Take the language from the client's keyboard layout (0x0407 German -> "de") when
+    # there are texts in that language; else `language`.
+    language_from_keyboard: bool = True
+    # The webgate's approval page as users reach it, e.g. https://rdp.example.com/web/approve:
+    # shown with web approval (and as QR code). "" = not shown.
+    approve_url: str = ""
+    # QR code of approve_url next to the text, for signing in on a phone.
+    qr_code: bool = True
+    # [ui.<language>] tables: {language: {text key: template}} (set by parse())
+    texts: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
 class Desktop:
     name: str
     backend: str  # xrdp | gnome | plasma
@@ -177,6 +195,7 @@ class Config:
     mfa: MfaSection
     web: WebSection
     network: NetworkSection
+    ui: UiSection
     desktops: dict[str, Desktop]
     backends: dict[str, BackendSection]
     default_desktop: str
@@ -196,6 +215,11 @@ MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a rec
 # session start after the approval (session_start_timeout, 90): 600 - 90
 WEB_APPROVAL_TIMEOUT = (10, 510)
 MAX_WEB_APPROVAL_AUTH_AGE = 300
+# [ui.<language>] tables
+LANGUAGE = re.compile(r"[a-z]{2,3}")
+# [ui] approve_url: printable ASCII, short enough for a version 10 QR code (213 bytes at level M)
+MAX_APPROVE_URL = 200
+APPROVE_URL = re.compile(r"https://[\x21-\x7e]{1,%d}" % (MAX_APPROVE_URL - len("https://")))
 # [mfa] kdc_evidence_as_mfa items (what fastrdp_plugin.c kdc_evidence() reports)
 KDC_EVIDENCE_ITEM = re.compile(r"ind:[\x21-\x7e]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15}")
 # Present after a password logon too, so never a second factor: "hardened" is a password
@@ -212,6 +236,35 @@ def _section(cls, data: dict, where: str):
     if unknown:
         raise ConfigError(f"[{where}]: unknown keys: {', '.join(sorted(unknown))}")
     return cls(**data)
+
+
+def parse_ui(raw: dict) -> UiSection:
+    from . import ui as uitexts  # ui.py imports this module
+
+    texts = {k: raw.pop(k) for k in [k for k, v in raw.items() if isinstance(v, dict)]}
+    ui = _section(UiSection, raw, "ui")
+    for key in ("language_from_keyboard", "qr_code"):
+        if not isinstance(getattr(ui, key), bool):
+            raise ConfigError(f"[ui] {key} must be true or false")
+    for lang, table in texts.items():
+        if not LANGUAGE.fullmatch(lang):
+            raise ConfigError(f"[ui.{lang}]: not a language code (two or three lower-case letters)")
+        unknown = set(table) - set(uitexts.TEXT_KEYS)
+        if unknown:
+            raise ConfigError(f"[ui.{lang}]: unknown keys: {', '.join(sorted(unknown))}")
+        for key, template in table.items():
+            try:
+                uitexts.check_template(template)
+            except ValueError as exc:
+                raise ConfigError(f"[ui.{lang}] {key}: {exc}") from None
+    ui.texts = texts
+    if not isinstance(ui.language, str) or ui.language not in {*uitexts.BUILTIN_TEXTS, *texts}:
+        raise ConfigError(f"[ui] language must be one of {sorted({*uitexts.BUILTIN_TEXTS, *texts})} "
+                          "(built in, or with an [ui.<language>] table)")
+    if not isinstance(ui.approve_url, str) or (ui.approve_url and not APPROVE_URL.fullmatch(ui.approve_url)):
+        raise ConfigError(f"[ui] approve_url must be an https:// URL of at most {MAX_APPROVE_URL} "
+                          "printable characters (or \"\")")
+    return ui
 
 
 def _parse_geometry(value: str) -> str:
@@ -334,6 +387,8 @@ def parse(raw: dict) -> Config:
     if network.xrdp_autodetect_profile not in conntype.PROFILES:
         raise ConfigError(f"[network] xrdp_autodetect_profile must be one of {conntype.PROFILES}")
 
+    ui = parse_ui(dict(raw.pop("ui", {})))
+
     desktops: dict[str, Desktop] = {}
     for name, d in raw.pop("desktops", {}).items():
         desk = _section(Desktop, {"name": name, **d}, f"desktops.{name}")
@@ -386,6 +441,7 @@ def parse(raw: dict) -> Config:
         mfa=mfa,
         web=web,
         network=network,
+        ui=ui,
         desktops=desktops,
         backends=backends,
         default_desktop=default_desktop,

@@ -96,6 +96,26 @@ service_password_file = "/etc/fastrdp/privacyidea-service.secret"
 lan_networks = []                 # client CIDRs that get `lan`, e.g. ["10.0.0.0/8", "2001:db8::/32"]
 xrdp_autodetect_profile = "wan"   # everyone else: modem broadband_low satellite broadband_high wan lan default
 
+# Texts of the proxy's waiting screen (proxy.ini [FastRDP] WaitingScreen): shown while a
+# login waits for its push or web approval and while the session starts.
+# docs/auth-matrix.md#waiting-screen
+[ui]
+language = "en"                  # built in: en, de; others need an [ui.<language>] table
+language_from_keyboard = true    # the client's keyboard layout picks a language that has texts
+# The webgate's approval page as users reach it ("" = not named; no QR code), e.g.
+# "https://rdp1.example.com/web/approve"
+approve_url = ""
+qr_code = true                   # QR code of approve_url, to approve on a phone
+# Own texts per language, each optional; placeholders {user} {approve_url} {timeout}
+# {method} {desktop}; a line naming {approve_url} is left out while approve_url is "".
+#[ui.de]
+#mfa_push = "Anmeldung bestätigen\nBitte bestätigen Sie die Push-Benachrichtigung auf Ihrem Telefon."
+#mfa_web = "..."
+#mfa_push_or_web = "..."
+#qr_hint = "..."
+#session_start = "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…"
+#countdown = "Verbleibend:"
+
 [defaults]
 desktop = "xfce"
 geometry = "1920x1080"

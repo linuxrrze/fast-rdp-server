@@ -192,7 +192,8 @@ Security review:
 - **Not covered:** a broker restart forgets grace (safe direction); several proxy hosts
   each have their own broker and grace; the web path is unchanged.
 
-During a push the client simply waits ("connecting…"). `fastrdp_proxy_broker_timeout`
+During a push the client waits: by default it shows its own "connecting…" state, with
+the [waiting screen](#waiting-screen) a panel that says what to do. `fastrdp_proxy_broker_timeout`
 (default 180 s, proxy.ini `[FastRDP] Timeout`, at most 600) is one wait for the whole
 broker call: the push (privacyIDEA `push_timeout`, default 60 s) or web approval
 (`fastrdp_mfa_web_approval_timeout`, default 90 s) **plus** the session start that
@@ -258,6 +259,63 @@ Security notes:
   desktop access, and is separate from the desktop chooser's sign-in.
 - `fastrdpctl status` shows the number of pending approvals
   (`mfa_pending_approvals`). Pending logins are memory only: a broker restart fails them.
+
+### Waiting screen
+
+**`fastrdp_proxy_waiting_screen: true`** (proxy.ini `[FastRDP] WaitingScreen`, default
+`false`): while the broker works on a login, the RDP client shows a panel instead of a
+black or "connecting…" window. The RDP connection is already active at that point
+(the proxy asks the broker from its PostConnect callback), so the module can draw with
+Bitmap Updates, which every client must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
+
+| Login state | What the user sees |
+|---|---|
+| broker called | "Signing you in…" (the module's own text; also all an older broker ever gives) |
+| push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
+| web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, a **QR code** of it ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
+| `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
+| session start or reuse | "Connecting to your desktop (Xfce)…" |
+| login granted | the panel is painted over in black just before the back-end's desktop arrives |
+| refused, timed out | the client's own error message (Set Error Info, as without the screen) |
+
+No push or approval panel appears when no second factor is due (exempt groups,
+`nla_kdc_enforced`, KDC evidence, reconnect grace, OTP appended to the password); the
+user then only sees "Signing you in…" and the session start. The QR code lets a user
+whose passkey or authenticator is on the phone sign in there: the phone opens
+`https://<host>/web/approve`, signs in at Keycloak with the usual MFA proof and
+approves the login waiting on the PC ([web-access.md](web-access.md#approving-rdp-logins)).
+
+Texts come from the broker (`[ui]`, Ansible `fastrdp_ui_*`): English and German are
+built in; the language is `fastrdp_ui_language` (default `en`) unless
+`fastrdp_ui_language_from_keyboard` (default `true`) finds texts for the language of
+the client's keyboard layout (German layout → German texts). Own texts per language
+in `fastrdp_ui_texts`, e.g.
+
+```yaml
+fastrdp_ui_texts:
+  de:
+    mfa_push: "Anmeldung bestätigen\nBitte die Push-Nachricht auf dem Diensthandy bestätigen."
+  fr:
+    mfa_push: "Confirmez la notification sur votre téléphone."
+    countdown: "Temps restant :"
+```
+
+Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `qr_hint`, `session_start`,
+`countdown`; placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}`;
+`\n` starts a new line; a language without some keys takes the English ones. The URL
+is `fastrdp_ui_approve_url` (default `<fastrdp_web_public_url>/web/approve` with the web
+gateway, else none: no URL, no QR code); `fastrdp_ui_qr_code: false` leaves the code out.
+The font covers Latin-1 (and `…`, `€`, typographic quotes); other characters are drawn
+as `?`.
+
+**Why off by default:** the panel is plain RDP, checked end to end with FreeRDP clients
+at 15/16/24/32 bpp (`tests/proxy-e2e/run.sh`, including decoding the QR code from the
+received screen), but not yet with mstsc, the Windows App and Remmina (lab S3/L15).
+Turn it on per host after a test with the clients you use.
+`fastrdp_proxy_status_info: true` (`[FastRDP] StatusInfo`) also sends Server Status
+Info PDUs ("finding destination", "bringing session online") to clients that announce
+support for them; FreeRDP clients never do, and whether mstsc shows anything is
+untested.
 
 ### Splitting password and OTP
 

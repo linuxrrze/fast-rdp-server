@@ -948,6 +948,13 @@ gateway_user = "_fastrdp-web"
 # guacd runs with host networking and connects to the proxy via loopback
 allowed_clients = ["127.0.0.1", "::1"]
 
+# Texts of the proxy's waiting screen (fastrdp_proxy_waiting_screen)
+[ui]
+language = "en"
+language_from_keyboard = true
+approve_url = ""
+qr_code = true
+
 [backends.xrdp]
 port = 3390
 listener_user = "root"   # xrdp binds as root, then drops to runtime_user
@@ -972,6 +979,7 @@ Values to change:
 | `[broker] home_create_roots` | `fastrdp_home_create_roots` | default `["/home"]`: `home_check = "create"` creates a home only when its parent is one of these or below one (also with symlinks resolved), never a root or another missing parent; `[]` = never create |
 | `[mfa]`, `[mfa.privacyidea]` | `fastrdp_mfa_*`, `fastrdp_privacyidea_*` | section 15.1 |
 | `[web] enabled` | `fastrdp_web_enabled` | section 15.2 |
+| `[ui] language`, `language_from_keyboard`, `approve_url`, `qr_code`; `[ui.<language>]` | `fastrdp_ui_language`, `fastrdp_ui_language_from_keyboard`, `fastrdp_ui_approve_url`, `fastrdp_ui_qr_code`, `fastrdp_ui_texts` | texts of the proxy's waiting screen; `approve_url` is `https://<fqdn>/web/approve` with the web gateway, else `""` ([auth-matrix.md](auth-matrix.md#waiting-screen)) |
 | `port_range`, `[backends.xrdp] port` | `fastrdp_backend_port_range`, `fastrdp_xrdp_port` | must match nftables, sysctl and `xrdp.ini` |
 
 Other keys and their defaults: `broker/brokerd/fastrdp_broker/config.py` and the
@@ -1411,6 +1419,11 @@ AllowTlsFrom=
 ; negotiation response without support and reports it); true = accepted identity only,
 ; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
 AcceptRemoteGuard=false
+; While the broker works on a login (push, web approval, session start), show what it
+; waits for: a panel drawn with Bitmap Updates, texts from the broker's [ui]. StatusInfo:
+; also Server Status Info PDUs, to clients that ask for them.
+WaitingScreen=false
+StatusInfo=false
 ```
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)
@@ -1433,6 +1446,12 @@ the connection). With `true` the proxy offers the mode, takes the user from the 
 as usual, and zeroes and discards the forwarded tickets: the broker receives
 `"remote_guard": true` and no password, so the session has no TGT and
 `session_tgt = required` refuses the login ([windows-clients.md](windows-clients.md) §3.12).
+`WaitingScreen` (`fastrdp_proxy_waiting_screen`, default `false`; also the module's default
+when the key is missing): `true` shows a panel in the client's window while the broker
+works on the login (push or web approval with countdown, approval URL and QR code, session
+start), drawn with Bitmap Updates and painted black before the desktop arrives; texts from
+the broker's `[ui]`. `StatusInfo` (`fastrdp_proxy_status_info`, default `false`) also sends
+Server Status Info PDUs to clients that ask for them ([auth-matrix.md](auth-matrix.md#waiting-screen)).
 `Port` = `fastrdp_listen_port`.
 
 ## 12. Start the services

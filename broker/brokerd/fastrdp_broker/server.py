@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import grp
+import json
 import logging
 import os
 import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
 
 from . import conntype, home, identity, pamauth, tgt, tickets
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
@@ -22,8 +24,12 @@ from .mfa import ApprovalError, MfaDenied, SecondFactor, split_otp
 from .protocol import ProtocolError, int_field, peer_uid, read_message, str_field, write_message
 from .state import StateStore
 from .tokens import WEB_TOKEN_PREFIX, TokenStore
+from .ui import WaitingTexts
 
 log = logging.getLogger("fastrdp.broker")
+
+# Sends one progress message to the proxy module (protocol.py "progress"); never blocks.
+Progress = Callable[[dict], None]
 
 
 class Denied(Exception):
@@ -48,6 +54,11 @@ class Broker:
         if cfg.web.enabled:
             self.web_uid = pwd.getpwnam(cfg.web.gateway_user).pw_uid
         self.mfa = SecondFactor(cfg.mfa)
+        # Texts for the proxy's waiting screen (ui.py)
+        self.waiting = WaitingTexts(cfg.ui)
+        if cfg.mfa.mode in WEB_APPROVAL_MODES and not cfg.ui.approve_url:
+            log.info("[ui] approve_url is not set: the proxy's waiting screen cannot name the "
+                     "approval page (no URL, no QR code)")
         if cfg.mfa.nla_kdc_enforced and cfg.mfa.mode != "none":
             log.warning(
                 "[mfa] nla_kdc_enforced: Kerberos NLA logins from %s skip the %s second factor; "
@@ -303,9 +314,18 @@ class Broker:
         log.debug("%s: KDC evidence %s", user.name, evidence)
         return None
 
-    async def login(self, msg: dict) -> dict:
+    async def login(self, msg: dict, progress: Progress | None = None) -> dict:
+        """`progress`: the module asked for progress messages ("progress": 1) and shows
+        them on its waiting screen: "mfa" once the login waits for a push or web approval
+        (not for an exempt group, nla_kdc_enforced, KDC evidence or reconnect grace),
+        "session_start" before the back-end is started or reused."""
         session_id = str_field(msg, "session_id", required=True, max_len=64)
         user, password, otp, mfa_done = await self.first_factor(msg)
+        lang = self.waiting.language(int_field(msg, "keyboard_layout", 0, 0xFFFFFFFF)) if progress else ""
+
+        def notify(method: str, timeout: int) -> None:
+            assert progress is not None
+            progress(self.waiting.mfa(lang, method, timeout, user.name))
 
         if not identity.user_allowed(user, self.cfg.auth):
             proven = msg.get("method") == "nla" or mfa_done is not None
@@ -337,7 +357,8 @@ class Broker:
                     # Web approval: the webgate names the local account (mfa_pending).
                     factor = await self.mfa.verify(mfa_user, otp, password, account=user.name,
                                                    method=str_field(msg, "method", required=True),
-                                                   client_address=str_field(msg, "client_address"))
+                                                   client_address=str_field(msg, "client_address"),
+                                                   notify=notify if progress else None)
                 except MfaDenied as exc:
                     raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
                 log.info("second factor ok for %s via %s", user.name, factor)
@@ -366,6 +387,11 @@ class Broker:
                                    self.cfg.broker.home_read_timeout, self.cfg.broker.home_create_roots)
                 return await backend.ensure(LoginRequest(user, desktop, password, width, height))
 
+        if progress:
+            try:
+                progress(self.waiting.session_start(lang, user.name, desktop.label or desktop.name))
+            except Exception as exc:
+                log.debug("progress message not sent: %s", exc)
         # A session start that is under way completes even if the proxy gives up on this
         # login (handle_broker_client): stopping it halfway could leave a half-started
         # session behind, a finished one is simply there at the next login.
@@ -398,13 +424,14 @@ class Broker:
         else:
             log.info("%s: session started for an abandoned login; it is reused at the next login", name)
 
-    async def login_unless_abandoned(self, msg: dict, reader: asyncio.StreamReader) -> dict | None:
+    async def login_unless_abandoned(self, msg: dict, reader: asyncio.StreamReader,
+                                     progress: Progress | None = None) -> dict | None:
         """login(), cancelled when the proxy closes the connection first: the user gave up
         (closed the client during an MFA push) and the proxy dropped the request
         (fastrdp_plugin.c broker_call). Returns None then. Cancelling stops a push wait
         (mfa.py); a session start already under way completes (login()). The proxy sends
         nothing else while it waits, so data instead of EOF is a protocol error."""
-        login = asyncio.ensure_future(self.login(msg))
+        login = asyncio.ensure_future(self.login(msg, progress))
         peer = asyncio.ensure_future(reader.read(1))
         try:
             await asyncio.wait({login, peer}, return_when=asyncio.FIRST_COMPLETED)
@@ -616,6 +643,19 @@ class Broker:
                 "login_allowed": identity.user_allowed(user, self.cfg.auth)}
 
     # ------------------------------------------------------------- sockets
+    @staticmethod
+    def progress_writer(writer: asyncio.StreamWriter) -> Progress:
+        """Progress messages before the login reply. Queued without waiting for the
+        proxy to read them (no drain): a slow or gone proxy never delays or fails the
+        login, which notices a gone proxy on its own (login_unless_abandoned)."""
+        def send(msg: dict) -> None:
+            try:
+                if not writer.is_closing():
+                    writer.write(json.dumps(msg, separators=(",", ":")).encode() + b"\n")
+            except Exception as exc:
+                log.debug("progress message not sent: %s", exc)
+        return send
+
     async def handle_broker_client(self, reader, writer) -> None:
         uid = peer_uid(writer)
         try:
@@ -623,7 +663,8 @@ class Broker:
                 op = msg["op"]
                 try:
                     if op == "login" and uid == self.proxy_uid:
-                        reply = await self.login_unless_abandoned(msg, reader)
+                        progress = self.progress_writer(writer) if msg.get("progress") == 1 else None
+                        reply = await self.login_unless_abandoned(msg, reader, progress)
                         if reply is None:
                             break
                     elif op == "end" and uid == self.proxy_uid:

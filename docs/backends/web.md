@@ -93,7 +93,7 @@ Role `web_gateway` (`ansible/roles/web_gateway/defaults/main.yml`):
 |---|---|---|
 | `fastrdp_web_enabled` | `false` | runs the role; broker `[web] enabled`; proxy `ServerTlsSecurity` and `AllowTls` on |
 | `fastrdp_tls_login_sources` (roles/common) | `[127.0.0.1, "::1"]` if web on and `fastrdp_allow_tls_logins` off, else `[]` (any) | proxy `[FastRDP] AllowTlsFrom`: peers allowed to log in over TLS (addresses/CIDRs) |
-| `fastrdp_web_public_url` | `https://{{ fastrdp_fqdn }}` | `[webgate] public_url` (redirect URI = `<url>/web/callback`) |
+| `fastrdp_web_public_url` | `https://{{ fastrdp_fqdn }}` | `[webgate] public_url` (redirect URI = `<url>/web/callback`); role common, as the proxy's waiting screen names `<url>/web/approve` (`fastrdp_ui_approve_url`) |
 | `fastrdp_web_oidc_issuer` | `https://keycloak.lab.example.com/realms/lab` | `[oidc] issuer` |
 | `fastrdp_web_oidc_client_id` | `fastrdp-web` | `[oidc] client_id` |
 | `fastrdp_web_oidc_client_secret` | `vault_fastrdp_web_oidc_client_secret` | `/etc/fastrdp/webgate-oidc.secret` (role fails if empty) |

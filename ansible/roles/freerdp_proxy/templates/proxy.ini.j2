@@ -75,3 +75,8 @@ AllowTlsFrom={{ fastrdp_tls_login_sources | join(',') }}
 ; negotiation response without support and reports it); true = accepted identity only,
 ; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
 AcceptRemoteGuard={{ fastrdp_accept_remote_guard | bool | lower }}
+; While the broker works on a login (push, web approval, session start), show what it
+; waits for: a panel drawn with Bitmap Updates, texts from the broker's [ui]. StatusInfo:
+; also Server Status Info PDUs, to clients that ask for them.
+WaitingScreen={{ fastrdp_proxy_waiting_screen | bool | lower }}
+StatusInfo={{ fastrdp_proxy_status_info | bool | lower }}

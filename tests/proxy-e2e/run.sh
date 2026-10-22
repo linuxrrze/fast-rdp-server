@@ -29,7 +29,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
     -subj /CN=e2e -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
 
 cd "$W"
-mkproxy() { # name port broker-socket [AllowTlsFrom [CertificatePolicy]]
+mkproxy() { # name port broker-socket [AllowTlsFrom [CertificatePolicy [more [FastRDP] lines]]]
 cat > "$1.ini" <<EOT
 [Server]
 Host=127.0.0.1
@@ -66,6 +66,7 @@ BrokerSocket=$3
 Timeout=10
 AllowTls=true
 AllowTlsFrom=${4:-}
+${6:-}
 EOT
 }
 mkproxy a 23389 a.sock '127.0.0.0/8, ::1'
@@ -74,6 +75,8 @@ mkproxy b 23390 b.sock
 mkproxy c 23392 a.sock '192.0.2.0/24, 2001:db8::/32'
 # the module pins the back-end certificate itself and needs CertificatePolicy=deny
 mkproxy d 23393 a.sock '127.0.0.0/8' allow
+# like A, with the waiting screen (and Status Info PDUs for clients that ask)
+mkproxy e 23394 a.sock '127.0.0.0/8' deny $'WaitingScreen=true\nStatusInfo=true'
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -84,9 +87,10 @@ WLOG_FILTER="com.freerdp.core.rdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" a.ini 
 LD_PRELOAD="$W/shim.so" "$PROXY" b.ini > proxy-b.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" c.ini > proxy-c.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" d.ini > proxy-d.log 2>&1 &
+WLOG_FILTER="proxy.modules.fastrdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" e.ini > proxy-e.log 2>&1 &
 for _ in $(seq 50); do grep -q ready a.out b.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
-    break; sleep 0.2; done
+    (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && break; sleep 0.2; done
 
 E2E_CLIENT_ADDRESS=203.0.113.7 timeout 20 ./client 127.0.0.1 23389 alice good fastrdp:gnome >/dev/null 2>&1 || true
 timeout 20 ./client 127.0.0.1 23389 mallory bad "" > mallory.out 2>&1 || true
@@ -122,6 +126,21 @@ timeout 20 ./client 127.0.0.1 23392 outsider good "" > outsider.out 2>&1 || true
 # The proxy must drop the broker request at once, not when the broker answers.
 E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23389 pushwait good "" > pushwait.out 2>&1 || true
 for _ in $(seq 50); do grep -q '"pushwait"' a.log 2>/dev/null && break; sleep 0.2; done
+# Waiting screen (proxy E): the broker's progress messages as Bitmap Updates while the
+# login waits; the screen is dumped 1.5 s in (MFA panel with the QR code)
+E2E_KEEP_S=10 E2E_STATUS_INFO=1 E2E_DUMP="$W/panel32.ppm" timeout 30 ./client 127.0.0.1 23394 progress good "" > ws32.out 2>&1 || true
+E2E_KEEP_S=10 E2E_BPP=16 E2E_DUMP="$W/panel16.ppm" timeout 30 ./client 127.0.0.1 23394 progress good "" > ws16.out 2>&1 || true
+E2E_KEEP_S=10 E2E_BPP=24 timeout 30 ./client 127.0.0.1 23394 progress good "" > ws24.out 2>&1 || true
+E2E_KEEP_S=10 E2E_BPP=15 timeout 30 ./client 127.0.0.1 23394 progress good "" > ws15.out 2>&1 || true
+# the same login through proxy A (no WaitingScreen): no progress asked, no graphics
+E2E_KEEP_S=10 E2E_STATUS_INFO=1 timeout 30 ./client 127.0.0.1 23389 progress good "" > ws-off.out 2>&1 || true
+# a broker without progress messages, malformed and too many progress messages
+E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 oldbroker good "" > ws-old.out 2>&1 || true
+E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 badprogress good "" > ws-bad.out 2>&1 || true
+E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 floodprogress good "" > ws-flood.out 2>&1 || true
+# the client gives up while the waiting screen shows the push
+E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23394 pushwait good "" > ws-giveup.out 2>&1 || true
+for _ in $(seq 50); do [ "$(grep -c '"pushwait"' a.log)" -ge 2 ] && break; sleep 0.2; done
 sleep 1
 
 fail=0
@@ -133,17 +152,19 @@ a, b = load("a.log"), load("b.log")
 la = [r for r in a if r["op"] == "login"]
 lb = [r for r in b if r["op"] == "login"]
 ct = lambda logins, user: [r.get("connection_type") for r in logins if r["user"] == user]
+pw = [r for r in a if r["op"] == "pushwait"]
+pr = lambda user: [r for r in a if r["op"] == "progresswait" and r["user"] == user]
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 16'
+expect "front broker saw the expected logins"         'len(la) == 25'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-expect "back-end received the token, not the password" 'len(lb) == 5 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 12 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -157,7 +178,14 @@ expect "session end reported to the broker"           'any(r["op"] == "end" and 
 expect "TLS login outside AllowTlsFrom never reached the broker" 'not any(r["user"] == "outsider" for r in la)'
 expect "Remote Credential Guard required: login never reached the broker" 'not any(r["user"] == "rcguser" for r in la)'
 expect "client gone during the MFA wait: broker connection closed early" \
-    'len(pw := [r for r in a if r["op"] == "pushwait"]) == 1 and pw[0]["closed"] and pw[0]["waited"] < 4'
+    'len(pw) == 2 and pw[0]["closed"] and pw[0]["waited"] < 4 and not pw[0]["asked"]'
+expect "... also while the waiting screen shows the push"  'pw[1]["asked"] and pw[1]["closed"] and pw[1]["waited"] < 4'
+expect "WaitingScreen: login asks for progress and sends the keyboard layout" \
+    'all(r.get("progress") == 1 and isinstance(r.get("keyboard_layout"), int) for r in la if r["user"] in ("oldbroker", "badprogress", "floodprogress"))'
+expect "no WaitingScreen: no progress asked"            '[r["asked"] for r in pr("progress")] == [True] * 4 + [False] and ["progress" in r for r in la if r["user"] == "progress"] == [True] * 4 + [False] and "progress" not in la[0]'
+expect "waiting screen logins reached the back-end (old broker, malformed progress too)" \
+    '[r["user"] for r in lb].count("progress") == 5 and any(r["user"] == "oldbroker" for r in lb) and any(r["user"] == "badprogress" for r in lb)'
+expect "too many progress messages: login refused, back-end never reached" 'not any(r["user"] == "floodprogress" for r in lb)'
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }
@@ -175,6 +203,46 @@ errinfo "TLS login outside AllowTlsFrom: ERRINFO_SERVER_DENIED_CONNECTION"      
 errinfo "wrong back-end certificate: ERRINFO_CB_DESTINATION_NOT_FOUND"           badcert.out    0x00000400
 errinfo "no back-end fingerprint from the broker: ERRINFO_CB_DESTINATION_NOT_FOUND" nocert.out  0x00000400
 errinfo "CertificatePolicy=allow: ERRINFO_SERVER_DENIED_CONNECTION"              allowpolicy.out 0x00000007
+errinfo "too many progress messages: ERRINFO_CB_DESTINATION_NOT_FOUND"        ws-flood.out   0x00000400
+bitmaps() { # description client-output python-expression-over(n, rects, first_ms)
+    if python3 - "$2" "$3" <<'PY'
+import re, sys
+m = re.search(r"bitmap_updates=(\d+) bitmap_rects=(\d+) first_bitmap_ms=(-?\d+)", open(sys.argv[1]).read())
+n, rects, first_ms = map(int, m.groups()) if m else (-1, -1, -1)
+sys.exit(0 if m and eval(sys.argv[2]) else 1)
+PY
+    then echo "ok   $1"; else echo "FAIL $1 ($(grep bitmap_updates "$2"))"; fail=1; fi
+}
+# generic panel, MFA panel, countdown seconds, session start, cleared: at least 6 updates
+for bpp in 32 24 16 15; do
+    bitmaps "waiting screen at $bpp bpp: panel within 1 s, countdown redrawn, cleared" ws$bpp.out \
+        'n >= 6 and 0 < first_ms <= 1000'
+done
+bitmaps "no WaitingScreen: no Bitmap Updates before the back-end"           ws-off.out 'n == 0'
+bitmaps "broker without progress messages: generic panel, then cleared"      ws-old.out 'n >= 2 and 0 < first_ms <= 1000'
+if grep -q "status_info=0x0401" ws32.out && grep -q "status_info=0x0403" ws32.out && ! grep -q status_info ws-off.out; then
+    echo "ok   StatusInfo: finding destination, bringing session online (only with StatusInfo=true)"
+else
+    echo "FAIL StatusInfo PDUs ($(grep status_info ws32.out ws-off.out | tr '\n' ' '))"; fail=1
+fi
+# the QR code on the decoded screen (32 bpp: planar, 16 bpp: interleaved) reads as the
+# approval URL; needs python3 with zxing-cpp and Pillow (E2E_QR_PYTHON), else skipped
+QRPY=${E2E_QR_PYTHON:-python3}
+if "$QRPY" -I -c 'import zxingcpp, PIL' 2>/dev/null; then
+    for bpp in 32 16; do
+        if [ -s "panel$bpp.ppm" ] && "$QRPY" -I - "panel$bpp.ppm" <<'PY'
+import sys, zxingcpp
+from PIL import Image
+found = [r.text for r in zxingcpp.read_barcodes(Image.open(sys.argv[1]))]
+print(found)
+sys.exit(0 if found == ["https://rdp1.lab.example.com/web/approve"] else 1)
+PY
+        then echo "ok   QR code on the $bpp bpp screen decodes to the approval URL"
+        else echo "FAIL QR code on the $bpp bpp screen"; fail=1; fi
+    done
+else
+    echo "skip QR code decoding: no python3 with zxing-cpp and Pillow (E2E_QR_PYTHON)"
+fi
 logged() { # description log-file fixed-string
     if grep -qF -- "$3" "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
@@ -186,6 +254,11 @@ logged "CertificatePolicy other than deny logged" proxy-d.log \
     "CertificatePolicy must be deny"
 logged "proxy abandoned the broker request when the client went away" proxy-a.log \
     "front connection closed while waiting for the broker"
+logged "... also with the waiting screen" proxy-e.log \
+    "front connection closed while waiting for the broker"
+logged "malformed QR code from the broker left out, login goes on" proxy-e.log \
+    "malformed QR code from the broker left out"
+logged "too many progress messages logged" proxy-e.log "more than 32 progress messages"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
@@ -196,5 +269,6 @@ else
 fi
 if [ $fail -ne 0 ]; then
     echo "--- proxy A log:"; grep -E "fastrdp|ERROR" proxy-a.log | tail -20
+    echo "--- proxy E log:"; grep -E "fastrdp|ERROR" proxy-e.log | tail -20
 fi
 exit $fail

@@ -183,8 +183,13 @@ and the broker's checks: [auth-matrix.md](auth-matrix.md#web-approval).
 
 How users reach it:
 - Start the RDP login as usual. The client shows "connecting…" and waits (90 s by
-  default, `fastrdp_mfa_web_approval_timeout`).
-- Open `https://<rdp-fqdn>/web/approve` (a bookmark, or a phone). The webgate always
+  default, `fastrdp_mfa_web_approval_timeout`). With the [waiting
+  screen](auth-matrix.md#waiting-screen) (`fastrdp_proxy_waiting_screen: true`) the RDP
+  window shows instead what to do, the time left, the approval URL and a **QR code** of
+  it.
+- Open `https://<rdp-fqdn>/web/approve` (a bookmark, or a phone: scan the QR code in
+  the RDP window with the phone's camera, then sign in there with the passkey or
+  authenticator app on the phone). The webgate always
   sends the browser to Keycloak for a **new** sign-in (`prompt=login`, `max_age=0`,
   plus `acr_values=mfa` as for desktops), even if the user is signed in there already,
   and refuses ID tokens whose `auth_time` shows a reused Keycloak session.

@@ -57,6 +57,11 @@ troubleshooting): [backends/](backends/README.md).
    OTP or push, or (`[mfa] mode = "web"`/`"push_or_web"`) the login waits until its user
    approves it on the webgate's `/web/approve` page after a fresh MFA sign-in at the IdP
    ([auth-matrix.md](auth-matrix.md#web-approval)).
+   While the module waits for the broker, the RDP connection is already active; with
+   `[FastRDP] WaitingScreen` the module draws a panel into the client's window (Bitmap
+   Updates): what the login waits for, a countdown, for web approval the approval URL
+   and a QR code of it. The broker sends these as progress lines before its reply
+   ([auth-matrix.md](auth-matrix.md#waiting-screen)).
 4. **Desktop choice**, first match wins:
    1. a client hint `fastrdp:<desktop>` in the RDP *alternate shell* field;
    2. the desktop chosen for RDP logins on the webgate's chooser page (`web_set_desktop`,
@@ -156,6 +161,11 @@ in) or no second factor is due. A TLS password login that still owes its second 
 gets `denied`. Unknown reasons count as `denied`. The webgate uses the same reasons for its
 error pages. `mfa_decide` has its own refusal reasons (`approval_unknown`, `approval_finished`,
 `approval_conflict`, `approval_stale`; protocol.py), which only the approval page shows.
+
+A login request with `"progress": 1` (module with `WaitingScreen`) may get progress lines
+before the reply, each an object with a `"progress"` field (`"mfa"` with method, timeout,
+texts, approval URL and QR code rows; `"session_start"`); the reply is the first line
+without one. Requests without it, and older brokers, behave as before.
 
 ## Files on a deployed host
 

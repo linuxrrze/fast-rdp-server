@@ -6,7 +6,9 @@ Proxy module -> broker.sock:
   {"op": "login", "session_id": str, "method": "nla"|"tls", "user": str, "domain": str,
    "password": str|null, "principal": str|null, "smartcard": bool, "remote_guard": bool,
    "desktop_hint": str|null, "client_address": str|null, "width": int|null,
-   "height": int|null, "connection_type": int, "kdc_evidence": [str] (NLA only)}
+   "height": int|null, "connection_type": int, "kdc_evidence": [str] (NLA only),
+   "progress": 1 (optional), "keyboard_layout": int (with "progress")}
+  -> 0..n progress messages (only if the request has "progress": 1), then
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
                  "domain": str, "security": "tls"|"nla", "cert_sha256": str}}
@@ -25,6 +27,29 @@ Proxy module -> broker.sock:
   ExtraSids, domain and resource groups), at most 512 items. Kerberos NLA logins only; []
   if the ticket carried none; absent for TLS logins, from older modules and when FreeRDP
   cannot tell. Compared with [mfa] kdc_evidence_as_mfa (Broker.kdc_evidence).
+
+  "progress": 1: the module shows a waiting screen (proxy.ini [FastRDP] WaitingScreen,
+  fastrdp_plugin.c waitingScreen) and takes progress messages before the reply: one JSON
+  object per line with a "progress" field; the reply is the first line without one.
+  Requests without "progress" (older modules, WaitingScreen off) get the reply alone; a
+  module that asks gets none from an older broker and keeps its generic panel. The module
+  accepts at most 32 progress messages, each within the 64 KiB line limit.
+    {"progress": "mfa", "method": "push"|"web"|"push_or_web", "timeout_s": int,
+     "lines": [str], "countdown": str, "approve_url": str, "qr": [str]}
+      once the login waits for the user's second factor (mfa.SecondFactor notify): a
+      privacyIDEA push, the approval page, or both; again with method "web" when only the
+      approval page is left (push_or_web, push failed or timed out). Never for exempt
+      groups, nla_kdc_enforced, kdc_evidence_as_mfa, reconnect grace or an appended OTP.
+      "timeout_s": seconds the wait may take (countdown, labelled "countdown");
+      "approve_url" and "qr" ([ui] approve_url, qr_code) only for web and push_or_web:
+      "qr" is the QR code of approve_url as rows of "0"/"1" (qrcode.py, dark = "1",
+      without the quiet zone).
+    {"progress": "session_start", "lines": [str]}
+      before the back-end session is started or reused (GNOME/Plasma can take a while).
+  "lines": texts from [ui] (ui.py) in [ui] language or the language of "keyboard_layout"
+  (the client's keyboard layout, [MS-RDPBCGR] 2.2.1.3.2) with [ui] language_from_keyboard.
+  Progress messages are queued without waiting for the module; failing to send one never
+  fails or delays the login. ("mfa_pending" below is the webgate's, unrelated.)
 
   The module closes the connection without waiting for the "login" reply when its RDP
   client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the

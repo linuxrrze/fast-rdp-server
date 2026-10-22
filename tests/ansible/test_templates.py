@@ -334,7 +334,7 @@ class Audio(unittest.TestCase):
 
 
 class ProxyIni(unittest.TestCase):
-    def check(self, name, tls_allowed, tls_from="", remote_guard="false"):
+    def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="false"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -355,6 +355,8 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual(p["Channels"]["PassthroughIsBlacklist"], "true")
         # Remote Credential Guard: off unless fastrdp_accept_remote_guard (fastrdp_plugin.c)
         self.assertEqual(p["FastRDP"]["AcceptRemoteGuard"], remote_guard)
+        # waiting screen: off unless fastrdp_proxy_waiting_screen (fastrdp_plugin.c waitingScreen)
+        self.assertEqual((p["FastRDP"]["WaitingScreen"], p["FastRDP"]["StatusInfo"]), (waiting, waiting))
 
     def test_tls_logins(self):
         self.check("proxy-lab.ini", "true")
@@ -370,6 +372,9 @@ class ProxyIni(unittest.TestCase):
 
     def test_remote_guard(self):
         self.check("proxy-rcg.ini", "true", remote_guard="true")
+
+    def test_waiting_screen(self):
+        self.check("proxy-waiting.ini", "true", waiting="true")
 
 
 class GpuPackages(unittest.TestCase):
@@ -451,6 +456,18 @@ class BrokerToml(unittest.TestCase):
         both = broker_config.parse(toml("broker-push_or_web.toml")).mfa
         self.assertEqual(both.mode, "push_or_web")
         self.assertEqual(both.privacyidea.url, "https://privacyidea.lab.example.com")
+
+    def test_waiting_screen_texts(self):
+        lab = broker_config.parse(toml("broker-lab.toml")).ui
+        self.assertEqual((lab.language, lab.language_from_keyboard, lab.approve_url, lab.qr_code, lab.texts),
+                         ("en", True, "", True, {}))                       # no web gateway: no URL
+        web = broker_config.parse(toml("broker-web.toml")).ui
+        self.assertEqual(web.approve_url, "https://rdp1.lab.example.com/web/approve")
+        cfg = broker_config.parse(toml("broker-ui.toml")).ui
+        self.assertEqual((cfg.language, cfg.language_from_keyboard, cfg.qr_code), ("fr", False, False))
+        self.assertEqual(cfg.approve_url, "https://rdp.example.org:8443/web/approve")
+        self.assertEqual(cfg.texts, {"fr": {"mfa_web": 'Approuvez "{user}" sur\n{approve_url}', "countdown": "Reste :"},
+                                     "de": {"session_start": "Desktop {desktop} startet…"}})
 
     def test_session_tgt_required(self):
         self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")

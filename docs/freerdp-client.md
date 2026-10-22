@@ -556,7 +556,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 - `/shell:` sets the alternate shell (`cmdline.c:5196-5200`); `.rdp`:
   `alternate shell:s:fastrdp:gnome`.
 - The module sends it to the broker as a hint and never forwards it to the back-end
-  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:928`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:1049-1050`).
+  (`fastrdp_fetch_target()`, `fastrdp_plugin.c:1359`; `fastrdp_client_pre_connect()`, `fastrdp_plugin.c:1493-1494`).
 - The `fastrdp:` prefix is optional (`identity.py` `hinted_desktop`).
 - Order (`choose_desktop`):
   1. the hint, if that desktop exists and the user may use it (`fastrdp_desktop_groups`);

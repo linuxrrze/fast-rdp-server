@@ -22,6 +22,22 @@ log = logging.getLogger(__name__)
 YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}$")
 
 
+# Called once a login waits for the user: (method "push" | "web" | "push_or_web", seconds
+# the wait may take). The broker turns it into a progress message for the proxy's waiting
+# screen (ui.py); it must not block.
+Notify = Callable[[str, int], None]
+
+
+def notify_safely(notify: Notify | None, method: str, timeout: float) -> None:
+    """The waiting screen is a courtesy: its errors never touch the login."""
+    if notify is None:
+        return
+    try:
+        notify(method, max(0, int(timeout)))
+    except Exception as exc:
+        log.debug("progress message not sent: %s", exc)
+
+
 class MfaDenied(Exception):
     """`reason`: "mfa_failed", or "mfa_timeout" for a push or web approval not given in time."""
 
@@ -96,16 +112,19 @@ class WebApprovals:
     def count(self, user: str) -> int:
         return sum(1 for e in self.pending.values() if e.user == user)
 
-    async def wait(self, user: str, method: str, client_address: str | None) -> str:
+    async def wait(self, user: str, method: str, client_address: str | None,
+                   notify: Notify | None = None) -> str:
         """Register the login and wait for its decision. Returns "web"; raises MfaDenied
         (denied: mfa_failed, no decision in time: mfa_timeout). Cancelling (the proxy
-        dropped the login) removes the entry."""
+        dropped the login) removes the entry. `notify`: told ("web", timeout) once the
+        login is pending."""
         self.prune()
         entry = PendingApproval(secrets.token_urlsafe(16), user, method, client_address,
                                 self.clock(), self.wall(), asyncio.get_running_loop().create_future())
         self.pending[entry.id] = entry
         timeout = self.cfg.web_approval_timeout
         log.info("web approval pending for %s from %s (%s login, %ds)", user, client_address, method, timeout)
+        notify_safely(notify, "web", timeout)
         try:
             approved = await asyncio.wait_for(entry.future, timeout)
         except TimeoutError:
@@ -174,10 +193,13 @@ class SecondFactor:
         return self.cfg.mode == "none" or bool(groups & set(self.cfg.exempt_groups))
 
     async def verify(self, user: str, otp: str | None, password: str | None, *,
-                     account: str | None = None, method: str = "", client_address: str | None = None) -> str:
+                     account: str | None = None, method: str = "", client_address: str | None = None,
+                     notify: Notify | None = None) -> str:
         """Run the configured second factor. Returns the factor used; raises MfaDenied.
         `user`: privacyIDEA's name; `account` (default `user`), `method` and
-        `client_address`: the local account and the login shown on the approval page."""
+        `client_address`: the local account and the login shown on the approval page.
+        `notify` hears when the login starts waiting for the user (push, web approval;
+        not for an OTP check), for the proxy's waiting screen."""
         try:
             if otp is not None and self.wants_otp_in_password:
                 assert self.pi is not None
@@ -185,11 +207,12 @@ class SecondFactor:
                     return "otp"
                 raise MfaDenied("OTP rejected")
             if self.cfg.mode == "web":
-                return await self.approvals.wait(account or user, method, client_address)
+                return await self.approvals.wait(account or user, method, client_address, notify)
             if self.cfg.mode == "push_or_web":
-                return await self.push_or_web(user, password, account or user, method, client_address)
+                return await self.push_or_web(user, password, account or user, method, client_address,
+                                              notify)
             if self.cfg.mode in ("push", "otp_or_push"):
-                if await self.push(user, password):
+                if await self.push(user, password, notify):
                     return "push"
                 raise MfaDenied("push not confirmed in time", "mfa_timeout")
             raise MfaDenied("OTP required: append it to the password")
@@ -197,14 +220,16 @@ class SecondFactor:
             log.error("privacyIDEA error for %s: %s", user, exc)
             raise MfaDenied("MFA service unavailable") from None
 
-    async def push(self, user: str, password: str | None) -> bool:
+    async def push(self, user: str, password: str | None, notify: Notify | None = None) -> bool:
         """Push challenge: True once approved, False if push_timeout passed (or the final
-        check refused it). Raises MfaDenied without a push-capable token."""
+        check refused it). Raises MfaDenied without a push-capable token. `notify` hears
+        ("push", push_timeout) once the challenge is out."""
         assert self.pi is not None
         txid = await asyncio.to_thread(self.pi.trigger_challenge, user, password)
         if not txid:
             raise MfaDenied("no challenge-capable token for user")
         log.info("push challenge sent to %s (transaction %s)", user, txid)
+        notify_safely(notify, "push", self.cfg.privacyidea.push_timeout)
         cancel = threading.Event()
         try:
             return await asyncio.to_thread(self.pi.wait_for_push, user, txid, cancel)
@@ -216,12 +241,15 @@ class SecondFactor:
             raise
 
     async def push_or_web(self, user: str, password: str | None, account: str, method: str,
-                          client_address: str | None) -> str:
+                          client_address: str | None, notify: Notify | None = None) -> str:
         """Push and web approval at once; the first answer wins and the other is cancelled.
         A Deny or a refused push fails the login. A push that cannot start (no push-capable
         token, privacyIDEA unreachable) or runs out of push_timeout leaves the web approval
-        waiting, whose web_approval_timeout bounds the whole wait."""
+        waiting, whose web_approval_timeout bounds the whole wait. `notify` hears
+        ("push_or_web", web_approval_timeout) at the start, and ("web", the time left) when
+        only the web approval is left."""
         started = time.monotonic()
+        notify_safely(notify, "push_or_web", self.cfg.web_approval_timeout)
         push = asyncio.ensure_future(self.push(user, password))
         web = asyncio.ensure_future(self.approvals.wait(account, method, client_address))
         try:
@@ -237,6 +265,7 @@ class SecondFactor:
                     raise exc
                 log.log(logging.WARNING if exc else logging.INFO, "push for %s: %s; waiting for web approval only",
                         user, exc or "not confirmed in time")
+                notify_safely(notify, "web", self.cfg.web_approval_timeout - (time.monotonic() - started))
             return await web
         finally:
             for task in (push, web):

@@ -324,6 +324,32 @@
       loop:
         - {mode: web}
         - {mode: push_or_web}
+
+    - name: Broker.toml, waiting screen texts (German default, own texts, URL behind a proxy)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-ui.toml"
+        mode: "0644"
+      vars:
+        fastrdp_mfa_mode: web
+        fastrdp_web_enabled: true
+        fastrdp_web_public_url: https://rdp.example.org:8443
+        fastrdp_ui_language: fr
+        fastrdp_ui_language_from_keyboard: false
+        fastrdp_ui_qr_code: false
+        fastrdp_ui_texts:
+          fr: {mfa_web: "Approuvez \"{user}\" sur\n{approve_url}", countdown: "Reste :"}
+          de: {session_start: "Desktop {desktop} startet…"}
+
+    - name: Proxy.ini, waiting screen and Status Info PDUs
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-waiting.ini"
+        mode: "0644"
+      vars:
+        fastrdp_proxy_waiting_screen: true
+        fastrdp_proxy_status_info: true
+
     - name: Broker.toml, MFA from KDC evidence per login (PKINIT indicator, AD key trust)
       ansible.builtin.template:
         src: "{{ roles_dir }}/broker/templates/broker.toml.j2"

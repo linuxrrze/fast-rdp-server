@@ -13,6 +13,15 @@ must refuse both: back-end certificate pin).
 User 'pushwait' stands for a pending MFA push: the reply comes after PUSH_WAIT seconds
 unless the proxy closes the connection first; either way a "pushwait" record with the
 seconds waited and whether the peer closed goes to the log.
+Progress lines (protocol.py; only when the login asks with "progress": 1):
+  'progress'      an "mfa" message (push_or_web, approval URL, QR code from the broker's
+                  qrcode.py, PROGRESS_TIMEOUT s countdown) at once, a "session_start"
+                  message after PROGRESS_WAIT s, then the reply
+  'pushwait'      the "mfa" message, then waits as above
+  'oldbroker'     none (a broker from before progress messages), the reply after 2 s
+  'badprogress'   a malformed QR code and non-string lines, then the reply
+  'floodprogress' more progress messages than the module accepts
+A "progresswait" record says whether the login asked and whether the peer closed.
 Connections are served in threads, so a waiting request does not hold up others."""
 import json
 import os
@@ -21,6 +30,9 @@ import socket
 import sys
 import threading
 import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "broker", "brokerd"))
+from fastrdp_broker import qrcode  # noqa: E402
 
 DENIED = "access denied"
 REFUSALS = {
@@ -35,6 +47,14 @@ REFUSALS = {
 CONNECTION_TYPES = {"lanuser": "lan", "bogususer": "bogus"}
 CERT_SHA256 = os.environ.get("E2E_CERT_SHA256", "0" * 64)
 PUSH_WAIT = 8.0
+PROGRESS_WAIT = 3.5
+PROGRESS_TIMEOUT = 5
+APPROVE_URL = "https://rdp1.lab.example.com/web/approve"
+MFA_PROGRESS = {"progress": "mfa", "method": "push_or_web", "timeout_s": PROGRESS_TIMEOUT,
+                "approve_url": APPROVE_URL, "countdown": "Time left:",
+                "lines": ["Approve your sign-in", "Confirm the push on your phone, or sign in at",
+                          APPROVE_URL, "Gr\u00fc\u00dfe \u2013 \u65e5\u672c"],
+                "qr": qrcode.encode(APPROVE_URL.encode())}
 
 path, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 log_lock = threading.Lock()
@@ -45,7 +65,7 @@ def record(rec: dict) -> None:
         fh.write(json.dumps(rec) + "\n")
 
 
-def wait_push(conn: socket.socket) -> bool:
+def wait_push(conn: socket.socket, asked: bool) -> bool:
     """Waits like a broker for a push approval; False if the peer closed first."""
     start = time.monotonic()
     closed = False
@@ -53,7 +73,41 @@ def wait_push(conn: socket.socket) -> bool:
         if select.select([conn], [], [], left)[0]:
             closed = conn.recv(1) == b""  # the module never sends while it waits
             break
-    record({"op": "pushwait", "closed": closed, "waited": round(time.monotonic() - start, 2)})
+    record({"op": "pushwait", "asked": asked, "closed": closed,
+            "waited": round(time.monotonic() - start, 2)})
+    return not closed
+
+
+def send(conn: socket.socket, msg: dict) -> None:
+    conn.sendall((json.dumps(msg) + "\n").encode())
+
+
+def wait_closed(conn: socket.socket, seconds: float) -> bool:
+    """Waits; True if the peer closed the connection meanwhile."""
+    return bool(select.select([conn], [], [], seconds)[0]) and conn.recv(1) == b""
+
+
+def progress(conn: socket.socket, req: dict) -> bool:
+    """The progress lines of the users above; False if the peer closed meanwhile."""
+    asked, user, start = req.get("progress") == 1, req["user"], time.monotonic()
+    closed = False
+    if user == "oldbroker":
+        closed = wait_closed(conn, 2)
+    elif asked and user == "progress":
+        send(conn, MFA_PROGRESS)
+        closed = wait_closed(conn, PROGRESS_WAIT)
+        if not closed:
+            send(conn, {"progress": "session_start", "lines": ["Starting your desktop\u2026"]})
+            closed = wait_closed(conn, 0.3)
+    elif asked and user == "badprogress":
+        send(conn, {**MFA_PROGRESS, "qr": ["01x", "0"], "lines": ["fine", 42, None, {"a": 1}]})
+    elif asked and user == "floodprogress":
+        for _ in range(40):
+            send(conn, {"progress": "session_start", "lines": ["again"]})
+    elif user == "progress":
+        closed = wait_closed(conn, PROGRESS_WAIT)
+    record({"op": "progresswait", "user": user, "asked": asked, "closed": closed,
+            "waited": round(time.monotonic() - start, 2)})
     return not closed
 
 
@@ -62,7 +116,13 @@ def serve(conn: socket.socket) -> None:
         for line in conn.makefile():
             req = json.loads(line)
             record(req)
-            if req["op"] == "login" and req["user"] == "pushwait" and not wait_push(conn):
+            if req["op"] == "login" and req["user"] == "pushwait":
+                if req.get("progress") == 1:
+                    send(conn, MFA_PROGRESS)
+                if not wait_push(conn, req.get("progress") == 1):
+                    return
+            if req["op"] == "login" and req["user"] in ("progress", "oldbroker", "badprogress",
+                                                         "floodprogress") and not progress(conn, req):
                 return
             if req["op"] != "login":
                 rep = {"ok": True}
@@ -81,7 +141,7 @@ def serve(conn: socket.socket) -> None:
             else:
                 rep = {"ok": False, **REFUSALS.get(req.get("password"), {"error": DENIED, "reason": "denied"})}
             try:
-                conn.sendall((json.dumps(rep) + "\n").encode())
+                send(conn, rep)
             except OSError:
                 return
 
