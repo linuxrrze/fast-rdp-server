@@ -269,9 +269,14 @@ async def prepare(user: LocalUser, mode: str, pool: Executor, timeout: float,
 
 
 async def create(user: LocalUser) -> None:
-    """Create the home like pam_mkhomedir umask=0077 (xrdp-sesman, fastrdp-session)."""
+    """Create the home like pam_mkhomedir umask=0077 (xrdp-sesman, fastrdp-session).
+
+    Through systemd-run, in a transient system unit: the broker's own unit has
+    ProtectHome=read-only, which its children inherit (mkhomedir_helper would fail
+    with EROFS), and keeps it for everything else the broker does."""
     try:
-        await sysutil.run("mkhomedir_helper", user.name, "0077", SKEL, "0700", timeout=30)
+        await sysutil.run("systemd-run", "--wait", "--pipe", "--quiet", "--collect", "--",
+                          "mkhomedir_helper", user.name, "0077", SKEL, "0700", timeout=30)
     except sysutil.CommandError as exc:
         raise HomeError(f"home directory {user.home} of {user.name} could not be created: {exc}") from None
     log.info("%s: created home directory %s (mode 0700, files from %s)", user.name, user.home, SKEL)

@@ -54,8 +54,10 @@ def describe(argv: tuple[str, ...] | list[str]) -> str:
     """Short name of a command for logs: the program run through systemd-run, not
     systemd-run's own options."""
     if argv and os.path.basename(argv[0]) == "systemd-run" and "--" in argv:
-        inner = list(argv[list(argv).index("--") + 1:])
-        return f"{' '.join(inner[:4])}{' ...' if len(inner) > 4 else ''} (systemd-run as the user)"
+        sep = list(argv).index("--")
+        inner = list(argv[sep + 1:])
+        how = "systemd-run as the user" if "--user" in argv[:sep] else "systemd-run"
+        return f"{' '.join(inner[:4])}{' ...' if len(inner) > 4 else ''} ({how})"
     return f"{' '.join(argv[:3])}{' ...' if len(argv) > 3 else ''}"
 
 

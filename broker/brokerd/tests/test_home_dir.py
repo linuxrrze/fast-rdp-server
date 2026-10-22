@@ -274,7 +274,11 @@ class PrepareTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLogs("fastrdp.home", "INFO") as logs:
             await self.prepare()
         self.run.assert_awaited_once()
-        self.assertEqual(self.run.call_args.args, ("mkhomedir_helper", "marcel", "0077", "/etc/skel", "0700"))
+        # outside the broker's ProtectHome=read-only sandbox (a transient system unit)
+        self.assertEqual(self.run.call_args.args,
+                         ("systemd-run", "--wait", "--pipe", "--quiet", "--collect", "--",
+                          "mkhomedir_helper", "marcel", "0077", "/etc/skel", "0700"))
+        self.assertNotIn("--user", self.run.call_args.args)
         self.assertIn("created home directory", "\n".join(logs.output))
 
     async def test_creation_refused_below_unsafe_parent(self):
@@ -491,6 +495,10 @@ class CommandErrorTests(unittest.IsolatedAsyncioTestCase):
                 "--collect", "--", "grdctl", "--headless", "rdp", "set-tls-cert", "/var/lib/x")
         self.assertEqual(sysutil.describe(argv), "grdctl --headless rdp set-tls-cert ... (systemd-run as the user)")
         self.assertEqual(sysutil.describe(("systemctl", "start", "x.service")), "systemctl start x.service")
+        # a system unit (home creation) is not "as the user"
+        self.assertEqual(sysutil.describe(("systemd-run", "--wait", "--pipe", "--quiet", "--collect", "--",
+                                           "mkhomedir_helper", "marcel", "0077", "/etc/skel", "0700")),
+                         "mkhomedir_helper marcel 0077 /etc/skel ... (systemd-run)")
 
     async def test_failed_command_message(self):
         script = "printf '%s' \"$1\" >&2; exit 1"
