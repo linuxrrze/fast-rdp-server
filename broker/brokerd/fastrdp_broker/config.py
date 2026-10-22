@@ -54,6 +54,19 @@ class BrokerSection:
     # roots or below one (also after resolving symlinks); the roots themselves and
     # missing parents never. [] = never create.
     home_create_roots: list[str] = field(default_factory=lambda: ["/home"])
+    # Desktop picker on the proxy's waiting screen after the second factor (server.py
+    # Broker.pick_desktop, docs/desktop-matrix.md#choosing-a-desktop): "never";
+    # "if_multiple" = users who may use more than one desktop and have chosen none yet
+    # (no desktop stored on the web gateway or with fastrdpctl, no ~/.config/fastrdp/desktop);
+    # "always" = also when they have, that desktop preselected. Never with a client hint
+    # (AlternateShell, the web gateway, downloaded .rdp files) or a single permitted desktop,
+    # and only with proxy.ini [FastRDP] WaitingScreen and patches/freerdp/0007.
+    desktop_picker: str = "never"
+    # Seconds the picker waits for the user (3..60); then the preselected desktop.
+    desktop_picker_timeout: int = 10
+    # The user has a running session: "preselect" its desktop in the picker, or "skip"
+    # the picker and reconnect to it.
+    desktop_picker_when_running: str = "preselect"
 
 
 @dataclass
@@ -210,6 +223,9 @@ WEB_APPROVAL_MODES = ("web", "push_or_web")
 VALID_SESSION_TGT = ("auto", "off", "required")
 DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
 VALID_HOME_CHECK = ("create", "check", "off")
+VALID_DESKTOP_PICKER = ("never", "if_multiple", "always")
+VALID_DESKTOP_PICKER_WHEN_RUNNING = ("preselect", "skip")
+DESKTOP_PICKER_TIMEOUT = (3, 60)  # seconds; the module accepts at most 60
 MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
 # seconds; the proxy module caps [FastRDP] Timeout at 600, which also has to cover the
 # session start after the approval (session_start_timeout, 90): 600 - 90
@@ -308,6 +324,18 @@ def parse(raw: dict) -> Config:
             raise ConfigError(f"[broker.session_tgt_groups] {group}: mode must be one of {VALID_SESSION_TGT}")
     if broker.home_check not in VALID_HOME_CHECK:
         raise ConfigError(f"[broker] home_check must be one of {VALID_HOME_CHECK}")
+    if broker.desktop_picker not in VALID_DESKTOP_PICKER:
+        raise ConfigError(f"[broker] desktop_picker must be one of {VALID_DESKTOP_PICKER}")
+    lo, hi = DESKTOP_PICKER_TIMEOUT
+    if (
+        isinstance(broker.desktop_picker_timeout, bool)
+        or not isinstance(broker.desktop_picker_timeout, int)
+        or not lo <= broker.desktop_picker_timeout <= hi
+    ):
+        raise ConfigError(f"[broker] desktop_picker_timeout must be whole seconds in {lo}..{hi}")
+    if broker.desktop_picker_when_running not in VALID_DESKTOP_PICKER_WHEN_RUNNING:
+        raise ConfigError("[broker] desktop_picker_when_running must be one of "
+                          f"{VALID_DESKTOP_PICKER_WHEN_RUNNING}")
     if not isinstance(broker.home_create_roots, list) or not all(
         isinstance(r, str) and r.startswith("/") and not r.startswith("//") and r != "/"
         and os.path.normpath(r) == r and "\n" not in r

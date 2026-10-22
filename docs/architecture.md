@@ -70,7 +70,13 @@ troubleshooting): [backends/](backends/README.md).
    4. a group default (`[defaults.groups]`);
    5. the global default.
 
-   Per-desktop `groups` restrict who may use each desktop.
+   Per-desktop `groups` restrict who may use each desktop. With `[broker]
+   desktop_picker` (opt-in) a login without a hint whose user may use several desktops
+   then shows a picker on the waiting screen, the result above (or the running session's
+   desktop) preselected: the broker sends a `"choose_desktop"` progress line, the module
+   reads the client's keys and clicks itself (the proxy's own input handling starts only
+   with the back-end; `patches/freerdp/0007`) and answers with one `{"op": "choice"}`
+   line ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)).
 5. **Session** (broker back-end driver):
    - *xrdp*: write `/run/fastrdp/desktop/<user>`, issue a one-time token, then route to
      `127.0.0.1:3390` with `user / token`. xrdp-sesman's PAM stack redeems the token.
@@ -168,8 +174,10 @@ error pages. `mfa_decide` has its own refusal reasons (`approval_unknown`, `appr
 
 A login request with `"progress": 1` (module with `WaitingScreen`) may get progress lines
 before the reply, each an object with a `"progress"` field (`"mfa"` with method, timeout,
-texts, approval URL and QR code rows; `"session_start"`); the reply is the first line
-without one. Requests without it, and older brokers, behave as before.
+texts, approval URL and QR code rows; `"choose_desktop"` with the picker's rows, only for
+requests that also carry `"picker": 1`; `"session_start"`); the reply is the first line
+without one. The only line the module sends while a login is pending is the answer to
+`"choose_desktop"`. Requests without these fields, and older brokers, behave as before.
 
 ## Files on a deployed host
 

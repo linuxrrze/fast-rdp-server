@@ -6,6 +6,10 @@ port_range = [{{ fastrdp_backend_port_range[0] }}, {{ fastrdp_backend_port_range
 session_tgt = "{{ fastrdp_session_tgt }}"
 # Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
 home_create_roots = {{ fastrdp_home_create_roots | map('string') | list | to_json }}
+# Desktop picker on the proxy's waiting screen (fastrdp_desktop_picker)
+desktop_picker = "{{ fastrdp_desktop_picker }}"
+desktop_picker_timeout = {{ fastrdp_desktop_picker_timeout | int }}
+desktop_picker_when_running = "{{ fastrdp_desktop_picker_when_running }}"
 {% if fastrdp_session_tgt_groups | length > 0 %}
 
 # session_tgt per group (fastrdp_session_tgt_groups): the strictest mode of the

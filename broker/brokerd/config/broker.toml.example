@@ -34,6 +34,16 @@ session_start_timeout = 90
 #[broker.session_tgt_groups]
 #"nfs-homes" = "required"
 #"kiosk" = "off"
+# Desktop picker in the RDP window after the second factor (proxy.ini [FastRDP]
+# WaitingScreen = true and fastrdp-freerdp3 >= 3.32.2-6): never; if_multiple = users who
+# may use more than one desktop and have chosen none yet (web gateway, fastrdpctl
+# desktop, ~/.config/fastrdp/desktop); always = also then, their choice preselected.
+# Never for logins that name a desktop (AlternateShell "fastrdp:<name>", the web gateway,
+# downloaded .rdp files). docs/desktop-matrix.md#choosing-a-desktop
+#desktop_picker = "never"
+#desktop_picker_timeout = 10                 # seconds, 3..60; then the preselected desktop
+#desktop_picker_when_running = "preselect"   # a running session: preselect it, or "skip"
+                                             # the picker and reconnect to it
 
 [auth]
 realms = ["EXAMPLE.COM"]          # Kerberos realms accepted from NLA
@@ -116,6 +126,12 @@ qr_code = true                   # QR code of approve_url, to approve on a phone
 #qr_hint = "..."
 #session_start = "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…"
 #countdown = "Verbleibend:"
+# Desktop picker ([broker] desktop_picker); also {running} and {count}:
+#picker_title = "Desktop auswählen"
+#picker_hint = "1-{count}, Pfeiltasten + Eingabe oder Klick. Esc: {desktop}"
+#picker_countdown = "Weiter in"
+#picker_running = "{desktop} (läuft)"
+#picker_reconnects = "{desktop} (öffnet das laufende {running})"
 
 [defaults]
 desktop = "xfce"

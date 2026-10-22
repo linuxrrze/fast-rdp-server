@@ -467,7 +467,17 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual((cfg.language, cfg.language_from_keyboard, cfg.qr_code), ("fr", False, False))
         self.assertEqual(cfg.approve_url, "https://rdp.example.org:8443/web/approve")
         self.assertEqual(cfg.texts, {"fr": {"mfa_web": 'Approuvez "{user}" sur\n{approve_url}', "countdown": "Reste :"},
-                                     "de": {"session_start": "Desktop {desktop} startet…"}})
+                                     "de": {"session_start": "Desktop {desktop} startet…",
+                                            "picker_title": "Desktop wählen ({count})"}})
+
+    def test_desktop_picker(self):
+        for name in ("broker-lab.toml", "broker-minimal.toml", "broker-web.toml"):
+            b = broker_config.parse(toml(name)).broker
+            self.assertEqual((b.desktop_picker, b.desktop_picker_timeout, b.desktop_picker_when_running),
+                             ("never", 10, "preselect"), name)
+        b = broker_config.parse(toml("broker-ui.toml")).broker
+        self.assertEqual((b.desktop_picker, b.desktop_picker_timeout, b.desktop_picker_when_running),
+                         ("if_multiple", 20, "skip"))
 
     def test_session_tgt_required(self):
         self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")
@@ -626,6 +636,13 @@ class CommonChecks(unittest.TestCase):
             "web approval timeout in minutes": dict(ok, fastrdp_mfa_web_approval_timeout="2m"),
             "proxy timeout over the module's limit": dict(ok, fastrdp_proxy_broker_timeout=601),
             "proxy timeout zero": dict(ok, fastrdp_proxy_broker_timeout=0),
+            "unknown desktop picker mode": dict(ok, fastrdp_proxy_waiting_screen=True, fastrdp_desktop_picker="on"),
+            "desktop picker without the waiting screen": dict(ok, fastrdp_desktop_picker="always"),
+            "desktop picker timeout too short": dict(ok, fastrdp_proxy_waiting_screen=True,
+                                                     fastrdp_desktop_picker="always", fastrdp_desktop_picker_timeout=2),
+            "desktop picker timeout over the module's limit": dict(ok, fastrdp_desktop_picker_timeout=61),
+            "desktop picker timeout in minutes": dict(ok, fastrdp_desktop_picker_timeout="1m"),
+            "desktop picker running mode unknown": dict(ok, fastrdp_desktop_picker_when_running="ask"),
             "web approval auth age negative": dict(ok, fastrdp_mfa_web_approval_max_auth_age=-1),
             "web approval auth age over the limit": dict(ok, fastrdp_mfa_web_approval_max_auth_age=301),
             "web approval single pending not a bool": dict(ok, fastrdp_mfa_web_approval_single_pending="maybe"),
@@ -757,6 +774,20 @@ class CommonChecks(unittest.TestCase):
         # without web approval the timeout is not compared with the proxy's
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",
                                          fastrdp_mfa_web_approval_timeout=300), 0)
+
+    def test_desktop_picker_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        self.assertEqual(self.run_checks(**ok, fastrdp_desktop_picker="never"), 0)
+        for mode in ("if_multiple", "always"):
+            with self.subTest(mode):
+                self.assertEqual(self.run_checks(**ok, fastrdp_proxy_waiting_screen=True, fastrdp_desktop_picker=mode,
+                                                 fastrdp_desktop_picker_timeout=60,
+                                                 fastrdp_desktop_picker_when_running="skip"), 0)
+        # the proxy adds the picker's time to its own timeout: no room needed with web approval
+        self.assertEqual(self.run_checks(**ok, fastrdp_web_enabled=True, fastrdp_mfa_mode="web",
+                                         fastrdp_mfa_web_approval_timeout=510, fastrdp_proxy_broker_timeout=600,
+                                         fastrdp_proxy_waiting_screen=True, fastrdp_desktop_picker="always",
+                                         fastrdp_desktop_picker_timeout=60), 0)
 
     def test_fully_qualified_names_pass(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

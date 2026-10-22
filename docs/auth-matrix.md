@@ -284,6 +284,7 @@ Bitmap Updates, which every client must accept ([rdp-spec-conformance.md](rdp-sp
 | push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
 | web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the URL ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
 | `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
+| desktop picker (`fastrdp_desktop_picker`, after the second factor) | "Choose your desktop", one row per desktop ("[1] Xfce", "[2] GNOME (running)"), the preselected row filled, a hint line and a countdown of `fastrdp_desktop_picker_timeout`; keys 1-9, arrow keys and Enter, a click, Esc ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
 | login granted | the panel is painted over in black just before the back-end's desktop arrives |
 | refused, timed out | the client's own error message (Set Error Info, as without the screen) |
@@ -311,9 +312,14 @@ fastrdp_ui_texts:
 ```
 
 Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `qr_hint`, `session_start`,
-`countdown`; placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}`
-`{code}` (the web approval's two-digit code; a line naming it is left out without one);
-`\n` starts a new line; a language without some keys takes the English ones. The URL
+`countdown`, and for the desktop picker `picker_title` (above the rows), `picker_hint`
+(one line below them, cut at the panel's width), `picker_countdown`, `picker_running`
+(a running session's desktop: `{desktop} (running)`) and `picker_reconnects` (another
+X11 desktop while an xrdp session runs: `{desktop} (opens the running {running})`);
+placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}` `{code}` (the
+web approval's two-digit code; a line naming it is left out without one) `{running}`
+`{count}` (the picker's rows); `\n` starts a new line; a language without some keys
+takes the English ones. The URL
 is `fastrdp_ui_approve_url` (default `<fastrdp_web_public_url>/web/approve` with the web
 gateway, else none: no URL, no QR code); `fastrdp_ui_qr_code: false` leaves the code out.
 The font covers Latin-1 (and `…`, `€`, typographic quotes); other characters are drawn
@@ -321,8 +327,11 @@ as `?`.
 
 **Why off by default:** the panel is plain RDP, checked end to end with FreeRDP clients
 at 15/16/24/32 bpp (`tests/proxy-e2e/run.sh`, including decoding the QR code from the
-received screen), but not yet with mstsc, the Windows App and Remmina (lab S3/L15).
-Turn it on per host after a test with the clients you use.
+received screen and the desktop picker's keys and clicks), but not yet with mstsc, the
+Windows App and Remmina (lab S3/L15). Turn it on per host after a test with the clients
+you use. The picker also reads the client's keyboard and mouse before the back-end
+starts, which needs `fastrdp-freerdp3` 3.32.2-6 or later
+([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
 `fastrdp_proxy_status_info: true` (`[FastRDP] StatusInfo`) also sends Server Status
 Info PDUs ("finding destination", "bringing session online") to clients that announce
 support for them; FreeRDP clients never do, and whether mstsc shows anything is

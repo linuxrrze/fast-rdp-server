@@ -27,7 +27,8 @@
  * The broker call can take as long as an MFA push. It is abandoned as soon as the front
  * client closes its connection or the proxy aborts the session (broker_call()), so a
  * user who gives up does not hold the proxy's thread until the timeout. Meanwhile the
- * client can show what the login waits for ([FastRDP] WaitingScreen, waitingScreen).
+ * client can show what the login waits for ([FastRDP] WaitingScreen, waitingScreen), and
+ * with [broker] desktop_picker the user picks the desktop there (ws_picker_start()).
  *
  * Refusals after the RDP connection is up carry a Set Error Info PDU
  * ([MS-RDPBCGR] 2.2.5.1.1) so that clients such as mstsc can show a reason instead of a
@@ -94,6 +95,14 @@
 #include "fastrdp_pac.h"
 #endif
 #include "fastrdp_spnego.h"
+/* patches/freerdp/0007: PDUs read while PostConnect runs are input of the active
+ * connection, not a second PostConnect; the desktop picker reads its input that way. Weak:
+ * built against the patched headers but loaded with an unpatched libfreerdp3, the module
+ * finds no such function and shows no picker. */
+#if defined(FREERDP_PEER_IN_POST_CONNECT)
+#define FASTRDP_DESKTOP_PICKER 1
+#pragma weak freerdp_peer_in_post_connect
+#endif
 
 #define TAG MODULE_TAG("fastrdp")
 #define PLUGIN_NAME "fastrdp"
@@ -121,6 +130,7 @@ typedef struct
 	BOOL target_nla;
 	UINT32 target_connection_type; /* 0 = keep the client's */
 	char target_cert_sha256[65];   /* the back-end's certificate, lower-case hex */
+	void* screen; /* waitingScreen during the broker call: the picker's input callbacks */
 } fastrdpSession;
 
 static void wipe_free(char** s)
@@ -368,6 +378,41 @@ static const char* json_str(const cJSON* obj, const char* key);
 #define WS_MAX_PROGRESS 32  /* progress messages per login */
 #define WS_MAX_TIMEOUT 3600 /* seconds a countdown may show */
 #define WS_GENERIC_TEXT "Signing you in\xe2\x80\xa6"
+#define WS_PICKER_NAME 64        /* bytes of a desktop name */
+#define WS_PICKER_MAX_TIMEOUT 60 /* seconds the picker may wait ([broker] desktop_picker_timeout) */
+#define WS_PICKER_GRACE_S 5      /* the broker waits that much longer for the answer */
+#define WS_PICKER_DRAIN_MS 500   /* at most, reading what the client sent before the picker */
+
+typedef enum
+{
+	WS_PICKER_OFF = 0, /* not offered, or answered */
+	WS_PICKER_SHOWN,   /* on the screen, waiting for the user */
+	WS_PICKER_ANSWER   /* answer ready for the broker */
+} wsPickerState;
+
+/* The desktop picker on the waiting screen (ws_picker_start()). */
+typedef struct
+{
+	BOOL offered; /* the login announced "picker": 1 (ws_picker_possible()) */
+	BOOL asked;   /* a prompt came (one per login) */
+	wsPickerState state;
+	BOOL gone;  /* the front connection failed while reading its input */
+	BOOL armed; /* input from before the picker read and dropped */
+	unsigned n, def, sel;
+	char names[FASTRDP_PANEL_MAX_OPTIONS][WS_PICKER_NAME + 1];
+	int answer; /* row, or -1: the broker's default */
+	const char* how;
+	BOOL moved; /* the user moved the selection */
+	BOOL num_lock;
+	int pressed_row;  /* button 1 went down on this row */
+	BYTE keys[64];    /* scancodes (| 0x100 extended) pressed after arming */
+	UINT16 unicode;   /* bit n: Unicode '1' + n (n = 9: Enter) pressed after arming */
+	pSynchronizeEvent sync;
+	pKeyboardEvent keyboard;
+	pUnicodeKeyboardEvent unicode_keyboard;
+	pMouseEvent mouse;
+	pExtendedMouseEvent extended_mouse;
+} wsPicker;
 
 /* The front connection while the broker works on the login ([FastRDP] WaitingScreen):
  * a panel with the broker's progress texts (MFA push, web approval with a QR code of the
@@ -410,6 +455,7 @@ typedef struct
 	BITMAP_DATA rects[WS_BATCH];
 	UINT32 nrects;
 	size_t batch_bytes;
+	wsPicker picker;
 } waitingScreen;
 
 static long ws_ms_until(const struct timespec* t)
@@ -665,12 +711,23 @@ static waitingScreen* waiting_screen_new(proxyData* pdata)
 	return ws;
 }
 
+static void ws_picker_start(waitingScreen* ws, const cJSON* msg);
+static void ws_picker_end(waitingScreen* ws);
+
 /* One {"progress": ...} message from the broker (protocol.py): new text, QR code and
- * countdown. Malformed parts are left out. */
+ * countdown, or the desktop picker ("choose_desktop"). Malformed parts are left out. */
 static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
 {
 	const char* kind = json_str(msg, "progress");
 	WLog_DBG(TAG, "[%s] broker progress: %s", ws->pdata->session_id, kind ? kind : "?");
+	/* the broker moved on without the picker's answer (its wait ended) */
+	if (ws->picker.state == WS_PICKER_SHOWN)
+		ws_picker_end(ws);
+	if (kind && strcmp(kind, "choose_desktop") == 0)
+	{
+		ws_picker_start(ws, msg);
+		return;
+	}
 	if (kind && strcmp(kind, "session_start") == 0)
 		ws_status_info(ws, TS_STATUS_BRINGING_SESSION_ONLINE);
 	if (!ws->draw)
@@ -810,13 +867,22 @@ static nfds_t abort_fds(proxyData* pdata, struct pollfd* fds, nfds_t max)
 	return n;
 }
 
+static nfds_t ws_picker_fds(const waitingScreen* ws, struct pollfd* fds, nfds_t max);
+static BOOL ws_picker_read(waitingScreen* ws);
+static void ws_picker_check_timeout(waitingScreen* ws);
+static int ws_picker_next_ms(const waitingScreen* ws);
+static BOOL ws_picker_answer(waitingScreen* ws, int fd);
+
 /* Sends one JSON line and waits for the one-line reply (parsed into *reply, caller frees).
  * With `abort_on`, the wait ends early when that session's front connection closes or
  * its abort event is set (abort_fds()); the broker sees its connection closed and stops
  * working on the request (MFA push wait). Without it (session end), it does not.
  * With `screen` (the request asked for "progress"), lines with a "progress" field before
  * the reply update the waiting screen, at most WS_MAX_PROGRESS of them, each within
- * MAX_REPLY like the reply; the countdown is redrawn once a second meanwhile. */
+ * MAX_REPLY like the reply; the countdown is redrawn once a second meanwhile.
+ * While the desktop picker shows (ws_picker_start()), the front connection's input is
+ * read instead of only watched, the picker's answer goes to the broker as one line, and
+ * the wait grows by the picker's timeout plus WS_PICKER_GRACE_S. */
 static brokerCallResult broker_call(const char* path, const cJSON* request, int timeout_s,
                                     proxyData* abort_on, waitingScreen* screen, cJSON** reply)
 {
@@ -846,7 +912,6 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 		goto out;
 
 	struct pollfd fds[1 + MAX_ABORT_FDS] = { { .fd = fd, .events = POLLIN } };
-	const nfds_t nfds = 1 + abort_fds(abort_on, &fds[1], MAX_ABORT_FDS);
 
 	size_t used = 0;
 	struct timespec start;
@@ -864,8 +929,18 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			rc = BROKER_TIMED_OUT;
 			goto out;
 		}
+		/* the picker reads the front connection; otherwise it is only watched */
+		const BOOL picking = screen && screen->picker.state == WS_PICKER_SHOWN;
+		const nfds_t nfds = 1 + (picking ? ws_picker_fds(screen, &fds[1], MAX_ABORT_FDS)
+		                                 : abort_fds(abort_on, &fds[1], MAX_ABORT_FDS));
+		int wait_ms = (int)left_ms;
 		const int next_ms = waiting_screen_next_ms(screen);
-		const int pr = poll(fds, nfds, (next_ms >= 0 && next_ms < left_ms) ? next_ms : (int)left_ms);
+		const int picker_ms = ws_picker_next_ms(screen);
+		if (next_ms >= 0 && next_ms < wait_ms)
+			wait_ms = next_ms;
+		if (picker_ms >= 0 && picker_ms < wait_ms)
+			wait_ms = picker_ms;
+		const int pr = poll(fds, nfds, wait_ms);
 		if (pr < 0 && errno == EINTR)
 			continue;
 		if (pr < 0)
@@ -874,9 +949,37 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			goto out;
 		}
 		waiting_screen_tick(screen);
-		if (pr == 0)
+		if (picking)
+		{
+			BOOL input = FALSE, aborted = FALSE;
+			for (nfds_t i = 1; i < nfds; i++)
+			{
+				if (fds[i].revents && abort_on && abort_on->abort_event &&
+				    fds[i].fd == GetEventFileDescriptor(abort_on->abort_event))
+					aborted = TRUE;
+				else if (fds[i].revents)
+					input = TRUE;
+			}
+			if (!aborted && input && !ws_picker_read(screen))
+				aborted = TRUE;
+			if (aborted)
+			{
+				WLog_WARN(TAG, "[%s] request abandoned during the desktop picker", sid);
+				rc = BROKER_ABANDONED;
+				goto out;
+			}
+			ws_picker_check_timeout(screen);
+			if (screen->picker.state == WS_PICKER_ANSWER && !ws_picker_answer(screen, fd))
+			{
+				WLog_ERR(TAG, "[%s] desktop choice not sent to the broker", sid);
+				goto out;
+			}
+			if (!fds[0].revents)
+				continue;
+		}
+		else if (pr == 0)
 			continue;
-		for (nfds_t i = 1; i < nfds; i++)
+		for (nfds_t i = 1; i < nfds && !picking; i++)
 		{
 			if (fds[i].revents)
 			{
@@ -909,6 +1012,21 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			if (progress && ++screen->progress <= WS_MAX_PROGRESS)
 				waiting_screen_progress(screen, msg);
 			cJSON_Delete(msg);
+			if (screen->picker.gone)
+			{
+				rc = BROKER_ABANDONED;
+				goto out;
+			}
+			if (screen->picker.state == WS_PICKER_SHOWN)
+			{
+				/* the broker waits for the choice: its timeout and some grace on top */
+				timeout_s += (int)ws_seconds_left(screen) + WS_PICKER_GRACE_S;
+			}
+			else if (screen->picker.state == WS_PICKER_ANSWER && !ws_picker_answer(screen, fd))
+			{
+				WLog_ERR(TAG, "[%s] desktop choice not sent to the broker", sid);
+				goto out;
+			}
 			if (!progress)
 				break;
 			if (screen->progress > WS_MAX_PROGRESS)
@@ -934,6 +1052,8 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 		rc = BROKER_REPLIED;
 
 out:
+	if (screen)
+		ws_picker_end(screen); /* the proxy's input callbacks back */
 	if (fd >= 0)
 		close(fd);
 	if (text)
@@ -961,6 +1081,475 @@ static void add_str(cJSON* obj, const char* key, const char* value)
 		cJSON_AddStringToObject(obj, key, value);
 	else
 		cJSON_AddNullToObject(obj, key);
+}
+
+/* ------------------------------------------------------------ desktop picker */
+
+/* [broker] desktop_picker: after the second factor the broker sends a "choose_desktop"
+ * prompt (protocol.py) and the user picks the desktop on the waiting screen: keys 1-9
+ * (top row, or the numeric keypad with NumLock), Up/Down/Tab/Home/End and Enter, a click
+ * (button 1 down and up on the same row; touch clients send it as one), Esc for the
+ * broker's default. The answer goes back once, {"op": "choice", "desktop": name|null};
+ * null (Esc, or the countdown ran out without a move) means the broker's default.
+ *
+ * The proxy's own input handlers drop input until its back-end connection is active
+ * (pf_input.c), and module input filters do not run before that, so the module reads the
+ * front connection itself: it polls the peer's event handles (socket and the transport's
+ * reread event for TLS bytes already decrypted) and calls CheckFileDescriptor() with its
+ * own input callbacks installed, restored afterwards (ws_picker_end()). This runs inside
+ * the proxy's PostConnect; FreeRDP 3.32.2 would run PostConnect again for a PDU read
+ * there, patches/freerdp/0007 handles it as input of the active connection
+ * (freerdp_peer_in_post_connect()). Without that patch the login does not offer the
+ * picker (ws_picker_possible()). Channel data read meanwhile goes the proxy's way (its
+ * queue for the back-end), other PDUs as in the active state.
+ *
+ * Input typed during the MFA wait is read first and dropped (ws_picker_drain()); a key
+ * counts on its release, and only if it went down after that, a click only if both
+ * halves came after it. Everything stays bounded: at most FASTRDP_PANEL_MAX_OPTIONS rows,
+ * names of WS_PICKER_NAME bytes, WS_PICKER_MAX_TIMEOUT seconds; the module's own timeout
+ * grows by the picker's (fastrdp_fetch_target()), so the choice never shortens the time
+ * left for the session start. A failed read is a closed client: the login is abandoned. */
+
+static BOOL ws_picker_possible(const waitingScreen* ws)
+{
+#if defined(FASTRDP_DESKTOP_PICKER)
+	const proxyData* pdata = ws ? ws->pdata : NULL;
+	freerdp_peer* peer = (pdata && pdata->ps) ? pdata->ps->peer : NULL;
+	if (!ws || !ws->draw || !peer || !pdata->ps->input || !peer->GetEventHandles ||
+	    !peer->CheckFileDescriptor)
+		return FALSE;
+	if (!freerdp_peer_in_post_connect || !freerdp_peer_in_post_connect(peer))
+	{
+		WLog_DBG(TAG, "[%s] no desktop picker: libfreerdp3 without patches/freerdp/0007",
+		         pdata->session_id);
+		return FALSE;
+	}
+	return TRUE;
+#else
+	(void)ws;
+	return FALSE;
+#endif
+}
+
+static waitingScreen* ws_of_input(rdpInput* input)
+{
+	const pServerContext* ps = input ? (const pServerContext*)input->context : NULL;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	if (!pdata || !fastrdp_mgr)
+		return NULL;
+	fastrdpSession* s = (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata);
+	waitingScreen* ws = s ? (waitingScreen*)s->screen : NULL;
+	return (ws && ws->picker.state == WS_PICKER_SHOWN) ? ws : NULL;
+}
+
+/* Sends picker row i (desktop coordinates). */
+static void ws_picker_send_row(waitingScreen* ws, unsigned i)
+{
+	const fastrdpPanel* p = ws->panel;
+	const fastrdpRect r = fastrdp_panel_option_rect(p, i);
+	fastrdp_panel_draw_option(p, ws->img, p->rect.w * 4, i);
+	const fastrdpRect d = { p->rect.x + r.x, p->rect.y + r.y, r.w, r.h };
+	(void)ws_send(ws, d);
+}
+
+static void ws_picker_select(waitingScreen* ws, unsigned i)
+{
+	wsPicker* pk = &ws->picker;
+	if (i >= pk->n || i == pk->sel)
+		return;
+	const unsigned old = pk->sel;
+	pk->sel = i;
+	pk->moved = TRUE;
+	ws->panel->selected = i;
+	ws_picker_send_row(ws, old);
+	ws_picker_send_row(ws, i);
+}
+
+/* row: the chosen row, -1: the broker's default */
+static void ws_picker_finish(waitingScreen* ws, int row, const char* how)
+{
+	wsPicker* pk = &ws->picker;
+	if (pk->state != WS_PICKER_SHOWN)
+		return;
+	if (row >= 0)
+		ws_picker_select(ws, (unsigned)row);
+	pk->answer = row;
+	pk->how = how;
+	pk->state = WS_PICKER_ANSWER;
+}
+
+static void ws_picker_move(waitingScreen* ws, int delta)
+{
+	const wsPicker* pk = &ws->picker;
+	ws_picker_select(ws, (unsigned)(((int)pk->sel + delta + (int)pk->n) % (int)pk->n));
+}
+
+static void ws_picker_digit(waitingScreen* ws, unsigned digit)
+{
+	if (digit >= 1 && digit <= ws->picker.n)
+		ws_picker_finish(ws, (int)digit - 1, "key");
+}
+
+/* A key released after it went down while the picker showed: code | 0x100 if extended. */
+static void ws_picker_key(waitingScreen* ws, unsigned key)
+{
+	/* numeric keypad 1-9 by scancode (0x47 = 7 ... 0x51 = 3), not extended */
+	static const BYTE keypad[9] = { 0x4f, 0x50, 0x51, 0x4b, 0x4c, 0x4d, 0x47, 0x48, 0x49 };
+	const wsPicker* pk = &ws->picker;
+	if (key >= 0x02 && key <= 0x0a) /* top row 1-9 */
+	{
+		ws_picker_digit(ws, key - 0x01);
+		return;
+	}
+	if (pk->num_lock)
+		for (unsigned d = 0; d < ARRAYSIZE(keypad); d++)
+			if (key == keypad[d])
+			{
+				ws_picker_digit(ws, d + 1);
+				return;
+			}
+	switch (key)
+	{
+		case 0x01: /* Esc */
+			ws_picker_finish(ws, -1, "Esc");
+			break;
+		case 0x1c:  /* Enter */
+		case 0x11c: /* keypad Enter */
+			ws_picker_finish(ws, (int)pk->sel, "key");
+			break;
+		case 0x148: /* Up */
+		case 0x48:  /* keypad 8 without NumLock */
+			ws_picker_move(ws, -1);
+			break;
+		case 0x150: /* Down */
+		case 0x50:  /* keypad 2 without NumLock */
+		case 0x0f:  /* Tab */
+			ws_picker_move(ws, 1);
+			break;
+		case 0x147: /* Home */
+		case 0x47:
+			ws_picker_select(ws, 0);
+			break;
+		case 0x14f: /* End */
+		case 0x4f:
+			ws_picker_select(ws, pk->n - 1);
+			break;
+		default:
+			break;
+	}
+}
+
+static BOOL ws_picker_keyboard(rdpInput* input, UINT16 flags, UINT8 code)
+{
+	waitingScreen* ws = ws_of_input(input);
+	if (!ws || !ws->picker.armed)
+		return TRUE;
+	wsPicker* pk = &ws->picker;
+	const unsigned key = code | ((flags & KBD_FLAGS_EXTENDED) ? 0x100u : 0u);
+	const BYTE bit = (BYTE)(1u << (key % 8));
+	if (!(flags & KBD_FLAGS_RELEASE))
+		pk->keys[key / 8] |= bit;
+	else if (pk->keys[key / 8] & bit)
+	{
+		pk->keys[key / 8] &= (BYTE)~bit;
+		ws_picker_key(ws, key);
+	}
+	return TRUE;
+}
+
+/* Clients that type characters instead of scancodes: '1'-'9' and Enter */
+static BOOL ws_picker_unicode(rdpInput* input, UINT16 flags, UINT16 code)
+{
+	waitingScreen* ws = ws_of_input(input);
+	if (!ws || !ws->picker.armed)
+		return TRUE;
+	wsPicker* pk = &ws->picker;
+	int n = -1;
+	if (code >= '1' && code <= '9')
+		n = code - '1';
+	else if (code == '\r')
+		n = 9;
+	if (n < 0)
+		return TRUE;
+	const UINT16 bit = (UINT16)(1u << n);
+	if (!(flags & KBD_FLAGS_RELEASE))
+		pk->unicode |= bit;
+	else if (pk->unicode & bit)
+	{
+		pk->unicode &= (UINT16)~bit;
+		if (n == 9)
+			ws_picker_finish(ws, (int)pk->sel, "key");
+		else
+			ws_picker_digit(ws, (unsigned)n + 1);
+	}
+	return TRUE;
+}
+
+static BOOL ws_picker_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
+{
+	waitingScreen* ws = ws_of_input(input);
+	if (!ws || !ws->picker.armed || !(flags & PTR_FLAGS_BUTTON1) || (flags & PTR_FLAGS_WHEEL))
+		return TRUE;
+	wsPicker* pk = &ws->picker;
+	const int row = fastrdp_panel_hit(ws->panel, x, y);
+	if (flags & PTR_FLAGS_DOWN)
+	{
+		pk->pressed_row = row;
+		if (row >= 0)
+			ws_picker_select(ws, (unsigned)row);
+	}
+	else
+	{
+		if (row >= 0 && row == pk->pressed_row)
+			ws_picker_finish(ws, row, "click");
+		pk->pressed_row = -1;
+	}
+	return TRUE;
+}
+
+static BOOL ws_picker_extended_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
+{
+	WINPR_UNUSED(input);
+	WINPR_UNUSED(flags);
+	WINPR_UNUSED(x);
+	WINPR_UNUSED(y);
+	return TRUE; /* buttons 4 and 5 */
+}
+
+/* The keypad digits need NumLock; the proxy keeps the state for its back-end. */
+static BOOL ws_picker_sync(rdpInput* input, UINT32 flags)
+{
+	const pServerContext* ps = input ? (const pServerContext*)input->context : NULL;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	fastrdpSession* s = (pdata && fastrdp_mgr)
+	                        ? (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata)
+	                        : NULL;
+	waitingScreen* ws = s ? (waitingScreen*)s->screen : NULL;
+	if (!ws)
+		return TRUE;
+	ws->picker.num_lock = (flags & KBD_SYNC_NUM_LOCK) != 0;
+	return ws->picker.sync ? ws->picker.sync(input, flags) : TRUE;
+}
+
+/* Peer event handles to read (POLLIN) into fds; the proxy's abort event first. */
+static nfds_t ws_picker_fds(const waitingScreen* ws, struct pollfd* fds, nfds_t max)
+{
+	nfds_t n = 0;
+	proxyData* pdata = ws->pdata;
+	if (pdata->abort_event && n < max)
+	{
+		const int fd = GetEventFileDescriptor(pdata->abort_event);
+		if (fd >= 0)
+			fds[n++] = (struct pollfd){ .fd = fd, .events = POLLIN };
+	}
+	freerdp_peer* peer = pdata->ps->peer;
+	HANDLE handles[MAXIMUM_WAIT_OBJECTS] = { 0 };
+	const DWORD count = peer->GetEventHandles(peer, handles, ARRAYSIZE(handles));
+	for (DWORD i = 0; i < count && n < max; i++)
+	{
+		const int fd = GetEventFileDescriptor(handles[i]);
+		if (fd >= 0)
+			fds[n++] = (struct pollfd){ .fd = fd, .events = POLLIN };
+	}
+	return n;
+}
+
+/* Reads what the front client sent (input callbacks above); FALSE if the connection failed. */
+static BOOL ws_picker_read(waitingScreen* ws)
+{
+	freerdp_peer* peer = ws->pdata->ps->peer;
+	if (peer->CheckFileDescriptor(peer))
+		return TRUE;
+	ws->picker.gone = TRUE;
+	WLog_WARN(TAG, "[%s] front connection closed during the desktop picker",
+	          ws->pdata->session_id);
+	return FALSE;
+}
+
+/* Reads and drops what the client sent before the picker showed (keys typed during the
+ * MFA wait), until nothing more is waiting or WS_PICKER_DRAIN_MS passed. */
+static BOOL ws_picker_drain(waitingScreen* ws)
+{
+	struct timespec end;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_nsec += WS_PICKER_DRAIN_MS * 1000000L;
+	end.tv_sec += end.tv_nsec / 1000000000L;
+	end.tv_nsec %= 1000000000L;
+	while (ws_ms_until(&end) > 0)
+	{
+		struct pollfd fds[MAX_ABORT_FDS];
+		const nfds_t n = ws_picker_fds(ws, fds, ARRAYSIZE(fds));
+		const int pr = poll(fds, n, 0);
+		if (pr < 0 && errno == EINTR)
+			continue;
+		if (pr <= 0)
+			break;
+		if (!ws_picker_read(ws))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* The broker's {"progress": "choose_desktop", ...}: shows the rows, installs the input
+ * callbacks. A prompt the module cannot show (no picker offered, malformed, the desktop
+ * too small) is answered at once with the default. */
+static void ws_picker_start(waitingScreen* ws, const cJSON* msg)
+{
+	wsPicker* pk = &ws->picker;
+	const char* sid = ws->pdata->session_id;
+	if (!pk->offered || pk->asked)
+	{
+		WLog_WARN(TAG, "[%s] desktop picker prompt from the broker ignored (%s)", sid,
+		          pk->asked ? "a second one" : "not offered");
+		return;
+	}
+	pk->asked = TRUE;
+	pk->answer = -1;
+	pk->how = "not shown";
+	pk->pressed_row = -1;
+	pk->state = WS_PICKER_ANSWER; /* until the rows are on the screen */
+
+	const char* labels[FASTRDP_PANEL_MAX_OPTIONS] = { 0 };
+	const char* def = json_str(msg, "default");
+	const cJSON* it = NULL;
+	cJSON_ArrayForEach(it, cJSON_GetObjectItemCaseSensitive(msg, "options"))
+	{
+		const char* name = json_str(it, "name");
+		const char* label = json_str(it, "label");
+		if (pk->n == FASTRDP_PANEL_MAX_OPTIONS || !name || !*name || strlen(name) > WS_PICKER_NAME)
+			break;
+		strcpy(pk->names[pk->n], name);
+		labels[pk->n] = label ? label : pk->names[pk->n];
+		if (def && strcmp(def, name) == 0)
+			pk->def = pk->n;
+		pk->n++;
+	}
+	const cJSON* t = cJSON_GetObjectItemCaseSensitive(msg, "timeout_s");
+	if (pk->n < 2 || !cJSON_IsNumber(t) || t->valuedouble < 1 ||
+	    t->valuedouble > WS_PICKER_MAX_TIMEOUT || !ws->draw)
+	{
+		WLog_WARN(TAG, "[%s] desktop picker not shown (%s): default desktop", sid,
+		          !ws->draw ? "no waiting screen" : "malformed prompt");
+		return;
+	}
+	pk->sel = pk->def;
+
+	const char* text[FASTRDP_PANEL_MAX_LINES] = { 0 };
+	unsigned nlines = 0;
+	cJSON_ArrayForEach(it, cJSON_GetObjectItemCaseSensitive(msg, "lines"))
+	{
+		if (nlines == FASTRDP_PANEL_MAX_LINES)
+			break;
+		text[nlines++] = cJSON_GetStringValue(it);
+	}
+	fastrdp_panel_set_text(ws->panel, text, nlines);
+	(void)fastrdp_panel_set_qr(ws->panel, NULL, 0);
+	fastrdp_panel_set_options(ws->panel, labels, pk->n, pk->sel, json_str(msg, "hint"));
+	const char* label = json_str(msg, "countdown");
+	fastrdp_panel_set_countdown(ws->panel, label ? label : "");
+	ws->countdown = TRUE;
+	clock_gettime(CLOCK_MONOTONIC, &ws->deadline);
+	ws->deadline.tv_sec += (time_t)t->valuedouble;
+	ws_redraw(ws, FALSE);
+	if (!ws->draw)
+	{
+		WLog_WARN(TAG, "[%s] desktop picker not shown: default desktop", sid);
+		return;
+	}
+
+	/* the client's own pointer: nothing set one yet */
+	rdpUpdate* update = ws->pdata->ps->update;
+	const POINTER_SYSTEM_UPDATE arrow = { .type = SYSPTR_DEFAULT };
+	if (update && update->pointer && update->pointer->PointerSystem &&
+	    !update->pointer->PointerSystem(ws->pdata->ps, &arrow))
+		WLog_DBG(TAG, "[%s] default pointer not sent", sid);
+
+	rdpInput* input = ws->pdata->ps->input;
+	pk->sync = input->SynchronizeEvent;
+	pk->keyboard = input->KeyboardEvent;
+	pk->unicode_keyboard = input->UnicodeKeyboardEvent;
+	pk->mouse = input->MouseEvent;
+	pk->extended_mouse = input->ExtendedMouseEvent;
+	input->SynchronizeEvent = ws_picker_sync;
+	input->KeyboardEvent = ws_picker_keyboard;
+	input->UnicodeKeyboardEvent = ws_picker_unicode;
+	input->MouseEvent = ws_picker_mouse;
+	input->ExtendedMouseEvent = ws_picker_extended_mouse;
+	pk->state = WS_PICKER_SHOWN;
+	WLog_INFO(TAG, "[%s] desktop picker: %u desktops, default %s, %d s", sid, pk->n,
+	          pk->names[pk->def], (int)t->valuedouble);
+	if (ws_picker_drain(ws))
+		pk->armed = TRUE;
+}
+
+/* Restores the proxy's input callbacks; the panel goes back to the generic text until the
+ * broker's next message. */
+static void ws_picker_end(waitingScreen* ws)
+{
+	wsPicker* pk = &ws->picker;
+	if (pk->sync || pk->keyboard)
+	{
+		rdpInput* input = ws->pdata->ps->input;
+		if (input->SynchronizeEvent == ws_picker_sync)
+			input->SynchronizeEvent = pk->sync;
+		if (input->KeyboardEvent == ws_picker_keyboard)
+			input->KeyboardEvent = pk->keyboard;
+		if (input->UnicodeKeyboardEvent == ws_picker_unicode)
+			input->UnicodeKeyboardEvent = pk->unicode_keyboard;
+		if (input->MouseEvent == ws_picker_mouse)
+			input->MouseEvent = pk->mouse;
+		if (input->ExtendedMouseEvent == ws_picker_extended_mouse)
+			input->ExtendedMouseEvent = pk->extended_mouse;
+		pk->sync = NULL;
+		pk->keyboard = NULL;
+	}
+	if (pk->state == WS_PICKER_OFF)
+		return;
+	pk->state = WS_PICKER_OFF;
+	if (!ws->draw || ws->panel->nopt == 0)
+		return;
+	static const char* const generic[] = { WS_GENERIC_TEXT };
+	fastrdp_panel_set_options(ws->panel, NULL, 0, 0, NULL);
+	fastrdp_panel_set_text(ws->panel, generic, ARRAYSIZE(generic));
+	fastrdp_panel_set_countdown(ws->panel, NULL);
+	ws->countdown = FALSE;
+	ws_redraw(ws, FALSE);
+}
+
+/* Once the countdown ran out: the selected row if the user moved it, else the default. */
+static void ws_picker_check_timeout(waitingScreen* ws)
+{
+	if (ws && ws->picker.state == WS_PICKER_SHOWN && ws_ms_until(&ws->deadline) <= 0)
+		ws_picker_finish(ws, ws->picker.moved ? (int)ws->picker.sel : -1, "timeout");
+}
+
+/* Milliseconds until the picker's countdown ends; -1 without a picker. */
+static int ws_picker_next_ms(const waitingScreen* ws)
+{
+	if (!ws || ws->picker.state != WS_PICKER_SHOWN)
+		return -1;
+	const long ms = ws_ms_until(&ws->deadline);
+	return ms <= 0 ? 0 : (int)MIN(ms, INT32_MAX);
+}
+
+/* {"op": "choice", "desktop": name|null} to the broker; the picker ends. */
+static BOOL ws_picker_answer(waitingScreen* ws, int fd)
+{
+	wsPicker* pk = &ws->picker;
+	const char* name = pk->answer >= 0 ? pk->names[pk->answer] : NULL;
+	WLog_INFO(TAG, "[%s] desktop picker: %s (%s)", ws->pdata->session_id,
+	          name ? name : "default desktop", pk->how);
+	ws_picker_end(ws);
+	cJSON* msg = cJSON_CreateObject();
+	if (!msg)
+		return FALSE;
+	cJSON_AddStringToObject(msg, "op", "choice");
+	add_str(msg, "desktop", name);
+	char* text = cJSON_PrintUnformatted(msg);
+	cJSON_Delete(msg);
+	const BOOL ok = text && write_all(fd, text, strlen(text)) && write_all(fd, "\n", 1);
+	free(text);
+	return ok;
 }
 
 /* ------------------------------------------------------------ error info */
@@ -1369,13 +1958,19 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	                        freerdp_settings_get_uint32(front, FreeRDP_ConnectionType));
 
 	/* [FastRDP] WaitingScreen/StatusInfo: the broker may send progress lines first. The
-	 * keyboard layout lets it pick the language of its texts. */
+	 * keyboard layout lets it pick the language of its texts. With the panel on the
+	 * screen and patches/freerdp/0007, the user can also pick the desktop there
+	 * ([broker] desktop_picker). */
 	screen = waiting_screen_new(pdata);
 	if (screen)
 	{
 		cJSON_AddNumberToObject(req, "progress", 1);
 		cJSON_AddNumberToObject(req, "keyboard_layout",
 		                        freerdp_settings_get_uint32(front, FreeRDP_KeyboardLayout));
+		screen->picker.offered = ws_picker_possible(screen);
+		if (screen->picker.offered)
+			cJSON_AddNumberToObject(req, "picker", 1);
+		s->screen = screen;
 	}
 
 	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);
@@ -1441,6 +2036,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	rc = TRUE;
 
 out:
+	if (s)
+		s->screen = NULL;
 	/* a granted login: no trace of the panel before the back-end's first frame */
 	waiting_screen_free(screen, rc);
 	if (!rc)

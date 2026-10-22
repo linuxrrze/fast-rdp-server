@@ -162,12 +162,27 @@ fastrdp_proxy_status_info: false
 fastrdp_ui_language: en
 fastrdp_ui_language_from_keyboard: true
 # Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web, qr_hint,
-# session_start, countdown; placeholders {user} {approve_url} {timeout} {method} {desktop}
-# {code} (the web approval's two-digit code).
+# session_start, countdown and for the desktop picker picker_title, picker_hint,
+# picker_countdown, picker_running, picker_reconnects; placeholders {user} {approve_url}
+# {timeout} {method} {desktop} {code} (the web approval's two-digit code) {running}
+# {count} (broker/brokerd/fastrdp_broker/ui.py).
 fastrdp_ui_texts: {}
 # The approval page on the panel ("" = not named, no QR code) and its QR code.
 fastrdp_ui_approve_url: "{{ (fastrdp_web_public_url ~ '/web/approve') if fastrdp_web_enabled | bool else '' }}"
 fastrdp_ui_qr_code: true
+# Desktop picker on that panel (broker [broker] desktop_picker; needs
+# fastrdp_proxy_waiting_screen; docs/desktop-matrix.md#choosing-a-desktop): after the
+# second factor the user picks the desktop in the RDP window (keys 1-9, arrow keys and
+# Enter, or a click). never; if_multiple = users with more than one permitted desktop
+# (fastrdp_desktops, fastrdp_desktop_groups) who have not chosen one (web gateway,
+# fastrdpctl desktop, ~/.config/fastrdp/desktop); always = also then, their choice
+# preselected. Never for logins that name a desktop (web gateway, downloaded .rdp files).
+fastrdp_desktop_picker: never
+# Seconds the picker waits (3..60), then the preselected desktop. The proxy adds them to
+# fastrdp_proxy_broker_timeout itself, so the checks below need no room for them.
+fastrdp_desktop_picker_timeout: 10
+# A running session: preselect its desktop, or skip the picker and reconnect to it.
+fastrdp_desktop_picker_when_running: preselect
 
 # ---------------------------------------------------------------- desktops
 fastrdp_desktops: [xfce]             # xfce mate cinnamon lxqt budgie i3 sway labwc wayfire gnome plasma

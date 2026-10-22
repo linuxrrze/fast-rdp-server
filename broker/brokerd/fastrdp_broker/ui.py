@@ -10,8 +10,15 @@ language of the client's keyboard layout ([ui] language_from_keyboard), with the
 placeholders: {user} (local account), {approve_url} ([ui] approve_url), {timeout}
 (seconds), {method} (push, web, push_or_web), {desktop} (the desktop's label), {code}
 (the web approval's two-digit correlation code, also on the approval page and in
-notifications; "" for a push). A line that names {approve_url} is left out while
-approve_url is "", one that names {code} while there is no code. """
+notifications; "" for a push), {running} (the desktop of a running session) and {count}
+(the desktop picker's rows). A line that names {approve_url} is left out while
+approve_url is "", one that names {code} while there is no code.
+
+The desktop picker ([broker] desktop_picker, Broker.pick_desktop) uses picker_title (the
+lines above the rows; {desktop}: the preselected one), picker_hint (one line below them,
+cut at the panel's width), picker_countdown, and for the rows picker_running (the
+desktop of a running session) and picker_reconnects (another desktop of the same
+back-end: choosing it reconnects to the running {running}). """
 
 from __future__ import annotations
 
@@ -20,11 +27,13 @@ import string
 from . import qrcode
 from .config import UiSection
 
-TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "qr_hint", "session_start", "countdown")
-PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code")
+TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "qr_hint", "session_start", "countdown",
+             "picker_title", "picker_hint", "picker_countdown", "picker_running", "picker_reconnects")
+PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code", "running", "count")
 MAX_TEMPLATE = 2000
 MAX_LINES = 12      # the module shows at most 16 after wrapping
 MAX_LINE = 200      # characters per line
+MAX_OPTION_LABEL = 44  # desktop picker rows: the module shows 48 glyphs with "[1] "
 QR_MAX_VERSION = 10  # 57 x 57 modules; [ui] approve_url fits (config.MAX_APPROVE_URL)
 
 BUILTIN_TEXTS: dict[str, dict[str, str]] = {
@@ -43,6 +52,11 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "qr_hint": "Scan the code to open the approval page on your phone.",
         "session_start": "Connecting to your desktop ({desktop})…",
         "countdown": "Time left:",
+        "picker_title": "Choose your desktop",
+        "picker_hint": "1-{count}, arrow keys + Enter, or click. Esc: {desktop}",
+        "picker_countdown": "Continuing in",
+        "picker_running": "{desktop} (running)",
+        "picker_reconnects": "{desktop} (opens the running {running})",
     },
     "de": {
         "mfa_push": "Anmeldung bestätigen\n"
@@ -62,6 +76,11 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "qr_hint": "Code scannen, um die Freigabeseite auf dem Telefon zu öffnen.",
         "session_start": "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…",
         "countdown": "Verbleibend:",
+        "picker_title": "Desktop auswählen",
+        "picker_hint": "1-{count}, Pfeiltasten + Eingabe oder Klick. Esc: {desktop}",
+        "picker_countdown": "Weiter in",
+        "picker_running": "{desktop} (läuft)",
+        "picker_reconnects": "{desktop} (öffnet das laufende {running})",
     },
 }
 
@@ -139,6 +158,30 @@ class WaitingTexts:
                 msg["qr"] = self.qr
                 msg["lines"] = (msg["lines"] + self.lines(lang, "qr_hint", user=user))[:MAX_LINES]
         return msg
+
+    def text(self, lang: str, key: str, **values) -> str:
+        """One-line text (the first line of the template)."""
+        lines = self.lines(lang, key, **values)
+        return lines[0] if lines else ""
+
+    def picker(self, lang: str, user: str, options: list[dict], default: str, timeout: int) -> dict:
+        """{"progress": "choose_desktop", ...} (protocol.py). `options`: {"name", "label",
+        "running": bool, "reconnects": label of the same back-end's running desktop or None};
+        `default`: the preselected name."""
+        rows = []
+        for o in options:
+            label = o["label"]
+            if o.get("running"):
+                label = self.text(lang, "picker_running", user=user, desktop=label, running=label)
+            elif o.get("reconnects"):
+                label = self.text(lang, "picker_reconnects", user=user, desktop=label, running=o["reconnects"])
+            rows.append({"name": o["name"], "label": label[:MAX_OPTION_LABEL], "running": bool(o.get("running"))})
+        default_label = next((o["label"] for o in options if o["name"] == default), default)
+        values = {"user": user, "desktop": default_label, "timeout": int(timeout), "count": len(options)}
+        return {"progress": "choose_desktop", "options": rows, "default": default,
+                "timeout_s": int(timeout), "lines": self.lines(lang, "picker_title", **values),
+                "countdown": self.text(lang, "picker_countdown", **values),
+                "hint": self.text(lang, "picker_hint", **values)}
 
     def session_start(self, lang: str, user: str, desktop: str) -> dict:
         return {"progress": "session_start",

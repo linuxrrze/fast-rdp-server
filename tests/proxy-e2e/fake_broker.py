@@ -22,6 +22,12 @@ Progress lines (protocol.py; only when the login asks with "progress": 1):
   'badprogress'   a malformed QR code and non-string lines, then the reply
   'floodprogress' more progress messages than the module accepts
 A "progresswait" record says whether the login asked and whether the peer closed.
+Desktop picker (protocol.py "choose_desktop"; users whose name starts with 'picker'):
+after PICKER_DELAY s (the MFA wait) a choose_desktop prompt with PICKER_OPTIONS, default
+xfce, PICKER_TIMEOUT s, if the login announced "picker": 1; then it waits up to
+PICKER_TIMEOUT + 5 s for the module's one line. A "pickerchoice" record holds whether a
+prompt went out, the line received (null: none), whether the peer closed and the seconds
+waited; the reply names the chosen desktop.
 Connections are served in threads, so a waiting request does not hold up others."""
 import json
 import os
@@ -50,6 +56,11 @@ PUSH_WAIT = 8.0
 PROGRESS_WAIT = 3.5
 PROGRESS_TIMEOUT = 5
 APPROVE_URL = "https://rdp1.lab.example.com/web/approve"
+PICKER_DELAY = 1.5
+PICKER_TIMEOUT = 6
+PICKER_OPTIONS = [{"name": "xfce", "label": "Xfce", "running": False},
+                  {"name": "gnome", "label": "GNOME (running)", "running": True},
+                  {"name": "plasma", "label": "KDE Plasma", "running": False}]
 MFA_PROGRESS = {"progress": "mfa", "method": "push_or_web", "timeout_s": PROGRESS_TIMEOUT,
                 "approve_url": APPROVE_URL, "countdown": "Time left:",
                 "lines": ["Approve your sign-in", "Confirm the push on your phone, or sign in at",
@@ -111,6 +122,38 @@ def progress(conn: socket.socket, req: dict) -> bool:
     return not closed
 
 
+def picker(conn: socket.socket, req: dict) -> tuple[bool, str]:
+    """The desktop picker of the 'picker*' users; (peer still there, chosen desktop)."""
+    asked = req.get("picker") == 1
+    if wait_closed(conn, PICKER_DELAY):
+        record({"op": "pickerchoice", "user": req["user"], "asked": asked, "closed": True})
+        return False, "xfce"
+    if not asked:
+        record({"op": "pickerchoice", "user": req["user"], "asked": False, "closed": False})
+        return True, "xfce"
+    send(conn, {"progress": "choose_desktop", "options": PICKER_OPTIONS, "default": "xfce",
+                "timeout_s": PICKER_TIMEOUT, "lines": ["Choose your desktop"],
+                "countdown": "Starting in", "hint": "1-3, arrows and Enter, or click. Esc: Xfce"})
+    start, line, closed = time.monotonic(), None, False
+    buf = b""
+    while (left := PICKER_TIMEOUT + 5 - (time.monotonic() - start)) > 0 and b"\n" not in buf:
+        if not select.select([conn], [], [], left)[0]:
+            break
+        data = conn.recv(4096)
+        if not data:
+            closed = True
+            break
+        buf += data
+    if b"\n" in buf:
+        line = json.loads(buf.split(b"\n", 1)[0])
+    record({"op": "pickerchoice", "user": req["user"], "asked": True, "line": line,
+            "closed": closed, "waited": round(time.monotonic() - start, 2)})
+    chosen = (line or {}).get("desktop") or "xfce"
+    if not closed:
+        send(conn, {"progress": "session_start", "lines": [f"Starting {chosen}\u2026"]})
+    return not closed, chosen
+
+
 def serve(conn: socket.socket) -> None:
     with conn:
         for line in conn.makefile():
@@ -124,10 +167,15 @@ def serve(conn: socket.socket) -> None:
             if req["op"] == "login" and req["user"] in ("progress", "oldbroker", "badprogress",
                                                          "floodprogress") and not progress(conn, req):
                 return
+            desktop = "xfce"
+            if req["op"] == "login" and req["user"].startswith("picker"):
+                there, desktop = picker(conn, req)
+                if not there:
+                    return
             if req["op"] != "login":
                 rep = {"ok": True}
             elif req.get("password") in ("good", "fastrdp1:TOKEN", "deadport"):
-                rep = {"ok": True, "user": req["user"], "desktop": "xfce", "target": {
+                rep = {"ok": True, "user": req["user"], "desktop": desktop, "target": {
                     "host": "127.0.0.1", "port": 1 if req["password"] == "deadport" else port,
                     "username": req["user"], "password": "fastrdp1:TOKEN", "domain": "",
                     "security": "tls", "cert_sha256": CERT_SHA256}}

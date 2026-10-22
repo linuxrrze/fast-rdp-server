@@ -23,11 +23,20 @@
  *   Info PDU ("status_info=0x...").
  * E2E_DUMP=FILE, E2E_DUMP_AT_MS=N: decode the graphics (FreeRDP's GDI) and write the screen
  *   as a PPM image N ms (default 1500) after the connection started.
+ * E2E_KEYS=LIST, E2E_INPUT_AT_MS=N: keys sent N ms (default 2500) after connecting, e.g. to
+ *   the desktop picker: comma-separated tokens, each a press and a release: "1".."9" (top
+ *   row), "kp1".."kp9" (numeric keypad), "up", "down", "tab", "enter", "esc", "u1".."u9"
+ *   (Unicode keyboard events); "dN" / "rN" only press / only release top-row N.
+ * E2E_EARLY_KEYS=LIST: the same right after connecting (typed during the MFA wait).
+ * E2E_NUMLOCK=1: a Synchronize event with NumLock on before the keys.
+ * E2E_CLICK=+N: at E2E_INPUT_AT_MS, a left click on the picker row N rows below the
+ *   selected one (found on the decoded screen: the accent-filled row).
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."),
  * if freerdp_connect failed, the connect error ("connect_error=0x..."), and the Bitmap
  * Updates received ("bitmap_updates=N bitmap_rects=N first_bitmap_ms=N", -1: none). */
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -61,7 +70,7 @@ static BOOL print_status_info(rdpContext* ctx, UINT32 status)
 }
 static BOOL post_connect(freerdp* inst)
 {
-	if (getenv("E2E_DUMP"))
+	if (getenv("E2E_DUMP") || getenv("E2E_CLICK"))
 	{
 		if (!gdi_init(inst, PIXEL_FORMAT_BGRX32))
 			return FALSE;
@@ -88,6 +97,87 @@ static void dump_screen(freerdp* inst, const char* path)
 		}
 	fclose(f);
 	printf("client: dumped screen at %ld ms\n", elapsed_ms());
+}
+/* one token of E2E_KEYS (see above) */
+static void send_key(rdpInput* input, const char* t)
+{
+	static const struct
+	{
+		const char* name;
+		UINT16 code; /* | 0x100: extended */
+	} named[] = { { "up", 0x148 }, { "down", 0x150 }, { "tab", 0x0f }, { "enter", 0x1c }, { "esc", 0x01 } };
+	static const BYTE keypad[9] = { 0x4f, 0x50, 0x51, 0x4b, 0x4c, 0x4d, 0x47, 0x48, 0x49 };
+	UINT16 code = 0;
+	BOOL down = TRUE, up = TRUE;
+	if (t[0] == 'u' && t[1] >= '1' && t[1] <= '9' && !t[2])
+	{
+		(void)freerdp_input_send_unicode_keyboard_event(input, 0, (UINT16)t[1]);
+		(void)freerdp_input_send_unicode_keyboard_event(input, KBD_FLAGS_RELEASE, (UINT16)t[1]);
+		return;
+	}
+	if ((t[0] == 'd' || t[0] == 'r') && t[1] >= '1' && t[1] <= '9' && !t[2])
+	{
+		down = t[0] == 'd';
+		up = !down;
+		t++;
+	}
+	if (t[0] >= '1' && t[0] <= '9' && !t[1])
+		code = (UINT16)(0x02 + t[0] - '1');
+	else if (strncmp(t, "kp", 2) == 0 && t[2] >= '1' && t[2] <= '9' && !t[3])
+		code = keypad[t[2] - '1'];
+	for (size_t i = 0; i < sizeof(named) / sizeof(named[0]) && !code; i++)
+		if (strcmp(t, named[i].name) == 0)
+			code = named[i].code;
+	if (!code)
+		return;
+	const UINT16 ext = (code & 0x100) ? KBD_FLAGS_EXTENDED : 0;
+	if (down)
+		(void)freerdp_input_send_keyboard_event(input, ext, (UINT8)code);
+	if (up)
+		(void)freerdp_input_send_keyboard_event(input, ext | KBD_FLAGS_RELEASE, (UINT8)code);
+}
+static void send_keys(freerdp* inst, const char* list)
+{
+	char buf[512];
+	(void)snprintf(buf, sizeof(buf), "%s", list);
+	if (getenv("E2E_NUMLOCK"))
+		(void)freerdp_input_send_synchronize_event(inst->context->input, KBD_SYNC_NUM_LOCK);
+	for (char* t = strtok(buf, ","); t; t = strtok(NULL, ","))
+		send_key(inst->context->input, t);
+	printf("client: sent keys %s at %ld ms\n", list, elapsed_ms());
+}
+/* E2E_CLICK=+N: the accent-filled (selected) picker row on the decoded screen is the
+ * first accent run taller than 10 pixels; click N rows below it */
+static void click_row(freerdp* inst, int rows_below)
+{
+	const rdpGdi* gdi = inst->context->gdi;
+	if (!gdi)
+		return;
+	for (UINT32 y = 1; y < gdi->height; y++)
+		for (UINT32 x = 0; x < gdi->width; x++)
+		{
+			const BYTE* px = gdi->primary_buffer + (size_t)y * gdi->stride + (size_t)x * 4;
+			const BYTE* above = px - gdi->stride;
+			const BOOL accent = px[2] == 0x2f && px[1] == 0x6d && px[0] == 0xb5;
+			if (!accent || (above[2] == 0x2f && above[1] == 0x6d && above[0] == 0xb5))
+				continue;
+			UINT32 h = 0;
+			while (y + h < gdi->height && px[(size_t)h * gdi->stride + 2] == 0x2f &&
+			       px[(size_t)h * gdi->stride + 1] == 0x6d && px[(size_t)h * gdi->stride] == 0xb5)
+				h++;
+			if (h <= 10)
+				continue;
+			const UINT16 cx = (UINT16)(x + 4);
+			const UINT16 cy = (UINT16)(y + (UINT32)rows_below * h + h / 2);
+			rdpInput* input = inst->context->input;
+			(void)freerdp_input_send_mouse_event(input, PTR_FLAGS_MOVE, cx, cy);
+			(void)freerdp_input_send_mouse_event(input, PTR_FLAGS_DOWN | PTR_FLAGS_BUTTON1, cx, cy);
+			(void)freerdp_input_send_mouse_event(input, PTR_FLAGS_BUTTON1, cx, cy);
+			printf("client: clicked %u,%u (selected row at %u,%u, %u high) at %ld ms\n", cx, cy, x,
+			       y, h, elapsed_ms());
+			return;
+		}
+	printf("client: no picker row on the screen\n");
 }
 static void give_up(int sig)
 {
@@ -163,6 +253,9 @@ int main(int argc, char** argv)
 	const long keep_ms = 1000L * (getenv("E2E_KEEP_S") ? atoi(getenv("E2E_KEEP_S")) : 4);
 	const char* dump = getenv("E2E_DUMP");
 	const long dump_at = getenv("E2E_DUMP_AT_MS") ? atol(getenv("E2E_DUMP_AT_MS")) : 1500;
+	const char* keys = getenv("E2E_KEYS");
+	const char* click = getenv("E2E_CLICK");
+	const long input_at = getenv("E2E_INPUT_AT_MS") ? atol(getenv("E2E_INPUT_AT_MS")) : 2500;
 	clock_gettime(CLOCK_MONOTONIC, &started);
 	BOOL ok = freerdp_connect(inst);
 	printf("client: freerdp_connect=%d\n", ok);
@@ -171,9 +264,19 @@ int main(int argc, char** argv)
 		       freerdp_get_last_error_name(freerdp_get_last_error(inst->context)));
 	/* keep the session alive so the proxy reaches post-connect and contacts the back-end */
 	const long connected_ms = elapsed_ms();
+	if (ok && getenv("E2E_EARLY_KEYS"))
+		send_keys(inst, getenv("E2E_EARLY_KEYS"));
 	while (ok && elapsed_ms() - connected_ms < keep_ms &&
 	       !freerdp_shall_disconnect_context(inst->context))
 	{
+		if ((keys || click) && elapsed_ms() - connected_ms >= input_at)
+		{
+			if (keys)
+				send_keys(inst, keys);
+			if (click)
+				click_row(inst, atoi(click));
+			keys = click = NULL;
+		}
 		if (dump && elapsed_ms() >= dump_at)
 		{
 			dump_screen(inst, dump);

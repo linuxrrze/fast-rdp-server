@@ -137,5 +137,13 @@ TLS e2e suite 39/39. No suite exercises the drop itself (no test back-end sends 
 NLA and smartcard suites not rerun (no KDC on the build host; 0006 touches only
 `server/proxy/pf_update.c`).
 
+2026-10-22, `3.32.2-6` (patch 0007, PDUs read during PostConnect are input, for the
+desktop picker): sysroot build of the full `build-freerdp.sh` configuration, all four e2e
+suites: TLS 70/70 (13 new desktop picker checks; 68/68 without zxing-cpp), Kerberos NLA 24/24, smartcard via
+p11-kit 6/6 and via SoftHSM 6/6. Without 0007 the module does not offer the picker (it is
+compiled out without `FREERDP_PEER_IN_POST_CONNECT`, and a weak reference finds no
+`freerdp_peer_in_post_connect()` in an unpatched `libfreerdp3`), so only the picker
+checks fail.
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

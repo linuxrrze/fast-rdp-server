@@ -296,3 +296,57 @@ faking one needs a back-end that breaks the rule. `tests/proxy-e2e/run.sh` (39/3
 ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** a FreeRDP release checks the front client's capability before forwarding.
+
+## 0007 – [core,peer] input during PostConnect: no second PostConnect
+
+**Problem.** The server calls the peer's `PostConnect` once the connection is active
+([MS-RDPBCGR] 1.3.1.1): after the client's Font List PDU, in
+`rdp_peer_handle_state_active()` (`libfreerdp/core/peer.c`), with `client->connected`
+still FALSE until the callback returns. The client may send input from then on (1.3).
+A callback that reads that input itself, with `GetEventHandles()` and
+`CheckFileDescriptor()` from inside `PostConnect`, gets every PDU into
+`rdp_peer_handle_state_active()` again: `connected` is still FALSE, so `PostConnect`
+runs a second time, nested in the first.
+
+**Who is affected.** Servers whose `PostConnect` waits for the user and reads the
+connection meanwhile. freerdp-proxy runs its modules' `ServerFetchTargetAddr` hook there
+(`pf_server_post_connect()` → `pf_server_get_target_info()`): fastrdp's broker call (MFA
+push, web approval) and its desktop picker ([docs/desktop-matrix.md](../../docs/desktop-matrix.md#choosing-a-desktop)),
+which takes keys and clicks on the waiting screen before the back-end starts. The proxy's
+own input handlers drop input until its back-end is connected, and module input filters
+run only after that, so the module must read the input itself.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp's desktop picker (`[broker] desktop_picker`) | yes: without it the module does not offer the picker (`ws_picker_possible()`) and logins get the desktop as before |
+| everything else in fastrdp, other FreeRDP servers | no: nothing changes for a `PostConnect` that does not read the connection |
+
+**Fix.** `rdpRdp` remembers that `PostConnect` runs (`in_post_connect`); a PDU that
+arrives meanwhile is handled as in the active state (`STATE_RUN_ACTIVE`: input callbacks,
+channel data, Refresh Rect, ...), not with a second `PostConnect`. `Activate` still runs
+once, after `PostConnect` returned; `client->connected` and `client->activated` are
+untouched. `freerdp_peer_in_post_connect()` (new, `include/freerdp/peer.h`, marked by
+`FREERDP_PEER_IN_POST_CONNECT`) returns TRUE while `PostConnect` runs. The fastrdp module
+compiles the picker in only with the macro and calls the function through a weak
+reference, so a module built against these headers but loaded with an unpatched
+`libfreerdp3` offers no picker instead of running into the nested `PostConnect`.
+
+Without a patch, a module could set `peer->connected` itself before reading and reset
+it afterwards. That depends on FreeRDP's internals in the same way, leaves the peer in
+an inconsistent state if the module fails in between, and cannot be detected; the patch
+is ten lines and testable.
+
+**Regression test.** `tests/proxy-e2e/run.sh` (desktop picker, 3.32.2-6): keys (top row,
+keypad with NumLock, arrows, Enter, Esc, Unicode), a click, keys typed before the
+picker showed (ignored), the countdown, and a client closed during the picker; every
+choice reaches the broker and the login reaches the back-end afterwards. Without the
+patch the module does not announce the picker and these checks fail; the rest of the
+suite passes either way.
+
+**Status upstream.** Still present in 3.32.2. Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** FreeRDP processes PDUs read during `PostConnect` as input (or offers
+another way to read input before `Activate`), and the module checks for that instead.

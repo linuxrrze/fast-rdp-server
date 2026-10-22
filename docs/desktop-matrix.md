@@ -89,6 +89,74 @@ allowed ones.
 A user can have one running session per back-end. Switching from `xfce` to `gnome`
 starts a second session; the X11 one keeps running until logout or timeout.
 
+### Desktop picker in the RDP window
+
+With `fastrdp_desktop_picker` (broker `[broker] desktop_picker`) users who may use more
+than one desktop pick it in the RDP window, after the second factor and before the
+session starts. It works with any client (mstsc, Windows App, FreeRDP, Remmina) and
+needs no client setting. Off by default.
+
+```
+Choose your desktop
+
+ [1] Xfce
+ [2] GNOME (running)          <- preselected, accent-filled
+ [3] KDE Plasma
+ [4] MATE (opens the running Xfce)
+1-4, arrow keys + Enter, or click. Esc: GNOME
+
+Continuing in 0:09
+```
+
+Keys 1-9 (top row, or the numeric keypad with NumLock) start a desktop at once; Up/Down
+(Tab, Home, End) move the selection and Enter starts it; a click on a row starts that
+row; Esc starts the preselected one. When the countdown (`fastrdp_desktop_picker_timeout`,
+10 s, at most 60) runs out, the selected row starts: the preselected one unless the user
+moved the selection. Keys typed before the picker showed (during the MFA wait) do not
+count.
+
+| `fastrdp_desktop_picker` | The picker is shown |
+|---|---|
+| `never` (default) | never; the order above decides |
+| `if_multiple` | when the order above ends at step 4 or 5: the user has chosen nothing yet (no stored choice, no `~/.config/fastrdp/desktop`) |
+| `always` | also when the user has; the stored choice is preselected |
+
+In every mode the picker is left out
+- for a login that names a desktop (step 1; any *alternate shell* counts). The web
+  gateway and its downloaded `.rdp` files always name one, so browser logins never see
+  the picker;
+- when the user may use only one desktop;
+- without the waiting screen (`fastrdp_proxy_waiting_screen`, the picker draws into it;
+  the role checks refuse the combination) and with an older `fastrdp-freerdp3` (before
+  3.32.2-6, `patches/freerdp/0007`): the proxy then does not offer the picker and the
+  order above decides.
+
+So with the picker the order is: client hint > picker choice > stored choice > home file
+> group default > default, where the picker preselects what the order without it would
+give. The choice is not stored: with `if_multiple` a user who wants to skip the picker
+chooses on the web gateway's chooser page or puts the name into
+`~/.config/fastrdp/desktop`.
+
+Running sessions (`fastrdp_desktop_picker_when_running`):
+- `preselect` (default): the desktop of the running session is preselected and marked
+  `(running)`. If the order above gives an X11 desktop and an xrdp session runs, its
+  desktop is preselected, because xrdp reconnects to the running session whatever was
+  asked ([backends/xrdp.md](backends/xrdp.md)). The other X11 desktops are marked
+  `(opens the running Xfce)`: choosing them reconnects to that session. To start another
+  X11 desktop, log out of the running one first.
+- `skip`: no picker; the login reconnects to the running session.
+
+The broker waits up to the countdown plus 5 s for the answer; no answer, a desktop the
+user may not use (any more) or anything unexpected gives the preselected desktop and a
+broker log line (`desktop picker answer ... was not offered`). Closing the client during
+the picker abandons the login like closing it during an MFA push. The proxy extends its
+own wait (`fastrdp_proxy_broker_timeout`) by the picker's time, so the picker never
+shortens the time left for the session start. Texts: `picker_*` in `fastrdp_ui_texts`
+([auth-matrix.md](auth-matrix.md#waiting-screen)). Not tested with real clients yet:
+mstsc, Windows App, Remmina, touch input (mstsc and the Windows App send a tap as a
+left click) and multi-monitor clients (the panel is centred on the whole desktop, which
+can put it across two screens).
+
 Measured numbers, encoder details per back-end, tuning knobs and the GPU-host
 runbook: [performance.md](performance.md).
 

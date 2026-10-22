@@ -12,7 +12,7 @@ import os
 import pwd
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable
+from typing import Awaitable, Callable
 
 from . import conntype, home, identity, pamauth, tgt, tickets
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
@@ -30,6 +30,11 @@ log = logging.getLogger("fastrdp.broker")
 
 # Sends one progress message to the proxy module (protocol.py "progress"); never blocks.
 Progress = Callable[[dict], None]
+# Sends the desktop picker's prompt and waits up to the given seconds for the module's
+# answer (login_unless_abandoned): (answered, desktop name or None for the default).
+AskDesktop = Callable[[dict, float], Awaitable[tuple[bool, str | None]]]
+# The broker waits this much longer than the picker's countdown for the answer.
+PICKER_GRACE = 5
 
 
 class Denied(Exception):
@@ -124,17 +129,99 @@ class Broker:
     async def choose_desktop(self, user: LocalUser, hint: str | None) -> str:
         """identity.choose_desktop: the desktop chosen on the webgate (desktopprefs.py),
         else the user's preference file, read off the event loop."""
+        return (await self.desktop_choice(user, hint))[0]
+
+    async def desktop_choice(self, user: LocalUser, hint: str | None) -> tuple[str, str]:
+        """choose_desktop() and why: (desktop, source), source as identity.desktop_choice."""
         hinted = identity.hinted_desktop(self.cfg, user, hint)
         if hinted:
-            return hinted
+            return hinted, "hint"
         web_pref, allowed = self.web_desktop_pref(user)
         if web_pref and allowed:
-            return web_pref
+            return web_pref, "web_pref"
         if web_pref:
             log.info("%s: desktop %s chosen on the web gateway is not allowed (any more); ignored",
                      user.name, web_pref)
         pref = await self.read_desktop_pref(user)
-        return identity.choose_desktop(self.cfg, user, None, pref=pref)
+        name, source, _ = identity.desktop_choice(self.cfg, user, None, pref=pref)
+        return name, source
+
+    async def running_desktops(self, user: LocalUser) -> dict[str, str]:
+        """back-end -> desktop of the user's sessions that still run (state records the
+        back-end confirms; a back-end that cannot tell in 5 s counts as not running)."""
+        running = {}
+        for name, backend in self.backends.items():
+            session = self.state.get(user.name, name)
+            if session is None or session.desktop not in self.cfg.desktops:
+                continue
+            try:
+                if await asyncio.wait_for(backend.alive(session), 5):
+                    running[name] = session.desktop
+            except Exception as exc:  # noqa: BLE001 - only a hint for the picker
+                log.debug("%s: %s session state unknown: %s", user.name, name, exc)
+        return running
+
+    async def pick_desktop(self, user: LocalUser, msg: dict, chosen: str, source: str, lang: str,
+                           ask: AskDesktop) -> str:
+        """[broker] desktop_picker: the user picks the desktop on the proxy's waiting screen
+        (protocol.py "choose_desktop"), `chosen` (from `source`, desktop_choice()) or the
+        running session's desktop preselected. Not for a login with a client hint, a user
+        with one permitted desktop, or with "if_multiple" a desktop chosen before (web
+        gateway, fastrdpctl, ~/.config/fastrdp/desktop). Returns the desktop to start."""
+        mode = self.cfg.broker.desktop_picker
+        if mode == "never":
+            return chosen
+        if str_field(msg, "desktop_hint") is not None:
+            log.debug("%s: no desktop picker: the client named a desktop", user.name)
+            return chosen
+        allowed = [d for d in self.cfg.desktops.values() if identity.desktop_allowed(self.cfg, d.name, user)]
+        if len(allowed) < 2:
+            return chosen
+        if mode == "if_multiple" and source not in ("group_default", "default"):
+            log.info("%s: no desktop picker: %s chosen before (%s)", user.name, chosen, source)
+            return chosen
+        running = await self.running_desktops(user)
+        names = {d.name for d in allowed}
+        live = [d for d in allowed if running.get(d.backend) == d.name]
+        default = chosen
+        if live:
+            # the running session of the chosen desktop's back-end (xrdp: any X11 desktop
+            # reconnects to the one that runs), else the first running one
+            backend = self.cfg.desktops[chosen].backend
+            default = next((d.name for d in live if d.backend == backend), live[0].name)
+            if self.cfg.broker.desktop_picker_when_running == "skip":
+                log.info("%s: no desktop picker: reconnecting to the running %s session (%s)",
+                         user.name, default, self.cfg.desktops[default].backend)
+                return default
+        # at most 9 rows (keys 1-9), the preselected one among them
+        rows = allowed[:9]
+        if default not in {d.name for d in rows}:
+            rows[-1] = self.cfg.desktops[default]
+        options = []
+        for d in rows:
+            other = running.get(d.backend)
+            options.append({
+                "name": d.name, "label": d.label or d.name, "running": other == d.name,
+                "reconnects": (self.cfg.desktops[other].label or other) if other and other != d.name else None,
+            })
+        timeout = self.cfg.broker.desktop_picker_timeout
+        log.info("%s: desktop picker: %s, %s preselected, %ds", user.name,
+                 ", ".join(o["name"] for o in options), default, timeout)
+        answered, desktop = await ask(self.waiting.picker(lang, user.name, options, default, timeout),
+                                      timeout + PICKER_GRACE)
+        if not answered:
+            log.warning("%s: desktop picker: no answer from the proxy within %ds; %s", user.name,
+                        timeout + PICKER_GRACE, default)
+            return default
+        if desktop is None:
+            log.info("%s: desktop picker: %s (preselected; timeout or Esc)", user.name, default)
+            return default
+        if desktop not in {o["name"] for o in options} or desktop not in names \
+                or not identity.desktop_allowed(self.cfg, desktop, user):
+            log.warning("%s: desktop picker answer %r was not offered; %s", user.name, desktop, default)
+            return default
+        log.info("%s: desktop %s chosen in the desktop picker", user.name, desktop)
+        return desktop
 
     def authz_reason(self, user: LocalUser, proven: bool) -> str:
         """Reason for refusing a user whose first factor checked out (allowed groups,
@@ -314,11 +401,14 @@ class Broker:
         log.debug("%s: KDC evidence %s", user.name, evidence)
         return None
 
-    async def login(self, msg: dict, progress: Progress | None = None) -> dict:
+    async def login(self, msg: dict, progress: Progress | None = None,
+                    ask: AskDesktop | None = None) -> dict:
         """`progress`: the module asked for progress messages ("progress": 1) and shows
         them on its waiting screen: "mfa" once the login waits for a push or web approval
         (not for an exempt group, nla_kdc_enforced, KDC evidence or reconnect grace),
-        "session_start" before the back-end is started or reused."""
+        "choose_desktop" for the desktop picker (with `ask`: the module also announced
+        "picker": 1; pick_desktop()), "session_start" before the back-end is started or
+        reused."""
         session_id = str_field(msg, "session_id", required=True, max_len=64)
         user, password, otp, mfa_done = await self.first_factor(msg)
         lang = self.waiting.language(int_field(msg, "keyboard_layout", 0, 0xFFFFFFFF)) if progress else ""
@@ -365,9 +455,11 @@ class Broker:
                 passed = (grace_key, self.grace.clock(), factor)
 
         try:
-            desktop_name = await self.choose_desktop(user, str_field(msg, "desktop_hint"))
+            desktop_name, source = await self.desktop_choice(user, str_field(msg, "desktop_hint"))
         except IdentityError as exc:
             raise Denied(str(exc), exc.reason) from None
+        if progress and ask and mfa_done != "idp":  # web logins chose on the web gateway
+            desktop_name = await self.pick_desktop(user, msg, desktop_name, source, lang, ask)
         desktop = self.cfg.desktops[desktop_name]
         width = int_field(msg, "width", 320, 8192)
         height = int_field(msg, "height", 200, 8192)
@@ -427,14 +519,45 @@ class Broker:
     async def login_unless_abandoned(self, msg: dict, reader: asyncio.StreamReader,
                                      progress: Progress | None = None) -> dict | None:
         """login(), cancelled when the proxy closes the connection first: the user gave up
-        (closed the client during an MFA push) and the proxy dropped the request
-        (fastrdp_plugin.c broker_call). Returns None then. Cancelling stops a push wait
-        (mfa.py); a session start already under way completes (login()). The proxy sends
-        nothing else while it waits, so data instead of EOF is a protocol error."""
-        login = asyncio.ensure_future(self.login(msg, progress))
-        peer = asyncio.ensure_future(reader.read(1))
+        (closed the client during an MFA push or the desktop picker) and the proxy dropped
+        the request (fastrdp_plugin.c broker_call). Returns None then. Cancelling stops a
+        push wait (mfa.py); a session start already under way completes (login()). While
+        a login is pending the proxy sends one line at most: the desktop picker's answer
+        {"op": "choice", "desktop": str|null}, only after a "choose_desktop" prompt and
+        only with "picker": 1 in the request. Anything else is a protocol error."""
+        prompted: asyncio.Future | None = None
+        answers = 0
+
+        async def ask(prompt: dict, timeout: float) -> tuple[bool, str | None]:
+            nonlocal prompted
+            assert progress is not None and prompted is None
+            prompted = asyncio.get_running_loop().create_future()
+            progress(prompt)
+            try:
+                return True, await asyncio.wait_for(asyncio.shield(prompted), timeout)
+            except TimeoutError:
+                prompted.cancel()  # an answer after this is too late
+                return False, None
+
+        picker = ask if progress is not None and msg.get("picker") == 1 else None
+        login = asyncio.ensure_future(self.login(msg, progress, picker))
+        peer = asyncio.ensure_future(reader.readline())
         try:
-            await asyncio.wait({login, peer}, return_when=asyncio.FIRST_COMPLETED)
+            while True:
+                await asyncio.wait({login, peer}, return_when=asyncio.FIRST_COMPLETED)
+                if login.done() or peer.exception() is not None or not peer.result():
+                    break  # a reset counts as closed
+                line = peer.result()
+                if prompted is None or answers:
+                    raise ProtocolError("data received while a login was pending")
+                answers += 1
+                desktop = self.parse_choice(line)
+                if prompted.done():
+                    log.info("session %s: desktop picker answer %r came too late; ignored",
+                             msg.get("session_id"), desktop)
+                else:
+                    prompted.set_result(desktop)
+                peer = asyncio.ensure_future(reader.readline())
             finished = login.done()
         finally:
             for task in (login, peer):
@@ -444,11 +567,24 @@ class Broker:
             await asyncio.gather(login, peer, return_exceptions=True)
         if finished:
             return login.result()  # Denied etc. propagate as before
-        if peer.exception() is None and peer.result():  # a reset counts as closed
+        if isinstance(peer.exception(), ValueError):  # longer than the reader's limit
             raise ProtocolError("data received while a login was pending")
         log.info("login of session %s abandoned: the proxy closed the connection (client gone)",
                  msg.get("session_id"))
         return None
+
+    @staticmethod
+    def parse_choice(line: bytes) -> str | None:
+        """The desktop picker's answer line (protocol.py): the desktop or None (default)."""
+        if not line.endswith(b"\n"):
+            raise ProtocolError("data received while a login was pending")
+        try:
+            choice = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ProtocolError("invalid desktop picker answer") from None
+        if not isinstance(choice, dict) or choice.get("op") != "choice" or "desktop" not in choice:
+            raise ProtocolError("data received while a login was pending")
+        return str_field(choice, "desktop", max_len=64)
 
     # ---------------------------------------------------------------- network
     def add_connection_type(self, target: dict, msg: dict, backend: Backend, user: LocalUser) -> None:

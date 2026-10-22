@@ -7,7 +7,8 @@ Proxy module -> broker.sock:
    "password": str|null, "principal": str|null, "smartcard": bool, "remote_guard": bool,
    "desktop_hint": str|null, "client_address": str|null, "width": int|null,
    "height": int|null, "connection_type": int, "kdc_evidence": [str] (NLA only),
-   "progress": 1 (optional), "keyboard_layout": int (with "progress")}
+   "progress": 1 (optional), "keyboard_layout": int (with "progress"),
+   "picker": 1 (optional, with "progress")}
   -> 0..n progress messages (only if the request has "progress": 1), then
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
@@ -44,6 +45,20 @@ Proxy module -> broker.sock:
       "approve_url" and "qr" ([ui] approve_url, qr_code) only for web and push_or_web:
       "qr" is the QR code of approve_url as rows of "0"/"1" (qrcode.py, dark = "1",
       without the quiet zone).
+    {"progress": "choose_desktop", "options": [{"name": str, "label": str, "running": bool}],
+     "default": str, "timeout_s": int, "lines": [str], "countdown": str, "hint": str}
+      the desktop picker ([broker] desktop_picker, Broker.pick_desktop): after the second
+      factor, only if the request has "picker": 1 (the module can draw the rows and read
+      the client's input: WaitingScreen, patches/freerdp/0007), names no desktop
+      ("desktop_hint"), is no web login, the user may use more than one desktop and, with
+      "if_multiple", has not chosen one before (desktop_choice() source). 2..9
+      options in [desktops] order ("label" with the running/reconnects marks of [ui]
+      picker_running, picker_reconnects; "running": the desktop of a running session),
+      "default" preselected (one of them), "timeout_s" 3..60. The module answers once:
+        {"op": "choice", "desktop": str|null}
+      null (Esc, or the countdown ran out) = "default". The broker waits timeout_s + 5
+      seconds; no answer, a name it did not offer, or one the user may no longer use gives
+      "default" (logged). An answer after that is logged and ignored.
     {"progress": "session_start", "lines": [str]}
       before the back-end session is started or reused (GNOME/Plasma can take a while).
   "lines": texts from [ui] (ui.py) in [ui] language or the language of "keyboard_layout"
@@ -52,10 +67,13 @@ Proxy module -> broker.sock:
   fails or delays the login. ("mfa_pending" below is the webgate's, unrelated.)
 
   The module closes the connection without waiting for the "login" reply when its RDP
-  client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the
-  login (Broker.login_unless_abandoned): a push or web approval wait stops, a session
-  start already under way completes, nothing is recorded as connected. The module sends
-  nothing else while a login is pending; data instead of EOF is a protocol error.
+  client goes away (e.g. mstsc closed during an MFA push or the desktop picker). The
+  broker then cancels the login (Broker.login_unless_abandoned): a push or web approval
+  wait stops, a session start already under way completes, nothing is recorded as
+  connected. While a login is pending the module sends nothing but the one "choice" line
+  after a "choose_desktop" prompt; any other data (also a "choice" before the prompt, a
+  second one, or one from a module without "picker": 1) is a protocol error and closes
+  the connection without a reply.
 
 fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}

@@ -113,7 +113,7 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
   fed AP-REQs and so did not see it.
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
   MS-KRB5. The module sees package `Kerberos`
-  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:199-220`).
+  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:209-230`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -170,11 +170,11 @@ safe). Still worth a robustness fix upstream (§5).
   - The proxy's acceptor does not offer NTLM (§3.13): the client's `[NegoEx, NTLM]` offer
     leaves no mechanism, and the login ends at the first CredSSP message. Before, NTLM ran
     to the end and failed at `ntlm_compute.c:285` (SamOpen), the module's check
-    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1169-1179`) being the last line.
+    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1758-1768`) being the last line.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:1336-1341`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:1925-1930`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -253,8 +253,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1205-1233`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1219-1231`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1794-1822`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1808-1820`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -271,7 +271,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1167-1196`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1756-1785`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`SecondFactor.verify()` → `SecondFactor.push()` in `mfa.py`).
@@ -399,7 +399,10 @@ Notes on the options above:
   before the desktop arrives ([auth-matrix.md](auth-matrix.md#waiting-screen)). Off by
   default until mstsc and the Windows App have shown it (lab S3/L15: panel visible,
   countdown updating, QR code scannable from the screen, no leftover after the desktop
-  appears, also after a resize to another resolution).
+  appears, also after a resize to another resolution). With `fastrdp_desktop_picker` the
+  same panel then lists the user's desktops, and mstsc's keys and clicks choose one
+  before the session starts ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window));
+  lab S3 as well.
   The proxy waits up to `fastrdp_proxy_broker_timeout` (180 s) for the push or approval
   (60/90 s) and the session start after it ([auth-matrix.md](auth-matrix.md)).
   Timeout → Set Error Info 0x409, refusal → 0x7. After a network drop mstsc reconnects
@@ -874,9 +877,12 @@ password (useful with Credential Guard). Clients should use the UPN (also
 non-joined clients not `LAB\alice`.
 
 mstsc and the Windows App have no desktop field: the desktop comes from
-`alternate shell:s:fastrdp:<desktop>`, or from the choice users make on the web
+`alternate shell:s:fastrdp:<desktop>`, from the choice users make on the web
 gateway's chooser page, which also offers these `.rdp` files for download
-([web-access.md](web-access.md#rdp-apps)).
+([web-access.md](web-access.md#rdp-apps)), or, with `fastrdp_desktop_picker`, from the
+list the RDP window shows after sign-in for connections without an alternate shell
+([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)).
+Touch input (Windows App on tablets) reaches the picker as mouse clicks; untested.
 
 Sound and microphone (`audiomode:i:0`, `audiocapturemode:i:1`) have nothing to do with
 Kerberos; the client always opts in. GPO *Remote Desktop Session Host → Device and
@@ -919,7 +925,9 @@ Resource Redirection* applies to Windows hosts, not to fastrdp; the server side 
    mechListMIC. (Confirmed 2026-10-22, §3.14.)
 9. What mstsc shows, and how long it waits, while the broker waits for a push or a web
    approval (§3.8, L15); with `fastrdp_proxy_waiting_screen` the panel, its countdown
-   and QR code, and that nothing of it stays once the desktop arrives.
+   and QR code, and that nothing of it stays once the desktop arrives; with
+   `fastrdp_desktop_picker` that the picker's keys (top row, keypad, arrows, Enter, Esc)
+   and clicks arrive, also from the Windows App on macOS/iOS (Unicode keys, touch).
 10. Windows Hello for Business certificates as a smart card toward fastrdp (§3.9, L19).
 11. An MFA gateway in front of fastrdp: rdpgw with Keycloak, Windows RD Gateway with the
     NPS extension (§3.10, L20, L21).

@@ -18,6 +18,7 @@ self-built FreeRDP 3.32.1 (with the fix below) and MIT krb5 1.22.2.
 | 6 | FreeRDP | Server rejects TSRemoteGuardCreds without the optional `supplementalCreds`, i.e. every FreeRDP `/remoteGuard` client | `patches/freerdp/0003`, shipped in `fastrdp-freerdp3` 3.32.2-2; not submitted |
 | 7 | FreeRDP | Kerberos user-to-user acceptor asks the KDC for a TGT of `TERMSRV/<host>` (or `<fqdn>$`), which Active Directory refuses: every mstsc Kerberos NLA login to an AD-joined FreeRDP server fails | `patches/freerdp/0004`, shipped in `fastrdp-freerdp3` 3.32.2-3; not submitted. Analysis: [windows-clients.md](windows-clients.md) §3.14 |
 | 8 | FreeRDP | freerdp-proxy forwards a back-end's Server Status Info PDU without checking that the front client announced RNS_UD_CS_SUPPORT_STATUSINFO_PDU ([MS-RDPBCGR] 3.3.5.7.2) | `patches/freerdp/0006`, shipped in `fastrdp-freerdp3` 3.32.2-5; not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
+| 9 | FreeRDP | Server: a PDU read while the peer's PostConnect callback runs (the callback reads the connection itself) calls PostConnect a second time, nested in the first | `patches/freerdp/0007`, shipped in `fastrdp-freerdp3` 3.32.2-6; not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
 
 Nothing in 1–4 is needed for fastrdp itself:
 - (1) is a client-side bug, and p11-kit-proxy (small slot ids) avoids it.
@@ -27,7 +28,9 @@ Nothing in 1–4 is needed for fastrdp itself:
 /remoteGuard`, (6) for `[FastRDP] AcceptRemoteGuard=true` with FreeRDP clients
 ([windows-clients.md](windows-clients.md) §3.11), (7) for any mstsc Kerberos login with
 AD ([windows-clients.md](windows-clients.md) §3.14). (8) is defence in depth on the
-proxy: it matters only for a back-end that sends the PDU without being asked.
+proxy: it matters only for a back-end that sends the PDU without being asked. (9) is
+needed only for the optional desktop picker ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window));
+without it the proxy does not offer the picker.
 
 ## 1. FreeRDP: PKCS#11 slot id truncated to 16 bits
 

@@ -1,3 +1,13 @@
+fastrdp-freerdp3 (3.32.2-6) unstable; urgency=medium
+
+  * patches/freerdp: core/peer: a PDU read while the peer's PostConnect runs
+    (the callback reads the connection itself) is handled as input of the
+    active connection instead of running PostConnect a second time;
+    freerdp_peer_in_post_connect() tells the callback. The fastrdp proxy
+    module's desktop picker reads keys and clicks that way.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 16:47:57 +0200
+
 fastrdp-freerdp3 (3.32.2-5) unstable; urgency=medium
 
   * patches/freerdp: server/proxy: drop a back-end's Server Status Info PDU

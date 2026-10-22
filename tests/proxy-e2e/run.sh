@@ -11,6 +11,8 @@
 # Needs: freerdp-proxy, freerdp3-dev, libcjson-dev, openssl, python3, gcc.
 # SYSROOT=/path runs against FreeRDP extracted from .debs instead of the system;
 # FREERDP_PREFIX=/opt/fastrdp against fastrdp's patched build (see freerdp-env.sh).
+# The desktop picker checks need patches/freerdp/0007 (fastrdp-freerdp3 3.32.2-6); without
+# it the module does not offer the picker and they fail.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -141,6 +143,26 @@ E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 floodprogress good "" > ws-flo
 # the client gives up while the waiting screen shows the push
 E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23394 pushwait good "" > ws-giveup.out 2>&1 || true
 for _ in $(seq 50); do [ "$(grep -c '"pushwait"' a.log)" -ge 2 ] && break; sleep 0.2; done
+# Desktop picker (proxy E): the fake broker prompts 1.5 s after the login (the MFA wait),
+# the clients answer 2.5 s after connecting, in parallel. Keys typed before the prompt and
+# a key released that went down before it do not count.
+picker() { # user [VAR=value ...]
+    local u=$1; shift
+    env E2E_KEEP_S=12 "$@" timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
+}
+pids=()
+picker pickerdigit E2E_KEYS=2 & pids+=($!)
+picker pickerkeys E2E_KEYS=down,down,enter & pids+=($!)
+picker pickeresc E2E_KEYS=down,esc & pids+=($!)
+picker pickertimeout & pids+=($!)
+picker pickermoved E2E_KEYS=down & pids+=($!)
+picker pickerclick E2E_CLICK=+1 & pids+=($!)
+picker pickerearly E2E_EARLY_KEYS=3,enter,d4 E2E_KEYS=r4,u2 & pids+=($!)
+picker pickerkeypad E2E_NUMLOCK=1 E2E_KEYS=kp3 & pids+=($!)
+picker pickergone E2E_GIVE_UP_S=3 & pids+=($!)
+# proxy A has no waiting screen: no picker offered, the login goes on as before
+E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 pickeroff good "" > pickeroff.out 2>&1 & pids+=($!)
+wait "${pids[@]}"
 sleep 1
 
 fail=0
@@ -154,17 +176,19 @@ lb = [r for r in b if r["op"] == "login"]
 ct = lambda logins, user: [r.get("connection_type") for r in logins if r["user"] == user]
 pw = [r for r in a if r["op"] == "pushwait"]
 pr = lambda user: [r for r in a if r["op"] == "progresswait" and r["user"] == user]
+pc = {r["user"]: r for r in a if r["op"] == "pickerchoice"}
+chose = lambda user: (pc[user].get("line") or {}).get("desktop", "none") if pc.get(user, {}).get("line") else "none"
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 25'
+expect "front broker saw the expected logins"         'len(la) == 35'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-expect "back-end received the token, not the password" 'len(lb) == 12 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 21 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -186,6 +210,21 @@ expect "no WaitingScreen: no progress asked"            '[r["asked"] for r in pr
 expect "waiting screen logins reached the back-end (old broker, malformed progress too)" \
     '[r["user"] for r in lb].count("progress") == 5 and any(r["user"] == "oldbroker" for r in lb) and any(r["user"] == "badprogress" for r in lb)'
 expect "too many progress messages: login refused, back-end never reached" 'not any(r["user"] == "floodprogress" for r in lb)'
+expect "picker offered with the waiting screen, not without" \
+    'all(r.get("picker") == 1 for r in la if r["user"].startswith("picker") and r["user"] != "pickeroff") and "picker" not in [r for r in la if r["user"] == "pickeroff"][0] and not pc["pickeroff"]["asked"]'
+expect "picker: top-row digit 2"                     'chose("pickerdigit") == "gnome"'
+expect "picker: Down Down Enter"                      'chose("pickerkeys") == "plasma"'
+expect "picker: Esc answers null (the broker's default)" 'pc["pickeresc"].get("line") == {"op": "choice", "desktop": None}'
+expect "picker: countdown over, nothing pressed: null after the timeout" \
+    'pc["pickertimeout"].get("line") == {"op": "choice", "desktop": None} and 5.5 <= pc["pickertimeout"].get("waited", 0) < 8'
+expect "picker: countdown over after a move: the selected row" 'chose("pickermoved") == "gnome" and pc["pickermoved"].get("waited", 0) >= 5.5'
+expect "picker: click on the row below the default"   'chose("pickerclick") == "gnome"'
+expect "picker: keys from before the prompt ignored, Unicode 2 counts" 'chose("pickerearly") == "gnome"'
+expect "picker: keypad 3 with NumLock"                'chose("pickerkeypad") == "plasma"'
+expect "picker: client gone during the picker: broker connection closed" \
+    'pc["pickergone"]["closed"] and pc["pickergone"].get("line") is None and pc["pickergone"].get("waited", 9) < 4'
+expect "picker: chosen logins reached the back-end, the abandoned one not" \
+    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickeroff"])'
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }
@@ -259,6 +298,8 @@ logged "... also with the waiting screen" proxy-e.log \
 logged "malformed QR code from the broker left out, login goes on" proxy-e.log \
     "malformed QR code from the broker left out"
 logged "too many progress messages logged" proxy-e.log "more than 32 progress messages"
+logged "picker: choice logged" proxy-e.log "desktop picker: gnome (click)"
+logged "picker: closed client logged" proxy-e.log "front connection closed during the desktop picker"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

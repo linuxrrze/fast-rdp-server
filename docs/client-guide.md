@@ -65,7 +65,9 @@ error messages: [freerdp-client.md](freerdp-client.md).
 
 Domain-joined Windows uses Kerberos automatically.
 
-**Desktop:** mstsc and the Windows App have no field for it. If your site has web
+**Desktop:** mstsc and the Windows App have no field for it. If your site turned on
+the desktop picker, the RDP window shows a list of your desktops after sign-in (see
+[Choosing your default desktop](#choosing-your-default-desktop)). If your site has web
 access, sign in at `https://<rdp-fqdn>/web/` and either click **Use for Remote Desktop
 logins** next to a desktop (applies to every later login), or **Download .rdp file**
 and open that file (applies to logins with that file). Without web access, put the
@@ -200,6 +202,14 @@ it off on slow links when you do not need it.
   cannot read it; use the web page.
 - **Per connection:** the client's desktop hint (`fastrdp:<desktop>`, sections above)
   wins over both.
+- **In the RDP window** (if your site turned on the desktop picker): after the second
+  factor the window lists the desktops you may use, e.g. `[1] Xfce`, `[2] GNOME
+  (running)`. Press the number, or choose with the arrow keys and Enter, or click the
+  row; Esc or waiting takes the highlighted one (your default, or your running
+  session). Logins that name a desktop (hint, downloaded `.rdp` file, browser) do not
+  show the list; depending on the site's setting it is also left out once you chose a
+  default on the web page or in the home directory. A desktop marked `(opens the running
+  …)` reconnects to your running X11 desktop; log out of that one first to switch.
 
 Available names: see `fastrdp_desktops` in the inventory (`xfce`, `mate`,
 `cinnamon`, `lxqt`, `plasma-x11`, `gnome`, `plasma`, and the wlroots desktops

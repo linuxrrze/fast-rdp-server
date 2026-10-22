@@ -5,6 +5,9 @@
  * lines of text from the broker, an optional countdown and an optional QR code, laid out
  * for the client's desktop and drawn into a 32-bit BGRX image. libc only, so that
  * tests/proxy-module/test_panel.c can test it without FreeRDP.
+ * The desktop picker ([broker] desktop_picker, fastrdp_plugin.c ws_picker_*()) adds up to
+ * FASTRDP_PANEL_MAX_OPTIONS rows below the text ("[1] Xfce"), the selected one filled with
+ * the accent colour, and a hint line; fastrdp_panel_hit() finds the row under a click.
  *
  * Text is UTF-8; code points the font lacks (fastrdp_font.h: printable Latin-1 and a few
  * typographic characters) and malformed sequences become '?'. Lines are wrapped at
@@ -32,12 +35,15 @@
 #define FASTRDP_QR_MIN_PX 4   /* pixels per module, at least */
 #define FASTRDP_QR_MAX_PX 8   /* and at most (font scale 2) */
 #define FASTRDP_PANEL_MARGIN 16 /* to the desktop's edges */
+#define FASTRDP_PANEL_MAX_OPTIONS 9 /* picker rows: keys 1..9 */
+#define FASTRDP_PANEL_OPTION_MAX 48 /* glyphs per picker row, "[1] " included */
 
 /* colours, 0xRRGGBB */
 #define FASTRDP_COLOR_SCREEN 0x000000u
 #define FASTRDP_COLOR_PANEL 0xf2f2f2u
 #define FASTRDP_COLOR_TEXT 0x1a1a1au
 #define FASTRDP_COLOR_ACCENT 0x2f6db5u
+#define FASTRDP_COLOR_SELECTED_TEXT 0xffffffu /* on the accent colour */
 #define FASTRDP_COLOR_QR_LIGHT 0xffffffu
 #define FASTRDP_COLOR_QR_DARK 0x000000u
 
@@ -58,6 +64,12 @@ typedef struct
 	int countdown; /* show the countdown line */
 	unsigned qr_size;
 	unsigned char qr[FASTRDP_QR_MAX * FASTRDP_QR_MAX]; /* 1 = dark */
+	unsigned nopt; /* picker rows */
+	unsigned short opt[FASTRDP_PANEL_MAX_OPTIONS][FASTRDP_PANEL_OPTION_MAX];
+	unsigned optlen[FASTRDP_PANEL_MAX_OPTIONS];
+	unsigned selected;
+	unsigned short hint[FASTRDP_PANEL_MAX_COLS];
+	unsigned hintlen;
 
 	/* layout (fastrdp_panel_layout()); positions inside the panel unless noted */
 	fastrdpRect rect; /* the panel on the desktop */
@@ -66,7 +78,9 @@ typedef struct
 	unsigned nlines;
 	unsigned short lines[FASTRDP_PANEL_MAX_LINES][FASTRDP_PANEL_MAX_COLS];
 	unsigned linelen[FASTRDP_PANEL_MAX_LINES];
-	unsigned text_x, text_y;
+	unsigned text_x, text_y, text_w;
+	unsigned row_h, opt_y; /* picker rows: height, top of the first */
+	fastrdpRect hint_rect;
 	fastrdpRect countdown_rect;
 	int show_qr;
 	unsigned qr_px; /* pixels per module */
@@ -153,6 +167,26 @@ static void fastrdp_panel_set_countdown(fastrdpPanel* p, const char* label)
 {
 	p->countdown = label != NULL;
 	p->labellen = label ? fastrdp_glyphs(label, p->label, FASTRDP_PANEL_LABEL_MAX) : 0;
+}
+
+/* The picker's rows: labels[0..n) become "[1] <label>" ... (n beyond
+ * FASTRDP_PANEL_MAX_OPTIONS dropped, labels cut to FASTRDP_PANEL_OPTION_MAX glyphs, NULL
+ * empty), `selected` filled with the accent colour, `hint` (NULL: none) one line below
+ * them. n = 0 removes the rows and the hint. */
+static void fastrdp_panel_set_options(fastrdpPanel* p, const char* const* labels, unsigned n,
+                                      unsigned selected, const char* hint)
+{
+	p->nopt = n < FASTRDP_PANEL_MAX_OPTIONS ? n : FASTRDP_PANEL_MAX_OPTIONS;
+	for (unsigned i = 0; i < p->nopt; i++)
+	{
+		const char prefix[] = { '[', (char)('1' + i), ']', ' ', '\0' };
+		unsigned len = fastrdp_glyphs(prefix, p->opt[i], FASTRDP_PANEL_OPTION_MAX);
+		if (labels[i])
+			len += fastrdp_glyphs(labels[i], p->opt[i] + len, FASTRDP_PANEL_OPTION_MAX - len);
+		p->optlen[i] = len;
+	}
+	p->selected = selected < p->nopt ? selected : 0;
+	p->hintlen = (p->nopt && hint) ? fastrdp_glyphs(hint, p->hint, FASTRDP_PANEL_MAX_COLS) : 0;
 }
 
 /* The QR code as n rows of n '0'/'1' characters (n = 21, 25, ..., 177: versions 1..40).
@@ -272,7 +306,11 @@ static int fastrdp_panel_layout(fastrdpPanel* p, unsigned desk_w, unsigned desk_
 			if (cols < min_cols)
 				continue;
 			const unsigned avail_h = desk_h - 2 * FASTRDP_PANEL_MARGIN;
-			const unsigned fixed_h = 2 * pad + accent_h + (p->countdown ? line_h + line_h / 2 : 0);
+			const unsigned row_h = line_h + line_h / 4;
+			const unsigned options_h =
+			    p->nopt ? line_h / 2 + p->nopt * row_h + (p->hintlen ? line_h / 4 + line_h : 0) : 0;
+			const unsigned fixed_h =
+			    2 * pad + accent_h + options_h + (p->countdown ? line_h + line_h / 2 : 0);
 			if (avail_h <= fixed_h + line_h || (with_qr && avail_h < qr_total + 2 * pad + accent_h))
 				continue;
 			unsigned max_lines = (avail_h - fixed_h) / line_h;
@@ -290,10 +328,17 @@ static int fastrdp_panel_layout(fastrdpPanel* p, unsigned desk_w, unsigned desk_
 				if (cd > widest)
 					widest = cd;
 			}
+			/* picker rows: half a glyph of room on both sides; longer ones are cut */
+			for (unsigned i = 0; i < p->nopt; i++)
+				if (p->optlen[i] + 1 > widest)
+					widest = p->optlen[i] + 1 < cols ? p->optlen[i] + 1 : cols;
+			if (p->hintlen > widest)
+				widest = p->hintlen < cols ? p->hintlen : cols;
 			if (widest < 16 && cols >= 16)
 				widest = 16;
 			const unsigned text_w = widest * cw;
-			const unsigned text_h = p->nlines * line_h + (p->countdown ? line_h / 2 + line_h : 0);
+			const unsigned text_h =
+			    p->nlines * line_h + options_h + (p->countdown ? line_h / 2 + line_h : 0);
 			const unsigned body_h = (with_qr && qr_total > text_h) ? qr_total : text_h;
 			p->scale = scale;
 			p->pad = pad;
@@ -308,8 +353,15 @@ static int fastrdp_panel_layout(fastrdpPanel* p, unsigned desk_w, unsigned desk_
 			p->rect.y = (int)((desk_h - p->rect.h) / 2);
 			p->text_x = pad;
 			p->text_y = accent_h + pad + (body_h - text_h) / 2;
+			p->text_w = text_w;
+			p->row_h = row_h;
+			p->opt_y = p->text_y + p->nlines * line_h + line_h / 2;
+			p->hint_rect.x = (int)pad;
+			p->hint_rect.y = (int)(p->opt_y + p->nopt * row_h + line_h / 4);
+			p->hint_rect.w = p->hintlen ? text_w : 0;
+			p->hint_rect.h = p->hintlen ? line_h : 0;
 			p->countdown_rect.x = (int)pad;
-			p->countdown_rect.y = (int)(p->text_y + p->nlines * line_h + line_h / 2);
+			p->countdown_rect.y = (int)(p->text_y + p->nlines * line_h + options_h + line_h / 2);
 			p->countdown_rect.w = p->countdown ? text_w : 0;
 			p->countdown_rect.h = p->countdown ? line_h : 0;
 			p->qr_rect.x = (int)(2 * pad + text_w);
@@ -339,7 +391,7 @@ static void fastrdp_fill(unsigned char* img, unsigned stride, unsigned img_h, fa
 
 static void fastrdp_draw_glyphs(const fastrdpPanel* p, unsigned char* img, unsigned stride,
                                 unsigned img_h, unsigned x0, unsigned y0,
-                                const unsigned short* g, unsigned n)
+                                const unsigned short* g, unsigned n, unsigned rgb)
 {
 	const unsigned s = p->scale;
 	const unsigned top = (p->line_h - FASTRDP_FONT_H * s) / 2;
@@ -354,7 +406,7 @@ static void fastrdp_draw_glyphs(const fastrdpPanel* p, unsigned char* img, unsig
 				{
 					const fastrdpRect dot = { (int)(x0 + (i * FASTRDP_FONT_W + c) * s),
 						                      (int)(y0 + top + r * s), s, s };
-					fastrdp_fill(img, stride, img_h, dot, FASTRDP_COLOR_TEXT);
+					fastrdp_fill(img, stride, img_h, dot, rgb);
 				}
 	}
 }
@@ -387,7 +439,47 @@ static void fastrdp_panel_draw_countdown(const fastrdpPanel* p, unsigned char* i
 	if (n > p->countdown_rect.w / (FASTRDP_FONT_W * p->scale))
 		n = p->countdown_rect.w / (FASTRDP_FONT_W * p->scale);
 	fastrdp_draw_glyphs(p, img, stride, p->rect.h, (unsigned)p->countdown_rect.x,
-	                    (unsigned)p->countdown_rect.y, g, n);
+	                    (unsigned)p->countdown_rect.y, g, n, FASTRDP_COLOR_TEXT);
+}
+
+/* Picker row i inside the panel (empty if there is none). */
+static fastrdpRect fastrdp_panel_option_rect(const fastrdpPanel* p, unsigned i)
+{
+	const fastrdpRect none = { 0, 0, 0, 0 };
+	if (i >= p->nopt)
+		return none;
+	const fastrdpRect r = { (int)p->text_x, (int)(p->opt_y + i * p->row_h), p->text_w, p->row_h };
+	return r;
+}
+
+/* Redraws picker row i inside the panel image: accent-filled while selected. */
+static void fastrdp_panel_draw_option(const fastrdpPanel* p, unsigned char* img, unsigned stride,
+                                      unsigned i)
+{
+	const fastrdpRect r = fastrdp_panel_option_rect(p, i);
+	if (r.w == 0)
+		return;
+	const int sel = i == p->selected;
+	fastrdp_fill(img, stride, p->rect.h, r, sel ? FASTRDP_COLOR_ACCENT : FASTRDP_COLOR_PANEL);
+	const unsigned cw = FASTRDP_FONT_W * p->scale;
+	const unsigned fit = p->text_w / cw > 0 ? p->text_w / cw - 1 : 0;
+	const unsigned n = p->optlen[i] < fit ? p->optlen[i] : fit;
+	fastrdp_draw_glyphs(p, img, stride, p->rect.h, (unsigned)r.x + cw / 2,
+	                    (unsigned)r.y + (p->row_h - p->line_h) / 2, p->opt[i], n,
+	                    sel ? FASTRDP_COLOR_SELECTED_TEXT : FASTRDP_COLOR_TEXT);
+}
+
+/* The picker row at desktop position (x, y); -1 if none. */
+static int fastrdp_panel_hit(const fastrdpPanel* p, long x, long y)
+{
+	for (unsigned i = 0; i < p->nopt; i++)
+	{
+		const fastrdpRect r = fastrdp_panel_option_rect(p, i);
+		const long x0 = (long)p->rect.x + r.x, y0 = (long)p->rect.y + r.y;
+		if (x >= x0 && x < x0 + (long)r.w && y >= y0 && y < y0 + (long)r.h)
+			return (int)i;
+	}
+	return -1;
 }
 
 /* Draws the whole panel into img (rect.w x rect.h pixels, BGRX, stride >= rect.w * 4). */
@@ -400,7 +492,17 @@ static void fastrdp_panel_draw(const fastrdpPanel* p, unsigned char* img, unsign
 	fastrdp_fill(img, stride, p->rect.h, accent, FASTRDP_COLOR_ACCENT);
 	for (unsigned i = 0; i < p->nlines; i++)
 		fastrdp_draw_glyphs(p, img, stride, p->rect.h, p->text_x, p->text_y + i * p->line_h,
-		                    p->lines[i], p->linelen[i]);
+		                    p->lines[i], p->linelen[i], FASTRDP_COLOR_TEXT);
+	for (unsigned i = 0; i < p->nopt; i++)
+		fastrdp_panel_draw_option(p, img, stride, i);
+	if (p->hintlen)
+	{
+		unsigned n = p->hintlen;
+		if (n > p->hint_rect.w / (FASTRDP_FONT_W * p->scale))
+			n = p->hint_rect.w / (FASTRDP_FONT_W * p->scale);
+		fastrdp_draw_glyphs(p, img, stride, p->rect.h, (unsigned)p->hint_rect.x,
+		                    (unsigned)p->hint_rect.y, p->hint, n, FASTRDP_COLOR_TEXT);
+	}
 	fastrdp_panel_draw_countdown(p, img, stride, seconds);
 	if (!p->show_qr)
 		return;

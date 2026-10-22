@@ -897,6 +897,10 @@ port_range = [33900, 34899]
 session_tgt = "auto"
 # Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
 home_create_roots = ["/home"]
+# Desktop picker on the proxy's waiting screen (fastrdp_desktop_picker)
+desktop_picker = "never"
+desktop_picker_timeout = 10
+desktop_picker_when_running = "preselect"
 
 [auth]
 realms = ["EXAMPLE.COM"]
@@ -977,6 +981,7 @@ Values to change:
 | `[desktops.<name>]` | `fastrdp_desktops`, `fastrdp_desktop_labels`, `fastrdp_desktop_groups` | one table per desktop (section 7); optional `label = "..."`, `groups = [...]` |
 | `[broker] home_check` | none (not rendered) | `create` (default): refuse unusable homes, create a missing one (0700) below an existing root-owned parent; `check`; `off` ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#where-homes-are)) |
 | `[broker] home_create_roots` | `fastrdp_home_create_roots` | default `["/home"]`: `home_check = "create"` creates a home only when its parent is one of these or below one (also with symlinks resolved), never a root or another missing parent; `[]` = never create |
+| `[broker] desktop_picker`, `desktop_picker_timeout`, `desktop_picker_when_running` | `fastrdp_desktop_picker`, `fastrdp_desktop_picker_timeout`, `fastrdp_desktop_picker_when_running` | `never` (default), `if_multiple` or `always`; 3..60 s (default 10); `preselect` (default) or `skip`. Needs proxy.ini `WaitingScreen=true` and `fastrdp-freerdp3` ≥ 3.32.2-6 ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | `[mfa]`, `[mfa.privacyidea]` | `fastrdp_mfa_*`, `fastrdp_privacyidea_*` | section 15.1 |
 | `[web] enabled` | `fastrdp_web_enabled` | section 15.2 |
 | `[ui] language`, `language_from_keyboard`, `approve_url`, `qr_code`; `[ui.<language>]` | `fastrdp_ui_language`, `fastrdp_ui_language_from_keyboard`, `fastrdp_ui_approve_url`, `fastrdp_ui_qr_code`, `fastrdp_ui_texts` | texts of the proxy's waiting screen; `approve_url` is `https://<fqdn>/web/approve` with the web gateway, else `""` ([auth-matrix.md](auth-matrix.md#waiting-screen)) |
@@ -1450,7 +1455,10 @@ as usual, and zeroes and discards the forwarded tickets: the broker receives
 when the key is missing): `true` shows a panel in the client's window while the broker
 works on the login (push or web approval with countdown, approval URL and QR code, session
 start), drawn with Bitmap Updates and painted black before the desktop arrives; texts from
-the broker's `[ui]`. `StatusInfo` (`fastrdp_proxy_status_info`, default `false`) also sends
+the broker's `[ui]`. With the broker's `[broker] desktop_picker` the same panel also lists
+the user's desktops and takes keys and clicks before the session starts (needs
+`fastrdp-freerdp3` ≥ 3.32.2-6; the module offers the picker only then and adds its
+countdown to `Timeout`). `StatusInfo` (`fastrdp_proxy_status_info`, default `false`) also sends
 Server Status Info PDUs to clients that ask for them ([auth-matrix.md](auth-matrix.md#waiting-screen)).
 `Port` = `fastrdp_listen_port`.
 

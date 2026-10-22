@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0
  * SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de> */
 /* The waiting screen's panel (broker/proxy-module/fastrdp_panel.h): UTF-8 to glyphs, word
- * wrap, layout for desktop sizes, QR code validation and drawing, countdown redraw. libc
- * only. Build and run: make test-proxy-module */
+ * wrap, layout for desktop sizes, QR code validation and drawing, countdown redraw, the
+ * desktop picker's rows (layout, selection, hit-testing). libc only.
+ * Build and run: make test-proxy-module */
 #include <stdio.h>
 
 #include "../../broker/proxy-module/fastrdp_panel.h"
@@ -236,6 +237,135 @@ static void test_wrap_limits(fastrdpPanel* p)
 		CHECK(p->linelen[i] % 5 == 4 && p->lines[i][0] != g(' '), "line %u breaks inside a word", i);
 }
 
+/* desktop picker: rows below the text, inside the panel, one under the other; a click in a
+ * row's middle hits it, between the panel's edge and a row or outside the panel nothing */
+static void check_rows(const fastrdpPanel* p, unsigned w, unsigned h)
+{
+	CHECK(inside(p->rect, w, h), "%ux%u: panel %d,%d %ux%u off the desktop", w, h, p->rect.x,
+	      p->rect.y, p->rect.w, p->rect.h);
+	for (unsigned i = 0; i < p->nopt; i++)
+	{
+		const fastrdpRect r = fastrdp_panel_option_rect(p, i);
+		CHECK(inside(r, p->rect.w, p->rect.h) && r.h >= p->line_h, "%ux%u: row %u outside", w, h, i);
+		CHECK(r.y >= (int)(p->text_y + p->nlines * p->line_h), "%ux%u: row %u over the text", w, h, i);
+		CHECK(i == 0 || r.y == fastrdp_panel_option_rect(p, i - 1).y + (int)p->row_h,
+		      "%ux%u: row %u not below row %u", w, h, i, i - 1);
+		const long cx = p->rect.x + r.x + (long)r.w / 2, cy = p->rect.y + r.y + (long)r.h / 2;
+		CHECK(fastrdp_panel_hit(p, cx, cy) == (int)i, "%ux%u: centre of row %u hits %d", w, h, i,
+		      fastrdp_panel_hit(p, cx, cy));
+		CHECK(fastrdp_panel_hit(p, p->rect.x + r.x, p->rect.y + r.y) == (int)i &&
+		          fastrdp_panel_hit(p, p->rect.x + r.x + (long)r.w - 1, p->rect.y + r.y + (long)r.h - 1) ==
+		              (int)i,
+		      "%ux%u: corners of row %u", w, h, i);
+		CHECK(fastrdp_panel_hit(p, p->rect.x + r.x - 1, cy) == -1 &&
+		          fastrdp_panel_hit(p, p->rect.x + r.x + (long)r.w, cy) == -1,
+		      "%ux%u: beside row %u", w, h, i);
+	}
+	if (p->nopt)
+	{
+		const fastrdpRect last = fastrdp_panel_option_rect(p, p->nopt - 1);
+		CHECK(p->hint_rect.y >= last.y + (int)last.h && inside(p->hint_rect, p->rect.w, p->rect.h),
+		      "%ux%u: hint below the rows", w, h);
+		CHECK(!p->countdown || p->countdown_rect.y >= p->hint_rect.y + (int)p->hint_rect.h,
+		      "%ux%u: countdown below the hint", w, h);
+	}
+	CHECK(fastrdp_panel_hit(p, p->rect.x + (long)p->rect.w / 2, p->rect.y + 1) == -1 &&
+	          fastrdp_panel_hit(p, -5, -5) == -1 && fastrdp_panel_hit(p, 40000, 40000) == -1,
+	      "%ux%u: hits outside the rows", w, h);
+}
+
+static void test_options(fastrdpPanel* p)
+{
+	static const char* const title[] = { "Choose your desktop" };
+	static const char* const labels[] = { "Xfce",  "GNOME (running)", "KDE Plasma", "MATE",
+		                                  "Cinnamon", "LXQt", "Plasma (X11)", "Sway",
+		                                  "Labwc", "Wayfire (left out)" };
+	fastrdp_panel_init(p);
+	fastrdp_panel_set_text(p, title, 1);
+	fastrdp_panel_set_countdown(p, "Starting in");
+	fastrdp_panel_set_options(p, labels, 10, 1, "1-9 or arrows and Enter, or click. Esc: Xfce");
+	CHECK(p->nopt == FASTRDP_PANEL_MAX_OPTIONS && p->selected == 1 && p->hintlen > 0,
+	      "rows bounded: %u, selected %u", p->nopt, p->selected);
+	CHECK(p->optlen[0] == 8 && p->opt[0][0] == g('[') && p->opt[0][1] == g('1') &&
+	          p->opt[8][1] == g('9') && p->opt[0][4] == g('X'),
+	      "\"[1] Xfce\": %u glyphs", p->optlen[0]);
+
+	static const unsigned sizes[][2] = { { 1920, 1080 }, { 2560, 1440 }, { 1366, 768 }, { 1024, 768 },
+		                                  { 800, 600 },   { 640, 480 },   { 3840, 2160 } };
+	for (unsigned k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++)
+	{
+		const unsigned w = sizes[k][0], h = sizes[k][1];
+		CHECK(fastrdp_panel_layout(p, w, h), "%ux%u: no layout", w, h);
+		CHECK(p->nlines == 1, "%ux%u: title on %u lines", w, h, p->nlines);
+		check_rows(p, w, h);
+	}
+	/* nine rows do not fit 320x240 at any scale: no panel; three do */
+	CHECK(!fastrdp_panel_layout(p, 320, 240), "320x240 with nine rows");
+	fastrdp_panel_set_options(p, labels, 3, 7, NULL);
+	CHECK(p->selected == 0 && p->hintlen == 0, "selection out of range: %u", p->selected);
+	CHECK(fastrdp_panel_layout(p, 320, 240) && p->scale == 1, "320x240 with three rows");
+	check_rows(p, 320, 240);
+
+	/* drawing: the selected row is accent-filled with light text, the others are not;
+	 * redrawing one row after a new selection changes nothing outside both rows */
+	fastrdp_panel_set_options(p, labels, 4, 2, "hint");
+	CHECK(fastrdp_panel_layout(p, 1920, 1080), "1920x1080");
+	unsigned char* img = draw(p, 10);
+	CHECK(img != NULL, "image");
+	if (!img)
+		return;
+	const fastrdpRect r1 = fastrdp_panel_option_rect(p, 1), r2 = fastrdp_panel_option_rect(p, 2);
+	CHECK(pixel(p, img, (unsigned)r2.x + 1, (unsigned)r2.y + 1) == FASTRDP_COLOR_ACCENT &&
+	          pixel(p, img, (unsigned)r1.x + 1, (unsigned)r1.y + 1) == FASTRDP_COLOR_PANEL,
+	      "selected row filled");
+	unsigned light = 0;
+	for (unsigned y = (unsigned)r2.y; y < (unsigned)r2.y + r2.h; y++)
+		for (unsigned x = (unsigned)r2.x; x < (unsigned)r2.x + r2.w; x++)
+			light += pixel(p, img, x, y) == FASTRDP_COLOR_SELECTED_TEXT;
+	CHECK(light > 50, "selected row has %u text pixels", light);
+	const size_t size = (size_t)p->rect.w * p->rect.h * 4;
+	unsigned char* before = malloc(size);
+	if (before)
+	{
+		memcpy(before, img, size);
+		p->selected = 1;
+		fastrdp_panel_draw_option(p, img, p->rect.w * 4, 1);
+		fastrdp_panel_draw_option(p, img, p->rect.w * 4, 2);
+		unsigned outside = 0, in = 0;
+		for (unsigned y = 0; y < p->rect.h; y++)
+			for (unsigned x = 0; x < p->rect.w; x++)
+			{
+				const size_t o = ((size_t)y * p->rect.w + x) * 4;
+				const int row = (int)y >= r1.y && y < (unsigned)r2.y + r2.h && (int)x >= r1.x &&
+				                x < (unsigned)r1.x + r1.w;
+				if (memcmp(before + o, img + o, 4) != 0)
+					row ? in++ : outside++;
+			}
+		CHECK(in > 0 && outside == 0, "row redraw: %u in, %u outside", in, outside);
+		CHECK(pixel(p, img, (unsigned)r1.x + 1, (unsigned)r1.y + 1) == FASTRDP_COLOR_ACCENT &&
+		          pixel(p, img, (unsigned)r2.x + 1, (unsigned)r2.y + 1) == FASTRDP_COLOR_PANEL,
+		      "selection moved");
+		free(before);
+	}
+	free(img);
+
+	/* a long label is cut to the row; no rows: the panel is as before */
+	char longlabel[200];
+	memset(longlabel, 'w', sizeof(longlabel) - 1);
+	longlabel[sizeof(longlabel) - 1] = '\0';
+	const char* const one[] = { longlabel, NULL };
+	fastrdp_panel_set_options(p, one, 2, 0, NULL);
+	CHECK(p->optlen[0] == FASTRDP_PANEL_OPTION_MAX && p->optlen[1] == 4, "label cut: %u, %u",
+	      p->optlen[0], p->optlen[1]);
+	CHECK(fastrdp_panel_layout(p, 640, 480), "640x480 with a long label");
+	check_rows(p, 640, 480);
+	free(draw(p, 0));
+	fastrdp_panel_set_options(p, NULL, 0, 0, "ignored");
+	CHECK(p->nopt == 0 && p->hintlen == 0 && fastrdp_panel_layout(p, 1920, 1080) &&
+	          fastrdp_panel_hit(p, 960, 540) == -1,
+	      "rows removed");
+}
+
 static void test_rects(void)
 {
 	const fastrdpRect a = { 10, 20, 100, 50 }, b = { 60, 0, 100, 30 }, e = { 5, 5, 0, 0 };
@@ -261,6 +391,7 @@ int main(void)
 	test_qr_validation(p);
 	test_layout_and_draw(p);
 	test_wrap_limits(p);
+	test_options(p);
 	free(p);
 	if (failures)
 	{
