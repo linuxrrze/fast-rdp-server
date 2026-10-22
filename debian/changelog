@@ -1,3 +1,23 @@
+fast-rdp-server (0.7.1) unstable; urgency=medium
+
+  * Security fixes from the 0.7.0 review: test notifications limited to one
+    per user per minute and kept from delaying approvals (bounded queues);
+    webpush_extra_hosts match the exact host and UnifiedPush paths only;
+    push endpoints re-checked before every send; channel data during the
+    desktop picker capped at 4 MiB; approvals always need an MFA proof,
+    also with allow_without_mfa_proof; user-controlled values logged
+    quoted; ids and user names matched exactly (trailing newline refused).
+  * Approval link for one login while other logins of the user wait: red
+    warning box with this login's code, warning in the logs.
+  * Ansible: _fastrdp-web created before the broker starts (fresh deploys
+    with the web gateway); switching fastrdp_web_enabled off removes the
+    web stack; nginx, webgate and broker restarted on new certificates and
+    CA files; fixes for wlroots-only build mode, NVIDIA driver install,
+    first Guacamole start, provider none, check mode and NFS Kerberos homes.
+  * Docs: Windows hosts as back-end researched and deferred (backlog B1).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 22:33:18 +0200
+
 fast-rdp-server (0.7.0) unstable; urgency=medium
 
   * Waiting screen on by default (fastrdp_proxy_waiting_screen and the
