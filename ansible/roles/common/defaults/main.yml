@@ -101,6 +101,16 @@ fastrdp_mfa_nla_kdc_enforced: false
 fastrdp_mfa_nla_kdc_auth_indicators: [passkey, pkinit]   # FreeIPA; also otp, radius, idp; never hardened
 fastrdp_mfa_nla_kdc_set_auth_ind: true                    # FreeIPA: let the identity role set them
 fastrdp_mfa_nla_kdc_enforced_by_ad_policy: false          # AD: you guarantee it by policy (no check possible)
+# Per login instead (broker [mfa] kdc_evidence_as_mfa; docs/passkeys.md#kdc-evidence-per-login):
+# a Kerberos NLA login whose ticket carries one of these skips privacyIDEA; logins without
+# one keep their second factor, nothing changes for the client. The proxy's FreeRDP reads
+# them from the ticket and checks the KDC's signature (fastrdp-freerdp3 >= 3.32.2-4).
+#   "ind:<indicator>"  FreeIPA/MIT authentication indicator: ind:pkinit, ind:passkey, ind:otp
+#   "sid:<SID>"        group SID from the AD PAC: sid:S-1-18-4 (Windows Hello for Business key
+#                      trust), sid:S-1-18-3 (PKINIT with freshness), an Authentication
+#                      Mechanism Assurance group (sid:S-1-5-21-...-<RID>)
+# Refused: ind:hardened, sid:S-1-18-1, sid:S-1-18-2, Domain Users (password logons have them).
+fastrdp_mfa_kdc_evidence_as_mfa: []
 # MFA grace for reconnects (broker [mfa] reconnect_grace; docs/auth-matrix.md#reconnect-grace):
 # seconds after a passed OTP/push during which reconnects of the same account, login
 # method (NLA/TLS), Kerberos principal and, with ..._same_address, client address skip

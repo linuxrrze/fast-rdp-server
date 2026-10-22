@@ -196,3 +196,64 @@ field report's error (19/22 instead of 22/22).
 
 **Drop it when** a FreeRDP release gets the U2U TGT from the account that owns the
 service name.
+
+## 0005 – [winpr,kerberos] acceptor: keep the KDC's evidence from the accepted ticket
+
+**Problem.** The WinPR Kerberos acceptor decrypted the service ticket in `krb5_rd_req()`
+and threw it away. A server could not tell how the client had authenticated to the KDC,
+although the KDC says so in the ticket's authorization data: MIT krb5 and FreeIPA as
+authentication indicators (`pkinit`, `passkey`, `otp`, …) in a CAMMAC (RFC 7751),
+Active Directory as group SIDs in the PAC (S-1-18-3 PKINIT with freshness, S-1-18-4 key
+trust / Windows Hello for Business, Authentication Mechanism Assurance groups). fastrdp
+could therefore count smart card or WHfB logons as MFA only through exempt groups or the
+global `[mfa] nla_kdc_enforced` (backlog K11).
+
+**Who is affected.** Servers that want to grant something per login from the KDC's
+statement. Nothing changes for anybody else: two new context attributes, no change to
+what the acceptor accepts.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp without `fastrdp_mfa_kdc_evidence_as_mfa` | no |
+| `fastrdp_mfa_kdc_evidence_as_mfa` (broker `[mfa] kdc_evidence_as_mfa`) | **yes**: without it the module reports no `kdc_evidence` and every login keeps its second factor |
+| fastrdp's regression suite | **yes**: `run_smartcard.sh` (6) expects `["ind:pkinit"]`, `run_nla.sh` (24) `[]` for password logins |
+
+**Fix.** After `krb5_rd_req()` (now with the ticket as out-parameter), and only with MIT
+krb5:
+- *Which key.* The key that decrypted the ticket: for user-to-user the session key of
+  the acceptor's TGT (`krb5_auth_con_getkey()` before `krb5_rd_req()` replaces it),
+  otherwise the keytab entries of the ticket's encryption type (any of them; all are
+  shared with the KDC only).
+- *Indicators.* `krb5_find_authdata(KRB5_AUTHDATA_CAMMAC)` (also inside AD-IF-RELEVANT);
+  the CAMMAC is decoded with WinPR's DER decoder; only one whose svc-verifier
+  (`krb5_c_verify_checksum()`, key usage 64, over the DER `elements`) verifies counts;
+  AD-AUTHENTICATION-INDICATOR UTF8Strings of 1-64 printable ASCII characters, at most 16.
+- *PAC.* Exactly one `AD-WIN2K-PAC`, `krb5_pac_parse()`, `krb5_pac_verify()` with the
+  server key (the KDC signature needs the krbtgt key and is not checked), then the raw
+  `PAC_LOGON_INFO` buffer (at most 64 KiB). The NDR is parsed by the caller (fastrdp:
+  `broker/proxy-module/fastrdp_pac.h`, unit-tested without FreeRDP).
+- Never fails the authentication: without verified evidence the attributes are empty.
+  A CAMMAC or PAC that does not verify is logged at WARN.
+
+Attributes (`winpr/sspi.h`, ids 1900-1999 left to fastrdp), `pBuffer` is a
+caller-allocated `SecBuffer`, so no `FreeContextBuffer`:
+- `SECPKG_ATTR_KERBEROS_AUTH_INDICATORS` (1900): NUL-terminated strings;
+- `SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO` (1901): the `PAC_LOGON_INFO` buffer.
+Both answer `SEC_E_INVALID_HANDLE` before the AP-REQ was accepted and
+`SEC_E_BUFFER_TOO_SMALL` (with the length needed) for a short buffer. Heimdal builds
+compile but report nothing.
+
+**Regression test.** `tests/proxy-e2e/run_smartcard.sh` (MIT KDC with
+`pkinit_indicator = pkinit`): the broker receives `"kdc_evidence": ["ind:pkinit"]`
+(6/6; without the patch 5/6). `run_nla.sh`: password logins report `[]` and no CAMMAC or
+PAC fails verification (24/24; without the patch 23/24). Checked by hand: with a wrong
+verification key (user-to-user and keytab path) the indicator disappears and the
+warnings appear. Not testable with MIT: PAC group SIDs (an MIT KDC issues only a minimal
+PAC); `tests/proxy-module/test_pac.c` covers the parser with Windows PACs.
+
+**Status upstream.** fastrdp-specific (vendor attribute ids); not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** FreeRDP offers the ticket's verified authorization data itself.

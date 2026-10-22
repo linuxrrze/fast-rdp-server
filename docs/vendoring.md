@@ -122,5 +122,14 @@ build with MIT Kerberos as above, all four e2e suites: TLS 30/30, Kerberos NLA 2
 krb5 1.22.1 KDC in AD mode), smartcard via p11-kit 4/4 and via SoftHSM 4/4. Against the
 3.32.2-2 build (0001-0003): NLA 19/22, the user-to-user login fails as in the field report.
 
+2026-10-22, `3.32.2-4` (patch 0005, KDC evidence from the accepted ticket, K11): sysroot
+build of the full `build-freerdp.sh` configuration (X11, FFmpeg/H.264, MIT krb5 1.22.1),
+all four e2e suites: TLS 39/39, Kerberos NLA 24/24 (AD mode), smartcard via p11-kit 6/6
+and via SoftHSM 6/6 (the broker gets `ind:pkinit` from a KDC with `pkinit_indicator`). Against the same build
+without 0005: smartcard 5/6, NLA 23/24, TLS 39/39 (no evidence; the module builds without
+the new attributes). With a deliberately wrong verification key (user-to-user and
+keytab) the indicator is dropped and the proxy logs the failed svc-verifier / PAC
+signature, so the e2e checks fail.
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

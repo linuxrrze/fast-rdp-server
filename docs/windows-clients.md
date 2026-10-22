@@ -113,7 +113,7 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
   fed AP-REQs and so did not see it.
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
   MS-KRB5. The module sees package `Kerberos`
-  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:181-202`).
+  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:189-210`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -170,11 +170,11 @@ safe). Still worth a robustness fix upstream (§5).
   - The proxy's acceptor does not offer NTLM (§3.13): the client's `[NegoEx, NTLM]` offer
     leaves no mechanism, and the login ends at the first CredSSP message. Before, NTLM ran
     to the end and failed at `ntlm_compute.c:285` (SamOpen), the module's check
-    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:602-612`) being the last line.
+    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:739-749`) being the last line.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:762-767`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:905-910`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -253,8 +253,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:636-664`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:650-662`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:775-803`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:789-801`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -271,7 +271,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:600-629`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:737-766`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`SecondFactor.verify()` → `SecondFactor.push()` in `mfa.py`).
@@ -350,11 +350,11 @@ front** of the proxy.
 | Option | mstsc → fastrdp | Status | User experience | Phishing resistance | Requirements |
 |---|---|---|---|---|---|
 | privacyIDEA **push** after Kerberos NLA | yes | **supported** (lab L15) | password or SSO, mstsc waits until the push is approved | low–medium: push fatigue, an attacker's push can be approved | privacyIDEA + app; `fastrdp_privacyidea_service_user` for SSO logins; proxy `Timeout` (120 s) > push timeout (60 s) |
-| **Web approval** (Keycloak passkey sign-in on the web gateway, approve the pending login) | yes, same waiting point as push | **in progress** (`[mfa] mode = web` / `push_or_web`) | like push, approved in a browser | the factor is a passkey (origin-bound); the approval itself can still be talked into, like a push | Keycloak passkeys ([passkeys.md](passkeys.md) stage 1), reachable web gateway |
+| **Web approval** (Keycloak passkey sign-in on the web gateway, approve the pending login) | yes, same waiting point as push | **supported** (`[mfa] mode = web` / `push_or_web`; real Keycloak + mstsc untested) | like push, approved in a browser | the factor is a passkey (origin-bound); the approval itself can still be talked into, like a push | Keycloak passkeys ([passkeys.md](passkeys.md) stage 1), reachable web gateway |
 | **Smart card / PIV / YubiKey PIV** (PKINIT on the client, TSSmartCardCreds) | yes | **supported** (soft token e2e; real card + AD: lab L7) | insert card, PIN in mstsc | high (key on the card, KDC-bound) | AD PKI (KDC certificates, NTAuth, UPN SAN) and an AD rule that makes it MFA (§3.9) |
 | **Windows Hello for Business certificate** (used as a virtual smart card) | yes, as a smart card [inference] | **possible**, untested (lab L19) | face/fingerprint/PIN in mstsc | high (TPM-bound key) | WHfB certificate trust, or a certificate in the WHfB container (AD CS / Intune, Passport KSP); same AD rule as smart cards |
 | **MFA gateway in front**: rdpgw (open source, MS-TSGU) with Keycloak OIDC; Windows RD Gateway + NPS extension (Entra MFA) | yes [inference] | **possible**, untested (lab L20, L21) | rdpgw: Keycloak sign-in in the browser, then the downloaded `.rdp` in mstsc; RDG: Authenticator push while mstsc shows "Initiating remote connection" | rdpgw: passkey; RDG: push | §3.10 |
-| WHfB key trust (Microsoft AD) | yes, as Kerberos SSO | **first factor today**; second factor per login with backlog K11 | passwordless Windows sign-in, then SSO | strong at Windows sign-in | AD DCs 2016+ add S-1-18-4 (KEY_TRUST_IDENTITY) to the PAC, with PKINIT freshness enabled also S-1-18-3 [doc: MS-DTYP §2.4.2.4]; fastrdp cannot read the PAC yet (K11). Samba AD adds neither S-1-18-4 nor AMA groups |
+| WHfB key trust (Microsoft AD) | yes, as Kerberos SSO | **second factor per login** with `kdc_evidence_as_mfa` (K11; lab pending) | passwordless Windows sign-in, then SSO | strong at Windows sign-in | AD DCs 2016+ add S-1-18-4 (KEY_TRUST_IDENTITY) to the PAC, with PKINIT freshness enabled also S-1-18-3 [doc: MS-DTYP §2.4.2.4]; fastrdp counts it per login with `fastrdp_mfa_kdc_evidence_as_mfa` (backlog K11, lab pending). Samba AD adds neither S-1-18-4 nor AMA groups |
 | FIDO2 key / cloud Kerberos trust (Entra Kerberos) | as the **first factor only** | works, no second factor for fastrdp | passwordless Windows sign-in, then SSO | strong at Windows sign-in, invisible to fastrdp | Entra hybrid/joined; whether the exchanged TGT carries any S-1-18-x SID is unverified (lab) |
 | OTP appended to the password under NLA | **no** | impossible | – | – | the string becomes the Kerberos password (below) |
 | OTP on the TLS path (no NLA) | practically **no** | server side exists (`fastrdp_allow_tls_logins`) | mstsc with `enablecredsspsupport:i:0` shows no prompt and sends only saved credentials (`cmdkey` with password+OTP before every connect); no logon screen at the proxy | low: secret sent to the server, no pre-connection authentication | lab S1; not recommended |
@@ -363,10 +363,11 @@ front** of the proxy.
 | WebAuthn redirection (MS-RDPEWA) at login | **no** | not planned | – | – | the channel exists only inside a running session ([webauthn-redirection.md](webauthn-redirection.md)) |
 | Windows credential providers (Duo for RDP, privacyIDEA CP, ...) | **no** | n/a | – | – | they run on a Windows RDP *host*; client-side providers do not help the server |
 
-What fastrdp does next (backlog): web approval (in progress); per-login evidence from
-the Kerberos ticket (FreeIPA authentication indicators, an AD AMA group in the PAC), so
-smart card and WHfB-certificate logins can skip push per login instead of through exempt
-groups or the global `nla_kdc_enforced`; a lab for the gateway option.
+Since then implemented: web approval (`[mfa] mode = web` / `push_or_web`) and per-login
+evidence from the Kerberos ticket (`fastrdp_mfa_kdc_evidence_as_mfa`, backlog K11: FreeIPA
+authentication indicators, AD PAC SIDs such as S-1-18-4, S-1-18-3 or an AMA group), so smart
+card and WHfB logins can skip push per login instead of through exempt groups or the global
+`nla_kdc_enforced`. Open: a lab for the gateway option (backlog K12).
 
 Notes on the options above:
 
@@ -399,6 +400,15 @@ Notes on the options above:
   it (§3.2, [rdp-spec-conformance.md](rdp-spec-conformance.md)). Trade-off: no
   authentication before the connection (brute force and DoS surface on the proxy), the
   password+OTP go to the server, server authentication rests on the TLS certificate alone.
+- **No push for strong Windows logons, per login** (`fastrdp_mfa_kdc_evidence_as_mfa`,
+  [passkeys.md](passkeys.md#kdc-evidence-per-login)): the proxy's FreeRDP keeps the
+  verified PAC of mstsc's service ticket (`patches/freerdp/0005`), and the broker skips
+  the second factor when it lists one of the configured group SIDs: `S-1-18-4` (Windows
+  Hello for Business key trust), `S-1-18-3` (PKINIT with freshness) or an Authentication
+  Mechanism Assurance group (certificate logons). mstsc does nothing differently; logins
+  without such a SID get the push as before. The SIDs describe the Windows sign-in that
+  produced the TGT, not this connection. Not yet seen with a real AD and mstsc (lab:
+  user-to-user ticket PAC, §3.14).
 
 ### 3.9 Smartcard from Windows (Q7)
 
@@ -412,7 +422,13 @@ PIN, uses the Kerberos principal as the user if no hint is sent, and sets
 `smartcard: true`. This is the same as the tested FreeRDP path ([smartcard-nla.md](smartcard-nla.md)).
 
 The AD PKI requirements are unchanged: KDC certificates, NTAuth, UPN SAN. To make the
-smart card count as MFA, AD must guarantee that these users cannot log in with a password:
+smart card count as MFA:
+
+- per login, from the ticket: an *Authentication Mechanism Assurance* group (issuance
+  policy of the smart card certificates linked to a universal group) or, with the DC
+  policy *KDC support for PKInit Freshness Extension*, `S-1-18-3`, listed in
+  `fastrdp_mfa_kdc_evidence_as_mfa` ([passkeys.md](passkeys.md#kdc-evidence-per-login));
+  the `smartcard` flag from TSSmartCardCreds is client-supplied and never counts; or
 
 - "Smart card is required for interactive logon" on the accounts plus
   `fastrdp_mfa_exempt_groups` for them (push skipped for the group), or
@@ -439,8 +455,8 @@ logon including passwords (no evidence of a second factor), S-1-18-3 for PKINIT 
 RFC 8070 freshness token (DC GPO "KDC support for PKInit Freshness Extension"; smart card,
 WHfB certificate and key trust), S-1-18-4 for WHfB **key trust**, S-1-18-5 when the key
 credential carries the MFA property. Samba AD adds only S-1-18-1/2/3 and has no AMA. fastrdp
-cannot read the PAC yet; backlog K11 adds it, so key-trust and smart card logons can skip
-push per login. Caveats: whoever can write a user's `msDS-KeyCredentialLink` can add a key
+reads the verified PAC (backlog K11, `fastrdp_mfa_kdc_evidence_as_mfa`), so key-trust and
+smart card logons can skip push per login. Caveats: whoever can write a user's `msDS-KeyCredentialLink` can add a key
 and obtain S-1-18-4 (and S-1-18-5) for that user ("shadow credentials"; restrict the
 attribute's ACLs, audit event 5136), and the evidence describes the Windows sign-in that
 produced the TGT, which may be hours old. *Cloud Kerberos trust* and FIDO2 keys via Entra

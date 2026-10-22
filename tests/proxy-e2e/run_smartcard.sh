@@ -5,7 +5,9 @@
 #   SoftHSM2 token (stands in for a PIV card / YubiKey) -> FreeRDP smartcard logon
 #   -> MIT KDC with PKINIT -> Kerberos NLA at the proxy -> broker request.
 # Checks: the principal is bound, the request is flagged smartcard, the PIN is
-# never forwarded as a password, and a wrong PIN never reaches the broker.
+# never forwarded as a password, a wrong PIN never reaches the broker, and the KDC's
+# "pkinit" authentication indicator reaches the broker as kdc_evidence
+# (patches/freerdp/0005, fastrdp-freerdp3 3.32.2-4).
 #
 # Needs krb5-kdc krb5-admin-server krb5-pkinit softhsm2 opensc p11-kit-modules plus
 # what run.sh needs. KRB5_SYSROOT / SC_SYSROOT: same packages extracted from .debs.
@@ -132,6 +134,7 @@ cat > kdc.conf <<EOT
         supported_enctypes = aes256-cts-hmac-sha1-96:normal
         pkinit_identity = FILE:$W/kdc.pem,$W/kdc.key
         pkinit_anchors = FILE:$W/ca.pem
+        pkinit_indicator = pkinit
     }
 [logging]
     kdc = FILE:$W/kdc.log
@@ -195,6 +198,14 @@ check "wrong PIN stopped at PKINIT, right PIN reached the broker" 'len(logins) =
 check "Kerberos principal from the smartcard certificate"        'logins[0]["method"] == "nla" and logins[0]["principal"] == "alice@TEST.FASTRDP"'
 check "flagged as smartcard logon"                               'logins[0]["smartcard"] is True'
 check "PIN not forwarded as password"                            'logins[0]["password"] is None'
+# patches/freerdp/0005: the KDC's authentication indicator (kdc.conf pkinit_indicator, as
+# FreeIPA sets it) reaches the broker; MIT's minimal PAC has no logon info, so no SIDs
+check "KDC evidence: the ticket's pkinit indicator"               'logins[0].get("kdc_evidence") == ["ind:pkinit"]'
+if grep -qE "svc-verifier does not verify|server signature does not verify" proxy.log; then
+    echo "FAIL KDC evidence: the CAMMAC and the PAC verified"; fail=1
+else
+    echo "ok   KDC evidence: the CAMMAC and the PAC verified"
+fi
 if [ $fail -ne 0 ]; then
     echo "--- proxy log:"; grep -E "fastrdp|ERROR" proxy.log | tail -15; tail -5 kdc.log
     echo "--- client PKINIT:"; grep -E "PKINIT loading identity|no matching tokens" client-trace.log | sort -u | head -4

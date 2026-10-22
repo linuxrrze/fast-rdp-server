@@ -1,3 +1,15 @@
+fastrdp-freerdp3 (3.32.2-4) unstable; urgency=medium
+
+  * patches/freerdp: winpr/kerberos: the Kerberos acceptor keeps what the KDC
+    asserted in the accepted ticket and offers it as context attributes:
+    authentication indicators from a CAMMAC whose svc-verifier checks out
+    (SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) and the PAC_LOGON_INFO of a PAC
+    whose server signature verifies (SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO).
+    The fastrdp proxy module passes them to the broker, which can count them
+    as the second factor per login ([mfa] kdc_evidence_as_mfa).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 10:30:00 +0200
+
 fastrdp-freerdp3 (3.32.2-3) unstable; urgency=medium
 
   * patches/freerdp: winpr/kerberos: the Kerberos user-to-user acceptor answers

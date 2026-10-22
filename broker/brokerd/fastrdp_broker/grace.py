@@ -5,8 +5,9 @@ recently (docs/auth-matrix.md#reconnect-grace).
 
 Neither the proxy nor xrdp supports RDP auto-reconnect cookies, so mstsc reconnects after
 a network drop with a full login: NLA (silent with Kerberos) and a new push. An entry is
-recorded only after a login whose second factor privacyIDEA confirmed or the user approved
-on the web approval page *and* whose session was started; it expires a fixed time after
+recorded only after a login whose second factor privacyIDEA confirmed, the user approved
+on the web approval page, or the KDC's evidence in the ticket satisfied ([mfa]
+kdc_evidence_as_mfa), *and* whose session was started; it expires a fixed time after
 that second factor (absolute, never extended by the logins it lets through). Lookups match the local account, the login method (the
 first factor's class), the Kerberos principal (NLA) and, by default, the client address.
 
@@ -32,7 +33,7 @@ class GraceKey(NamedTuple):
 class GraceEntry:
     passed_at: float        # monotonic time of the real second factor
     address: str | None     # where it was passed (for the log)
-    factor: str             # "otp" | "push" | "web"
+    factor: str             # "otp" | "push" | "web" | "kdc <item>" ([mfa] kdc_evidence_as_mfa)
 
 
 class ReconnectGrace:

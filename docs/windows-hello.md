@@ -16,7 +16,7 @@ PIN), and does it count as MFA? With emphasis on **Samba AD** domains.
   web path and web approval (path G). With an Entra tenant, a **WHfB certificate in
   the Hello container** should log in to Samba like a smart card (path B, lab L19).
 - **Microsoft AD:** all WHfB models work with DCs 2016+; per-login evidence in the
-  ticket (S-1-18-3/-4) is usable by fastrdp once backlog K11 (in progress) is done.
+  ticket (S-1-18-3/-4) is usable by fastrdp through `fastrdp_mfa_kdc_evidence_as_mfa` (backlog K11, lab pending).
 
 Nothing on this page has been tested with Windows. Markers: **[verified]** = read in
 source or a specification, **[doc]** = vendor documentation, **[inference]** = follows
@@ -71,7 +71,7 @@ the freshness extension since version 1607.
 
 **fastrdp use.** Today: an exempt group (`fastrdp_mfa_exempt_groups`) for accounts with
 "smart card is required for interactive logon" ([windows-clients.md](windows-clients.md#39-smartcard-from-windows-q7)).
-With backlog K11 (in progress): per-login items such as `sid:S-1-18-3` (Samba; MS AD
+With `fastrdp_mfa_kdc_evidence_as_mfa` (backlog K11, lab pending): per-login items such as `sid:S-1-18-3` (Samba; MS AD
 with freshness), `sid:S-1-18-4` (MS AD key trust) or an AMA group (MS AD).
 
 ## 3. Samba AD: what exists, what blocks
@@ -169,7 +169,7 @@ YubiKey PIV enrolment). Untested end to end (lab L19).
 7. **mstsc to fastrdp:** choose the Hello credential, face/fingerprint/PIN; fastrdp sees
    a smart card login (`smartcard: true`).
 8. **fastrdp MFA:** today an exempt group, with "smart card is required for interactive
-   logon" on those accounts; with backlog K11 (in progress) `sid:S-1-18-3`.
+   logon" on those accounts; with `fastrdp_mfa_kdc_evidence_as_mfa` (backlog K11) `sid:S-1-18-3`.
 
 **Path D lab sketch.** Export the user's self-signed Hello certificate (subject like
 `CN=<SID>/<GUID>/login.windows.net/<tenant>/<UPN>`, Passport KSP), then

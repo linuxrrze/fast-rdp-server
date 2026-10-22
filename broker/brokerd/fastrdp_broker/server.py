@@ -60,6 +60,12 @@ class Broker:
                      "(sign-in at most %ds older than the login%s)", cfg.mfa.mode,
                      cfg.mfa.web_approval_timeout, cfg.mfa.web_approval_max_auth_age,
                      "; one pending login per user" if cfg.mfa.web_approval_single_pending else "")
+        if cfg.mfa.kdc_evidence_as_mfa and cfg.mfa.mode != "none":
+            log.info(
+                "[mfa] kdc_evidence_as_mfa: Kerberos NLA logins from %s whose ticket carries %s "
+                "skip the %s second factor",
+                ", ".join(cfg.auth.realms), " or ".join(cfg.mfa.kdc_evidence_as_mfa), cfg.mfa.mode,
+            )
         # [mfa] reconnect_grace (grace.py): reconnects skip a recently passed second factor.
         self.grace = ReconnectGrace(cfg.mfa.reconnect_grace, cfg.mfa.reconnect_grace_same_address)
         if self.grace.enabled and cfg.mfa.mode != "none":
@@ -273,6 +279,30 @@ class Broker:
             principal = f"{name}@{realm}"
         return self.grace.key(user.name, method, principal, str_field(msg, "client_address"))
 
+    def kdc_evidence(self, user: LocalUser, msg: dict) -> str | None:
+        """The first [mfa] kdc_evidence_as_mfa item that the KDC asserted in the ticket of
+        this Kerberos NLA login ("kdc_evidence" from the proxy module, verified with the
+        service key there), or None. Only principals of [auth] realms: another realm's KDC
+        does not apply this realm's policy, and AD filters foreign SIDs only at the trust."""
+        wanted = self.cfg.mfa.kdc_evidence_as_mfa
+        evidence = msg.get("kdc_evidence")
+        if not wanted or msg.get("method") != "nla" or evidence is None:
+            return None
+        if not isinstance(evidence, list) or len(evidence) > 1024 or not all(
+            isinstance(e, str) and len(e) <= 256 for e in evidence
+        ):
+            raise ProtocolError("invalid field 'kdc_evidence'")
+        _, realm = identity.split_principal(str_field(msg, "principal", required=True))
+        if realm not in self.cfg.auth.realms:
+            return None
+        have = set(evidence)
+        if match := next((w for w in wanted if w in have), None):
+            return match
+        log.info("%s: KDC evidence in the ticket: %s; none of [mfa] kdc_evidence_as_mfa", user.name,
+                 ", ".join(e for e in evidence if e.startswith("ind:")) or "no indicators")
+        log.debug("%s: KDC evidence %s", user.name, evidence)
+        return None
+
     async def login(self, msg: dict) -> dict:
         session_id = str_field(msg, "session_id", required=True, max_len=64)
         user, password, otp, mfa_done = await self.first_factor(msg)
@@ -287,7 +317,13 @@ class Broker:
             log.info("second factor for %s already verified by %s", user.name, mfa_done)
         elif not self.mfa.exempt(user.groups):
             grace_key = self.grace_key(user, msg)
-            if hit := self.grace.lookup(grace_key):
+            if evidence := self.kdc_evidence(user, msg):
+                # The KDC vouches for this login's pre-authentication (PKINIT, passkey,
+                # Windows Hello for Business, ...): a real second factor, so it earns grace.
+                log.info("%s: Kerberos NLA login (principal %s); second factor from KDC evidence %s",
+                         user.name, str_field(msg, "principal"), evidence)
+                passed = (grace_key, self.grace.clock(), f"kdc {evidence}")
+            elif hit := self.grace.lookup(grace_key):
                 entry, age = hit
                 log.info("%s: %s login from %s; second factor skipped: reconnect grace "
                          "(%s passed %ds ago from %s)%s", user.name, msg.get("method"),

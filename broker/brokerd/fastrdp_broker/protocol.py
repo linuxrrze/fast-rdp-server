@@ -6,7 +6,7 @@ Proxy module -> broker.sock:
   {"op": "login", "session_id": str, "method": "nla"|"tls", "user": str, "domain": str,
    "password": str|null, "principal": str|null, "smartcard": bool, "remote_guard": bool,
    "desktop_hint": str|null, "client_address": str|null, "width": int|null,
-   "height": int|null, "connection_type": int}
+   "height": int|null, "connection_type": int, "kdc_evidence": [str] (NLA only)}
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
                  "domain": str, "security": "tls"|"nla", "cert_sha256": str}}
@@ -19,6 +19,12 @@ Proxy module -> broker.sock:
   proxy.ini [FastRDP] AcceptRemoteGuard). The module discarded the forwarded Kerberos
   tickets; "password" is null. Identity only: the principal is the identity, there is no
   session TGT. Both flags are false for TLS logins and are absent from older modules.
+  "kdc_evidence": what the KDC asserted in the Kerberos service ticket, verified with the
+  service key by the proxy's FreeRDP (patches/freerdp/0005): "ind:<authentication
+  indicator>" (MIT/FreeIPA CAMMAC) and "sid:S-1-..." (enabled group SIDs from the PAC:
+  ExtraSids, domain and resource groups), at most 512 items. Kerberos NLA logins only; []
+  if the ticket carried none; absent for TLS logins, from older modules and when FreeRDP
+  cannot tell. Compared with [mfa] kdc_evidence_as_mfa (Broker.kdc_evidence).
 
   The module closes the connection without waiting for the "login" reply when its RDP
   client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the

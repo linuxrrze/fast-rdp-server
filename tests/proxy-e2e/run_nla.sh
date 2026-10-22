@@ -25,7 +25,8 @@
 # libkrb5-dev for kdc_adlike.c (KRB5_CFLAGS: extra compiler flags, e.g. -I<include dir>)
 # plus everything run.sh needs. The Remote Credential Guard checks need a FreeRDP built
 # with Kerberos (WITH_KRB5) and patches/freerdp/0002 + 0003 (fastrdp-freerdp3 3.32.2-2), the
-# user-to-user checks patches/freerdp/0004 (3.32.2-3).
+# user-to-user checks patches/freerdp/0004 (3.32.2-3), the kdc_evidence checks
+# patches/freerdp/0005 (3.32.2-4).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -214,6 +215,12 @@ holds() { # description command...
 check "two logins reached the broker (wrong password and NTLM stopped at NLA)" 'len(logins) == 2'
 check "method is nla with the Kerberos principal"   'all(r["method"] == "nla" and r["principal"] == "alice@TEST.FASTRDP" for r in logins)'
 check "CredSSP user and delegated password passed" 'logins[0]["user"] == "alice" and logins[0]["password"] == "alicepw" and logins[0]["remote_guard"] is False'
+# patches/freerdp/0005: a password TGT carries no authentication indicator and MIT's
+# minimal PAC no group SIDs; the field is there (empty), its PAC signature checked out
+check "KDC evidence: password logins report an empty list" \
+    'all(r.get("kdc_evidence") == [] for r in logins + glogins + ulogins + tlogins)'
+holds "KDC evidence: no CAMMAC or PAC failed verification" \
+    [ -z "$(grep -hE "svc-verifier does not verify|server signature does not verify" proxy*.log)" ]
 # R5: NTLM is not offered
 logged "NTLM: proxy logged the attempt and the Kerberos hint" proxy.log \
     "attempted NTLM (offered: NTLM); only Kerberos NLA is accepted: check that the client can reach the KDC"

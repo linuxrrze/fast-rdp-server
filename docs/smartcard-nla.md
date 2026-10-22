@@ -41,6 +41,15 @@ it cannot by itself replace the second factor. The sound setup in AD:
 
 Other users keep their privacyIDEA push even when they use a card.
 
+**Per login instead (K11):** the KDC's own statement in the ticket can replace the
+push for exactly the logins that used a card, with nothing to configure on the client:
+`fastrdp_mfa_kdc_evidence_as_mfa: ["ind:pkinit"]` (FreeIPA, MIT with
+`pkinit_indicator = pkinit`), or the SID of an AD *Authentication Mechanism Assurance*
+group or `sid:S-1-18-3` (PKINIT with freshness). The proxy's FreeRDP verifies the
+evidence with the service key (`patches/freerdp/0005`); `run_smartcard.sh` checks that a
+PKINIT login reaches the broker with `"kdc_evidence": ["ind:pkinit"]`. Details:
+[passkeys.md](passkeys.md#kdc-evidence-per-login).
+
 **Deployment requirements (AD):**
 - KDC certificates on the DCs, the issuing CA in NTAuth, and user certificates with
   the UPN SAN. This is the standard Windows smartcard-logon PKI.

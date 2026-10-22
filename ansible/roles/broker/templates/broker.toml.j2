@@ -32,6 +32,7 @@ exempt_groups = {{ fastrdp_mfa_exempt_groups | to_json }}
 otp_lengths = {{ fastrdp_otp_lengths | to_json }}
 yubikey_otp = true
 nla_kdc_enforced = {{ fastrdp_mfa_nla_kdc_enforced | bool | lower }}
+kdc_evidence_as_mfa = {{ fastrdp_mfa_kdc_evidence_as_mfa | to_json }}
 reconnect_grace = {{ fastrdp_mfa_reconnect_grace | int }}
 reconnect_grace_same_address = {{ fastrdp_mfa_reconnect_grace_same_address | bool | lower }}
 # mode web / push_or_web: users approve their logins on the web gateway (/web/approve)

@@ -914,6 +914,7 @@ exempt_groups = []
 otp_lengths = [6]
 yubikey_otp = true
 nla_kdc_enforced = false
+kdc_evidence_as_mfa = []
 reconnect_grace = 0
 reconnect_grace_same_address = true
 

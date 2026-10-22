@@ -259,6 +259,13 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual(cfg.mfa.mode, "push")
         self.assertEqual(cfg.auth.realms, ["LAB.EXAMPLE.COM"])
 
+    def test_kdc_evidence_as_mfa(self):
+        for name in ("broker-lab.toml", "broker-minimal.toml", "broker-kdc.toml"):
+            self.assertEqual(broker_config.parse(toml(name)).mfa.kdc_evidence_as_mfa, [], name)
+        cfg = broker_config.parse(toml("broker-kdc-evidence.toml"))
+        self.assertEqual(cfg.mfa.kdc_evidence_as_mfa, ["ind:pkinit", "sid:S-1-18-4", "sid:S-1-5-21-1-2-3-1300"])
+        self.assertFalse(cfg.mfa.nla_kdc_enforced)
+
     def test_reconnect_grace(self):
         for name in ("broker-lab.toml", "broker-minimal.toml"):
             mfa = broker_config.parse(toml(name)).mfa
@@ -455,6 +462,14 @@ class CommonChecks(unittest.TestCase):
                 ok, fastrdp_identity_provider="ipa", fastrdp_mfa_nla_kdc_enforced=True,
                 fastrdp_mfa_nla_kdc_auth_indicators=[]),
             "kdc-enforced on AD without a policy": dict(ok, fastrdp_mfa_nla_kdc_enforced=True),
+            "kdc evidence as a string": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa="ind:pkinit"),
+            "kdc evidence without a prefix": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["pkinit"]),
+            "kdc evidence SID malformed": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["sid:S-1-5-21-x"]),
+            "kdc evidence with a newline": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["ind:pkinit\n"]),
+            "kdc evidence hardened (password)": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["ind:hardened"]),
+            "kdc evidence S-1-18-1 (every logon)": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["sid:S-1-18-1"]),
+            "kdc evidence S-1-18-2 (S4U)": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["sid:S-1-18-2"]),
+            "kdc evidence Domain Users": dict(ok, fastrdp_mfa_kdc_evidence_as_mfa=["sid:S-1-5-21-1-2-3-513"]),
             "unknown autodetect profile": dict(ok, fastrdp_xrdp_autodetect_profile="autodetect"),
             "autodetect profile upper case": dict(ok, fastrdp_xrdp_autodetect_profile="WAN"),
             "lan networks as a string": dict(ok, fastrdp_lan_networks="10.0.0.0/8"),
@@ -487,6 +502,12 @@ class CommonChecks(unittest.TestCase):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_mfa_nla_kdc_enforced": True}
         self.assertEqual(self.run_checks(**ok, fastrdp_identity_provider="ipa"), 0)
         self.assertEqual(self.run_checks(**ok, fastrdp_mfa_nla_kdc_enforced_by_ad_policy=True), 0)
+
+    def test_kdc_evidence_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        for items in ([], ["ind:pkinit", "ind:passkey"], ["sid:S-1-18-4", "sid:S-1-18-3", "sid:S-1-5-21-1-2-3-1300"]):
+            with self.subTest(items):
+                self.assertEqual(self.run_checks(**ok, fastrdp_mfa_kdc_evidence_as_mfa=items), 0)
 
     def test_network_settings_pass(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

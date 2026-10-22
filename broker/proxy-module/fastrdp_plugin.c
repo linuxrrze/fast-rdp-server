@@ -6,7 +6,8 @@
  * Flow per connection:
  *   ServerPeerLogon       capture the front identity. For NLA, bind the CredSSP
  *                         user name to the Kerberos principal that actually
- *                         authenticated (SECPKG_ATTR_AUTH_IDENTITY).
+ *                         authenticated (SECPKG_ATTR_AUTH_IDENTITY), and keep what
+ *                         the KDC asserted in the ticket (kdc_evidence()).
  *   ServerFetchTargetAddr ask fastrdp-brokerd (Unix socket) to authorise the
  *                         login (account, groups, MFA) and to start or reuse the
  *                         user's session. The broker returns the back-end target.
@@ -77,6 +78,11 @@
 #include <freerdp/private/proxy_client.h>
 
 #include "fastrdp_addr.h"
+/* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
+#if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
+#define FASTRDP_KDC_EVIDENCE 1
+#include "fastrdp_pac.h"
+#endif
 #include "fastrdp_spnego.h"
 
 #define TAG MODULE_TAG("fastrdp")
@@ -96,6 +102,7 @@ typedef struct
 	char* domain;
 	char* password;
 	char* principal;
+	cJSON* kdc_evidence; /* NLA: ["ind:...", "sid:..."]; NULL: FreeRDP cannot tell */
 	/* broker reply */
 	BOOL routed;
 	char* target_user;
@@ -124,6 +131,7 @@ static void session_free(fastrdpSession* s)
 	wipe_free(&s->domain);
 	wipe_free(&s->password);
 	wipe_free(&s->principal);
+	cJSON_Delete(s->kdc_evidence);
 	wipe_free(&s->target_user);
 	wipe_free(&s->target_password);
 	wipe_free(&s->target_domain);
@@ -199,6 +207,135 @@ static BOOL nla_package_name(rdpContext* ps, char* ascii, size_t size)
 	}
 	(void)freerdp_nla_FreeContextBuffer(ps, info.PackageInfo);
 	return TRUE;
+}
+
+/* ------------------------------------------------------------ KDC evidence */
+
+#if defined(FASTRDP_KDC_EVIDENCE)
+/* The broker reads one JSON line of at most 64 KiB; keep the list well below that. A
+ * truncated list can only miss evidence, so the login falls back to the second factor. */
+#define KDC_EVIDENCE_MAX_ITEMS 512
+#define KDC_EVIDENCE_MAX_BYTES (32 * 1024)
+#define KDC_EVIDENCE_BUFFER (64 * 1024) /* patches/freerdp/0005 keeps at most this much */
+
+typedef struct
+{
+	cJSON* list;
+	size_t bytes;
+	size_t dropped;
+} kdcEvidence;
+
+static int kdc_evidence_add(kdcEvidence* e, const char* prefix, const char* value)
+{
+	char item[FASTRDP_PAC_SID_LEN + 32];
+	(void)snprintf(item, sizeof(item), "%s%s", prefix, value);
+	const size_t len = strlen(item) + 3; /* quotes and comma */
+	if ((size_t)cJSON_GetArraySize(e->list) >= KDC_EVIDENCE_MAX_ITEMS ||
+	    e->bytes + len > KDC_EVIDENCE_MAX_BYTES)
+	{
+		e->dropped++;
+		return 1;
+	}
+	cJSON* str = cJSON_CreateString(item);
+	if (!str || !cJSON_AddItemToArray(e->list, str))
+	{
+		cJSON_Delete(str);
+		return 0;
+	}
+	e->bytes += len;
+	return 1;
+}
+
+static int kdc_evidence_add_sid(void* ctx, const char* sid)
+{
+	return kdc_evidence_add(ctx, "sid:", sid);
+}
+#endif
+
+/* What the KDC asserted about the client in the Kerberos service ticket the proxy
+ * accepted, from patches/freerdp/0005 (verified with the service key there):
+ *   "ind:<indicator>"  authentication indicators (MIT krb5, FreeIPA: pkinit, otp, passkey, ...)
+ *   "sid:S-1-..."      enabled group SIDs from the PAC (Active Directory, Samba, FreeIPA):
+ *                      ExtraSids first (S-1-18-x, other domains), then domain and resource
+ *                      groups (fastrdp_pac.h)
+ * The broker may count it as the second factor ([mfa] kdc_evidence_as_mfa). Nothing the
+ * client sends ends up here: the TSSmartCardCreds flag, for one, does not count.
+ * NULL if this FreeRDP cannot tell (unpatched, Heimdal): the broker then sees no field. */
+static cJSON* kdc_evidence(proxyData* pdata)
+{
+#if defined(FASTRDP_KDC_EVIDENCE)
+	kdcEvidence e = { cJSON_CreateArray(), 0, 0 };
+	BYTE* buf = calloc(1, KDC_EVIDENCE_BUFFER);
+	SecBuffer sb = { 0 };
+	if (!e.list || !buf)
+		goto fail;
+
+	sb.cbBuffer = KDC_EVIDENCE_BUFFER;
+	sb.pvBuffer = buf;
+	SECURITY_STATUS st = freerdp_nla_QueryContextAttributes(
+	    pdata->ps, SECPKG_ATTR_KERBEROS_AUTH_INDICATORS, &sb);
+	if (st != SEC_E_OK || sb.cbBuffer > KDC_EVIDENCE_BUFFER)
+	{
+		WLog_WARN(TAG, "[%s] Kerberos ticket evidence not available (status 0x%08" PRIx32
+		               "); [mfa] kdc_evidence_as_mfa cannot apply",
+		          pdata->session_id, (UINT32)st);
+		goto fail;
+	}
+	for (size_t off = 0; off < sb.cbBuffer;)
+	{
+		const char* ind = (const char*)buf + off;
+		const size_t len = strnlen(ind, sb.cbBuffer - off);
+		if (len == sb.cbBuffer - off) /* not NUL-terminated */
+			break;
+		if (len > 0 && !kdc_evidence_add(&e, "ind:", ind))
+			goto fail;
+		off += len + 1;
+	}
+
+	sb.cbBuffer = KDC_EVIDENCE_BUFFER;
+	sb.pvBuffer = buf;
+	st = freerdp_nla_QueryContextAttributes(pdata->ps, SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO, &sb);
+	if (st == SEC_E_OK && sb.cbBuffer > 0 && sb.cbBuffer <= KDC_EVIDENCE_BUFFER &&
+	    (!fastrdp_pac_group_sids(buf, sb.cbBuffer, FASTRDP_PAC_EXTRA, kdc_evidence_add_sid, &e) ||
+	     !fastrdp_pac_group_sids(buf, sb.cbBuffer, FASTRDP_PAC_GROUPS | FASTRDP_PAC_RESOURCE,
+	                             kdc_evidence_add_sid, &e)))
+		WLog_WARN(TAG, "[%s] PAC logon information does not parse; no group SIDs",
+		          pdata->session_id);
+	if (e.dropped)
+		WLog_WARN(TAG, "[%s] Kerberos ticket evidence: %" PRIuz " items left out (at most %d)",
+		          pdata->session_id, e.dropped, KDC_EVIDENCE_MAX_ITEMS);
+	free(buf);
+	return e.list;
+
+fail:
+	free(buf);
+	cJSON_Delete(e.list);
+	return NULL;
+#else
+	(void)pdata;
+	return NULL;
+#endif
+}
+
+/* "pkinit, hardened; 12 group SIDs" for the log */
+static void kdc_evidence_summary(const cJSON* list, char* out, size_t size)
+{
+	size_t sids = 0, o = 0;
+	out[0] = '\0';
+	const cJSON* it = NULL;
+	cJSON_ArrayForEach(it, list)
+	{
+		const char* v = cJSON_GetStringValue(it);
+		if (v && strncmp(v, "ind:", 4) == 0 && o < size)
+		{
+			const int n = snprintf(out + o, size - o, "%s%s", o ? ", " : "", v + 4);
+			o += n > 0 ? (size_t)n : 0;
+		}
+		else if (v && strncmp(v, "sid:", 4) == 0)
+			sids++;
+	}
+	if (o < size)
+		(void)snprintf(out + o, size - o, "%s%" PRIuz " group SIDs", o ? "; " : "", sids);
 }
 
 /* The one hint for every "this client could not do Kerberos" log line. */
@@ -627,6 +764,8 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 		if (!s->principal)
 			goto refuse;
 		(void)_snprintf(s->principal, plen, "%s@%s", ai.User, ai.Domain);
+		cJSON_Delete(s->kdc_evidence);
+		s->kdc_evidence = kdc_evidence(pdata);
 
 		/* The delegated TSCredentials (user, domain, password typed by the user) land in
 		 * the front settings, not in the logon identity. They are client-supplied: the
@@ -662,11 +801,15 @@ static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, voi
 			wipe_free(&s->password);
 		if (!s->user)
 			s->user = _strdup(ai.User);
-		WLog_INFO(TAG, "[%s] NLA logon: principal %s, rdp user %s%s", pdata->session_id,
-		          s->principal, s->user ? s->user : "(none)",
+		char evidence[256] = "not available";
+		if (s->kdc_evidence)
+			kdc_evidence_summary(s->kdc_evidence, evidence, sizeof(evidence));
+		WLog_INFO(TAG, "[%s] NLA logon: principal %s, rdp user %s%s; KDC evidence: %s",
+		          pdata->session_id, s->principal, s->user ? s->user : "(none)",
 		          s->smartcard      ? " (smartcard)"
 		          : s->remote_guard ? " (Remote Credential Guard, identity only)"
-		                            : "");
+		                            : "",
+		          evidence);
 	}
 	else if (!config_bool(pdata, "AllowTls", FALSE))
 	{
@@ -779,6 +922,9 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	add_str(req, "principal", s->principal);
 	cJSON_AddBoolToObject(req, "smartcard", s->smartcard);
 	cJSON_AddBoolToObject(req, "remote_guard", s->remote_guard);
+	/* Kerberos NLA only (s->kdc_evidence stays NULL for TLS): absent if FreeRDP cannot tell */
+	if (s->nla && s->kdc_evidence)
+		cJSON_AddItemToObject(req, "kdc_evidence", cJSON_Duplicate(s->kdc_evidence, 1));
 	add_str(req, "desktop_hint", freerdp_settings_get_string(front, FreeRDP_AlternateShell));
 	/* The socket's peer address, not FreeRDP_ClientAddress: the latter comes from the
 	 * client's own Client Info PDU and can be anything. */

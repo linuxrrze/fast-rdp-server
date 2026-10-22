@@ -211,6 +211,13 @@
             and fastrdp_mfa_nla_kdc_auth_indicators | difference(['passkey', 'pkinit', 'otp', 'radius', 'idp']) | length == 0)
       - not fastrdp_mfa_nla_kdc_enforced | bool or fastrdp_identity_provider != 'ad'
         or fastrdp_mfa_nla_kdc_enforced_by_ad_policy | bool
+      - fastrdp_mfa_kdc_evidence_as_mfa is sequence and fastrdp_mfa_kdc_evidence_as_mfa is not string
+      # \Z, not $: same item syntax as the broker (config.py KDC_EVIDENCE_ITEM)
+      - fastrdp_mfa_kdc_evidence_as_mfa | map('string')
+        | reject('match', '^(ind:[!-~]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15})\Z') | list | length == 0
+      - fastrdp_mfa_kdc_evidence_as_mfa | map('string')
+        | select('match', '^(ind:hardened|sid:S-1-18-[12]|sid:S-1-1-0|sid:S-1-5-11|sid:S-1-5-32-545|sid:S-1-5-21-.*-513)\Z')
+        | list | length == 0
       - fastrdp_mfa_reconnect_grace | string is match('^[0-9]+$')
       - fastrdp_mfa_reconnect_grace | int <= 3600
       - fastrdp_mfa_reconnect_grace_same_address | string | lower in ['true', 'false']
@@ -244,6 +251,8 @@
       fastrdp_termsrv_aliases are plain DNS names; fastrdp_mfa_nla_kdc_enforced needs
       fastrdp_mfa_nla_kdc_auth_indicators from passkey, pkinit, otp, radius, idp (never
       hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md);
+      fastrdp_mfa_kdc_evidence_as_mfa is a list of "ind:<indicator>" and "sid:S-1-..."
+      items, not ind:hardened, sid:S-1-18-1, sid:S-1-18-2 or Domain Users (docs/passkeys.md);
       fastrdp_mfa_reconnect_grace is whole seconds 0..3600 and
       fastrdp_mfa_reconnect_grace_same_address true or false (docs/auth-matrix.md);
       fastrdp_mfa_web_approval_timeout is whole seconds 10..540 and, with web approval, less

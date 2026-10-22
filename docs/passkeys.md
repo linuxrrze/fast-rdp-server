@@ -367,14 +367,12 @@ So the question is which KDCs issue TGTs for passkeys.
 - **Samba AD** cannot act as the on-premises side of Entra Kerberos [inferred].
 - **Windows Hello for Business** (key trust, certificate trust, cloud Kerberos trust)
   gives the same result: an AD TGT without a password.
-- AD has no authentication indicators like MIT/FreeIPA, but it marks some logons with
-  well-known SIDs in the PAC: S-1-18-4 for WHfB **key trust**, S-1-18-3 for PKINIT with
-  the freshness extension (smart card, certificate trust, key trust), never for a
-  password (which gets only S-1-18-1) [doc: MS-DTYP §2.4.2.4]. fastrdp cannot read the
-  PAC yet (backlog K11; caveats in [windows-clients.md](windows-clients.md) §3.9).
-  Whether cloud Kerberos trust or FIDO2 via Entra Kerberos adds any of them is
-  unverified. Until K11: keep privacyIDEA push (or web approval) for these users, or
-  use AD *Authentication Mechanism Assurance* (certificate trust only) with an exempt
+- AD has no authentication indicators like MIT/FreeIPA, but its PAC says something about
+  the logon: S-1-18-4 for a key trust logon (Windows Hello for Business), S-1-18-3 for
+  PKINIT with freshness, *Authentication Mechanism Assurance* groups for certificate
+  logons. `fastrdp_mfa_kdc_evidence_as_mfa` can count them per login
+  ([below](#kdc-evidence-per-login)); FIDO2/passkey via Entra Kerberos is not known to
+  leave such a trace. Otherwise keep privacyIDEA push for these users, or an exempt
   group, as for smartcards.
 
 ### WebAuthn redirection (MS-RDPEWA) [verified]
@@ -608,6 +606,92 @@ phone hybrid.
   variant, `roles/common` refusals for `hardened`, empty list, AD without the
   assertion).
 
+#### KDC evidence per login
+
+`fastrdp_mfa_kdc_evidence_as_mfa` (broker `[mfa] kdc_evidence_as_mfa`, default `[]` =
+off) decides per login, from what the KDC wrote into the ticket, where
+`nla_kdc_enforced` asserts it for every Kerberos NLA login:
+
+```yaml
+fastrdp_mfa_kdc_evidence_as_mfa: ["ind:pkinit", "ind:passkey"]            # FreeIPA / MIT
+fastrdp_mfa_kdc_evidence_as_mfa: ["sid:S-1-18-4", "sid:S-1-5-21-…-1300"]   # AD: WHfB key trust, AMA group
+fastrdp_mfa_kdc_evidence_as_mfa: ["sid:S-1-18-3"]                          # Samba AD / AD with freshness: PKINIT
+```
+
+- **What it does.** A Kerberos NLA login whose ticket carries one of the items skips
+  privacyIDEA, logged as `<user>: Kerberos NLA login (principal …); second factor from
+  KDC evidence ind:pkinit`. A login without a matching item keeps its second factor
+  exactly as before (push, or refusal in `otp` mode), with the line `KDC evidence in the
+  ticket: …; none of [mfa] kdc_evidence_as_mfa`. Nothing changes for the client: no
+  prompt, no setting, mstsc as before.
+- **Items.**
+  - `ind:<indicator>`: an authentication indicator (MIT krb5 ≥ 1.16, FreeIPA). FreeIPA's
+    KDC tags PKINIT TGTs with `pkinit` and passkey TGTs with `passkey` (also `otp`,
+    `radius`, `idp`); a plain MIT KDC needs `pkinit_indicator = pkinit` in `kdc.conf`.
+    The KDC copies a TGT's indicators into the service tickets it issues from it.
+  - `sid:<SID>`: an enabled group SID from the PAC (AD, Samba AD, FreeIPA): domain
+    groups, ExtraSids and resource groups. Useful in AD ([MS-DTYP] 2.4.2.4):
+    - `sid:S-1-18-4` (KEY_TRUST_IDENTITY): logon with a key from `msDS-KeyCredentialLink`,
+      i.e. Windows Hello for Business key trust;
+    - `sid:S-1-18-3` (FRESH_PUBLIC_KEY_IDENTITY): PKINIT with a valid RFC 8070
+      freshness token, i.e. current proof of possession of the certificate's key (smart
+      card, WHfB certificate or key trust; Windows clients since 1607 ask for it).
+      Microsoft AD adds it only with the DC policy *KDC support for PKInit Freshness
+      Extension* (off by default); Samba AD (4.25) whenever the client sends the token,
+      without any option. It is **not hardware-bound**: a certificate in software gets it
+      too, so restrict certificate enrolment and writes to `altSecurityIdentities` and
+      `msDS-KeyCredentialLink`. For Samba AD it is the only per-login evidence: Samba
+      never adds S-1-18-4/-5/-6 and has no AMA;
+    - an *Authentication Mechanism Assurance* group: the universal group an issuance
+      policy of the logon certificate is linked to (`msDS-OIDToGroupLink`); AD adds it
+      to the PAC only for logons with such a certificate (smart cards, WHfB certificate
+      trust);
+    - `sid:S-1-18-5` (KEY_PROPERTY_MFA) exists, but see the caveats.
+  - Refused by the broker and `roles/common`: `ind:hardened` (a password with FAST or
+    SPAKE), `sid:S-1-18-1` (every AS logon, passwords included), `sid:S-1-18-2`
+    (S4U2Self), Everyone, Authenticated Users, Users and Domain Users (RID 513).
+- **Where it comes from.** The proxy's WinPR Kerberos acceptor keeps the evidence of
+  the ticket it accepted (`patches/freerdp/0005`, `fastrdp-freerdp3` ≥ 3.32.2-4) and
+  checks that the KDC signed it for this service: indicators only from a CAMMAC (RFC
+  7751) whose svc-verifier checks out with the key that decrypted the ticket, the PAC
+  only when its server signature does (`krb5_pac_verify()`). Authorization data a client
+  adds to its own TGS-REQ therefore never counts. The module parses the PAC's
+  `KERB_VALIDATION_INFO` (`fastrdp_pac.h`, bounds-checked NDR) and sends the broker
+  `"kdc_evidence": ["ind:pkinit", "sid:S-1-…", …]` (at most 512 items, ExtraSids before
+  domain groups; a longer list loses items, so such a login falls back to its second
+  factor). The `smartcard` flag (TSSmartCardCreds) is client-supplied and never counts.
+- **Gating.** Only `method = nla` (Kerberos, never NTLM) with a principal of `[auth]
+  realms`; the broker refuses the option with an empty list. TLS logins and web
+  tokens ignore the field. With `mode = none` it has no effect.
+- **With the other options.**
+  - `exempt_groups` and `nla_kdc_enforced` are checked first; with `nla_kdc_enforced` on,
+    the evidence decides nothing for principals of `[auth] realms`.
+  - A login whose second factor came from the evidence earns reconnect grace like a
+    push (factor `kdc ind:pkinit`, [auth-matrix.md](auth-matrix.md#reconnect-grace)).
+  - `session_tgt = required` still refuses logins without a password, before MFA.
+  - In `otp` mode, NLA logins with matching evidence now pass; all other NLA logins are
+    refused as before.
+- **Caveats.**
+  - *Freshness:* the evidence describes the pre-authentication of the TGT the client
+    used, possibly hours old (Windows: the TGT from the sign-in, renewed for up to the
+    ticket lifetime). It does not mean the user touched the card for this connection.
+  - *Shadow credentials (AD):* whoever can write a user's `msDS-KeyCredentialLink` can
+    add a key, log on with it and get S-1-18-4; S-1-18-5 can be crafted the same way.
+    Restrict write access to the attribute and audit it (event 5136).
+  - *Not verified with a real AD:* the PAC of mstsc's user-to-user tickets (§3.14 of
+    [windows-clients.md](windows-clients.md)), AD's signature over it and which SIDs
+    WHfB and smart cards produce are lab items.
+  - *No-code alternative on AD (unverified):* an authentication policy on the fastrdp
+    computer account whose access condition requires `Member_of {SID(S-1-18-4)}` (or the
+    AMA group), with Kerberos armoring, plus `fastrdp_mfa_nla_kdc_enforced` and
+    `fastrdp_mfa_nla_kdc_enforced_by_ad_policy`: the KDC then refuses the other logins
+    instead of fastrdp asking them for a push.
+- Tests: `broker/brokerd/tests/test_kdc_evidence.py`; `tests/proxy-module/test_pac.c`
+  (Windows PACs from MIT's test suite, synthetic PAC with ExtraSids and resource groups,
+  truncated and mutated buffers); `tests/proxy-e2e/run_smartcard.sh` (MIT KDC with
+  `pkinit_indicator`: the broker gets `["ind:pkinit"]`), `run_nla.sh` (password logins:
+  `[]`, every CAMMAC and PAC verified), `run.sh` (TLS: no field); `tests/ansible`.
+
 #### FreeIPA passkey → TGT → NLA (lab)
 
 `tests/lab/freeipa-passkey-nla.sh [--setup] USER FASTRDP_FQDN` on an enrolled Linux
@@ -662,7 +746,9 @@ Not run: no FreeIPA, client or key here.
   `roles/web_gateway/defaults/main.yml`; tests `tests/keycloak/` (offline unit tests in
   `make test-ansible`, end to end in `make test-keycloak`).
 - Stage 2: broker `[mfa] nla_kdc_enforced` (`config.py`, `server.py`), Ansible
-  `fastrdp_mfa_nla_kdc_*` (roles common, broker, identity), preflight check,
+  `fastrdp_mfa_nla_kdc_*` (roles common, broker, identity), preflight check; per login
+  `[mfa] kdc_evidence_as_mfa` (`patches/freerdp/0005`, `fastrdp_pac.h`,
+  `fastrdp_plugin.c` `kdc_evidence()`, `server.py`, `fastrdp_mfa_kdc_evidence_as_mfa`),
   `FASTRDP_FREERDP_WEBAUTHN` in `third_party/build-freerdp.sh`,
   `tests/lab/freeipa-passkey-nla.sh`.
 - Stage 3: [webauthn-redirection.md](webauthn-redirection.md),
@@ -689,6 +775,11 @@ Not run: no FreeIPA, client or key here.
   for reading `krbprincipalauthind` with the host keytab (read from the
   `System: Read Services` permission in the source, not run).
 - AD + Entra Kerberos and WHfB cloud trust → mstsc SSO to fastrdp (AD-joined).
+- `fastrdp_mfa_kdc_evidence_as_mfa` with AD and mstsc: which SIDs a smart card, WHfB key
+  trust and certificate trust logon put into the `TERMSRV` user-to-user ticket's PAC
+  (S-1-18-3/-4, AMA group), that the PAC's server signature verifies, and that a
+  password logon has none of them. FreeIPA: `ind:pkinit` / `ind:passkey` from real
+  clients.
 - RDPEWA: confirm that freerdp-proxy passes `WebAuthN_Channel` through between mstsc and
   a Windows back-end (proxy in front of Windows); whether mstsc accepts requests
   without `clientDataJSON` ([webauthn-redirection.md](webauthn-redirection.md)).

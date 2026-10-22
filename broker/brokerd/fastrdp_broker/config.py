@@ -106,6 +106,14 @@ class MfaSection:
     # [auth] realms; TLS and web logins are unaffected. Never for AD without a policy
     # that guarantees it (AD has no authentication indicators).
     nla_kdc_enforced: bool = False
+    # Per login: a Kerberos NLA login whose ticket carries one of these items skips
+    # privacyIDEA. The proxy module reports what the KDC asserted in the ticket, verified
+    # with the service key (patches/freerdp/0005): "ind:<authentication indicator>"
+    # (MIT/FreeIPA, e.g. ind:pkinit, ind:passkey) and "sid:<group SID>" from the PAC
+    # (AD, e.g. sid:S-1-18-4 for Windows Hello for Business key trust or an Authentication
+    # Mechanism Assurance group). Only principals of [auth] realms; logins without a
+    # matching item keep their second factor. docs/passkeys.md#kdc-evidence-per-login
+    kdc_evidence_as_mfa: list[str] = field(default_factory=list)
     # Seconds after a login with a real second factor (OTP/push) during which reconnects
     # of the same account, login method (nla/tls), Kerberos principal and, with
     # reconnect_grace_same_address, client address skip it. Counted from that second
@@ -186,6 +194,14 @@ MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a rec
 # seconds; the proxy module caps [FastRDP] Timeout at 600 and needs time for the session start
 WEB_APPROVAL_TIMEOUT = (10, 540)
 MAX_WEB_APPROVAL_AUTH_AGE = 300
+# [mfa] kdc_evidence_as_mfa items (what fastrdp_plugin.c kdc_evidence() reports)
+KDC_EVIDENCE_ITEM = re.compile(r"ind:[\x21-\x7e]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15}")
+# Present after a password logon too, so never a second factor: "hardened" is a password
+# with FAST/SPAKE (MIT, FreeIPA); S-1-18-1 "authentication authority asserted identity"
+# is in every AD/Samba AS logon, S-1-18-2 marks S4U2Self; Everyone, Authenticated Users,
+# Users. Domain Users (RID 513) is refused below.
+KDC_EVIDENCE_NOT_MFA = {"ind:hardened", "sid:S-1-18-1", "sid:S-1-18-2", "sid:S-1-1-0",
+                        "sid:S-1-5-11", "sid:S-1-5-32-545"}
 
 
 def _section(cls, data: dict, where: str):
@@ -272,6 +288,17 @@ def parse(raw: dict) -> Config:
         # Only tickets from KDCs whose TERMSRV policy is known may skip MFA; a trusted
         # foreign realm's KDC does not apply this realm's authentication indicators.
         raise ConfigError("[mfa] nla_kdc_enforced needs [auth] realms (the realms whose KDC enforces it)")
+    if not isinstance(mfa.kdc_evidence_as_mfa, list) or not all(
+        isinstance(i, str) and KDC_EVIDENCE_ITEM.fullmatch(i) for i in mfa.kdc_evidence_as_mfa
+    ):
+        raise ConfigError('[mfa] kdc_evidence_as_mfa must be a list of "ind:<indicator>" '
+                          'and "sid:S-1-..." items (e.g. ["ind:pkinit", "sid:S-1-18-4"])')
+    for item in mfa.kdc_evidence_as_mfa:
+        if item in KDC_EVIDENCE_NOT_MFA or (item.startswith("sid:S-1-5-21-") and item.endswith("-513")):
+            raise ConfigError(f"[mfa] kdc_evidence_as_mfa: {item} is in the tickets of password "
+                              "logons too, it is no second factor")
+    if mfa.kdc_evidence_as_mfa and not auth.realms:
+        raise ConfigError("[mfa] kdc_evidence_as_mfa needs [auth] realms (the realms whose KDC is trusted for it)")
     if (
         isinstance(mfa.reconnect_grace, bool)
         or not isinstance(mfa.reconnect_grace, int)

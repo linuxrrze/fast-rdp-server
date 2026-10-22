@@ -295,6 +295,14 @@
       loop:
         - {mode: web}
         - {mode: push_or_web}
+    - name: Broker.toml, MFA from KDC evidence per login (PKINIT indicator, AD key trust)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-kdc-evidence.toml"
+        mode: "0644"
+      vars:
+        fastrdp_mfa_mode: push
+        fastrdp_mfa_kdc_evidence_as_mfa: ["ind:pkinit", "sid:S-1-18-4", "sid:S-1-5-21-1-2-3-1300"]
 
     - name: Broker.toml, SSSD with fully qualified names (FreeIPA domain other than the realm)
       ansible.builtin.template:

@@ -11,7 +11,7 @@
 | Web: Guacamole + Keycloak | Keycloak (OIDC) | at Keycloak (OTP, WebAuthn/FIDO2, privacyIDEA), proven by `acr`/`amr` | no (refused with `fastrdp_session_tgt: required`) | `fastrdp_web_enabled`; see [web-access.md](web-access.md) |
 | NLA with a passkey-derived TGT (FreeIPA, Linux client) | Kerberos: passkey pre-authentication at the KDC (`kinit -T` / sssd), TGT carries indicator `passkey` | `push`; **skipped** with `fastrdp_mfa_nla_kdc_enforced: true` when the KDC requires `passkey`/`pkinit` for `TERMSRV` (FreeIPA auth indicators; checked by preflight and the identity role) | no (no password) | Lab stage: [passkeys.md](passkeys.md) stage 2, `tests/lab/freeipa-passkey-nla.sh`. Not for AD (no auth indicators) |
 | NLA, Remote Credential Guard (`mstsc /remoteGuard`, GPO "Require Remote Credential Guard"; FreeRDP `/remoteGuard`) | Kerberos ticket of the logged-on user; then TSRemoteGuardCreds (service ticket + TGT) instead of a password | as SSO: `push` with `fastrdp_privacyidea_service_user`, skipped with `fastrdp_mfa_nla_kdc_enforced` | **no.** The proxy module discards the forwarded tickets (identity only); refused with `fastrdp_session_tgt: required`. gssproxy S4U for NFS works as for SSO | **Refused by default**: the proxy answers the negotiation with "not supported" and mstsc shows its own error. `fastrdp_accept_remote_guard: true` accepts it identity only; the broker logs `remote credential guard: identity only, credentials discarded` (request field `remote_guard`). Using the credentials (MS-RDPEAR) is not implemented. [windows-clients.md](windows-clients.md) §3.12 |
-| Smartcard / PIV / YubiKey PIV (NLA) | Kerberos via **PKINIT** (certificate + PIN) | `push`, or exempt group for "smart card required" accounts | no (PIN is never forwarded; refused with `fastrdp_session_tgt: required`) | Tested with a software token; real cards/AD/mstsc to validate. See [smartcard-nla.md](smartcard-nla.md) |
+| Smartcard / PIV / YubiKey PIV (NLA) | Kerberos via **PKINIT** (certificate + PIN) | `push`, or exempt group for "smart card required" accounts; **skipped per login** when the ticket carries an item of `fastrdp_mfa_kdc_evidence_as_mfa` (FreeIPA `ind:pkinit`; AD an AMA group or `sid:S-1-18-3`) | no (PIN is never forwarded; refused with `fastrdp_session_tgt: required`) | Tested with a software token; real cards/AD/mstsc to validate. See [smartcard-nla.md](smartcard-nla.md) |
 
 ### Kerberos TGT per back-end
 
@@ -85,6 +85,19 @@ TGTs: FreeIPA `ipa service-mod TERMSRV/<host> --auth-ind=passkey --auth-ind=pkin
 (the identity role sets and verifies this; preflight reads it). Details, the AD case
 and the security review: [passkeys.md](passkeys.md#kdc-enforced-strong-authentication-for-nla).
 
+**`fastrdp_mfa_kdc_evidence_as_mfa`** (broker `[mfa] kdc_evidence_as_mfa`, default `[]`):
+the same per login, from what the KDC wrote into the ticket. A Kerberos NLA login of a
+principal in `[auth] realms` whose ticket carries one of the listed items skips the
+second factor, logged as `second factor from KDC evidence <item>`: `ind:<indicator>`
+(FreeIPA/MIT authentication indicators such as `ind:pkinit`, `ind:passkey`) or
+`sid:<SID>` (AD PAC group SIDs such as `sid:S-1-18-4` for Windows Hello for Business key
+trust, or an Authentication Mechanism Assurance group). Logins without a matching item
+keep their second factor unchanged; the client sees no difference. The proxy's FreeRDP
+checks the KDC's signature over the evidence (`patches/freerdp/0005`); the client's
+`smartcard` flag never counts. Such a login earns reconnect grace like a push. Items,
+refusals, caveats (freshness, shadow credentials):
+[passkeys.md](passkeys.md#kdc-evidence-per-login).
+
 ### Reconnect grace
 
 **`fastrdp_mfa_reconnect_grace`** (broker `[mfa] reconnect_grace`, seconds, default
@@ -105,7 +118,9 @@ alice: nla login from 192.0.2.10; second factor skipped: reconnect grace (push p
 How it works:
 
 - **What earns grace:** only a login whose second factor privacyIDEA confirmed (OTP or
-  push) or the user approved on the web approval page *and* whose session then started (the broker handed the target to the proxy).
+  push), the user approved on the web approval page, or the KDC's evidence in the ticket
+  (`kdc_evidence_as_mfa`, factor `kdc <item>`), *and* whose session then started (the
+  broker handed the target to the proxy).
   Refusals, wrong or missing OTPs, push timeouts, privacyIDEA errors and back-end errors
   record nothing. Logins that never asked privacyIDEA record nothing either: exempt
   groups, `nla_kdc_enforced`, web logins (their MFA is at Keycloak), `mode = "none"`.
@@ -159,8 +174,8 @@ Security review:
   is short.
 - **What it does not weaken:** the first factor, account and group checks, the realm
   check, and the binding to the principal. Grace never starts from a login that did
-  not pass privacyIDEA, so it cannot extend `nla_kdc_enforced`, exempt groups or the
-  web path, and a refused login (R1 reasons `denied`, `not_allowed`, `mfa_failed`,
+  not pass privacyIDEA (or present matching KDC evidence), so it cannot extend
+  `nla_kdc_enforced`, exempt groups or the web path, and a refused login (R1 reasons `denied`, `not_allowed`, `mfa_failed`,
   `mfa_timeout`, `backend`) never creates an entry. The reply to a refused login is the
   same with or without grace.
 - **A compromised client machine** already controls the running session, so grace
