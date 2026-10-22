@@ -8,7 +8,7 @@ fastrdp-freerdp3 (3.32.2-4) unstable; urgency=medium
     The fastrdp proxy module passes them to the broker, which can count them
     as the second factor per login ([mfa] kdc_evidence_as_mfa).
 
- -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 10:30:00 +0200
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 10:26:06 +0200
 
 fastrdp-freerdp3 (3.32.2-3) unstable; urgency=medium
 
