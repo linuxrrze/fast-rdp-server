@@ -31,9 +31,12 @@
  * E2E_NUMLOCK=1: a Synchronize event with NumLock on before the keys.
  * E2E_CLICK=+N: at E2E_INPUT_AT_MS, a left click on the picker row N rows below the
  *   selected one (found on the decoded screen: the accent-filled row).
+ * E2E_CHANNEL_DATA=N: announce the static virtual channel "e2echan" and, at
+ *   E2E_INPUT_AT_MS, send N bytes on it (before the keys); prints "channel_data=N sent=0|1".
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."),
  * if freerdp_connect failed, the connect error ("connect_error=0x..."), and the Bitmap
  * Updates received ("bitmap_updates=N bitmap_rects=N first_bitmap_ms=N", -1: none). */
+#include <freerdp/channels/channels.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/input.h>
@@ -181,6 +184,33 @@ static void click_row(freerdp* inst, int rows_below)
 		}
 	printf("client: no picker row on the screen\n");
 }
+/* E2E_CHANNEL_DATA: one static channel without a plugin, announced in the Client Network Data */
+static BOOL announce_channel(rdpSettings* s)
+{
+	const UINT32 n = freerdp_settings_get_uint32(s, FreeRDP_ChannelCount);
+	CHANNEL_DEF* def = freerdp_settings_get_pointer_array_writable(s, FreeRDP_ChannelDefArray, n);
+	if (!def)
+		return FALSE;
+	memset(def, 0, sizeof(*def));
+	memcpy(def->name, "e2echan", sizeof("e2echan"));
+	def->options = CHANNEL_OPTION_INITIALIZED;
+	return freerdp_settings_set_uint32(s, FreeRDP_ChannelCount, n + 1);
+}
+static void send_channel_data(freerdp* inst, size_t size)
+{
+	const UINT16 id = freerdp_channels_get_id_by_name(inst, "e2echan");
+	BYTE* data = calloc(1, size);
+	BOOL sent = FALSE;
+	/* in pieces, as a channel plugin would send messages; each is chunked by the core */
+	for (size_t off = 0; data && id && off < size; off += 64 * 1024)
+	{
+		sent = inst->SendChannelData(inst, id, data + off, MIN(64 * 1024, size - off));
+		if (!sent)
+			break;
+	}
+	free(data);
+	printf("client: channel_data=%zu sent=%d\n", size, sent);
+}
 static void give_up(int sig)
 {
 	(void)sig;
@@ -251,6 +281,9 @@ int main(int argc, char** argv)
 		freerdp_settings_set_uint32(s, FreeRDP_ColorDepth, (UINT32)atoi(getenv("E2E_BPP")));
 	if (getenv("E2E_STATUS_INFO"))
 		freerdp_settings_set_bool(s, FreeRDP_SupportStatusInfoPdu, TRUE);
+	size_t channel_data = getenv("E2E_CHANNEL_DATA") ? strtoul(getenv("E2E_CHANNEL_DATA"), NULL, 10) : 0;
+	if (channel_data && !announce_channel(s))
+		return 4;
 	inst->PostConnect = post_connect;
 	const long keep_ms = 1000L * (getenv("E2E_KEEP_S") ? atoi(getenv("E2E_KEEP_S")) : 4);
 	const char* dump = getenv("E2E_DUMP");
@@ -271,6 +304,11 @@ int main(int argc, char** argv)
 	while (ok && elapsed_ms() - connected_ms < keep_ms &&
 	       !freerdp_shall_disconnect_context(inst->context))
 	{
+		if (channel_data && elapsed_ms() - connected_ms >= input_at)
+		{
+			send_channel_data(inst, channel_data);
+			channel_data = 0;
+		}
 		if ((keys || click) && elapsed_ms() - connected_ms >= input_at)
 		{
 			if (keys)

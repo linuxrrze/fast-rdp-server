@@ -251,11 +251,39 @@ class ApproveTests(unittest.TestCase):
         self.assertEqual((status, h["Location"]), (303, "/web/approve"))
         self.assertEqual(self.broker.seen, [])
 
+    def test_approval_needs_mfa_proof(self):
+        """allow_without_mfa_proof is for the desktop chooser only: without required_acr or
+        required_amr_any no approval page, no sign-in for it, no decision."""
+        self.sign_in()
+        csrf = self.csrf()
+        seen = len(self.broker.seen)
+        self.app.cfg.oidc.required_acr, self.app.cfg.oidc.allow_without_mfa_proof = [], True
+        FakeIdP.acr = "1"
+        for name, request in (("page", lambda: self.fetch("/web/approve")),
+                              ("bound page", lambda: self.fetch(f"/web/approve?login={MINE}")),
+                              ("decision", lambda: self.post(csrf=csrf, id="req-1_A", decision="approve"))):
+            with self.subTest(name), self.assertLogs("fastrdp.webgate", "ERROR") as logs:
+                status, h, body = request()
+                self.assertEqual(status, 503)
+                self.assertIn("not set up correctly", body)
+                self.assertIn("allow_without_mfa_proof applies to the desktop chooser only", logs.output[0])
+        self.assertEqual(len(self.broker.seen), seen)               # the broker is never asked
+        # a sign-in for the approval page that started before the change: refused at the callback
+        self.app.cfg.oidc.required_acr = ["mfa"]
+        self.jar.clear()
+        _, h, _ = self.fetch("/web/approve")
+        _, h, _ = self.fetch(h["Location"])                         # IdP "authorize"
+        self.app.cfg.oidc.required_acr = []
+        with self.assertLogs("fastrdp.webgate", "ERROR"):
+            status, _, _ = self.fetch(h["Location"])                # back to /web/callback
+        self.assertEqual(status, 503)
+        self.assertFalse(self.cookie("fastrdp_web_approve"))
+
     def test_bad_form(self):
         self.sign_in()
         csrf = self.csrf()
         for form in ({"id": "../x", "decision": "approve"}, {"id": "req-1_A", "decision": "yes"},
-                     {"id": "", "decision": "deny"}):
+                     {"id": "", "decision": "deny"}, {"id": "req-1_A\n", "decision": "deny"}):
             with self.subTest(form):
                 self.assertEqual(self.post(csrf=csrf, **form)[0], 400)
         self.assertNotIn("mfa_decide", self.broker.ops())
@@ -284,7 +312,8 @@ class ApproveTests(unittest.TestCase):
     def test_untrusted_values_escaped(self):
         self.broker.replies["mfa_pending"]["pending"] = [
             dict(PENDING[0], client_address="<script>x</script>", method="<b>"),
-            dict(PENDING[0], id="bad id\"><script>")]          # not a broker id: left out
+            dict(PENDING[0], id="bad id\"><script>"),          # not a broker id: left out
+            dict(PENDING[0], id="req-1_A\n", code="12\n")]
         self.sign_in()
         body = self.fetch("/web/approve")[2]
         self.assertIn("&lt;script&gt;x&lt;/script&gt;", body)
@@ -375,6 +404,14 @@ class ApproveTests(unittest.TestCase):
         self.assertEqual((mine.count('value="approve"'), mine.count('value="deny"')), (1, 1))
         self.assertEqual(mine.count(f'name="login" value="{MINE}"'), 2)
         self.assertIn("somebody sent you this link", mine)
+        # the prominent warning above the Approve button, with this login's code next to it
+        warning, item = mine.split('<div role="alert"')[1].split("</div>", 1)
+        self.assertLess(mine.index('<div role="alert"'), mine.index('value="approve"'))
+        self.assertIn("Warning: 2 logins with your account are waiting right now.", warning)
+        self.assertIn('Its code is <b style="font-size:1.4em">42</b>: approve it only if <b>your own</b> RDP '
+                      "window shows this code.", warning)
+        self.assertIn("click <b>Deny</b>", warning)
+        self.assertNotIn("13", warning)                              # not the other login's code
         # the other one below, with the warning and Deny only
         self.assertIn("<b>Another login with your password is waiting. Deny it if it is not yours.</b>", body)
         self.assertIn("From <b>198.51.100.7</b>", others)
@@ -385,7 +422,11 @@ class ApproveTests(unittest.TestCase):
         self.assertNotIn("More than one RDP login", body)     # the unbound page's refusal
 
         csrf = self.bound_csrf()
-        status, _, body = self.post(csrf=csrf, id=MINE, login=MINE, decision="approve")
+        self.broker.replies["mfa_decide"] = {"ok": True, "approved": True, "others_pending": 1}
+        with self.assertLogs("fastrdp.webgate", "INFO") as logs:
+            status, _, body = self.post(csrf=csrf, id=MINE, login=MINE, decision="approve")
+        self.assertIn("WARNING:fastrdp.webgate:web approval: alice approved an RDP login via the login-bound link "
+                      "while 1 other login(s) of the account waited (somebody else with the password?)", logs.output)
         self.assertEqual(status, 200)
         self.assertIn("Login approved", body)
         self.assertEqual(self.broker.seen[-1], {"op": "mfa_decide", "user": "alice", "id": MINE, "approve": True,
@@ -404,7 +445,14 @@ class ApproveTests(unittest.TestCase):
         body = self.fetch(f"/web/approve?login={MINE}")[2]
         self.assertIn("<h2>This RDP login</h2>", body)
         self.assertNotIn("Another login", body)
+        self.assertNotIn('role="alert"', body)                       # the warning only while others wait
         self.assertEqual(body.count('value="approve"'), 1)
+        with self.assertNoLogs("fastrdp.webgate", "WARNING"):
+            self.assertEqual(self.post(csrf=self.bound_csrf(), id=MINE, login=MINE, decision="approve")[0], 200)
+        self.broker.replies["mfa_pending"]["pending"] = [dict(PENDING[0], id=MINE, code=None),
+                                                         dict(PENDING[0], id=OTHER)]
+        body = self.fetch(f"/web/approve?login={MINE}")[2]
+        self.assertIn("Approve it only if you started it yourself just now, on your own screen.", body)
 
     def test_unknown_or_foreign_login_id(self):
         """An id that is not among the signed-in user's pending logins (another user's,

@@ -684,7 +684,13 @@ class Broker:
         log.info("web approval for %s from %s (%s login): %s on the approval page", user.name,
                  entry.client_address, entry.method,
                  ("approved via the login-bound link" if bound else "approved") if approve else "DENIED")
-        return {"ok": True, "approved": approve}
+        # the user's own logins still waiting (never ids or other users'): a bound approval
+        # while others wait may be an attacker's link to the attacker's login
+        others = self.mfa.approvals.count(user.name)
+        if approve and bound and others:
+            log.warning("web approval for %s via the login-bound link while %d other login(s) of the "
+                        "account waited: somebody else may have the password", user.name, others)
+        return {"ok": True, "approved": approve, "others_pending": others}
 
     async def mfa_events(self, msg: dict) -> dict:
         """fastrdp-webgate's notifier: events of web approvals (mfa.ApprovalEvents), waiting

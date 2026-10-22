@@ -382,6 +382,10 @@ static const char* json_str(const cJSON* obj, const char* key);
 #define WS_PICKER_MAX_TIMEOUT 60 /* seconds the picker may wait ([broker] desktop_picker_timeout) */
 #define WS_PICKER_GRACE_S 5      /* the broker waits that much longer for the answer */
 #define WS_PICKER_DRAIN_MS 500   /* at most, reading what the client sent before the picker */
+/* Static channel data read during the picker, counted with WS_PICKER_CHUNK_COST per chunk
+ * (the proxy's per-chunk copy): above it the login is abandoned (ws_picker_channel_data()) */
+#define WS_PICKER_MAX_CHANNEL_BYTES (4 * 1024 * 1024)
+#define WS_PICKER_CHUNK_COST 128
 
 typedef enum
 {
@@ -412,6 +416,9 @@ typedef struct
 	pUnicodeKeyboardEvent unicode_keyboard;
 	pMouseEvent mouse;
 	pExtendedMouseEvent extended_mouse;
+	psPeerReceiveChannelData receive_channel_data; /* the proxy's, while counting */
+	size_t channel_bytes; /* static channel data read meanwhile (+ WS_PICKER_CHUNK_COST each) */
+	BOOL channel_capped;
 } wsPicker;
 
 /* The front connection while the broker works on the login ([FastRDP] WaitingScreen):
@@ -1107,7 +1114,12 @@ static void add_str(cJSON* obj, const char* key, const char* value)
  * there, patches/freerdp/0007 handles it as input of the active connection
  * (freerdp_peer_in_post_connect()). Without that patch the login does not offer the
  * picker (ws_picker_possible()). Channel data read meanwhile goes the proxy's way (its
- * queue for the back-end), other PDUs as in the active state.
+ * queue for the back-end, which has no limit), other PDUs as in the active state; the
+ * module counts it (ws_picker_channel_data()) and abandons the login above
+ * WS_PICKER_MAX_CHANNEL_BYTES. It is not dropped: the proxy's intercepted channels (rdpdr,
+ * drdynvc) already talk to the client then (pf_server_setup_channels()), and a client's
+ * answer there must reach the proxy; a well-behaved client sends little else before the
+ * back-end's channels speak first.
  *
  * Input typed during the MFA wait is read first and dropped (ws_picker_drain()); a key
  * counts on its release, and only if it went down after that, a click only if both
@@ -1337,6 +1349,33 @@ static BOOL ws_picker_sync(rdpInput* input, UINT32 flags)
 	return ws->picker.sync ? ws->picker.sync(input, flags) : TRUE;
 }
 
+/* The peer's ReceiveChannelData while the picker reads the front connection: hands the data
+ * to the proxy's hook (its queue for the not yet existing back-end), counting it; FALSE
+ * (the read fails, the login is abandoned) once WS_PICKER_MAX_CHANNEL_BYTES is exceeded. */
+static BOOL ws_picker_channel_data(freerdp_peer* peer, UINT16 channelId, const BYTE* data,
+                                   size_t size, UINT32 flags, size_t totalSize)
+{
+	const pServerContext* ps = peer ? (const pServerContext*)peer->context : NULL;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	fastrdpSession* s = (pdata && fastrdp_mgr)
+	                        ? (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata)
+	                        : NULL;
+	waitingScreen* ws = s ? (waitingScreen*)s->screen : NULL;
+	if (!ws || !ws->picker.receive_channel_data)
+		return FALSE;
+	wsPicker* pk = &ws->picker;
+	pk->channel_bytes += size + WS_PICKER_CHUNK_COST;
+	if (pk->channel_bytes > WS_PICKER_MAX_CHANNEL_BYTES)
+	{
+		if (!pk->channel_capped)
+			WLog_WARN(TAG, "[%s] more than %d bytes of channel data during the desktop picker",
+			          pdata->session_id, WS_PICKER_MAX_CHANNEL_BYTES);
+		pk->channel_capped = TRUE;
+		return FALSE;
+	}
+	return pk->receive_channel_data(peer, channelId, data, size, flags, totalSize);
+}
+
 /* Peer event handles to read (POLLIN) into fds; the proxy's abort event first. */
 static nfds_t ws_picker_fds(const waitingScreen* ws, struct pollfd* fds, nfds_t max)
 {
@@ -1482,6 +1521,12 @@ static void ws_picker_start(waitingScreen* ws, const cJSON* msg)
 	input->UnicodeKeyboardEvent = ws_picker_unicode;
 	input->MouseEvent = ws_picker_mouse;
 	input->ExtendedMouseEvent = ws_picker_extended_mouse;
+	freerdp_peer* peer = ws->pdata->ps->peer;
+	if (peer->ReceiveChannelData)
+	{
+		pk->receive_channel_data = peer->ReceiveChannelData;
+		peer->ReceiveChannelData = ws_picker_channel_data;
+	}
 	pk->state = WS_PICKER_SHOWN;
 	WLog_INFO(TAG, "[%s] desktop picker: %u desktops, default %s, %d s", sid, pk->n,
 	          pk->names[pk->def], (int)t->valuedouble);
@@ -1509,6 +1554,13 @@ static void ws_picker_end(waitingScreen* ws)
 			input->ExtendedMouseEvent = pk->extended_mouse;
 		pk->sync = NULL;
 		pk->keyboard = NULL;
+	}
+	if (pk->receive_channel_data)
+	{
+		freerdp_peer* peer = ws->pdata->ps->peer;
+		if (peer->ReceiveChannelData == ws_picker_channel_data)
+			peer->ReceiveChannelData = pk->receive_channel_data;
+		pk->receive_channel_data = NULL;
 	}
 	if (pk->state == WS_PICKER_OFF)
 		return;

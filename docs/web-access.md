@@ -60,7 +60,13 @@ browser ──https──▶ nginx :443
   port 3389 while the proxy restarts therefore receives nothing. The format is
   verified against FreeRDP in the end-to-end test.
 - **The webgate refuses to start without an MFA proof requirement**
-  (`required_acr` / `required_amr_any`), and `amr` must be a list.
+  (`required_acr` / `required_amr_any`), and `amr` must be a list. `allow_without_mfa_proof`
+  (webgate.toml only, for an IdP that enforces MFA in a way acr/amr cannot show) covers
+  the desktop chooser's sign-in only: [approving RDP logins](#approving-rdp-logins) is
+  the RDP login's second factor and always needs `required_acr` or `required_amr_any`.
+  Without them the approval page and its decisions are refused ("not set up correctly",
+  HTTP 503) and the journal says `login approval refused: [oidc] required_acr and
+  required_amr_any are empty`; with `[notify]` backends the webgate does not start.
 - **Username claims:** `user@domain` is accepted only for `fastrdp_web_strip_domains`;
   other domains are refused, so `alice@gmail.com` never maps to `alice`. Use a
   directory-backed claim (Keycloak LDAP/AD federation) so users cannot edit it.
@@ -286,7 +292,10 @@ How users reach it:
   waiting" otherwise (reload after starting the login).
 - Opened from the QR code, the page shows **that login** first under *This RDP login*,
   with Approve and Deny. Other waiting logins of the user follow with "Another login
-  with your password is waiting. Deny it if it is not yours." and only Deny.
+  with your password is waiting. Deny it if it is not yours." and only Deny. While
+  others wait, a red warning box above the buttons shows this login's code in large
+  type: approve only if your own RDP window shows that code, deny a link somebody sent
+  you. Approving then is logged as a warning by the webgate and the broker.
 - Approve: the RDP client continues at once. Deny: the client gets "access denied"
   (Set Error Info 0x7). Nothing: it gives up after the timeout (0x409).
 
@@ -318,7 +327,8 @@ page. Details: [auth-matrix.md](auth-matrix.md#login-bound-link-qr-code).
 
 **A link from somebody else is not yours.** An attacker with the password could send
 you the link of *their* login ("please approve, it's urgent"). The page then shows a
-login whose address, start time and code match nothing in your RDP window: deny it.
+login whose address, start time and code match nothing in your RDP window (and, if
+your own login waits too, the red warning box): deny it.
 Scan only the QR code in your own RDP window and never approve a login you did not
 start.
 

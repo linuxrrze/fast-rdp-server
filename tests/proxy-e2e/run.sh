@@ -164,6 +164,10 @@ picker pickerclick E2E_CLICK=+1 & pids+=($!)
 picker pickerearly E2E_EARLY_KEYS=3,enter,d4 E2E_KEYS=r4,u2 & pids+=($!)
 picker pickerkeypad E2E_NUMLOCK=1 E2E_KEYS=kp3 & pids+=($!)
 picker pickergone E2E_GIVE_UP_S=3 & pids+=($!)
+# static channel data read during the picker: passed on below the module's cap (4 MiB),
+# the login abandoned above it (the proxy's queue for the back-end has no limit)
+picker pickerchan E2E_CHANNEL_DATA=65536 E2E_KEYS=2 & pids+=($!)
+picker pickerflood E2E_CHANNEL_DATA=6291456 & pids+=($!)
 # proxy A has the waiting screen switched off: no picker offered, the login goes on as before
 E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 pickeroff good "" > pickeroff.out 2>&1 & pids+=($!)
 wait "${pids[@]}"
@@ -186,13 +190,13 @@ sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 35'
+expect "front broker saw the expected logins"         'len(la) == 37'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-expect "back-end received the token, not the password" 'len(lb) == 21 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 22 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -227,8 +231,11 @@ expect "picker: keys from before the prompt ignored, Unicode 2 counts" 'chose("p
 expect "picker: keypad 3 with NumLock"                'chose("pickerkeypad") == "plasma"'
 expect "picker: client gone during the picker: broker connection closed" \
     'pc["pickergone"]["closed"] and pc["pickergone"].get("line") is None and pc["pickergone"].get("waited", 9) < 4'
+expect "picker: channel data below the cap passed on, the choice counts" 'chose("pickerchan") == "gnome"'
+expect "picker: channel data above the cap: login abandoned, broker connection closed" \
+    'pc["pickerflood"]["closed"] and pc["pickerflood"].get("line") is None'
 expect "picker: chosen logins reached the back-end, the abandoned one not" \
-    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickeroff"])'
+    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff"])'
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }
@@ -305,6 +312,7 @@ logged "malformed QR code from the broker left out, login goes on" proxy-e.log \
 logged "too many progress messages logged" proxy-e.log "more than 32 progress messages"
 logged "picker: choice logged" proxy-e.log "desktop picker: gnome (click)"
 logged "picker: closed client logged" proxy-e.log "front connection closed during the desktop picker"
+logged "picker: channel data cap logged" proxy-e.log "more than 4194304 bytes of channel data during the desktop picker"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

@@ -62,7 +62,7 @@ EXPIRED_BODY = ("This session can no longer access your Kerberos-protected home 
 TEXT_KEYS = ("summary", "body", "expired_summary", "expired_body")
 PLACEHOLDERS = {"left": "2 h", "deadline": "Mon 01 Jan 00:00", "principal": "user@REALM"}
 
-_DURATION = re.compile(r"^([0-9]+)([smhd]?)$")
+_DURATION = re.compile(r"([0-9]+)([smhd]?)")
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -84,7 +84,7 @@ def parse_duration(value, name: str) -> int:
     """'24h', '90m', '7d', '30s' or a number of seconds -> seconds (> 0)."""
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         raise ConfigError(f"{name}: duration expected (e.g. 24h, 90m), got {value!r}")
-    m = _DURATION.match(str(value).strip())
+    m = _DURATION.fullmatch(str(value).strip())
     if not m or int(m.group(1)) <= 0:
         raise ConfigError(f"{name}: duration expected (e.g. 24h, 90m), got {value!r}")
     return int(m.group(1)) * _UNITS[m.group(2)]

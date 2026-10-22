@@ -34,7 +34,9 @@ Off by default. Two channels, usable together:
    notifier polls.
 2. fastrdp-webgate's notifier thread long-polls the broker (op `mfa_events`, webgate uid
    only), looks up the user's subscriptions and hands each message to a small thread
-   pool with a 5 s timeout per request. Errors are logged and dropped.
+   pool with a 5 s timeout per request. Errors are logged and dropped. The pool's queue
+   is bounded (200 sends); above it a message is dropped and logged (`dropped: too many
+   notifications queued`).
 3. When the login ends (approved, denied, timed out, cancelled by the client) a second
    event follows: Web Push replaces the notification; ntfy sends a warning for denied and
    timed-out logins (`alert_on_deny`).
@@ -53,7 +55,9 @@ On `https://<host>/web/notify` (also linked from the desktop chooser): sign in a
 the desktop chooser (Keycloak with MFA; a sign-in without a second factor gets *Second
 factor required*, [web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)). The
 page lists the user's devices with
-**Remove** and **Send a test notification**.
+**Remove** and **Send a test notification** (at most one per minute and user; again
+within the minute the page says to wait. Test messages are outside the rate limit below
+but go through their own small queue, so they never delay an approval notification).
 
 - **This browser (Web Push):** name the device, click *Turn on notifications in this
   browser*, allow notifications. Works in desktop browsers and on Android (Chrome,
@@ -84,7 +88,7 @@ attacker's. Only the QR code in the user's own RDP window names a login
 | `fastrdp_web_notify_ntfy_url` | `""` | the ntfy server, `https://` (checked) |
 | `fastrdp_web_notify_ntfy_token` | `vault_fastrdp_web_notify_ntfy_token` | access token with write access to `fastrdp-*`; written to `/etc/fastrdp/webgate-ntfy.token` (`root:_fastrdp-web 0640`). `""`: publish without a token |
 | `fastrdp_web_notify_vapid_subject` | `mailto:root@<fqdn>` | contact for the push services (RFC 8292), `mailto:` or `https://` |
-| `fastrdp_web_notify_webpush_extra_hosts` | `[]` | push service hosts accepted in addition to the built-in ones (FCM, Mozilla, Apple, WNS), e.g. `[ntfy.example.com]` for [UnifiedPush](#android-without-google-services); DNS names, each with its subdomains (checked: no URL, port, wildcard or IP address). `webpush_extra_hosts` in `webgate.toml` |
+| `fastrdp_web_notify_webpush_extra_hosts` | `[]` | push service hosts accepted in addition to the built-in ones (FCM, Mozilla, Apple, WNS), e.g. `[ntfy.example.com]` for [UnifiedPush](#android-without-google-services); DNS names (checked: no URL, port, wildcard or IP address). Exactly these hosts, **not** their subdomains, and only ntfy's UnifiedPush endpoints on them: `https://<host>/up<topic>`, optionally `?up=1` (topic: letters, digits, `_`, `-`). `webpush_extra_hosts` in `webgate.toml` |
 | `fastrdp_web_notify_rate_limit` | `"3/600"` | notifications per user and window (1..100 per 60..86400 s) |
 | `fastrdp_web_notify_alert_on_deny` | `true` | ntfy: a message when a notified login is denied or times out |
 | `fastrdp_web_notify_show_code` | `true` | the two-digit code in the notification |
@@ -178,7 +182,7 @@ Fennec 152.0.4). The browser then gives the page the distributor's endpoint:
 - **Sunup** (uses Mozilla's push service): the endpoint is presumably on
   `push.services.mozilla.com`, which is allowed by default. Not tested on a device yet.
 - **ntfy as distributor:** the endpoint is on the user's ntfy server
-  (`https://ntfy.example.com/up…`). Add that host to
+  (`https://ntfy.example.com/up…?up=1`). Add that host to
   `fastrdp_web_notify_webpush_extra_hosts` (otherwise the page says "This browser's push
   service is not allowed here."), and let the ntfy server accept anonymous writes to
   UnifiedPush topics: `ntfy access '*' 'up*' write-only`. With
@@ -213,13 +217,17 @@ link is the approval page.
   known push services are accepted (`webpush_allowed_hosts` in `webgate.toml`: FCM,
   Mozilla, Apple, WNS and their subdomains), so a signed-in user cannot make the webgate
   call internal addresses. Redirects are never followed (the ntfy token never goes
-  elsewhere).
+  elsewhere). The list is checked when a browser subscribes and again before every
+  send: a stored subscription it no longer accepts (the list was narrowed, a file was
+  edited) is removed and logged (`endpoint ... no longer allowed ...; removed`).
 - `fastrdp_web_notify_webpush_extra_hosts` (`webpush_extra_hosts`) widens that list:
-  add only your own ntfy server. Any signed-in user can then make the webgate POST
-  encrypted bodies to any `https://` URL on that host (port 443), e.g. any `up*` topic; an
-  internal ntfy host becomes reachable from the gateway for exactly that, which is the
-  intent. Adding the public ntfy.sh would let users make your gateway publish to arbitrary
-  ntfy.sh `up*` topics.
+  add only your own ntfy server. It accepts exactly the named host (no subdomains) and
+  only UnifiedPush topic URLs there (`/up<topic>`, optionally `?up=1`). Any signed-in user
+  can then make the webgate POST encrypted bodies to any `up*` topic on that host (port
+  443); an internal ntfy host becomes reachable from the gateway for exactly that, which
+  is the intent. Adding the public ntfy.sh would let users make your gateway publish to
+  arbitrary ntfy.sh `up*` topics. Other UnifiedPush distributors with other URL forms
+  (e.g. NextPush on Nextcloud) are not accepted.
 - Opt-in requires the desktop chooser's sign-in (MFA at the IdP); forms and the
   subscription POST carry the CSRF token; at most 10 devices per user.
 - The opt-in page runs only its own script (`<prefix>/static/notify.js`), no inline

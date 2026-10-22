@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import struct
 import time
 import urllib.error
@@ -40,6 +41,12 @@ TAG_LENGTH = 16
 # accept (4096); the plaintext gets one delimiter byte.
 MAX_PAYLOAD = RECORD_SIZE - TAG_LENGTH - 1 - 86
 JWT_LIFETIME = 12 * 3600   # RFC 8292: at most 24 h
+MAX_ENDPOINT = 1024
+# Endpoints on a host of [notify] webpush_extra_hosts (the site's own UnifiedPush
+# distributor, docs/notifications.md): ntfy's https://<host>/up<topic>, with or without
+# "?up=1"; ntfy topics are at most 64 characters.
+UNIFIEDPUSH_PATH = re.compile(r"/up[A-Za-z0-9_-]{1,62}")
+UNIFIEDPUSH_QUERIES = ("", "up=1")
 
 
 class WebPushError(Exception):
@@ -122,17 +129,27 @@ def vapid_jwt(key: ec.EllipticCurvePrivateKey, audience: str, subject: str, now:
     return f"{header}.{claims}.{b64u(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
 
 
-def endpoint_allowed(endpoint: str, hosts: list[str]) -> bool:
-    """https:// to one of the push services' hosts (or a subdomain), default port."""
+def endpoint_allowed(endpoint: str, hosts: list[str], extra_hosts: list[str] = ()) -> bool:
+    """https:// on the default port to one of the push services' `hosts` (or a subdomain),
+    or to exactly one of `extra_hosts` with a UnifiedPush (ntfy) path. Checked when a
+    browser subscribes and again before every send."""
+    if not isinstance(endpoint, str) or len(endpoint) > MAX_ENDPOINT or not endpoint.isascii() \
+            or not endpoint.isprintable() or " " in endpoint:
+        return False
     try:
         parts = urllib.parse.urlsplit(endpoint)
         port = parts.port
     except ValueError:
         return False
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or port not in (None, 443) or parts.username or parts.password:
+    if parts.scheme != "https" or port not in (None, 443) or parts.username or parts.password \
+            or not re.fullmatch(r"[a-z0-9.-]+", host):
         return False
-    return any(host == h or host.endswith("." + h) for h in hosts)
+    if any(host == h or host.endswith("." + h) for h in hosts):
+        return True
+    # an admin's own server: that host only (no subdomains), UnifiedPush endpoints only
+    return host in extra_hosts and bool(UNIFIEDPUSH_PATH.fullmatch(parts.path)) \
+        and parts.query in UNIFIEDPUSH_QUERIES and not parts.fragment
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

@@ -156,7 +156,7 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(entry["id"]), 20)
         self.assertFalse(login.done())                       # still waiting
         self.ensure.assert_not_called()
-        self.assertEqual(await self.decide(entry["id"]), {"ok": True, "approved": True})
+        self.assertEqual(await self.decide(entry["id"]), {"ok": True, "approved": True, "others_pending": 0})
         self.assertTrue((await login)["ok"])
         self.ensure.assert_awaited_once()
         self.assertEqual((await self.pending_op())["pending"], [])
@@ -172,7 +172,7 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
     async def test_deny(self):
         login = self.start()
         (rid,) = await self.wait_pending()
-        self.assertEqual(await self.decide(rid, approve=False), {"ok": True, "approved": False})
+        self.assertEqual(await self.decide(rid, approve=False), {"ok": True, "approved": False, "others_pending": 0})
         self.assertEqual(await login, self.refused("mfa_failed"))
         self.ensure.assert_not_called()
         self.assertEqual(self.broker.mfa.approvals.pending, {})
@@ -254,14 +254,32 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         ids = await self.wait_pending(2)
         self.assertEqual(await self.decide(ids[1], bound=False), self.refused_decision("approval_conflict"))
         with self.assertLogs("fastrdp.broker", "INFO") as logs:
-            self.assertEqual(await self.decide(ids[1], bound=True), {"ok": True, "approved": True})
+            self.assertEqual(await self.decide(ids[1], bound=True), {"ok": True, "approved": True, "others_pending": 1})
         self.assertIn(f"INFO:fastrdp.broker:web approval for alice from {OTHER_ADDR} (tls login): approved via "
                       "the login-bound link on the approval page", logs.output)
+        # the webgate warned on the page; the log says it too
+        self.assertIn("WARNING:fastrdp.broker:web approval for alice via the login-bound link while 1 other "
+                      "login(s) of the account waited: somebody else may have the password", logs.output)
         self.assertTrue((await second)["ok"])
         self.assertEqual(await self.wait_pending(), [ids[0]])
         self.assertFalse(first.done())
         await self.decide(ids[0], approve=False)
         self.assertEqual(await first, self.refused("mfa_failed"))
+
+    async def test_others_pending_counts_own_logins_only(self):
+        """mfa_decide's others_pending: the deciding user's other waiting logins, never
+        another user's (nor any id)."""
+        mine, eves = self.start(), self.start(user="eve", client_address=OTHER_ADDR)
+        (rid,) = await self.wait_pending()
+        await self.wait_pending(user="eve")
+        with self.assertNoLogs("fastrdp.broker", "WARNING"):
+            reply = await self.decide(rid, bound=True)
+        self.assertEqual(reply, {"ok": True, "approved": True, "others_pending": 0})
+        self.assertTrue((await mine)["ok"])
+        (eve_id,) = await self.wait_pending(user="eve")
+        self.assertEqual(await self.decide(eve_id, approve=False, user="eve"),
+                         {"ok": True, "approved": False, "others_pending": 0})
+        await eves
 
     async def test_bound_relaxes_nothing_else(self):
         first = self.start()
@@ -288,8 +306,8 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         first, second = self.start(), self.start(client_address=OTHER_ADDR)
         ids = await self.wait_pending(2)
         self.assertFalse((await self.pending_op())["pending"][0]["single_pending_conflict"])
-        for rid in ids:
-            self.assertEqual(await self.decide(rid), {"ok": True, "approved": True})
+        for rid, others in zip(ids, (1, 0)):
+            self.assertEqual(await self.decide(rid), {"ok": True, "approved": True, "others_pending": others})
         self.assertTrue((await first)["ok"] and (await second)["ok"])
 
     async def test_stale_sign_in_refused(self):
@@ -303,13 +321,13 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
                          self.refused_decision("approval_stale"))
         self.assertFalse(login.done())
         self.mfa_cfg.web_approval_max_auth_age = 30
-        self.assertEqual(await self.decide(rid, auth_time=int(created) - 29), {"ok": True, "approved": True})
+        self.assertEqual(await self.decide(rid, auth_time=int(created) - 29), {"ok": True, "approved": True, "others_pending": 0})
         self.assertTrue((await login)["ok"])
 
     async def test_stale_sign_in_may_still_deny(self):
         login = self.start()
         (rid,) = await self.wait_pending()
-        self.assertEqual(await self.decide(rid, approve=False, auth_time=0), {"ok": True, "approved": False})
+        self.assertEqual(await self.decide(rid, approve=False, auth_time=0), {"ok": True, "approved": False, "others_pending": 0})
         self.assertEqual(await login, self.refused("mfa_failed"))
 
     async def test_already_decided(self):

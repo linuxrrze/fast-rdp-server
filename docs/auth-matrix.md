@@ -297,7 +297,14 @@ code for typing on another device; that way gets the plain page as before.
   **Deny**. Approving it is allowed even while other logins of the user wait
   (`single_pending` does not apply to it; the broker logs `approved via the login-bound
   link`); the others are listed below with "Another login with your password is waiting.
-  Deny it if it is not yours." and only **Deny**.
+  Deny it if it is not yours." and only **Deny**. While others wait, a red warning box
+  above the buttons says how many logins with the account are waiting, shows this
+  login's code in large type ("approve it only if **your own** RDP window shows this
+  code") and says to deny a link somebody sent. Approving stays possible (the user's
+  choice); the broker and the webgate then log a warning (`... via the login-bound link
+  while N other login(s) of the account waited`). `mfa_decide` answers with
+  `others_pending`, the number of the user's own other waiting logins (no ids, nothing of
+  other users).
 - An id that is unknown, finished or another user's reads the same after the sign-in:
   "This login is no longer waiting for approval.", followed by the user's own pending
   logins under the usual rules; a malformed one gets that message at once. The page
@@ -308,10 +315,11 @@ code for typing on another device; that way gets the plain page as before.
   own login, so the race that `single_pending` guards against cannot make the user approve
   the wrong one; the attacker's login stays pending and can be denied.
 - **Phishing:** someone with the password could send the user *their* login-bound link
-  ("please approve quickly"). The page then shows the attacker's login: an address and
-  start time the user does not recognise and a code that is not the one in the user's
-  RDP window, and the page says to approve only a login started just now whose code the
-  RDP window shows. Never approve a login
+  ("please approve quickly"), timed so that the user's own login waits too. The page
+  then shows the attacker's login: an address and start time the user does not
+  recognise and a code that is not the one in the user's RDP window, with the warning
+  box above (two logins waiting, compare the code) when the user's own login waits as
+  well. Never approve a login
   you did not start, and scan only the QR code in your own RDP window.
 - Notifications never carry the id; typed URLs and bookmarks have none (plain page).
 

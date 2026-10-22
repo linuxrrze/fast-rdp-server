@@ -126,6 +126,7 @@ class SyncPool:
 
     def submit(self, fn, *args):
         fn(*args)
+        return True
 
 
 def cfg_with(tmp, **notify_cfg):
@@ -165,15 +166,35 @@ class NotifyConfigTests(unittest.TestCase):
     def test_extra_push_hosts(self):
         good = {"backends": ["webpush"], "vapid_private_key_file": "/k.pem", "vapid_subject": "mailto:a@b.c"}
         n = self.parse(**good, webpush_extra_hosts=["NTFY.example.com", "fcm.googleapis.com"]).notify
-        self.assertEqual(n.webpush_allowed_hosts, config.DEFAULT_PUSH_HOSTS + ["ntfy.example.com"])
-        self.assertTrue(webpush.endpoint_allowed("https://ntfy.example.com/upAbC?up=1", n.webpush_allowed_hosts))
-        self.assertTrue(webpush.endpoint_allowed("https://fcm.googleapis.com/fcm/send/x", n.webpush_allowed_hosts))
-        self.assertFalse(webpush.endpoint_allowed("https://ntfy.example.com:8443/up", n.webpush_allowed_hosts))
-        self.assertFalse(webpush.endpoint_allowed("https://ntfy.sh/upAbC", n.webpush_allowed_hosts))
+        # kept apart: the browsers' push services with subdomains, the extra hosts exactly
+        self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts),
+                         (config.DEFAULT_PUSH_HOSTS, ["ntfy.example.com"]))
+        hosts, extra = n.webpush_allowed_hosts, n.webpush_extra_hosts
+        for ok in ("https://ntfy.example.com/upAbC?up=1", "https://ntfy.example.com/upAbC",
+                   "https://NTFY.example.com:443/up_a-B9", "https://fcm.googleapis.com/fcm/send/x"):
+            self.assertTrue(webpush.endpoint_allowed(ok, hosts, extra), ok)
+        for bad in ("https://ntfy.example.com:8443/upAbC", "https://ntfy.sh/upAbC",
+                    "https://sub.ntfy.example.com/upAbC",             # no subdomains of an extra host
+                    "https://ntfy.example.com/up", "https://ntfy.example.com/fastrdp-abc",
+                    "https://ntfy.example.com/v1/account", "https://ntfy.example.com/upAbC/json",
+                    "https://ntfy.example.com/upAbC?up=1&x=2", "https://ntfy.example.com/upAbC?auth=x",
+                    "https://ntfy.example.com/upAbC#x", "https://ntfy.example.com/up" + "a" * 63,
+                    "http://ntfy.example.com/upAbC", "https://u@ntfy.example.com/upAbC"):
+            self.assertFalse(webpush.endpoint_allowed(bad, hosts, extra), bad)
         n = self.parse(**good, webpush_allowed_hosts=["push.apple.com"], webpush_extra_hosts=["ntfy.example.com"]).notify
-        self.assertEqual(n.webpush_allowed_hosts, ["push.apple.com", "ntfy.example.com"])
+        self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts), (["push.apple.com"], ["ntfy.example.com"]))
         self.assertEqual(self.parse(**good, webpush_extra_hosts=[]).notify.webpush_allowed_hosts,
                          config.DEFAULT_PUSH_HOSTS)
+
+    def test_needs_mfa_proof(self):
+        """Notifications exist for web approvals, which need the IdP's MFA proof:
+        allow_without_mfa_proof alone is refused."""
+        oidc = {"issuer": "https://idp", "client_id": "web", "allow_without_mfa_proof": True}
+        notify_cfg = {"backends": ["ntfy"], "ntfy_url": "https://ntfy.example.com"}
+        config.parse({**self.BASE, "oidc": oidc})
+        with self.assertRaisesRegex(config.ConfigError, "allow_without_mfa_proof does not apply"):
+            config.parse({**self.BASE, "oidc": oidc, "notify": notify_cfg})
+        config.parse({**self.BASE, "oidc": {**oidc, "required_amr_any": ["otp"]}, "notify": notify_cfg})
 
     def test_invalid(self):
         good = {"vapid_private_key_file": "/k.pem", "vapid_subject": "mailto:a@b.c"}
@@ -343,6 +364,9 @@ class WebPushTests(unittest.TestCase):
             self.assertFalse(webpush.endpoint_allowed(bad, hosts), bad)
         self.assertTrue(webpush.endpoint_allowed("https://a.fcm.googleapis.com/x", hosts))   # a subdomain
         self.assertFalse(webpush.endpoint_allowed("https://evilfcm.googleapis.com/x", hosts))
+        for bad in ("https://fcm.googleapis.com/x\ny", "https://fcm.googleapis.com/x y", "https://fcm.googleapis.com/\x1b",
+                    "https://a b.fcm.googleapis.com/x", "https://fcm.googleapis.com/" + "x" * 1024, None):
+            self.assertFalse(webpush.endpoint_allowed(bad, hosts), bad)
 
     def test_subscription_keys(self):
         sub, _, _ = browser_subscription("https://p/1")
@@ -388,8 +412,10 @@ class NotifierTests(unittest.TestCase):
         self.t = 1000.0
         self.notifier = Notifier(self.cfg, self.store, vapid_key=self.key, ntfy_token="tk_secret",
                                  clock=lambda: self.t)
-        self.notifier.pool = SyncPool()
+        self.notifier.pool = self.notifier.test_pool = SyncPool()
         self.notifier.rate = RateLimit(100, 600, clock=lambda: self.t)   # test_rate_limit: the configured one
+        # the fake push service is http://127.0.0.1 (test_endpoint_rechecked_before_sending: the real check)
+        self.notifier.endpoint_allowed = lambda endpoint: True
         sub, self.ua, self.auth = browser_subscription(self.push.url + "/push/1")
         self.web = self.store.add("alice", {k: v for k, v in sub.items() if k not in ("id",)})
         self.topic = self.store.add("alice", {"type": "ntfy", "label": "ntfy", "topic": "fastrdp-abc"})
@@ -507,7 +533,7 @@ class NotifierTests(unittest.TestCase):
             self.notifier.handle(self.event(id="disk"))
 
     def test_timeouts_in_the_pool(self):
-        self.notifier.pool = notify.ThreadPoolExecutor(max_workers=2)
+        self.notifier.pool = notify.Lane(2, 10, "test")
         self.ntfy.delay = 1.5
         with mock.patch.object(notify, "SEND_TIMEOUT", 0.3), self.assertLogs("fastrdp.webgate.notify", "WARNING"):
             started = time.monotonic()
@@ -526,6 +552,73 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(self.notifier.test("alice"), 2)
         self.assertIn("Test", self.ntfy.requests[-1][2].decode())
         self.assertEqual(self.notifier.test("nobody"), 0)
+        # one per user and TEST_COOLDOWN, outside the approvals' rate limit
+        self.assertIsNone(self.notifier.test("alice"))
+        self.assertEqual((len(self.ntfy.requests), len(self.push.requests)), (1, 1))
+        self.t += notify.TEST_COOLDOWN - 1
+        self.assertIsNone(self.notifier.test("alice"))
+        self.t += 1
+        self.assertEqual(self.notifier.test("alice"), 2)
+        self.assertEqual(self.notifier.rate.sent, {})
+        # approvals keep their rate limit after test messages
+        self.notifier.handle(self.event())
+        self.assertIn("approve your RDP login", self.ntfy.requests[-1][2].decode())
+
+    def test_queues_bounded(self):
+        """A full queue drops sends (logged); test messages have their own small queue,
+        so they never hold up an approval notification."""
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        ran = []
+        lane = notify.Lane(1, 2, "test")
+        self.addCleanup(lane.shutdown, False)
+        self.assertEqual([lane.submit(lambda: (gate.wait(5), ran.append(1))) for _ in range(3)],
+                         [True, True, False])
+        gate.set()
+        deadline = time.monotonic() + 5
+        while lane.queued and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual((ran, lane.queued), ([1, 1], 0))
+        self.assertTrue(lane.submit(ran.append, 2))                 # room again
+        lane.shutdown(wait=True)
+        self.assertEqual(ran, [1, 1, 2])
+
+        self.notifier.pool = notify.Lane(1, 1, "test-approvals")
+        self.notifier.test_pool = notify.Lane(1, 1, "test-tests")
+        blocked = threading.Event()
+        self.addCleanup(blocked.set)
+        sent = []
+        with mock.patch.object(self.notifier, "send_one",
+                               side_effect=lambda user, sub, msg: (blocked.wait(5), sent.append(msg.body))):
+            with self.assertLogs("fastrdp.webgate.notify", "WARNING") as logs:
+                self.assertEqual(self.notifier.test("alice"), 1)        # one of two: the test queue is full
+            self.assertIn("dropped: too many notifications queued", logs.output[0])
+            # an approval goes through its own queue although the test one is stuck
+            self.assertEqual(self.notifier.deliver("alice", [self.web], self.notifier.pending_message(PENDING)), 1)
+            blocked.set()
+            self.notifier.pool.shutdown(wait=True)
+            self.notifier.test_pool.shutdown(wait=True)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(notify.Notifier(self.cfg, self.store).pool.limit, notify.QUEUE_MAX)
+
+    def test_endpoint_rechecked_before_sending(self):
+        """A stored subscription whose endpoint the allowlist no longer accepts (narrowed
+        webpush_extra_hosts, a file edited by hand) is removed, never POSTed to."""
+        del self.notifier.endpoint_allowed                          # the real check again
+        self.cfg.notify.webpush_extra_hosts = ["ntfy.example.com"]
+        sub = self.store.add("alice", {"type": "webpush", "label": "old\nline", "p256dh": self.web["p256dh"],
+                                       "auth": self.web["auth"], "endpoint": "https://sub.ntfy.example.com/upX"})
+        with self.assertLogs("fastrdp.webgate.notify", "WARNING") as logs:
+            self.assertFalse(self.notifier.send_one("alice", sub, self.notifier.pending_message(PENDING)))
+        self.assertIn("no longer allowed", logs.output[0])
+        self.assertNotIn("\n", logs.output[0])                     # repr: no line break from the file
+        self.assertNotIn(sub["id"], [s["id"] for s in self.store.list("alice")])
+        self.assertEqual(self.push.requests, [])
+        # this test's fake push service (http://) is not allowed either: removed, nothing sent
+        with self.assertLogs("fastrdp.webgate.notify", "WARNING"):
+            self.notifier.handle(self.event())
+        self.assertEqual([s["type"] for s in self.store.list("alice")], ["ntfy"])
+        self.assertEqual(self.push.requests, [])
 
 
 class PollLoopTests(unittest.TestCase):
@@ -622,7 +715,7 @@ class NotifyPageTests(unittest.TestCase):
         provider.discover()
         self.key = ec.generate_private_key(ec.SECP256R1())
         self.notifier = Notifier(cfg, SubscriptionStore(self.tmp), vapid_key=self.key)
-        self.notifier.pool = SyncPool()
+        self.notifier.pool = self.notifier.test_pool = SyncPool()
         self.app = Webgate(cfg, provider, Signer("cookie-secret"), guacjson.parse_key(KEY_HEX),
                            notifier=self.notifier)
         web = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.app))
@@ -723,8 +816,14 @@ class NotifyPageTests(unittest.TestCase):
         self.assertIn(f"{self.ntfy.url}/{sub['topic']}", body)
         self.assertIn("<svg", body)                                 # the QR code
         self.assertIn("ntfy://127.0.0.1:", body)
-        self.post(csrf=self.csrf(), action="test")
+        status, h, _ = self.post(csrf=self.csrf(), action="test")
+        self.assertEqual(h["Location"], "/web/notify?m=test")
         self.assertEqual(self.ntfy.requests[-1][0], "/" + sub["topic"])
+        # test messages: one per minute and user, the page says so
+        status, h, _ = self.post(csrf=self.csrf(), action="test")
+        self.assertEqual((status, h["Location"]), (303, "/web/notify?m=test-wait"))
+        self.assertEqual(len(self.ntfy.requests), 1)
+        self.assertIn("less than a minute ago", self.fetch(h["Location"])[2].decode())
         self.post(csrf=self.csrf(), action="ntfy-on")              # a new topic replaces it
         (new,) = self.notifier.store.list("alice")
         self.assertNotEqual(new["topic"], sub["topic"])
@@ -768,6 +867,13 @@ class NotifyPageTests(unittest.TestCase):
             with self.subTest(bad):
                 self.assertEqual(self.post("/web/notify/webpush", **{**form, **bad})[0], status)
         self.assertEqual(len(self.notifier.store.list("alice")), 1)
+        # a refused endpoint is logged as a repr: an encoded line break stays one line
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            self.assertEqual(self.post("/web/notify/webpush", **{**form, "endpoint": "https://evil.example/x\nINFO "
+                                                                 "forged line"})[0], 400)
+        self.assertIn("web push endpoint refused", logs.output[0])
+        self.assertNotIn("\n", logs.output[0])
+        self.assertIn("'https://evil.example/x\\nINFO forged line'", logs.output[0])
 
     def test_static_files(self):
         cases = {"/web/sw.js": "text/javascript; charset=utf-8",

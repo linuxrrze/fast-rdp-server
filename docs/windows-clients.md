@@ -170,11 +170,11 @@ safe). Still worth a robustness fix upstream (§5).
   - The proxy's acceptor does not offer NTLM (§3.13): the client's `[NegoEx, NTLM]` offer
     leaves no mechanism, and the login ends at the first CredSSP message. Before, NTLM ran
     to the end and failed at `ntlm_compute.c:285` (SamOpen), the module's check
-    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1765-1775`) being the last line.
+    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1817-1827`) being the last line.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:1932-1937`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:1984-1989`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -253,8 +253,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1801-1829`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1815-1827`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1853-1881`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1867-1879`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -271,7 +271,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1763-1792`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:1815-1844`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`SecondFactor.verify()` → `SecondFactor.push()` in `mfa.py`).

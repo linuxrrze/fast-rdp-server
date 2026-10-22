@@ -19,7 +19,7 @@ from .config import AuthSection, Config
 
 log = logging.getLogger("fastrdp.identity")
 
-SAFE_NAME = re.compile(r"^[A-Za-z0-9._@-]{1,256}$")
+SAFE_NAME = re.compile(r"[A-Za-z0-9._@-]{1,256}")   # fullmatch: no trailing newline
 DESKTOP_PREF = ".config/fastrdp/desktop"
 
 
@@ -126,7 +126,7 @@ def resolve(name: str, realm: str | None, auth: AuthSection) -> LocalUser:
     Candidates 'name' and 'name@<realm>' (for an accepted realm also 'name@<domain>'
     for each [auth] domains), in the order [auth] strip_realm gives.
     """
-    if not SAFE_NAME.match(name):
+    if not SAFE_NAME.fullmatch(name):
         raise IdentityError("invalid user name")
     quals = [realm] if realm else []
     if realm and realm.upper() in auth.realms:
@@ -145,7 +145,7 @@ def resolve_login(rdp_user: str, auth: AuthSection) -> LocalUser:
     """
     typed = rdp_user.split("\\", 1)[1] if "\\" in rdp_user else rdp_user
     name = normalize_rdp_user(rdp_user)
-    if not SAFE_NAME.match(name):
+    if not SAFE_NAME.fullmatch(name):
         raise IdentityError("invalid user name")
     quals = qualifiers(auth)
     if "@" in typed and typed.rsplit("@", 1)[1].lower() in quals:
@@ -240,7 +240,7 @@ def names_other_account(rdp_user: str, user: LocalUser, auth: AuthSection | None
         candidates += [f"{short}@{q}" for q in qualifiers(auth)]
     other = False
     for cand in dict.fromkeys(candidates):
-        if not SAFE_NAME.match(cand):
+        if not SAFE_NAME.fullmatch(cand):
             continue
         try:
             uid = pwd.getpwnam(cand).pw_uid

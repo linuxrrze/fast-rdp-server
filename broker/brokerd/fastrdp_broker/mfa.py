@@ -19,7 +19,7 @@ from .privacyidea import PrivacyIdea, PrivacyIdeaError
 
 log = logging.getLogger(__name__)
 
-YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}$")
+YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}\Z")   # \Z: not before a trailing newline
 
 
 # Called once a login waits for the user: (method "push" | "web" | "push_or_web", seconds

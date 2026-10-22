@@ -65,8 +65,14 @@ class OidcSection:
     ca_file: str = ""
     timeout: int = 10
     # The broker skips its own MFA for web logins, so the IdP must prove MFA. Only set
-    # this if the IdP enforces MFA for this client in a way acr/amr cannot express.
+    # this if the IdP enforces MFA for this client in a way acr/amr cannot express. It
+    # applies to the desktop chooser's sign-in only: approving RDP logins (<prefix>/approve)
+    # always needs required_acr or required_amr_any, else approvals are refused.
     allow_without_mfa_proof: bool = False
+
+    def proves_mfa(self) -> bool:
+        """required_acr or required_amr_any set: the IdP's tokens must prove MFA."""
+        return bool(self.required_acr or self.required_amr_any)
 
 
 @dataclass
@@ -103,8 +109,9 @@ class NotifySection:
     vapid_private_key_file: str = ""  # PEM, EC P-256 (openssl ecparam -name prime256v1 -genkey)
     vapid_subject: str = ""          # mailto:admin@example.com or https://... (RFC 8292)
     webpush_allowed_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_PUSH_HOSTS))
-    # Added to webpush_allowed_hosts, e.g. the site's own ntfy server as a UnifiedPush
-    # distributor (browsers on Android without Google services, docs/notifications.md).
+    # Accepted in addition, e.g. the site's own ntfy server as a UnifiedPush distributor
+    # (browsers on Android without Google services, docs/notifications.md): exactly these
+    # hosts (no subdomains) and only UnifiedPush endpoints on them (https://<host>/up<topic>).
     webpush_extra_hosts: list[str] = field(default_factory=list)
     # At most N notifications per user within the given seconds; above that one alert
     # without a link per window.
@@ -179,6 +186,10 @@ def parse(raw: dict) -> Config:
             raise ConfigError(f"webgate.{key} must be true or false")
     cfg.guacamole.rdp_parameters = {str(k): str(v) for k, v in cfg.guacamole.rdp_parameters.items()}
     _check_notify(cfg)
+    if cfg.notify.backends and not cfg.oidc.proves_mfa():
+        # notifications only exist for web approvals, which need the IdP's MFA proof
+        raise ConfigError("notify.backends needs oidc.required_acr or oidc.required_amr_any: approving "
+                          "RDP logins needs MFA proof from the IdP (allow_without_mfa_proof does not apply)")
     return cfg
 
 
@@ -223,9 +234,9 @@ def _check_notify(cfg: Config) -> None:
                     isinstance(h, str) and DNS_NAME.fullmatch(h) and "." in h and not h.replace(".", "").isdigit()
                     for h in hosts):
                 raise ConfigError(f"notify.{key} must be a list of DNS names (push services)")
-        n.webpush_extra_hosts = [h.lower() for h in n.webpush_extra_hosts]
-        n.webpush_allowed_hosts = list(dict.fromkeys(
-            [h.lower() for h in n.webpush_allowed_hosts] + n.webpush_extra_hosts))
+        n.webpush_allowed_hosts = list(dict.fromkeys(h.lower() for h in n.webpush_allowed_hosts))
+        n.webpush_extra_hosts = [h for h in dict.fromkeys(h.lower() for h in n.webpush_extra_hosts)
+                                 if h not in n.webpush_allowed_hosts]
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:

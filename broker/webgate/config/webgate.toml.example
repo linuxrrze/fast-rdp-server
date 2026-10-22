@@ -56,7 +56,8 @@ ntfy_token_file = "/etc/fastrdp/webgate-ntfy.token"   # write access to fastrdp-
 vapid_private_key_file = "/etc/fastrdp/webgate-vapid.pem"
 vapid_subject = "mailto:root@rdp1.lab.example.com"
 #webpush_allowed_hosts = ["fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com", "notify.windows.com"]
-#webpush_extra_hosts = ["ntfy.lab.example.com"]   # added to them, e.g. your ntfy as UnifiedPush distributor
+#webpush_extra_hosts = ["ntfy.lab.example.com"]   # also, e.g. your ntfy as UnifiedPush distributor:
+                                                  # exactly that host, https://<host>/up<topic> only
 rate_limit = "3/600"                # per user; above it one alert without a link
 alert_on_deny = true                # ntfy: tell the user about a denied or timed-out login
 show_code = true                    # the login's two-digit code in the notification

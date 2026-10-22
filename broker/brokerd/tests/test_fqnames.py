@@ -124,6 +124,13 @@ class ResolveTests(unittest.TestCase):
                 identity.resolve_login("ghost", auth())
             with self.assertRaises(IdentityError):
                 identity.resolve_login("a/b", auth())
+        with FakeNss() as nss:
+            for bad in ("carol\n", "carol\n@example.com"):   # SAFE_NAME is a fullmatch
+                with self.subTest(bad=bad), self.assertRaises(IdentityError):
+                    identity.resolve_login(bad, auth())
+            with self.assertRaises(IdentityError):
+                identity.resolve("carol\n", "EXAMPLE.COM", auth())
+            self.assertEqual(nss.tried(), [])
 
     def test_typed_domain_selects_the_qualifier(self):
         a = auth(realms=["EXAMPLE.COM"], domains=["example.com", "ipa.example.com"])

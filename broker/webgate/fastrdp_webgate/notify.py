@@ -9,8 +9,8 @@ page, which lists the signed-in user's own pending logins. It carries no secret,
 login id and no other link.
 
 A background thread long-polls the broker (op mfa_events, protocol.py) and hands each
-message to a small thread pool, one task per subscription, with a short timeout. Every
-error is logged and dropped: nothing here can delay or fail a login. Backends: ntfy
+message to a small thread pool (bounded queue; test messages in a pool of their own), one
+task per subscription, with a short timeout. Every error is logged and dropped: nothing here can delay or fail a login. Backends: ntfy
 (POST to <ntfy_url>/<the user's topic>) and Web Push (webpush.py).
 """
 
@@ -39,6 +39,12 @@ POLL_WAIT = 25           # seconds the broker may hold a poll (its maximum)
 SEND_TIMEOUT = 5
 FINISHED_TTL = 300
 SENT_KEEP = 900          # seconds a notified login is remembered for its follow-up
+# Sends waiting for (or in) a pool thread; above that a message is dropped and logged.
+# Test messages have their own single thread and a small queue, so that they never
+# delay an approval notification.
+QUEUE_MAX = 200
+TEST_QUEUE_MAX = 20
+TEST_COOLDOWN = 60       # seconds between two test messages of a user
 METHODS = {"nla": "Kerberos (NLA)", "tls": "password"}
 OUTCOMES = {
     "approved": "was approved",
@@ -129,6 +135,33 @@ class RateLimit:
         return "drop"
 
 
+class Lane:
+    """A thread pool with a bounded queue: submit() returns False (and runs nothing) while
+    `limit` tasks wait or run."""
+
+    def __init__(self, workers: int, limit: int, name: str):
+        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
+        self.limit, self.queued, self.lock = limit, 0, threading.Lock()
+
+    def submit(self, fn, *args) -> bool:
+        with self.lock:
+            if self.queued >= self.limit:
+                return False
+            self.queued += 1
+
+        def run():
+            try:
+                fn(*args)
+            finally:
+                with self.lock:
+                    self.queued -= 1
+        self.pool.submit(run)
+        return True
+
+    def shutdown(self, wait: bool = True) -> None:
+        self.pool.shutdown(wait=wait)
+
+
 class Notifier:
     def __init__(self, cfg: Config, store: SubscriptionStore, *, vapid_key=None, ntfy_token: str | None = None,
                  clock=time.monotonic, workers: int = 4):
@@ -141,7 +174,10 @@ class Notifier:
         self.approve_url = cfg.webgate.public_url.rstrip("/") + cfg.webgate.path_prefix + "/approve"
         self.rate = RateLimit(*self.n.rate(), clock=clock)
         self.notified: dict[str, tuple[str, dict, float]] = {}   # login id -> (user, event, when)
-        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fastrdp-notify")
+        self.pool = Lane(workers, QUEUE_MAX, "fastrdp-notify")
+        self.test_pool = Lane(1, TEST_QUEUE_MAX, "fastrdp-notify-test")
+        self.tested: dict[str, float] = {}   # user -> last test message
+        self.tested_lock = threading.Lock()
         self.stop = threading.Event()
 
     @property
@@ -217,11 +253,23 @@ class Notifier:
             log.warning("subscriptions of %s not read: %s", user, exc)
             return []
 
-    def deliver(self, user: str, subs: list[dict], msg: Message) -> None:
+    def deliver(self, user: str, subs: list[dict], msg: Message, pool: Lane | None = None) -> int:
+        """Queue one send per subscription; the number queued (a full queue drops, logged)."""
+        pool = pool or self.pool
+        queued = 0
         for sub in subs:
             if sub["type"] == "ntfy" and not msg.renotify:
                 continue   # ntfy cannot replace a message: a follow-up only as an alert
-            self.pool.submit(self.send_one, user, sub, msg)
+            if pool.submit(self.send_one, user, sub, msg):
+                queued += 1
+            else:
+                log.warning("notification for %s (%s %r) dropped: too many notifications queued",
+                            user, sub.get("type"), sub.get("label"))
+        return queued
+
+    def endpoint_allowed(self, endpoint) -> bool:
+        """The push service allowlist ([notify] webpush_*_hosts), as when subscribing."""
+        return webpush.endpoint_allowed(endpoint, self.n.webpush_allowed_hosts, self.n.webpush_extra_hosts)
 
     def send_one(self, user: str, sub: dict, msg: Message) -> bool:
         """Send to one subscription (in a pool thread); True if accepted. Never raises."""
@@ -233,6 +281,13 @@ class Notifier:
                     return True
                 log.warning("ntfy refused the notification for %s: HTTP %d%s", user, status,
                             " (check ntfy_token_file and the token's write access)" if status in (401, 403) else "")
+                return False
+            if not self.endpoint_allowed(sub.get("endpoint")):
+                # stored when the allowlist was wider (or by hand): never POSTed to
+                log.warning("web push subscription %r of %s: endpoint %r no longer allowed "
+                            "(webpush_allowed_hosts, webpush_extra_hosts); removed", sub.get("label"), user,
+                            str(sub.get("endpoint"))[:80])
+                self.store.remove(user, sub["id"])
                 return False
             payload = json.dumps({"title": msg.title, "body": msg.body, "tag": msg.tag, "url": msg.url},
                                  separators=(",", ":")).encode()
@@ -254,13 +309,21 @@ class Notifier:
             log.warning("notification for %s (%s %r) not sent: %s", user, sub.get("type"), sub.get("label"), exc)
             return False
 
-    def test(self, user: str) -> int:
-        """Send a test message to all the user's subscriptions; their number."""
+    def test(self, user: str) -> int | None:
+        """Send a test message to all the user's subscriptions; the number queued, or None
+        (nothing sent) within TEST_COOLDOWN of the user's last test. Test messages go
+        through their own small queue (test_pool), never ahead of approvals."""
+        now = self.clock()
+        with self.tested_lock:
+            for k in [k for k, t in self.tested.items() if now - t >= TEST_COOLDOWN]:
+                del self.tested[k]
+            if user in self.tested:
+                return None
+            self.tested[user] = now
         subs = self.subscriptions(user)
         msg = Message(TITLE, "Test: notifications for RDP login approvals work on this device.",
                       self.approve_url, tag_of("test:" + user), 300, urgent=False)
-        self.deliver(user, subs, msg)
-        return len(subs)
+        return self.deliver(user, subs, msg, self.test_pool)
 
     # ------------------------------------------------------------ loop
     def run(self) -> None:

@@ -898,8 +898,10 @@ class WebgateToml(unittest.TestCase):
                          ("/etc/fastrdp/webgate-vapid.pem", "mailto:root@rdp1.lab.example.com"))
         self.assertEqual((n.rate(), n.alert_on_deny, n.show_code, n.state_dir),
                          ((5, 3600), False, True, "/var/lib/fastrdp-webgate"))
-        # the extra host is added to the browsers' push services, not instead of them
-        self.assertEqual(n.webpush_allowed_hosts, webgate_config.DEFAULT_PUSH_HOSTS + ["ntfy.lab.example.com"])
+        # the extra host is accepted besides the browsers' push services, not instead of them
+        # (exactly that host, UnifiedPush endpoints only: webpush.endpoint_allowed())
+        self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts),
+                         (webgate_config.DEFAULT_PUSH_HOSTS, ["ntfy.lab.example.com"]))
         self.assertNotIn("tk_example", (OUT / "webgate-notify.toml").read_text())   # the token stays in its file
 
     def test_rdp_port_follows_the_proxy_port(self):

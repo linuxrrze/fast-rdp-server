@@ -25,7 +25,9 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastrdp_webgate import config, guacjson  # noqa: E402
-from fastrdp_webgate.app import BrokerError, Webgate, broker_web_token, make_handler  # noqa: E402
+from fastrdp_webgate.app import (SAFE_CODE, SAFE_DESKTOP, SAFE_REQUEST_ID, SAFE_SUB_ID,  # noqa: E402
+                                 SAFE_USER, BrokerError, Webgate, broker_web_token, loggable,
+                                 make_handler)
 from fastrdp_webgate.cookies import Signer  # noqa: E402
 from fastrdp_webgate.oidc import OidcError, Provider, pkce_pair  # noqa: E402
 from test_webgate import KEY_HEX, FakeIdP, NoRedirect, jwt  # noqa: E402
@@ -43,6 +45,23 @@ def parse(**sections):
 
 
 # ----------------------------------------------------------------- cookies
+class LogAndIdTests(unittest.TestCase):
+    def test_loggable(self):
+        """Request values in the log: no line breaks or escapes from a client."""
+        self.assertEqual(loggable("/web/approve"), "/web/approve")
+        for bad in ("/web/x\nINFO forged", "/web/\x1b[2J", "/web/\x85x"):
+            self.assertEqual(loggable(bad), repr(bad))
+            self.assertTrue(loggable(bad).isprintable())
+
+    def test_ids_fullmatch(self):
+        """A trailing newline never passes (re.match with ^...$ would let it through)."""
+        for pattern, good in ((SAFE_REQUEST_ID, "req-1_A"), (SAFE_SUB_ID, "abc"), (SAFE_USER, "alice"),
+                              (SAFE_DESKTOP, "gnome"), (SAFE_CODE, "42")):
+            self.assertTrue(pattern.fullmatch(good))
+            self.assertIsNone(pattern.fullmatch(good + "\n"))
+            self.assertFalse(pattern.pattern.startswith("^") or pattern.pattern.endswith("$"))
+
+
 class SignerTests(unittest.TestCase):
     def setUp(self):
         self.s = Signer("secret")

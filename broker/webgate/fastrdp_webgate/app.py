@@ -37,7 +37,7 @@ import urllib.parse
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import guacjson, pwa, webpush
+from . import guacjson, notify, pwa, webpush
 from .config import Config
 from .cookies import Signer
 from .notify import Notifier
@@ -51,19 +51,21 @@ PENDING_COOKIE = "fastrdp_web_login"
 # Sign-in for the approval page only (user + the IdP's auth_time); no desktop access.
 APPROVE_COOKIE = "fastrdp_web_approve"
 APPROVE_TTL = 300
-SAFE_USER = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-SAFE_DESKTOP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# all used with fullmatch (match() with ^...$ lets a trailing newline through)
+SAFE_USER = re.compile(r"[A-Za-z0-9._-]{1,128}")
+SAFE_DESKTOP = re.compile(r"[A-Za-z0-9_-]{1,64}")
+SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # <prefix>/approve?login=<id>: a pending login's id as the broker makes them
 # (fastrdp_broker mfa.WebApprovals.new_id(), 22 characters)
 SAFE_LOGIN_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")
 RDP_FILE = re.compile(r"/rdp/([A-Za-z0-9_-]{1,64})\.rdp")
-SAFE_SUB_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
-SAFE_CODE = re.compile(r"^[0-9]{2}$")
+SAFE_SUB_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
+SAFE_CODE = re.compile(r"[0-9]{2}")
 METHOD_LABELS = {"nla": "RDP client, Kerberos (NLA)", "tls": "RDP client, password"}
 # Notes on the opt-in page after a change (?m=...)
 NOTES = {"ntfy": "ntfy is set up: subscribe to the topic below.", "removed": "Removed.",
-         "test": "Test notification sent to your devices."}
+         "test": "Test notification sent to your devices.",
+         "test-wait": "A test notification was sent less than a minute ago. Please wait a minute."}
 # A login id the approval page does not find among the user's pending logins (unknown,
 # finished, malformed or another user's: told apart nowhere)
 NOT_WAITING = "This login is no longer waiting for approval."
@@ -239,7 +241,7 @@ def make_handler(app: Webgate):
         sys_version = ""
 
         def log_message(self, fmt, *args):  # no query strings in logs (they can carry codes)
-            log.info("%s %s", self.command, self.path.split("?", 1)[0])
+            log.info("%s %s", loggable(self.command), loggable(self.path.split("?", 1)[0]))
 
         # -------------------------------------------------------- plumbing
         def send(self, status: int, body: str | bytes = "", headers: list[tuple[str, str]] = (),
@@ -304,6 +306,8 @@ def make_handler(app: Webgate):
             if path == "/callback":
                 return self.callback(query)
             if path == "/approve":
+                if self.approval_without_mfa():
+                    return
                 login = query.get("login")
                 if login is not None and not SAFE_LOGIN_ID.fullmatch(login):
                     return self.approval_message(404, NOT_WAITING)   # like an unknown id
@@ -352,6 +356,8 @@ def make_handler(app: Webgate):
                 return self.error_page(403, f"Login failed: {query.get('error')}")
             if not pending or not secrets.compare_digest(query.get("state", ""), pending["s"]):
                 return self.error_page(400, "Login state mismatch or expired.")
+            if pending.get("a") and self.approval_without_mfa():
+                return
             try:
                 tokens = app.provider.exchange(query.get("code", ""), app.redirect_uri, pending["v"])
                 claims = app.provider.id_token_claims(tokens, pending["n"])
@@ -517,6 +523,20 @@ def make_handler(app: Webgate):
             raw = self.cookie_value(APPROVE_COOKIE)
             return app.signer.loads("approve", raw), raw
 
+        def approval_without_mfa(self) -> bool:
+            """True (after a page and a log line) if [oidc] does not make the IdP prove MFA:
+            approving an RDP login is that login's second factor, so it always needs
+            required_acr or required_amr_any; allow_without_mfa_proof is for the desktop
+            chooser's sign-in only."""
+            if app.cfg.oidc.proves_mfa():
+                return False
+            log.error("login approval refused: [oidc] required_acr and required_amr_any are empty, so "
+                      "sign-ins do not prove MFA; approving RDP logins needs them (allow_without_mfa_proof "
+                      "applies to the desktop chooser only, docs/web-access.md#approving-rdp-logins)")
+            self.send(503, page("Approve RDP login", "<p>Approving RDP logins is not set up correctly on "
+                                "this server. Please contact your administrator.</p>"))
+            return True
+
         def approval_message(self, status: int, message: str, cookies: list[tuple[str, str]] = (),
                              login: str | None = None):
             back = html.escape(app.prefix + approve_path(login))
@@ -542,7 +562,7 @@ def make_handler(app: Webgate):
             address = html.escape(str(p.get("client_address") or "unknown address"))
             method = html.escape(METHOD_LABELS.get(p.get("method"), "RDP client"))
             code = str(p.get("code") or "")
-            code = f", code <b>{code}</b>" if SAFE_CODE.match(code) else ""
+            code = f", code <b>{code}</b>" if SAFE_CODE.fullmatch(code) else ""
             return (f"From <b>{address}</b> at <b>{started}</b> ({age} s ago)<br>"
                     f"{method}{code}<br>{buttons}")
 
@@ -554,7 +574,7 @@ def make_handler(app: Webgate):
                 pending = broker_mfa_pending(app.cfg.webgate.broker_socket, user)
             except (OSError, BrokerError) as exc:
                 return self.broker_refused("pending logins", user, exc)
-            pending = [p for p in pending if SAFE_REQUEST_ID.match(str(p.get("id", "")))]
+            pending = [p for p in pending if SAFE_REQUEST_ID.fullmatch(str(p.get("id", "")))]
             signed_in = f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
             if login:
                 bound = [p for p in pending if p["id"] == login]
@@ -589,6 +609,7 @@ def make_handler(app: Webgate):
             "bound"), the user's other pending logins below with Deny only."""
             body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
                     '<h2>This RDP login</h2>'
+                    f"{self.others_warning(p, others)}"
                     f'<p style="border:2px solid;border-radius:.4rem;padding:.6rem 1rem">'
                     f"{self.login_item(p, csrf, True, bound=True)}</p>"
                     "<p>Approve it only if you started it yourself just now and its code is the one "
@@ -602,22 +623,42 @@ def make_handler(app: Webgate):
             body += f'<p><a href="{html.escape(app.prefix + approve_path(p["id"]))}">Reload</a></p>'
             self.send(200, page("Approve RDP login", body))
 
+        def others_warning(self, p: dict, others: list[dict]) -> str:
+            """Above the Approve button of a login-bound page while other logins of the user
+            wait: the link may be an attacker's (sent to the user) for the attacker's own
+            login, which the broker approves although others wait ("bound"). The code next
+            to the warning, for comparing with the user's own RDP window."""
+            if not others:
+                return ""
+            code = str(p.get("code") or "")
+            compare = (f'Its code is <b style="font-size:1.4em">{code}</b>: approve it only if '
+                       "<b>your own</b> RDP window shows this code." if SAFE_CODE.fullmatch(code) else
+                       "Approve it only if you started it yourself just now, on your own screen.")
+            return ('<div role="alert" style="border:3px solid #b3261e;background:#fdecea;color:#410e0b;'
+                    'border-radius:.4rem;padding:.2rem 1rem;margin:1rem 0">'
+                    f"<p><b>Warning: {len(others) + 1} logins with your account are waiting right now.</b> "
+                    "Somebody else may be using your password.</p>"
+                    f"<p>{compare} If you did not open this link from your own RDP window, or somebody "
+                    "sent it to you, click <b>Deny</b>.</p></div>")
+
         def decide(self, form: dict):
+            if self.approval_without_mfa():
+                return
             appr, raw = self.approval_session()
             if not appr:
                 return self.redirect(app.prefix + "/approve")
             if not secrets.compare_digest(form.get("csrf", ""), app.signer.csrf(raw)):
                 return self.error_page(403, "Form expired, please try again.")
             rid, decision = form.get("id", ""), form.get("decision")
-            if not SAFE_REQUEST_ID.match(rid) or decision not in ("approve", "deny"):
+            if not SAFE_REQUEST_ID.fullmatch(rid) or decision not in ("approve", "deny"):
                 return self.error_page(400, "Bad request.")
             user, approve = appr["user"], decision == "approve"
             # the user came with this login's id (?login=, login_page()): the broker approves
             # it although other logins of the user wait
             login = rid if form.get("login") == rid and SAFE_LOGIN_ID.fullmatch(rid) else None
             try:
-                broker_mfa_decide(app.cfg.webgate.broker_socket, user, rid, approve, appr["auth_time"],
-                                  bound=login is not None)
+                reply = broker_mfa_decide(app.cfg.webgate.broker_socket, user, rid, approve, appr["auth_time"],
+                                          bound=login is not None)
             except BrokerError as exc:
                 if exc.reason == "approval_stale":
                     # sign in again: the next GET starts a fresh login at the IdP
@@ -641,6 +682,10 @@ def make_handler(app: Webgate):
                 return self.broker_refused("login approval", user, exc)
             log.info("web approval: %s %s an RDP login%s", user, "approved" if approve else "denied",
                      " (login-bound link)" if login else "")
+            others = reply.get("others_pending")
+            if approve and login and isinstance(others, int) and others > 0:
+                log.warning("web approval: %s approved an RDP login via the login-bound link while %d other "
+                            "login(s) of the account waited (somebody else with the password?)", user, others)
             if approve:
                 return self.approval_message(200, "Login approved. Your RDP client continues now.")
             self.approval_message(200, "Login denied. If you did not start it, change your password.")
@@ -700,7 +745,7 @@ def make_handler(app: Webgate):
             kinds = {"webpush": "browser", "ntfy": "ntfy app"}
             rows = []
             for sub in subs:
-                if not SAFE_SUB_ID.match(sub["id"]):
+                if not SAFE_SUB_ID.fullmatch(str(sub["id"])):
                     continue
                 created = time.strftime("%Y-%m-%d", time.gmtime(sub.get("created") or 0))
                 off = "" if sub["type"] in n.backends else " (not used: switched off on this server)"
@@ -771,14 +816,18 @@ def make_handler(app: Webgate):
                                         "topic": "fastrdp-" + secrets.token_urlsafe(16)})
                     log.info("%s: ntfy topic for approval notifications created", account)
                     note = "ntfy"
-                elif action == "remove" and SAFE_SUB_ID.match(form.get("id", "")):
+                elif action == "remove" and SAFE_SUB_ID.fullmatch(form.get("id", "")):
                     removed = store.remove(account, form["id"])
                     log.info("%s: notification subscription %s", account, "removed" if removed else "not found")
                     note = "removed"
                 elif action == "test":
                     count = app.notifier.test(account)
-                    log.info("%s: test notification to %d subscription(s)", account, count)
-                    note = "test"
+                    if count is None:
+                        log.info("%s: test notification not sent: one within %d s", account, notify.TEST_COOLDOWN)
+                        note = "test-wait"
+                    else:
+                        log.info("%s: test notification to %d subscription(s)", account, count)
+                        note = "test"
                 else:
                     return self.error_page(400, "Bad request.")
             except TooManyError as exc:
@@ -797,8 +846,8 @@ def make_handler(app: Webgate):
                 return self.send(404, "Web Push is not enabled here.", content_type=plain)
             endpoint, p256dh, auth = form.get("endpoint", ""), form.get("p256dh", ""), form.get("auth", "")
             label = re.sub(r"[^\w .,()@+-]", "", form.get("label", ""))[:40].strip() or "Browser"
-            if len(endpoint) > 1024 or not webpush.endpoint_allowed(endpoint, app.cfg.notify.webpush_allowed_hosts):
-                log.warning("%s: web push endpoint refused (not a known push service): %.80s", user, endpoint)
+            if not app.notifier.endpoint_allowed(endpoint):
+                log.warning("%s: web push endpoint refused (not a known push service): %r", user, endpoint[:80])
                 return self.send(400, "This browser's push service is not allowed here.", content_type=plain)
             try:
                 webpush.check_subscription_keys(p256dh, auth)
@@ -847,7 +896,7 @@ def make_handler(app: Webgate):
                 return self.redirect(target or app.prefix + "/",
                                      [("Set-Cookie", app.cookie(SESSION_COOKIE, "", 0))])
             desktop = form.get("desktop") or None
-            if desktop and (not SAFE_DESKTOP.match(desktop) or not app.offers(desktop)):
+            if desktop and (not SAFE_DESKTOP.fullmatch(desktop) or not app.offers(desktop)):
                 return self.error_page(400, "Unknown desktop.")
             try:
                 reply = broker_web_token(app.cfg.webgate.broker_socket, sess["user"])
@@ -862,6 +911,12 @@ def make_handler(app: Webgate):
             self.redirect(app.cfg.guacamole.url + sep + "data=" + urllib.parse.quote(blob, safe=""))
 
     return Handler
+
+
+def loggable(value: str) -> str:
+    """A request value for a %s in the log: as it is if printable, else its repr (no
+    line breaks or terminal escapes from a client in the journal)."""
+    return value if value.isprintable() else repr(value)
 
 
 def page(title: str, body: str, head: str = "") -> str:
