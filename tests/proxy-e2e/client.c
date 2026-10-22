@@ -184,9 +184,12 @@ static void click_row(freerdp* inst, int rows_below)
 		}
 	printf("client: no picker row on the screen\n");
 }
-/* E2E_CHANNEL_DATA: one static channel without a plugin, announced in the Client Network Data */
-static BOOL announce_channel(rdpSettings* s)
+/* E2E_CHANNEL_DATA: one static channel without a plugin, announced in the Client Network Data.
+ * Added from LoadChannels: freerdp_connect() reloads the channels first, and that resets
+ * FreeRDP_ChannelCount (freerdp_channels_close()), so a channel set up before it is dropped. */
+static BOOL announce_channel(freerdp* inst)
 {
+	rdpSettings* s = inst->context->settings;
 	const UINT32 n = freerdp_settings_get_uint32(s, FreeRDP_ChannelCount);
 	CHANNEL_DEF* def = freerdp_settings_get_pointer_array_writable(s, FreeRDP_ChannelDefArray, n);
 	if (!def)
@@ -282,8 +285,8 @@ int main(int argc, char** argv)
 	if (getenv("E2E_STATUS_INFO"))
 		freerdp_settings_set_bool(s, FreeRDP_SupportStatusInfoPdu, TRUE);
 	size_t channel_data = getenv("E2E_CHANNEL_DATA") ? strtoul(getenv("E2E_CHANNEL_DATA"), NULL, 10) : 0;
-	if (channel_data && !announce_channel(s))
-		return 4;
+	if (channel_data)
+		inst->LoadChannels = announce_channel;
 	inst->PostConnect = post_connect;
 	const long keep_ms = 1000L * (getenv("E2E_KEEP_S") ? atoi(getenv("E2E_KEEP_S")) : 4);
 	const char* dump = getenv("E2E_DUMP");

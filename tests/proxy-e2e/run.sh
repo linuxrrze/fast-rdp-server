@@ -313,6 +313,9 @@ logged "too many progress messages logged" proxy-e.log "more than 32 progress me
 logged "picker: choice logged" proxy-e.log "desktop picker: gnome (click)"
 logged "picker: closed client logged" proxy-e.log "front connection closed during the desktop picker"
 logged "picker: channel data cap logged" proxy-e.log "more than 4194304 bytes of channel data during the desktop picker"
+# the client really sent the data: without it the pickerchan choice check passes anyway
+logged "picker: channel data below the cap sent on the announced channel" pickerchan.out \
+    "channel_data=65536 sent=1"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
