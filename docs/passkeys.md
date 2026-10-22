@@ -367,10 +367,15 @@ So the question is which KDCs issue TGTs for passkeys.
 - **Samba AD** cannot act as the on-premises side of Entra Kerberos [inferred].
 - **Windows Hello for Business** (key trust, certificate trust, cloud Kerberos trust)
   gives the same result: an AD TGT without a password.
-- In both AD cases fastrdp cannot see *how* the TGT was obtained: AD has no
-  authentication indicators like MIT/FreeIPA. Keep privacyIDEA push for these users,
-  or use AD *Authentication Mechanism Assurance* (certificate trust only) with an
-  exempt group, as for smartcards.
+- AD has no authentication indicators like MIT/FreeIPA, but it marks some logons with
+  well-known SIDs in the PAC: S-1-18-4 for WHfB **key trust**, S-1-18-3 for PKINIT with
+  the freshness extension (smart card, certificate trust, key trust), never for a
+  password (which gets only S-1-18-1) [doc: MS-DTYP §2.4.2.4]. fastrdp cannot read the
+  PAC yet (backlog K11; caveats in [windows-clients.md](windows-clients.md) §3.9).
+  Whether cloud Kerberos trust or FIDO2 via Entra Kerberos adds any of them is
+  unverified. Until K11: keep privacyIDEA push (or web approval) for these users, or
+  use AD *Authentication Mechanism Assurance* (certificate trust only) with an exempt
+  group, as for smartcards.
 
 ### WebAuthn redirection (MS-RDPEWA) [verified]
 
