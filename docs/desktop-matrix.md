@@ -27,8 +27,8 @@ runs **inside** an ordinary xrdp session:
    `fastrdp-<compositor>` runs `/usr/libexec/fastrdp/wlroots-in-x <compositor>`.
 2. The launcher starts the compositor with `WLR_BACKENDS=x11`, so it draws into
    one fullscreen window of the xorgxrdp display. xrdp still provides H.264/GFX,
-   clipboard, drives, audio and reconnects (audio needs an xrdp sink module, which
-   no role installs; see [backends/xrdp.md](backends/xrdp.md#channels)).
+   clipboard, drives, audio and reconnects (audio: the PipeWire xrdp module, which
+   `wlroots-in-x` starts; see [backends/xrdp.md](backends/xrdp.md#channels)).
 3. **Renderer:** GLES when the X server offers DRI3 (xorgxrdp-glamor on
    Intel/AMD); otherwise pixman. Wayfire's GL effects (cube, fisheye, …) need GLES.
 4. **Size:** the launcher watches the X root size (dynamic resolution, reconnects)

@@ -9,6 +9,8 @@ fastrdp_gnome_packages:
   - nautilus
   - xwayland
   - dconf-cli          # dconf update (system database below)
+# Audio out (fastrdp_audio): a sink for gnome-remote-desktop, also without a sound card
+fastrdp_gnome_audio_packages: [pipewire-pulse]
 # GDM's gnome-headless-session@.service runs gdm-new-session with DynamicUser=yes; Ubuntu
 # 26.04's dbus-daemon disconnects that client ("Failed: The connection is closed", dbus#390).
 # true: a drop-in runs it as the static gdm user, with the sandboxing DynamicUser implied.

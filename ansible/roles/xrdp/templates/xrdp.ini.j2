@@ -33,7 +33,8 @@ EnableSyslog=true
 
 [Channels]
 rdpdr=true
-rdpsnd=true
+; audio out (fastrdp_audio); the microphone is AUDIO_INPUT inside drdynvc
+rdpsnd={{ 'true' if fastrdp_audio | bool else 'false' }}
 drdynvc=true
 cliprdr=true
 rail=true

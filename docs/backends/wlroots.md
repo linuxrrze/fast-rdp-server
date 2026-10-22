@@ -120,8 +120,9 @@ only.
 - Full xrdp session with a real xorgxrdp display and GPU: **to validate**. Tests ran
   on Xvfb only.
 - Audio and drive redirection behave as in xrdp ([xrdp.md](xrdp.md#channels)); the
-  compositors run no XDG autostart, so audio also needs `wlroots-in-x` to start the
-  PipeWire xrdp module ([audio.md](../audio.md)).
+  compositors run no XDG autostart, so `wlroots-in-x` starts the PipeWire xrdp module
+  itself (`/usr/libexec/fastrdp/xrdp-audio`; [audio.md](../audio.md)). Checked on Xvfb
+  with a stub loader (`tests/wlroots/run.sh`), not with real audio.
 - No desktop notifications without `mako-notifier` (not installed by fastrdp: its
   D-Bus activation file can take over notifications of MATE sessions on the same
   host); the Kerberos login reminder then only logs

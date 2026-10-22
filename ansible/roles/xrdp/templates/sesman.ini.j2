@@ -48,4 +48,7 @@ LogLevel=INFO
 EnableSyslog=true
 
 [SessionVariables]
-PULSE_SCRIPT=/etc/xrdp/pulse/default.pa
+; Microphone (fastrdp_audio_input): false = /usr/libexec/fastrdp/xrdp-audio loads the
+; PipeWire xrdp module sink-only (docs/audio.md). PULSE_SCRIPT of xrdp's default
+; belongs to the PulseAudio module, which fastrdp does not use.
+FASTRDP_AUDIO_INPUT={{ 'true' if fastrdp_audio_input | bool else 'false' }}

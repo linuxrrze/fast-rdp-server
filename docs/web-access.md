@@ -217,6 +217,16 @@ broker (`web approval for alice from … DENIED`) and is a reason to change the 
   reaches the server). Users can run `kinit` inside the session.
 - **Clipboard, audio and file transfer** follow Guacamole's capabilities; printing
   and USB redirection are not available.
+- **Sound and microphone.** Sound plays in the browser by default (Guacamole's
+  `rdpsnd`, PCM) on X11/wlroots desktops and GNOME [GNOME through its `rdpsnd`
+  fallback: not verified]; Plasma (KRdp) has none. The microphone follows
+  `fastrdp_audio_input` (Guacamole `enable-audio-input`; an `enable-audio-input` in
+  `fastrdp_web_rdp_parameters` wins). Browsers give web pages the microphone only over
+  HTTPS and after the user allows it; the browser asks once guacd accepts the
+  microphone stream [when exactly: not verified], and a denied permission leaves the
+  session without it.
+  Quote values in `fastrdp_web_rdp_parameters` or write YAML `true`/`false`: both reach
+  Guacamole as `"true"`/`"false"`. ([audio.md](audio.md))
 - **Images** are pulled from Docker Hub by tag (`fastrdp_guacamole_version`). Mirror
   or pin by digest for production.
 

@@ -1,0 +1,64 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Audio in xrdp sessions (backlog A1, docs/audio.md): loads the PipeWire xrdp module
+# (pipewire-module-xrdp) through the package's own load_pw_modules.sh, which creates
+# xrdp-sink (audio out, RDP rdpsnd) and xrdp-source (microphone, AUDIO_INPUT) in the
+# user's PipeWire and makes them the defaults.
+#
+#   xrdp-audio              wlroots-in-x (these compositors run no XDG autostart)
+#   xrdp-audio --autostart  /etc/xdg/autostart/fastrdp-xrdp-audio.desktop
+#
+# FASTRDP_AUDIO_INPUT=false (sesman.ini [SessionVariables], fastrdp_audio_input) loads
+# the module sink-only, the variant load_pw_modules.sh carries as a comment: no
+# xrdp-source, so applications cannot record from the client's microphone. A user can
+# still load the module themselves (it is their own PipeWire): a default, not a policy.
+#
+# With --autostart it does nothing while the package's own autostart entry is active:
+# the xrdp role hides that entry (Hidden=true) only with fastrdp_audio_input: false,
+# so the module is never loaded twice.
+set -u
+
+# Sink-only shim: load_pw_modules.sh finds this as "pw-cli" first in PATH. It drops
+# the source.stream.props= argument from the module load and passes everything else
+# (ls, info, destroy, quit) to the real pw-cli.
+if [ "${0##*/}" = pw-cli ]; then
+    real=${FASTRDP_REAL_PW_CLI:?}
+    xrdp_load=false
+    for a do
+        [ "$a" = libpipewire-module-xrdp ] && xrdp_load=true
+    done
+    for a do
+        shift
+        if $xrdp_load; then
+            case $a in source.stream.props=*) continue ;; esac
+        fi
+        set -- "$@" "$a"
+    done
+    exec "$real" "$@"
+fi
+
+LOADER=${FASTRDP_PW_XRDP_LOADER:-/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh}
+UPSTREAM_AUTOSTART=${FASTRDP_PW_XRDP_AUTOSTART:-/etc/xdg/autostart/pipewire-xrdp.desktop}
+
+# Only in xrdp sessions (sesexec sets XRDP_SESSION), and only with the module installed
+# (fastrdp_audio: true): GNOME and Plasma sessions run the autostart entry too.
+[ -n "${XRDP_SESSION:-}" ] || exit 0
+[ -x "$LOADER" ] || exit 0
+
+if [ "${1:-}" = --autostart ] && [ -f "$UPSTREAM_AUTOSTART" ] \
+        && ! grep -q '^Hidden=true' "$UPSTREAM_AUTOSTART"; then
+    exit 0
+fi
+
+if [ "${FASTRDP_AUDIO_INPUT:-true}" = false ]; then
+    FASTRDP_REAL_PW_CLI=$(command -v pw-cli) || exit 0
+    export FASTRDP_REAL_PW_CLI
+    shim=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fastrdp-audio
+    self=$(readlink -f "$0")
+    mkdir -p "$shim" && ln -sf "$self" "$shim/pw-cli" || exit 1
+    PATH=$shim:$PATH
+    export PATH
+fi
+
+exec "$LOADER"

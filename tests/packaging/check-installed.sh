@@ -49,6 +49,10 @@ check "tgt-notify autostart entry is a conffile of fastrdp-session" \
     bash -c 'dpkg-query -W -f="\${Conffiles}\n" fastrdp-session | grep -q " /etc/xdg/autostart/fastrdp-tgt-notify.desktop "'
 check "tgt-notify --status" /usr/libexec/fastrdp/tgt-notify --config /nonexistent --status
 output_has "tgt-notify imports the broker module (defaults without a config file)" '"enabled": true'
+check "xrdp-audio installed" test -x /usr/libexec/fastrdp/xrdp-audio
+check "xrdp-audio autostart entry is a conffile of fastrdp-session" \
+    bash -c 'dpkg-query -W -f="\${Conffiles}\n" fastrdp-session | grep -q " /etc/xdg/autostart/fastrdp-xrdp-audio.desktop "'
+check "xrdp-audio does nothing outside xrdp sessions" env -u XRDP_SESSION /usr/libexec/fastrdp/xrdp-audio --autostart
 for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman fastrdp-termsrv-keytab; do
     check "$u.service shipped" test -f "/usr/lib/systemd/system/$u.service"
 done

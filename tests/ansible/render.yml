@@ -208,6 +208,33 @@
         fastrdp_xrdp_disconnected_time_limit: 30
       loop: [xrdp.ini, sesman.ini, xorg.conf]
 
+    - name: Audio - xrdp.ini and sesman.ini per switch (fastrdp_audio, fastrdp_audio_input)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/xrdp/templates/{{ item.src }}.j2"
+        dest: "{{ render_out }}/audio-{{ item.name }}-{{ item.src }}"
+        mode: "0644"
+      vars:
+        fastrdp_audio: "{{ item.audio }}"
+        fastrdp_audio_input: "{{ item.input }}"
+      loop:
+        - {name: no-mic, src: xrdp.ini, audio: true, input: false}
+        - {name: no-mic, src: sesman.ini, audio: true, input: false}
+        - {name: none, src: xrdp.ini, audio: false, input: true}
+        - {name: none, src: sesman.ini, audio: "False", input: "False"}
+
+    - name: Audio - webgate.toml without the microphone, and with an own enable-audio-input
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/webgate.toml.j2"
+        dest: "{{ render_out }}/audio-{{ item.name }}-webgate.toml"
+        mode: "0644"
+      vars:
+        fastrdp_web_enabled: true
+        fastrdp_audio_input: "{{ item.input }}"
+        fastrdp_web_rdp_parameters: "{{ item.params }}"
+      loop:
+        - {name: no-mic, input: false, params: {color-depth: "32"}}
+        - {name: own, input: false, params: {enable-audio-input: true, disable-audio: "true"}}
+
     - name: Proxy.ini (TLS logins, web, both off)
       ansible.builtin.template:
         src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"

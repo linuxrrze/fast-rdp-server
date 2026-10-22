@@ -680,6 +680,32 @@ The tag names come from the `TAG` definitions of the files cited above.
 | `Timeout waiting for activation` | network too slow for the 9-second default; raise `/timeout:` (§6) |
 | window opens, then closes after a while | refused after authentication: MFA denied or timed out, account/GPO policy, `session_tgt = required`; see the broker log |
 
+## 16. Sound and microphone
+
+The server offers audio out on X11/wlroots (xrdp) and GNOME desktops and the client's
+microphone to applications there, unless the administrator switched them off
+([audio.md](audio.md)). Plasma (KRdp) has no audio. FreeRDP sends neither unless asked:
+
+```sh
+# sound and microphone through PipeWire's (or PulseAudio's) server
+xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg-list:'kerberos,!ntlm' \
+    /sound:sys:pulse /microphone:sys:pulse
+```
+
+| Switch | Effect |
+|---|---|
+| `/sound[:sys:pulse\|alsa\|oss\|fake,dev:<dev>,...]` | audio out on the client: static `rdpsnd` (xrdp) and the dynamic playback channel (GNOME); without `sys:` the first back-end the build has |
+| `/audio-mode:redirect` (`0`, the default with `/sound`), `server` (`1`), `none` (`2`) | play on the client, on the server (fastrdp hosts usually have no sound card), or not at all |
+| `/microphone[:sys:pulse,dev:<source>]` | offers the client's microphone (`AUDIO_INPUT`); applications record from `xrdp-source` (xrdp) or `grd_remote_audio_source` (GNOME) |
+
+- Remmina: Advanced → *Audio output mode* → *Local*, and *Redirect local microphone*.
+- `/drive` and `/smartcard` load the `rdpsnd` channel with the `fake` back-end on their
+  own (no sound, but the channel exists).
+- The X11 desktops' microphone is uncompressed PCM, 44.1 kHz stereo (about 1.4 Mbit/s).
+- fastrdp's own build (`/opt/fastrdp/bin/xfreerdp`) has no PulseAudio/ALSA back-end:
+  use the distribution's client for sound. [src: `third_party/build-freerdp.sh`]
+- Not yet tested through fastrdp with a real session ([audio.md](audio.md#open-questions-lab)).
+
 ## Open points (need a lab)
 
 1. Smartcard logon with real PIV cards and YubiKey PIV (OpenSC and `libykcs11`) against

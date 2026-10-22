@@ -98,5 +98,11 @@ fi
 if [ -x "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/tgt-notify" ]; then
     WAYLAND_DISPLAY=$WL "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/tgt-notify" &
 fi
+# Audio: the PipeWire xrdp module (pipewire-module-xrdp, fastrdp_audio), which other
+# desktops load through XDG autostart. xrdp-audio does nothing outside xrdp sessions or
+# without the module, and loads it sink-only with fastrdp_audio_input: false.
+if [ -x "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/xrdp-audio" ]; then
+    "${FASTRDP_LIBEXEC:-/usr/libexec/fastrdp}/xrdp-audio" &
+fi
 
 wait "$COMP_PID"

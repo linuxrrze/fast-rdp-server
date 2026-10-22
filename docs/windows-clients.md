@@ -868,6 +868,12 @@ mstsc and the Windows App have no desktop field: the desktop comes from
 gateway's chooser page, which also offers these `.rdp` files for download
 ([web-access.md](web-access.md#rdp-apps)).
 
+Sound and microphone (`audiomode:i:0`, `audiocapturemode:i:1`) have nothing to do with
+Kerberos; the client always opts in. GPO *Remote Desktop Session Host → Device and
+Resource Redirection* applies to Windows hosts, not to fastrdp; the server side is
+`fastrdp_audio` / `fastrdp_audio_input` ([client-guide.md](client-guide.md#sound-and-microphone),
+[audio.md](audio.md)).
+
 ## 5. Bugs and gaps (summary)
 
 | # | Where | Kind | Proposal |

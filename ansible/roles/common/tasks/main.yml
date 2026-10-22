@@ -109,6 +109,17 @@
       only the placeholders {left}, {deadline} and {principal}
       (docs/nfs-kerberos-homes.md#long-running-sessions).
 
+# Rendered as "true"/"false" into xrdp.ini, sesman.ini and webgate.toml: a typo such as
+# "no" or "off" must not turn into a value the templates do not expect.
+- name: Audio settings (xrdp, gnome_rd and web_gateway roles)
+  ansible.builtin.assert:
+    that:
+      - fastrdp_audio | string | lower in ['true', 'false']
+      - fastrdp_audio_input | string | lower in ['true', 'false']
+    fail_msg: >-
+      fastrdp_audio and fastrdp_audio_input are true or false (docs/audio.md).
+    quiet: true
+
 # Role desktops' defaults (browsers, backlog K9). The domains go into browser policies
 # as host patterns: DNS names with at least one dot (no bare TLD, no wildcard, no URL).
 - name: Browser settings (desktops role)

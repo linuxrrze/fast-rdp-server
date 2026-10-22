@@ -115,6 +115,9 @@
         - {src: /usr/libexec/fastrdp/startwm.sh, dest: /etc/xrdp/startwm.sh, mode: "0755"}
         - {src: /usr/share/fastrdp-session/pam.d/xrdp-sesman, dest: /etc/pam.d/xrdp-sesman, mode: "0644"}
 
+- name: Audio and microphone (fastrdp_audio, fastrdp_audio_input)
+  ansible.builtin.import_tasks: audio.yml
+
 - name: Enable xrdp services
   ansible.builtin.systemd_service:
     name: "{{ item }}"

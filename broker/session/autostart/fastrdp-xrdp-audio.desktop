@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=fastrdp audio for xrdp sessions
+Comment=Loads the PipeWire xrdp module (sink-only when the microphone is switched off)
+Exec=/usr/libexec/fastrdp/xrdp-audio --autostart
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

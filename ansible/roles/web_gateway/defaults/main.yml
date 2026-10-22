@@ -23,6 +23,8 @@ fastrdp_web_rdp_port: "{{ fastrdp_listen_port }}"
 fastrdp_guacamole_version: 1.6.0
 fastrdp_guacamole_image: "docker.io/guacamole/guacamole:{{ fastrdp_guacamole_version }}"
 fastrdp_guacd_image: "docker.io/guacamole/guacd:{{ fastrdp_guacamole_version }}"
+# Guacamole RDP parameters. Audio out is on (Guacamole's default); the microphone
+# (enable-audio-input) follows fastrdp_audio_input unless set here (docs/web-access.md).
 fastrdp_web_rdp_parameters:
   enable-font-smoothing: "true"
   color-depth: "32"

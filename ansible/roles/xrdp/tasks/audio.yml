@@ -1,0 +1,59 @@
+---
+# Audio and microphone in xrdp sessions (backlog A1, docs/audio.md). xrdp's chansrv
+# carries audio out (rdpsnd) and the microphone (AUDIO_INPUT); the PipeWire xrdp module
+# connects them to the user's PipeWire as xrdp-sink and xrdp-source. Its loader
+# (/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh) runs in every xrdp session:
+# through the package's XDG autostart entry, or fastrdp's own entry and wlroots-in-x
+# (/usr/libexec/fastrdp/xrdp-audio), which loads it sink-only with
+# fastrdp_audio_input: false. fastrdp_audio: false installs nothing and turns rdpsnd off
+# (xrdp.ini); packages installed earlier stay.
+- name: Audio - PipeWire and its xrdp module
+  ansible.builtin.apt:
+    name: "{{ fastrdp_xrdp_audio_packages }}"
+    state: present
+    install_recommends: false
+  when: fastrdp_audio | bool
+
+- name: Audio loader from this checkout
+  when:
+    - fastrdp_audio | bool
+    - fastrdp_install_method == 'build'
+  block:
+    - name: Audio - directories for the loader and its autostart entry
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: [/usr/libexec/fastrdp, /etc/xdg/autostart]
+
+    - name: Audio - loader (xrdp-audio)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/libexec/xrdp-audio"
+        dest: /usr/libexec/fastrdp/xrdp-audio
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Audio - autostart entry of the loader (every xrdp session)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../broker/session/autostart/fastrdp-xrdp-audio.desktop"
+        dest: /etc/xdg/autostart/fastrdp-xrdp-audio.desktop
+        owner: root
+        group: root
+        mode: "0644"
+
+# With the APT install method the xrdp role has installed fastrdp-session, which ships
+# both. The package's own entry loads the module with the microphone; hidden (XDG
+# autostart: Hidden=true) only without it, then fastrdp's entry loads it sink-only.
+# A local change of a conffile: dpkg keeps it on upgrades (asks when the package's
+# version of the file changes); the next run restores it.
+- name: Audio - autostart entry of pipewire-module-xrdp follows fastrdp_audio_input
+  ansible.builtin.lineinfile:
+    path: /etc/xdg/autostart/pipewire-xrdp.desktop
+    regexp: '^Hidden='
+    line: Hidden=true
+    insertafter: '^\[Desktop Entry\]'
+    state: "{{ 'absent' if fastrdp_audio_input | bool else 'present' }}"
+  when: fastrdp_audio | bool

@@ -100,7 +100,8 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
 |---|---|---|
 | Clipboard | `cliprdr=true`; sesman `RestrictOutboundClipboard=none`, `RestrictInboundClipboard=none` | handled by chansrv |
 | Drives | `rdpdr=true`; `[Chansrv] FuseMountName=thinclient_drives`, `FileUmask=077` | needs `fuse3` (runtime package of the role) |
-| Audio out | `rdpsnd=true`; `PULSE_SCRIPT=/etc/xrdp/pulse/default.pa` | needs `pipewire-module-xrdp` (+ `pipewire`, `wireplumber`, `pipewire-pulse`); also carries the microphone (`AUDIO_INPUT`, PCM). **No role installs it; audio does not work as deployed** ([audio.md](../audio.md), backlog A1). |
+| Audio out | `rdpsnd=true` (`fastrdp_audio`; `false` turns it off) | PipeWire with `pipewire-module-xrdp` (xrdp role, `fastrdp_xrdp_audio_packages`): `xrdp-sink`. Implemented, not yet tested on a host ([audio.md](../audio.md), backlog A1) |
+| Microphone | `AUDIO_INPUT` inside `drdynvc`; sesman `[SessionVariables] FASTRDP_AUDIO_INPUT` (`fastrdp_audio_input`) | `xrdp-source`, PCM 44.1 kHz stereo; with `false` the module is loaded sink-only (no `xrdp-source`) |
 | RemoteApp | `rail=true` in xrdp | the proxy has `RemoteApp=false` |
 | Video redirection | `xrdpvr=true` | not tested |
 
@@ -123,6 +124,8 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
 | `/run/fastrdp/desktop/<user>` | broker | chosen xsession name |
 | `/run/fastrdp/token.sock` | broker | token redemption, root only |
 | `/usr/share/xsessions/*.desktop` | desktop packages, `fastrdp-session` | what `startwm.sh` can start |
+| `/usr/libexec/fastrdp/xrdp-audio`, `/etc/xdg/autostart/fastrdp-xrdp-audio.desktop` | role (build) or `fastrdp-session` (apt) | loads the PipeWire xrdp module, sink-only with `fastrdp_audio_input: false` |
+| `/etc/xdg/autostart/pipewire-xrdp.desktop` | `pipewire-module-xrdp` | the package's own loader entry; `Hidden=true` (xrdp role) only with `fastrdp_audio_input: false` |
 | `/usr/local/src/fastrdp/vendor/.installed-xrdp-<key>-glamor<bool>-ffmpeg<bool>` | build | build stamp; a new key, glamor or FFmpeg choice triggers a rebuild |
 
 Logs: `xrdp.ini` `LogFile=xrdp.log` and `sesman.ini` `LogFile=xrdp-sesman.log`
@@ -284,7 +287,9 @@ lists each; `xrdp.log` (`xrdp_encoder_ffmpeg: using ...`) is the authoritative a
 ## Limitations and known issues
 
 - Hardware H.264 is untested on real GPUs (VA-API, NVENC, QSV).
-- No audio: `pipewire-module-xrdp` is not installed ([audio.md](../audio.md)).
+- Audio and microphone are implemented (PipeWire xrdp module) but not yet tested on a
+  host with real clients ([audio.md](../audio.md)). The module's loader sets user-wide
+  PipeWire settings (quantum 2048, 44.1 kHz), also seen by a GNOME session of the same user.
 - One X11 session per user (per colour depth); switching X11 desktops needs a logout.
 - `fastrdpctl logout` terminates all of the user's logind sessions.
 - H.264 is AVC420 only; xrdp 0.10 has no AVC444.

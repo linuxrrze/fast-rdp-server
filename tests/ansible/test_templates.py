@@ -169,6 +169,162 @@ class XrdpIni(unittest.TestCase):
         self.assertIn("with glamor", text)
 
 
+class Audio(unittest.TestCase):
+    """Audio and microphone (fastrdp_audio, fastrdp_audio_input; backlog A1): xrdp.ini
+    rdpsnd, sesman.ini FASTRDP_AUDIO_INPUT, Guacamole enable-audio-input, the packages
+    per switch, and xrdp-audio loading the PipeWire xrdp module sink-only."""
+
+    XRDP = REPO / "ansible/roles/xrdp"
+    LOADER = REPO / "broker/session/libexec/xrdp-audio"
+    # load_pw_modules.sh's pw-cli calls (pipewire-module-xrdp 0.2), plus another module
+    STUB_LOADER = textwrap.dedent("""\
+        #!/bin/sh
+        pw-cli ls Node
+        pw-cli -m -d load-module libpipewire-module-xrdp sink.node.latency=2048 \
+            sink.stream.props={node.name=xrdp-sink} source.stream.props={node.name=xrdp-source}
+        pw-cli load-module libpipewire-module-other source.stream.props={x=y}
+        """)
+
+    def test_xrdp_ini(self):
+        self.assertEqual(ini("xrdp.ini")["Channels"]["rdpsnd"], "true")
+        self.assertEqual(ini("audio-no-mic-xrdp.ini")["Channels"]["rdpsnd"], "true")
+        self.assertEqual(ini("audio-none-xrdp.ini")["Channels"]["rdpsnd"], "false")
+        self.assertEqual(ini("audio-none-xrdp.ini")["Channels"]["drdynvc"], "true")   # GFX
+
+    def test_sesman_ini(self):
+        for name, value in (("sesman.ini", "true"), ("audio-no-mic-sesman.ini", "false"),
+                            ("audio-none-sesman.ini", "false")):
+            with self.subTest(name):
+                env = ini(name, strict=False)["SessionVariables"]
+                self.assertEqual(env["FASTRDP_AUDIO_INPUT"], value)
+                # PulseAudio module only (pulseaudio-module-xrdp); fastrdp uses PipeWire
+                self.assertNotIn("PULSE_SCRIPT", env)
+
+    def test_guacamole_audio_input(self):
+        params = webgate_config.parse(toml("webgate.toml")).guacamole.rdp_parameters
+        self.assertEqual(params["enable-audio-input"], "true")
+        self.assertNotIn("disable-audio", params)   # audio out: Guacamole's default (on)
+        params = webgate_config.parse(toml("audio-no-mic-webgate.toml")).guacamole.rdp_parameters
+        self.assertEqual(params, {"enable-audio-input": "false", "color-depth": "32"})
+        # fastrdp_web_rdp_parameters wins
+        params = webgate_config.parse(toml("audio-own-webgate.toml")).guacamole.rdp_parameters
+        self.assertEqual(params, {"enable-audio-input": "true", "disable-audio": "true"})   # YAML true
+
+    def test_packages_per_switch(self):
+        import yaml
+        defaults = yaml.safe_load((self.XRDP / "defaults/main.yml").read_text())
+        self.assertEqual(defaults["fastrdp_xrdp_audio_packages"],
+                         ["pipewire", "pipewire-bin", "wireplumber", "pipewire-pulse", "pipewire-module-xrdp",
+                          "pulseaudio-utils"])
+        self.assertIn("import_tasks: audio.yml", (self.XRDP / "tasks/main.yml").read_text())
+        tasks = yaml.safe_load((self.XRDP / "tasks/audio.yml").read_text())
+        for task in tasks:
+            with self.subTest(task["name"]):
+                when = task["when"] if isinstance(task["when"], list) else [task["when"]]
+                self.assertIn("fastrdp_audio | bool", when)
+        apt = [t for t in tasks if "ansible.builtin.apt" in t]
+        self.assertEqual([t["ansible.builtin.apt"]["name"] for t in apt], ["{{ fastrdp_xrdp_audio_packages }}"])
+        self.assertIs(apt[0]["ansible.builtin.apt"]["install_recommends"], False)
+        # the package's autostart entry is hidden exactly when the microphone is off
+        hide = [t["ansible.builtin.lineinfile"] for t in tasks if "ansible.builtin.lineinfile" in t]
+        self.assertEqual(hide[0]["path"], "/etc/xdg/autostart/pipewire-xrdp.desktop")
+        self.assertEqual(hide[0]["line"], "Hidden=true")
+        self.assertEqual(hide[0]["state"], "{{ 'absent' if fastrdp_audio_input | bool else 'present' }}")
+        gnome = (REPO / "ansible/roles/gnome_rd")
+        self.assertIn("fastrdp_gnome_audio_packages: [pipewire-pulse]", (gnome / "defaults/main.yml").read_text())
+        gtasks = yaml.safe_load((gnome / "tasks/main.yml").read_text())
+        gaudio = [t for t in gtasks if t["name"] == "Audio for GNOME sessions (fastrdp_audio)"][0]
+        self.assertEqual(gaudio["when"], "fastrdp_audio | bool")
+        self.assertEqual(gaudio["ansible.builtin.apt"]["name"], "{{ fastrdp_gnome_audio_packages }}")
+        common = yaml.safe_load((REPO / "ansible/roles/common/defaults/main.yml").read_text())
+        self.assertIs(common["fastrdp_audio"], True)
+        self.assertIs(common["fastrdp_audio_input"], True)
+
+    def test_packaging_and_launchers(self):
+        install = (REPO / "debian/fastrdp-session.install").read_text()
+        self.assertIn("broker/session/autostart/fastrdp-xrdp-audio.desktop etc/xdg/autostart/", install)
+        self.assertIn("broker/session/libexec/* usr/libexec/fastrdp/", install)
+        desktop = configparser.ConfigParser(interpolation=None)
+        desktop.read(REPO / "broker/session/autostart/fastrdp-xrdp-audio.desktop")
+        self.assertEqual(desktop["Desktop Entry"]["Exec"], "/usr/libexec/fastrdp/xrdp-audio --autostart")
+        self.assertNotIn("Hidden", desktop["Desktop Entry"])
+        tasks = (self.XRDP / "tasks/audio.yml").read_text()
+        for text in ("dest: /usr/libexec/fastrdp/xrdp-audio", "dest: /etc/xdg/autostart/fastrdp-xrdp-audio.desktop"):
+            self.assertIn(text, tasks)
+        # wlroots compositors run no XDG autostart: wlroots-in-x starts the loader
+        self.assertIn('/xrdp-audio" &', (REPO / "broker/session/libexec/wlroots-in-x").read_text())
+        self.assertIn("broker/session/libexec/xrdp-audio", (REPO / "Makefile").read_text())   # shellcheck
+
+    def run_loader(self, *args, input_=None, xrdp=True, loader=True, upstream_entry=None):
+        """xrdp-audio with a stub load_pw_modules.sh and pw-cli; returns the pw-cli calls."""
+        tmp = Path(tempfile.mkdtemp(prefix="fastrdp-audio."))
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "bin").mkdir()
+        log = tmp / "pw-cli.log"
+        stub = tmp / "bin/pw-cli"
+        stub.write_text(f'#!/bin/sh\nprintf "%s|" "$@" >>{log}\necho >>{log}\n')
+        stub.chmod(0o755)
+        script = tmp / "load_pw_modules.sh"
+        if loader:
+            script.write_text(self.STUB_LOADER)
+            script.chmod(0o755)
+        entry = tmp / "pipewire-xrdp.desktop"
+        if upstream_entry is not None:
+            entry.write_text(upstream_entry)
+        env = {"PATH": f"{tmp / 'bin'}:/usr/bin:/bin", "XDG_RUNTIME_DIR": str(tmp / "run"),
+               "FASTRDP_PW_XRDP_LOADER": str(script), "FASTRDP_PW_XRDP_AUTOSTART": str(entry)}
+        if xrdp:
+            env["XRDP_SESSION"] = "1"
+        if input_ is not None:
+            env["FASTRDP_AUDIO_INPUT"] = input_
+        res = subprocess.run(["sh", str(self.LOADER), *args], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return log.read_text().splitlines() if log.exists() else []
+
+    def test_loader_with_microphone(self):
+        for input_ in (None, "true"):
+            with self.subTest(input_):
+                calls = self.run_loader(input_=input_)
+                self.assertEqual(calls[0], "ls|Node|")
+                self.assertIn("source.stream.props={node.name=xrdp-source}|", calls[1])
+
+    def test_loader_sink_only(self):
+        calls = self.run_loader(input_="false")
+        self.assertEqual(calls, [
+            "ls|Node|",
+            "-m|-d|load-module|libpipewire-module-xrdp|sink.node.latency=2048|sink.stream.props={node.name=xrdp-sink}|",
+            "load-module|libpipewire-module-other|source.stream.props={x=y}|",   # other modules untouched
+        ])
+
+    def test_loader_does_nothing(self):
+        self.assertEqual(self.run_loader(xrdp=False), [])          # GNOME/Plasma sessions
+        self.assertEqual(self.run_loader(loader=False), [])        # module not installed
+        # autostart: the package's own entry loads the module while it is not hidden
+        upstream = "[Desktop Entry]\nExec=/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh\n"
+        self.assertEqual(self.run_loader("--autostart", upstream_entry=upstream), [])
+        self.assertEqual(len(self.run_loader("--autostart", input_="false",
+                                             upstream_entry=upstream.replace("]\n", "]\nHidden=true\n"))), 3)
+        self.assertEqual(len(self.run_loader("--autostart")), 3)   # no package entry
+        self.assertEqual(len(self.run_loader()), 3)                # wlroots-in-x
+
+    def test_checks(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        checks = CommonChecks()
+        for good in ({"fastrdp_audio": False}, {"fastrdp_audio_input": False}, {"fastrdp_audio": "true"}):
+            with self.subTest(good=good):
+                self.assertEqual(checks.run_checks(**ok, **good), 0)
+        for bad in ({"fastrdp_audio": "maybe"}, {"fastrdp_audio_input": "off"}, {"fastrdp_audio_input": []},
+                    {"fastrdp_audio": "yes"}):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(checks.run_checks(**ok, **bad), 0)
+
+    def test_smoke_script(self):
+        text = (REPO / "tests/smoke/check-audio.sh").read_text()
+        for name in ("xrdp-sink", "xrdp-source", "grd_remote_audio_source", "FASTRDP_AUDIO_INPUT",
+                     "/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh"):
+            self.assertIn(name, text)
+
+
 class ProxyIni(unittest.TestCase):
     def check(self, name, tls_allowed, tls_from="", remote_guard="false"):
         p = ini(name)
@@ -617,7 +773,8 @@ class WebgateToml(unittest.TestCase):
         self.assertEqual(cfg.guacamole.cert_fingerprint_file, "/etc/fastrdp/front.fingerprint")
         # values are strings for Guacamole, whatever YAML type they had
         self.assertEqual(cfg.guacamole.rdp_parameters,
-                         {"enable-font-smoothing": "true", "color-depth": "32", "resize-method": "display-update"})
+                         {"enable-audio-input": "true", "enable-font-smoothing": "true", "color-depth": "32",
+                          "resize-method": "display-update"})
 
     def test_rdp_port_follows_the_proxy_port(self):
         cfg = webgate_config.parse(toml("webgate-ports.toml"))

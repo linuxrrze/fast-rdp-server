@@ -6,7 +6,9 @@
 #   - the compositor starts on the X11 backend and its socket is found,
 #   - its output and X window follow the X root size,
 #   - the clipboard bridge works both ways,
-#   - a stale wayland-N socket from a crashed session does not confuse the launcher.
+#   - a stale wayland-N socket from a crashed session does not confuse the launcher,
+#   - the launcher starts the PipeWire xrdp module loader (xrdp-audio, stub
+#     load_pw_modules.sh) in xrdp sessions.
 #
 # Needs: xvfb xwayland x11-utils x11-xkb-utils xclip wl-clipboard wlr-randr and the
 # compositors to test (default: labwc sway wayfire; missing ones are skipped).
@@ -28,8 +30,10 @@ run_one() { # compositor display width height [compositor args...]
     ${XVFB_WRAP:-} Xvfb ":$disp" -screen 0 "${w}x${h}x24" -nolisten tcp ${XVFB_ARGS:-} >"$rt/xvfb.log" 2>&1 &
     local xpid=$!
     sleep 2
+    printf '#!/bin/sh\ntouch "%s/audio-loaded"\n' "$rt" >"$rt/load_pw_modules.sh"
+    chmod 755 "$rt/load_pw_modules.sh"
     (
-        export DISPLAY=":$disp" XDG_RUNTIME_DIR=$rt
+        export DISPLAY=":$disp" XDG_RUNTIME_DIR=$rt XRDP_SESSION=1 FASTRDP_PW_XRDP_LOADER=$rt/load_pw_modules.sh
         "$LAUNCHER" "$comp" "$@" >"$rt/comp.log" 2>&1 &
         local lpid=$!
         sleep "${START_WAIT:-7}"
@@ -47,6 +51,7 @@ run_one() { # compositor display width height [compositor args...]
         WAYLAND_DISPLAY=$sock wl-copy <"$rt/w"; sleep 2
         [ "$(xclip -selection clipboard -o 2>/dev/null)" = "$(cat "$rt/w")" ] \
             && ok "$comp: clipboard Wayland -> X" || bad "$comp: clipboard Wayland -> X"
+        [ -f "$rt/audio-loaded" ] && ok "$comp: audio module loader started" || bad "$comp: audio module loader not started"
         # Crash the compositor (stale socket stays) and start again in the same runtime dir.
         pkill -9 -x "$comp"; kill $lpid 2>/dev/null; wait $lpid 2>/dev/null
         "$LAUNCHER" "$comp" "$@" >"$rt/comp2.log" 2>&1 &

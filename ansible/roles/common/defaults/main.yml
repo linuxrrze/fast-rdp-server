@@ -185,6 +185,21 @@ fastrdp_xrdp_port: 3390
 fastrdp_xrdp_autodetect_profile: wan   # lan wan broadband_high satellite broadband_low modem default
 fastrdp_lan_networks: []               # client CIDRs, e.g. [10.0.0.0/8, "2001:db8::/32"]
 
+# ---------------------------------------------------------------- audio
+# Sound and microphone in sessions (docs/audio.md, backlog A1). Clients decide whether
+# they want either (mstsc "Play on this computer" / "Record from this computer", FreeRDP
+# /sound /microphone); these switches decide what the host offers.
+# xrdp desktops (X11 and wlroots): PipeWire with pipewire-module-xrdp (xrdp role) and
+# xrdp.ini rdpsnd; GNOME: pipewire-pulse, a sink for gnome-remote-desktop to capture
+# (gnome_rd role). Plasma (KRdp) has no audio. false = no audio packages, rdpsnd off.
+fastrdp_audio: true
+# Applications in xrdp sessions may record from the client's microphone (xrdp-source)
+# when the client offers it; false = the PipeWire xrdp module is loaded sink-only, and
+# the web path does not offer the microphone (Guacamole enable-audio-input). A default,
+# not a policy: users can load the module themselves, and GNOME (gnome-remote-desktop)
+# has no switch. The proxy passes AUDIO_INPUT either way (docs/audio.md#privacy-and-policy).
+fastrdp_audio_input: true
+
 # ---------------------------------------------------------------- hardening
 # Hide other users' processes (/proc hidepid). The nftables owner rules already stop
 # other users from reaching back-end ports.

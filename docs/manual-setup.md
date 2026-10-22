@@ -1034,6 +1034,7 @@ EnableSyslog=true
 
 [Channels]
 rdpdr=true
+; audio out (fastrdp_audio); the microphone is AUDIO_INPUT inside drdynvc
 rdpsnd=true
 drdynvc=true
 cliprdr=true
@@ -1106,7 +1107,10 @@ LogLevel=INFO
 EnableSyslog=true
 
 [SessionVariables]
-PULSE_SCRIPT=/etc/xrdp/pulse/default.pa
+; Microphone (fastrdp_audio_input): false = /usr/libexec/fastrdp/xrdp-audio loads the
+; PipeWire xrdp module sink-only (docs/audio.md). PULSE_SCRIPT of xrdp's default
+; belongs to the PulseAudio module, which fastrdp does not use.
+FASTRDP_AUDIO_INPUT=true
 ```
 
 `/etc/xrdp/gfx.toml` (`gfx.toml.j2`), GPU stack `none` (encoder `x264`):
@@ -1308,6 +1312,23 @@ install -o root -g root -m 0644 /usr/share/fastrdp-session/pam.d/xrdp-sesman /et
 The PAM stacks of the broker (`/etc/pam.d/fastrdp`, `fastrdp-tgt`) and of Plasma
 sessions (`fastrdp-session`) come with the packages and need no change; they call
 `pam_sss` (section 3).
+
+Audio and microphone (`fastrdp_audio`, [audio.md](audio.md)): PipeWire with its xrdp
+module. `pipewire-module-xrdp` is in Debian 13 main and Ubuntu 26.04 universe.
+`fastrdp-session` ships `/usr/libexec/fastrdp/xrdp-audio` and its autostart entry
+(`/etc/xdg/autostart/fastrdp-xrdp-audio.desktop`), which does nothing while the
+module's own entry is active; `wlroots-in-x` runs `xrdp-audio` itself. GNOME sessions need only `pipewire-pulse` (a sink for
+gnome-remote-desktop on hosts without a sound card).
+
+```sh
+apt-get install --no-install-recommends pipewire pipewire-bin wireplumber pipewire-pulse \
+    pipewire-module-xrdp pulseaudio-utils
+# Only without the microphone (FASTRDP_AUDIO_INPUT=false in sesman.ini): hide the
+# module's own entry, fastrdp's entry then loads it sink-only
+sed -i '/^\[Desktop Entry\]/a Hidden=true' /etc/xdg/autostart/pipewire-xrdp.desktop
+```
+
+Without audio: `rdpsnd=false` in `xrdp.ini` and none of these packages.
 
 ## 11. Proxy
 

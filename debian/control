@@ -100,6 +100,8 @@ Depends:
 Recommends:
  fastrdp-broker,
  libnotify-bin,
+Suggests:
+ pipewire-module-xrdp,
 Description: session launchers and units for fastrdp back ends
  fastrdp turns a Linux host into a multi-user RDP terminal server.
  .
@@ -114,7 +116,10 @@ Description: session launchers and units for fastrdp back ends
     /etc/pam.d/xrdp-sesman, the deployment roles do this),
   - tgt-notify, started in every desktop session (XDG autostart): a desktop
     notification before the session's Kerberos login can no longer be
-    renewed (settings: /etc/fastrdp/tgt-notify.conf).
+    renewed (settings: /etc/fastrdp/tgt-notify.conf),
+  - xrdp-audio, started in xrdp sessions (XDG autostart, wlroots-in-x): loads
+    the PipeWire xrdp module of pipewire-module-xrdp, sink-only when the
+    microphone is switched off.
 
 Package: fastrdp-webgate
 Architecture: all

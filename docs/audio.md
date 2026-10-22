@@ -3,22 +3,23 @@
 Do sessions play sound on the client, and can applications in the session use the
 client's microphone?
 
-**Short answer:** not as deployed today, on any back-end. The proxy is not the problem:
-freerdp-proxy passes every audio channel through unchanged. What is missing is on the
-session side:
+**Short answer:** yes on xrdp, wlroots and GNOME desktops, since backlog item A1
+([backlog.md](backlog.md)); **implemented, not yet tested on a host with real clients**.
+The proxy was never the problem: freerdp-proxy passes every audio channel through
+unchanged. The roles now install what the session side needs:
 
-| Back-end | Audio out today | Microphone today | With the changes below |
+| Back-end | Audio out | Microphone | Before A1 |
 |---|---|---|---|
-| xrdp (xfce, mate, cinnamon, lxqt, plasma-x11) | no | no | both |
-| wlroots-in-x (sway, labwc, wayfire) | no | no | both, plus one launcher line |
-| GNOME 50 (gnome-remote-desktop headless) | probably silent on hosts without a sound card [inferred] | probably works when the client opts in [untested] | audio out with `pipewire-pulse` |
+| xrdp (xfce, mate, cinnamon, lxqt, plasma-x11) | yes (`xrdp-sink`) | yes (`xrdp-source`), unless `fastrdp_audio_input: false` | neither: no role installed the PipeWire module |
+| wlroots-in-x (sway, labwc, wayfire) | as xrdp; `wlroots-in-x` starts the module | as xrdp | neither |
+| GNOME 50 (gnome-remote-desktop headless) | yes, with `pipewire-pulse` (a sink also without a sound card) | when the client opts in [untested]; no server switch | probably silent on hosts without a sound card [inferred] |
 | Plasma 6 (KRdp) | no | no | not possible without new KRdp code: use `plasma-x11` (xrdp) for audio |
 
-Nothing about audio has been tested through fastrdp yet. The findings below come from
-the sources of the versions fastrdp ships (xrdp 0.10.6.1, FreeRDP 3.32.2,
-gnome-remote-desktop 50.2, KRdp 6.3.5/6.6.4/6.8.1, pipewire-module-xrdp 0.2,
-guacamole-server 1.6.0) and from the Debian 13 / Ubuntu 26.04 package metadata.
-The changes are backlog item A1 ([backlog.md](backlog.md)).
+The findings below come from the sources of the versions fastrdp ships (xrdp 0.10.6.1,
+FreeRDP 3.32.2, gnome-remote-desktop 50.2, KRdp 6.3.5/6.6.4/6.8.1, pipewire-module-xrdp
+0.2, guacamole-server 1.6.0) and from the Debian 13 / Ubuntu 26.04 package metadata.
+What fastrdp does with them: [Implementation](#implementation-backlog-a1); how to check a
+host: [Verifying on a host](#verifying-on-a-host).
 
 ## Channels
 
@@ -47,8 +48,9 @@ from this computer").
   source tree (it copies the protocol constants), so it works with `fastrdp-xrdp`.
   `pulseaudio-module-xrdp` needs the PulseAudio source tree, is not packaged and is not
   needed: both distributions use PipeWire.
-- **Today:** no role installs the module, and with `install_recommends: false`
-  (`roles/desktops`) usually no PipeWire either (`xfce4` pulls only `libpulse0`).
+- **Before A1** no role installed the module, and with `install_recommends: false`
+  (`roles/desktops`) usually no PipeWire either (`xfce4` pulls only `libpulse0`). Now
+  the xrdp role installs them (`fastrdp_xrdp_audio_packages`).
 - **How it works once installed:**
   - sesexec exports `XRDP_SESSION`, `XRDP_SOCKET_PATH=/run/xrdp/sockdir/<uid>`,
     `XRDP_PULSE_SINK_SOCKET` and `XRDP_PULSE_SOURCE_SOCKET` (xrdp
@@ -62,13 +64,21 @@ from this computer").
     xrdp-sink/xrdp-source the defaults with `pactl`. That also affects a GNOME session
     of the same user running at the same time.
   - Outside xrdp sessions the script exits quietly, so it is harmless for GNOME/Plasma.
-- `PULSE_SCRIPT` in `sesman.ini` belongs to the PulseAudio module and can go.
+- The module creates the source only when the load names `source.stream.props`
+  (`src/module-xrdp.c:961-964`, `MODE_XRDP_SOURCE`); without it, xrdp-sink alone. The
+  script carries this sink-only load as a comment.
+- `PULSE_SCRIPT` in `sesman.ini` belongs to the PulseAudio module; fastrdp's template
+  no longer sets it.
+- The package installs `/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh` and
+  `/etc/xdg/autostart/pipewire-xrdp.desktop` (`debian/pipewire-module-xrdp.install`) and
+  only suggests `pipewire-bin`, which has the `pw-cli` and `pw-metadata` the script
+  needs.
 
 ### wlroots desktops (sway, labwc, wayfire in xorgxrdp)
 
-As xrdp, but these compositors do not run XDG autostart (`wlroots-in-x`), so the
-launcher must start `/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh` itself when
-it exists.
+As xrdp, but these compositors do not run XDG autostart, so `wlroots-in-x` starts the
+loader itself (`/usr/libexec/fastrdp/xrdp-audio`, which runs
+`/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh` when it exists).
 
 ### GNOME (gnome-remote-desktop headless)
 
@@ -81,7 +91,8 @@ it exists.
   host without a sound card (VMs) nothing creates one, and applications using the
   PulseAudio API find no server, so audio out is **probably silent** [inferred from code
   and package dependencies, not observed]. `pipewire-pulse` loads `module-always-sink`
-  by default (a dummy sink when none exists) and fixes both.
+  by default (a dummy sink when none exists) and fixes both; the gnome_rd role installs
+  it.
 - No g-r-d setting or `grdctl` key turns audio on or off.
 
 ### Plasma (KRdp)
@@ -117,12 +128,19 @@ audio choose `plasma-x11` (xrdp).
   `/microphone`, Guacamole `enable-audio-input`).
 - Server-side switches that exist:
   - proxy, all users: `[Channels] AudioInput=false` / `AudioOutput=false` (intercept-mode
-    caveat above);
-  - xrdp: `rdpsnd=false` turns audio out off; there is no microphone-only switch
-    (`XRDP_NO_RDPSND_REC` only affects the legacy rdesktop path); loading the PipeWire
-    module sink-only (a commented variant in `load_pw_modules.sh`) leaves the microphone
-    unused per host;
-  - g-r-d: none.
+    caveat above); **not wired to any fastrdp setting** (see below);
+  - xrdp: `rdpsnd=false` turns audio out off (`fastrdp_audio: false`); there is no
+    microphone-only switch in xrdp (`XRDP_NO_RDPSND_REC` only affects the legacy
+    rdesktop path); loading the PipeWire module sink-only (the commented variant in
+    `load_pw_modules.sh`) leaves the microphone unused per host
+    (`fastrdp_audio_input: false`);
+  - g-r-d: none;
+  - Guacamole (web path): `enable-audio-input` (from `fastrdp_audio_input`).
+- `fastrdp_audio_input: false` is a **default, not a policy**: the module runs in the
+  user's own PipeWire, so a user can load it with a source again (`pw-cli load-module
+  libpipewire-module-xrdp source.stream.props=...`), and GNOME sessions keep their
+  microphone. Enforcing it needs the proxy's `AudioInput=false` (lab S10 first) or the
+  per-user module code below.
 - **Per user or group: nothing today.** Possible in the fastrdp proxy module through the
   proxy's channel filter hooks, with the broker returning a "microphone allowed" flag.
   New code, needs a lab.
@@ -134,38 +152,96 @@ audio choose `plasma-x11` (xrdp).
 | mstsc / `.rdp` | `audiomode:i:0` play on this computer (`1` on the remote computer, `2` off); `audioqualitymode:i:0\|1\|2` dynamic, medium, high | `audiocapturemode:i:1` |
 | Windows App, Remmina | same channels ("Audio output: local"; "Redirect local microphone") [not verified through fastrdp] | same |
 | FreeRDP 3 | `/sound[:sys:pulse\|alsa\|fake,...]` (static and dynamic rdpsnd); `/audio-mode:0\|1\|2` redirect, server, none | `/microphone[:sys:pulse,dev:...]` |
-| Guacamole 1.6.0 (web path) | on by default (static `rdpsnd`, PCM) | `enable-audio-input: "true"` in `fastrdp_web_rdp_parameters` (not set today), HTTPS and the browser's permission |
+| Guacamole 1.6.0 (web path) | on by default (static `rdpsnd`, PCM) | `enable-audio-input`, set from `fastrdp_audio_input` (an entry in `fastrdp_web_rdp_parameters` wins); HTTPS and the browser's permission |
 
 FreeRDP's `/drive` and `/smartcard` load `rdpsnd sys:fake` on their own. On the web
 path xrdp works once fixed; g-r-d should work through its `rdpsnd` fallback
 [unverified]; KRdp has nothing.
 
-## Changes needed (backlog A1)
+## Implementation (backlog A1)
 
-1. **Roles:** `xrdp` (or `desktops`): runtime packages `pipewire`, `wireplumber`,
-   `pipewire-pulse`, `pipewire-module-xrdp` (optionally `pulseaudio-utils`); `gnome_rd`:
-   `pipewire-pulse`. Optional `fastrdp_audio_input: true|false` driving the proxy's
-   `AudioInput` and a sink-only xrdp module load.
-2. **Launcher:** `broker/session/libexec/wlroots-in-x` starts `load_pw_modules.sh` when it
-   exists.
-3. **Web gateway:** document `enable-audio-input` in `fastrdp_web_rdp_parameters`, or a
-   `fastrdp_web_audio_input` switch.
-4. **Docs:** the client settings above in client-guide, windows-clients and
-   freerdp-client; the per-back-end audio rows once tested.
-5. **Tests:**
-   - The test FreeRDP build (`third_party/build-freerdp.sh`) has PulseAudio, ALSA and OSS
-     off: only the `fake` playback backend and no microphone backend. It can show that
-     `rdpsnd` negotiates, not the microphone.
-   - Host smoke test: distribution `xfreerdp3` with PipeWire, `/sound:sys:pulse` into a
-     null sink and `/microphone:sys:pulse,dev:<null-sink monitor or a sine source>`;
-     on the server `pw-cli ls Node` shows `xrdp-sink`/`xrdp-source` or
-     `grd_remote_audio_source`, `pw-record` from the source is not silent, the chansrv log
-     names the negotiated format.
-   - Proxy e2e: a stub back-end that opens `AUDIO_INPUT` and checks the client's create
-     response; lab S10 with `AudioInput=false`.
+Status: **implemented, not yet tested on a host.** Settings in `roles/common`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `fastrdp_audio` | `true` | xrdp role: `fastrdp_xrdp_audio_packages` (`pipewire`, `pipewire-bin`, `wireplumber`, `pipewire-pulse`, `pipewire-module-xrdp`, `pulseaudio-utils`; no recommends), fastrdp's loader; `xrdp.ini` `rdpsnd=true`. gnome_rd role: `pipewire-pulse`. `false`: nothing installed (packages from earlier runs stay), `rdpsnd=false` |
+| `fastrdp_audio_input` | `true` | `false`: `sesman.ini` `[SessionVariables] FASTRDP_AUDIO_INPUT=false`, the module loaded sink-only, the package's autostart entry hidden; Guacamole `enable-audio-input: "false"`. The proxy is unchanged |
+
+`pipewire-module-xrdp` is in Debian 13 main and Ubuntu 26.04 universe (as with
+`python3-kdcproxy`, the roles expect universe to be enabled).
+
+**How the module is loaded.** `/usr/libexec/fastrdp/xrdp-audio` (`fastrdp-session`, or
+copied by the xrdp role) runs the package's `load_pw_modules.sh`:
+- from `wlroots-in-x` in wlroots sessions;
+- from `/etc/xdg/autostart/fastrdp-xrdp-audio.desktop` (`--autostart`) in other
+  sessions, but only while the package's own entry `pipewire-xrdp.desktop` is hidden;
+  otherwise that entry loads it, as upstream intends;
+- outside xrdp sessions (`XRDP_SESSION` unset: GNOME, Plasma) and without the package
+  it does nothing.
+
+With `FASTRDP_AUDIO_INPUT=false` it puts itself first in `PATH` as `pw-cli` for the
+script: that shim drops `source.stream.props=` from the `load-module
+libpipewire-module-xrdp` call and passes every other `pw-cli` call on. The script's own
+logic (removing old xrdp nodes, quantum and rate, default sink via `pactl`) stays
+upstream's; `pactl set-default-source xrdp-source` then fails harmlessly. The role sets
+`Hidden=true` in the package's `pipewire-xrdp.desktop` only in this mode, so the module
+is never loaded twice. That is a local change of a conffile: dpkg keeps it on upgrades
+(it asks when the packaged file changes), and the next role run restores it.
+
+**Why sink-only and not the proxy's `AudioInput=false`.** Turning a channel off in
+`proxy.ini` moves the whole `drdynvc` (which also carries GFX/H.264, display control
+and the other dynamic channels) from passthrough into the proxy's intercept mode, which
+fastrdp has not tested (lab S10), and what xrdp and g-r-d do with the silently dropped
+`AUDIO_INPUT` create request is unknown. Sink-only keeps the proxy as it is, matches a
+variant upstream ships, and covers the X11 and wlroots desktops; its limits (a default,
+not a policy; GNOME unaffected) are listed under
+[Privacy and policy](#privacy-and-policy).
+
+**Web path.** `webgate.toml` gets `enable-audio-input` from `fastrdp_audio_input` unless
+`fastrdp_web_rdp_parameters` sets it; audio out stays Guacamole's default (on). YAML
+booleans there reach Guacamole as `"true"`/`"false"`.
+
+**Plasma (KRdp):** nothing to do; users who need sound choose `plasma-x11`.
+
+**Tests** ([tests/README.md](../tests/README.md)):
+- `tests/ansible/test_templates.py` (`Audio`): `rdpsnd`, `FASTRDP_AUDIO_INPUT` and no
+  `PULSE_SCRIPT` per switch, Guacamole `enable-audio-input` (default, off, own value),
+  packages and tasks per switch, packaging, the common checks; `xrdp-audio` with a stub
+  `load_pw_modules.sh` and `pw-cli` (with microphone, sink-only, other modules untouched,
+  nothing outside xrdp sessions, autostart only while the package's entry is hidden).
+- `tests/wlroots/run.sh`: `wlroots-in-x` starts the loader (stub).
+- `tests/smoke/check-audio.sh`: read-only host check, below.
+- Not automated: the test FreeRDP build (`third_party/build-freerdp.sh`) has PulseAudio,
+  ALSA and OSS off (only the `fake` playback back-end, no microphone back-end), so it can
+  show that `rdpsnd` negotiates, not the microphone. A proxy e2e with a stub back-end
+  that opens `AUDIO_INPUT`, and lab S10 with `AudioInput=false`, remain open.
+
+## Verifying on a host
+
+1. Deploy with the defaults; connect with "play on this computer" and "record from this
+   computer" (mstsc `audiomode:i:0`, `audiocapturemode:i:1`; FreeRDP `/sound:sys:pulse
+   /microphone:sys:pulse`), once per desktop type.
+2. `sudo tests/smoke/check-audio.sh USER` (or `tests/smoke/check-audio.sh` in a session
+   terminal): packages, `rdpsnd`, autostart entries, PipeWire and WirePlumber in the
+   user manager, the nodes (`xrdp-sink`, `xrdp-source`, or `grd_remote_audio_source` on
+   GNOME) and the default sink.
+3. Play something in the session (`speaker-test -c2 -t wav` from `alsa-utils`, or any
+   media player) and record (`pw-record --target xrdp-source /tmp/mic.wav`, GNOME:
+   `--target grd_remote_audio_source`); the recording must not be silent.
+   `journalctl -t xrdp-chansrv` names the negotiated format.
+4. With a client without a sound device: distribution `xfreerdp3` with PipeWire,
+   `/sound:sys:pulse` into a null sink and `/microphone:sys:pulse,dev:<null-sink
+   monitor or a sine source>`.
+5. `fastrdp_audio_input: false`: no `xrdp-source` after a new login; the web path does
+   not offer the microphone.
 
 ## Open questions (lab)
 
+- Everything above on a real host: xrdp, wlroots and GNOME sessions with mstsc, the
+  Windows App, FreeRDP, Remmina and the browser.
+- The sink-only load in a real session (`FASTRDP_AUDIO_INPUT=false`), and that the
+  desktops honour `Hidden=true` in the package's autostart entry (XDG autostart spec;
+  xfce4-session, mate-session, cinnamon-session, lxqt-session, plasma-x11).
 - Which codecs mstsc and the Windows App advertise (AAC, MP3).
 - Whether Ubuntu's FreeRDP DSP encodes AAC for g-r-d.
 - That GNOME has no sink without `pipewire-pulse` (inferred, not observed).

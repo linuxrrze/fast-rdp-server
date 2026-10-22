@@ -32,3 +32,8 @@ fastrdp_xrdp_build_packages: >-
   {{ lookup('ansible.builtin.pipe', playbook_dir ~ '/../third_party/build-xrdp.sh --deps').split()
      + ['curl', 'ca-certificates'] }}
 fastrdp_xrdp_runtime_packages: [xserver-xorg-core, fuse3, dbus-x11, xauth]
+# Audio in xrdp sessions (fastrdp_audio, roles/common; docs/audio.md): PipeWire with its
+# xrdp module. pipewire-module-xrdp: Debian 13 main, Ubuntu 26.04 universe; it only
+# suggests pipewire-bin (pw-cli, pw-metadata), which its loader script needs.
+# pulseaudio-utils: pactl, with which the loader makes xrdp-sink/xrdp-source the defaults.
+fastrdp_xrdp_audio_packages: [pipewire, pipewire-bin, wireplumber, pipewire-pulse, pipewire-module-xrdp, pulseaudio-utils]

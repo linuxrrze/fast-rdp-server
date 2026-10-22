@@ -5,6 +5,17 @@
     state: present
     install_recommends: false
 
+# gnome-remote-desktop sends what it captures from an existing PipeWire sink and
+# depends only on pipewire/wireplumber. On hosts without a sound card nothing creates a
+# sink; pipewire-pulse loads module-always-sink (a dummy sink) and serves applications
+# that use the PulseAudio API. docs/audio.md#gnome-gnome-remote-desktop-headless
+- name: Audio for GNOME sessions (fastrdp_audio)
+  ansible.builtin.apt:
+    name: "{{ fastrdp_gnome_audio_packages }}"
+    state: present
+    install_recommends: false
+  when: fastrdp_audio | bool
+
 - name: GDM provides headless sessions (gnome-headless-session@.service, GDM 50+)
   ansible.builtin.stat:
     path: /usr/lib/systemd/system/gnome-headless-session@.service

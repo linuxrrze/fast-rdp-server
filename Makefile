@@ -120,6 +120,7 @@ lint:   # ansible-lint, shellcheck (missing: SKIP, or FAIL with FASTRDP_TESTS_ST
 	@$(call with_tool,lint shell,shellcheck,\
 	  shellcheck -x broker/session/libexec/startwm.sh broker/session/libexec/session-plasma \
 		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
+		broker/session/libexec/xrdp-audio \
 		tests/proxy-e2e/*.sh tests/krb5-spnego/run.sh tests/smoke/*.sh tests/perf/*.sh patches/xrdp/test/run_test.sh \
 		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh tests/ansible/*.sh && \
 	  shellcheck -e SC1090$(comma)SC2015 tests/wlroots/run.sh && \

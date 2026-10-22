@@ -151,6 +151,35 @@ The exact cause is only in the server log.
 - Colour depth: GFX AVC444 (32 bpp).
 - Advanced → "Start-up program": `fastrdp:gnome` sets the desktop.
 
+## Sound and microphone
+
+The client decides: sound reaches you only when you choose "play on this computer",
+and applications in the session can use your microphone only when you choose "record
+from this computer". The server offers both unless the administrator switched them
+off (`fastrdp_audio`, `fastrdp_audio_input`). X11 and wlroots desktops (xrdp) and GNOME
+have sound; **Plasma (Wayland) has none**: choose `plasma-x11` when you need sound
+([audio.md](audio.md)). Not yet tested on a host with real clients.
+
+- **mstsc:** Show Options → Local Resources → Remote audio → Settings: "Play on this
+  computer", "Record from this computer". In an `.rdp` file:
+  ```
+  audiomode:i:0
+  audiocapturemode:i:1
+  ```
+  `audiomode:i:2` turns sound off; `audioqualitymode:i:0|1|2` is dynamic, medium or high
+  quality.
+- **FreeRDP:** `/sound` and `/microphone` (Linux: `/sound:sys:pulse /microphone:sys:pulse`
+  for PipeWire's PulseAudio server); details in [freerdp-client.md](freerdp-client.md) §16.
+- **Windows App** (macOS, iOS, Android) and **Remmina** use the same channels: Windows
+  App "Play sound: on this device" and microphone redirection in the PC's device settings;
+  Remmina Advanced → "Audio output mode: Local" and "Redirect local microphone" [not
+  verified through fastrdp].
+- **Browser** (web access): sound plays by default; the microphone needs the browser's
+  permission ([web-access.md](web-access.md#limits)).
+
+Microphone audio from X11 desktops is uncompressed (about 1.4 Mbit/s upstream); leave
+it off on slow links when you do not need it.
+
 ## Choosing your default desktop
 
 - **On the web page** (if your site has web access): sign in at

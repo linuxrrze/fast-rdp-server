@@ -29,6 +29,8 @@ data_ttl = 30
 cert_fingerprint_file = "/etc/fastrdp/front.fingerprint"
 
 [guacamole.rdp_parameters]
-{% for k, v in fastrdp_web_rdp_parameters.items() %}
-{{ k | to_json }} = {{ v | string | to_json }}
+{# microphone from fastrdp_audio_input; an enable-audio-input in fastrdp_web_rdp_parameters wins.
+   YAML booleans as Guacamole's "true"/"false", not Python's "True" #}
+{% for k, v in ({'enable-audio-input': 'true' if fastrdp_audio_input | bool else 'false'} | combine(fastrdp_web_rdp_parameters)).items() %}
+{{ k | to_json }} = {{ (('true' if v else 'false') if v is boolean else v | string) | to_json }}
 {% endfor %}

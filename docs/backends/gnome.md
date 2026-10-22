@@ -105,8 +105,10 @@ checked in this repository.
 The broker passes no geometry to g-r-d (width/height from the client are ignored for
 this back-end). Monitor layout, dynamic resize (proxy passes DisplayControl),
 clipboard, audio and drive redirection are whatever g-r-d's headless RDP server
-implements; **none of these is tested through fastrdp**. Audio out probably needs
-`pipewire-pulse` (a sink for g-r-d to capture), see [audio.md](../audio.md).
+implements; **none of these is tested through fastrdp**. For audio out the role
+installs `pipewire-pulse` (`fastrdp_audio`): a sink for g-r-d to capture also on hosts
+without a sound card. g-r-d has no switch for the microphone (`fastrdp_audio_input`
+does not apply), see [audio.md](../audio.md).
 
 ## Components on a deployed host
 
