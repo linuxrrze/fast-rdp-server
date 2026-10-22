@@ -100,7 +100,7 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
 |---|---|---|
 | Clipboard | `cliprdr=true`; sesman `RestrictOutboundClipboard=none`, `RestrictInboundClipboard=none` | handled by chansrv |
 | Drives | `rdpdr=true`; `[Chansrv] FuseMountName=thinclient_drives`, `FileUmask=077` | needs `fuse3` (runtime package of the role) |
-| Audio out | `rdpsnd=true`; `PULSE_SCRIPT=/etc/xrdp/pulse/default.pa` | needs an xrdp sink module for PulseAudio/PipeWire (e.g. `pulseaudio-module-xrdp` or `pipewire-module-xrdp`). **No role installs one; audio is untested and probably does not work as deployed.** |
+| Audio out | `rdpsnd=true`; `PULSE_SCRIPT=/etc/xrdp/pulse/default.pa` | needs `pipewire-module-xrdp` (+ `pipewire`, `wireplumber`, `pipewire-pulse`); also carries the microphone (`AUDIO_INPUT`, PCM). **No role installs it; audio does not work as deployed** ([audio.md](../audio.md), backlog A1). |
 | RemoteApp | `rail=true` in xrdp | the proxy has `RemoteApp=false` |
 | Video redirection | `xrdpvr=true` | not tested |
 
@@ -284,7 +284,7 @@ lists each; `xrdp.log` (`xrdp_encoder_ffmpeg: using ...`) is the authoritative a
 ## Limitations and known issues
 
 - Hardware H.264 is untested on real GPUs (VA-API, NVENC, QSV).
-- No audio sink module is installed (see Channels).
+- No audio: `pipewire-module-xrdp` is not installed ([audio.md](../audio.md)).
 - One X11 session per user (per colour depth); switching X11 desktops needs a logout.
 - `fastrdpctl logout` terminates all of the user's logind sessions.
 - H.264 is AVC420 only; xrdp 0.10 has no AVC444.

@@ -119,7 +119,9 @@ only.
   keeps its old size; the loop retries every second.
 - Full xrdp session with a real xorgxrdp display and GPU: **to validate**. Tests ran
   on Xvfb only.
-- Audio and drive redirection behave as in xrdp ([xrdp.md](xrdp.md#channels)).
+- Audio and drive redirection behave as in xrdp ([xrdp.md](xrdp.md#channels)); the
+  compositors run no XDG autostart, so audio also needs `wlroots-in-x` to start the
+  PipeWire xrdp module ([audio.md](../audio.md)).
 - No desktop notifications without `mako-notifier` (not installed by fastrdp: its
   D-Bus activation file can take over notifications of MATE sessions on the same
   host); the Kerberos login reminder then only logs

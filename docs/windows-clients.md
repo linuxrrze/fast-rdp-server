@@ -448,6 +448,8 @@ Kerberos: unknown whether any S-1-18-x SID appears (lab); first factor only for 
 
 Confidence medium; real card + AD + mstsc is lab test L7, WHfB certificate L19.
 
+Windows Hello / WHfB in detail, including Samba AD domains: [windows-hello.md](windows-hello.md).
+
 ### 3.10 Off-network clients: KDC proxy, RD Gateway (Q8)
 
 - Without a reachable KDC, Windows cannot get the TERMSRV ticket and falls back to NTLM,

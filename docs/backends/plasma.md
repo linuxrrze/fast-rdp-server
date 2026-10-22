@@ -111,8 +111,9 @@ every `fastrdp-plasma@.service` instance as a drop-in. Check with
 
 ### Channels
 
-Clipboard, audio and drive redirection depend on KRdp's features; **none is tested
-through fastrdp**. KRdp exports one output (`--monitor 0`).
+Clipboard and drive redirection depend on KRdp's features; **none is tested
+through fastrdp**. KRdp has no audio at all ("TODO: Implement audio support"): use
+`plasma-x11` when audio is needed ([audio.md](../audio.md)). KRdp exports one output (`--monitor 0`).
 
 ## Components on a deployed host
 
