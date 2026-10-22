@@ -81,8 +81,8 @@ fastrdp_tls_login_sources: >-
 fastrdp_accept_remote_guard: false
 
 # ---------------------------------------------------------------- MFA
-fastrdp_mfa_mode: none               # none | otp | push | otp_or_push (docs/auth-matrix.md)
-fastrdp_privacyidea_url: ""          # REQUIRED when fastrdp_mfa_mode != none
+fastrdp_mfa_mode: none               # none | otp | push | otp_or_push | web | push_or_web (docs/auth-matrix.md)
+fastrdp_privacyidea_url: ""          # REQUIRED for otp, push, otp_or_push, push_or_web
 fastrdp_privacyidea_realm: ""
 fastrdp_privacyidea_ca_src: ""       # PEM on the controller; "" = system trust store
 fastrdp_privacyidea_service_user: "" # admin with triggerchallenge right ("" = use user password)
@@ -110,6 +110,22 @@ fastrdp_mfa_nla_kdc_enforced_by_ad_policy: false          # AD: you guarantee it
 # `fastrdpctl clear-grace USER` forgets a user's grace.
 fastrdp_mfa_reconnect_grace: 0
 fastrdp_mfa_reconnect_grace_same_address: true
+# Web approval (fastrdp_mfa_mode web or push_or_web; needs fastrdp_web_enabled;
+# docs/auth-matrix.md#web-approval): the RDP login waits until the user approves it on
+# https://<fqdn>/web/approve after a fresh MFA sign-in at Keycloak (passkey, TOTP, ...).
+# Seconds to wait, 10..540 and less than fastrdp_proxy_broker_timeout (which must also
+# leave time for the session start):
+fastrdp_mfa_web_approval_timeout: 90
+# The approving sign-in may be at most this many seconds older than the login (0..300):
+fastrdp_mfa_web_approval_max_auth_age: 30
+# Two or more pending logins of a user: none can be approved (somebody with the password
+# may have started one alongside the user's own); the user denies them and retries.
+fastrdp_mfa_web_approval_single_pending: true
+
+# Seconds the proxy waits for the broker (proxy.ini [FastRDP] Timeout, at most 600): more
+# than an MFA push (push_timeout 60) or web approval (fastrdp_mfa_web_approval_timeout)
+# plus the session start. Here, not in role freerdp_proxy: the common checks compare them.
+fastrdp_proxy_broker_timeout: 120
 
 # ---------------------------------------------------------------- web access
 # Browser path (Keycloak + Guacamole, role web_gateway). Read by the broker and proxy

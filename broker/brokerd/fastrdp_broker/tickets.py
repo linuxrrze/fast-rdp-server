@@ -255,5 +255,6 @@ def format_status(reply: dict) -> list[str]:
     lines += ["  " + ln for ln in format_tickets(reply.get("tickets", {}))]
     lines.append(f"connected: {reply.get('connected', 0)}  pending tokens: {reply.get('pending_tokens', 0)}"
                  f"  pending web tokens: {reply.get('pending_web_tokens', 0)}"
-                 f"  MFA grace entries: {reply.get('mfa_grace_entries', 0)}")
+                 f"  MFA grace entries: {reply.get('mfa_grace_entries', 0)}"
+                 f"  MFA web approvals pending: {reply.get('mfa_pending_approvals', 0)}")
     return lines

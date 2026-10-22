@@ -38,7 +38,7 @@ def daemon_main(argv: list[str] | None = None) -> int:
     if args.check:
         print("config ok")
         return 0
-    if cfg.mfa.mode != "none" and not cfg.mfa.privacyidea.verify_tls:
+    if cfg.mfa.mode in config_mod.PRIVACYIDEA_MODES and not cfg.mfa.privacyidea.verify_tls:
         logging.warning("privacyIDEA TLS verification is DISABLED - lab use only")
 
     from .server import Broker

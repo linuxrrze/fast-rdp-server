@@ -176,14 +176,15 @@
       - fastrdp_group_desktops.values() | difference(fastrdp_desktops) | length == 0
       - fastrdp_desktop_groups.keys() | difference(fastrdp_desktops) | length == 0
       - fastrdp_identity_provider in ['ad', 'ipa', 'none']
-      - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push']
+      - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push', 'web', 'push_or_web']
       - fastrdp_gpu in ['auto', 'nvidia', 'mesa', 'none']
       - fastrdp_session_tgt in ['auto', 'off', 'required']
       - fastrdp_session_tgt_groups is mapping
       - fastrdp_session_tgt_groups.values() | map('string') | difference(['auto', 'off', 'required']) | length == 0
       - fastrdp_session_tgt_groups.keys() | map('string') | reject('match', '^\S([^\x00-\x1f]*\S)?\Z') | list | length == 0
       - fastrdp_sssd_fully_qualified_names | string | lower in ['true', 'false']
-      - fastrdp_mfa_mode == 'none' or fastrdp_privacyidea_url | length > 0
+      - fastrdp_mfa_mode not in ['otp', 'push', 'otp_or_push', 'push_or_web'] or fastrdp_privacyidea_url | length > 0
+      - fastrdp_mfa_mode not in ['web', 'push_or_web'] or fastrdp_web_enabled | bool
       - fastrdp_backend_port_range | length == 2
       - fastrdp_backend_port_range[0] | int < fastrdp_backend_port_range[1] | int
       - fastrdp_xrdp_port | int != fastrdp_listen_port | int
@@ -197,6 +198,15 @@
       - fastrdp_mfa_reconnect_grace | string is match('^[0-9]+$')
       - fastrdp_mfa_reconnect_grace | int <= 3600
       - fastrdp_mfa_reconnect_grace_same_address | string | lower in ['true', 'false']
+      - fastrdp_mfa_web_approval_timeout | string is match('^[0-9]+$')
+      - fastrdp_mfa_web_approval_timeout | int >= 10 and fastrdp_mfa_web_approval_timeout | int <= 540
+      - fastrdp_proxy_broker_timeout | string is match('^[0-9]+$') and fastrdp_proxy_broker_timeout | int >= 1
+        and fastrdp_proxy_broker_timeout | int <= 600
+      - fastrdp_mfa_mode not in ['web', 'push_or_web']
+        or fastrdp_mfa_web_approval_timeout | int < fastrdp_proxy_broker_timeout | int
+      - fastrdp_mfa_web_approval_max_auth_age | string is match('^[0-9]+$')
+      - fastrdp_mfa_web_approval_max_auth_age | int <= 300
+      - fastrdp_mfa_web_approval_single_pending | string | lower in ['true', 'false']
       - fastrdp_xrdp_autodetect_profile in ['lan', 'wan', 'broadband_high', 'satellite', 'broadband_low', 'modem', 'default']
       - fastrdp_lan_networks is sequence and fastrdp_lan_networks is not string
       # shape only; the broker parses them strictly (host bits set, prefix range) at start-up
@@ -209,7 +219,9 @@
       Check the site settings (docs/quickstart.md, roles/common/defaults/main.yml):
       fastrdp_realm and fastrdp_domain (a DNS domain name) are required; fastrdp_default_desktop,
       fastrdp_group_desktops and fastrdp_desktop_groups may only name desktops from
-      fastrdp_desktops; MFA modes other than none need fastrdp_privacyidea_url;
+      fastrdp_desktops; fastrdp_mfa_mode is none, otp, push, otp_or_push, web or
+      push_or_web; the privacyIDEA modes (all but none and web) need fastrdp_privacyidea_url,
+      web and push_or_web need fastrdp_web_enabled;
       fastrdp_session_tgt is auto, off or required; fastrdp_session_tgt_groups maps group
       names to auto, "off" (quoted) or required; fastrdp_sssd_fully_qualified_names is
       true or false; fastrdp_gpu is auto, nvidia, mesa or none;
@@ -218,6 +230,10 @@
       hardened), and on AD fastrdp_mfa_nla_kdc_enforced_by_ad_policy (docs/passkeys.md);
       fastrdp_mfa_reconnect_grace is whole seconds 0..3600 and
       fastrdp_mfa_reconnect_grace_same_address true or false (docs/auth-matrix.md);
+      fastrdp_mfa_web_approval_timeout is whole seconds 10..540 and, with web approval, less
+      than fastrdp_proxy_broker_timeout (whole seconds 1..600);
+      fastrdp_mfa_web_approval_max_auth_age whole seconds 0..300 and
+      fastrdp_mfa_web_approval_single_pending true or false (docs/auth-matrix.md#web-approval);
       fastrdp_xrdp_autodetect_profile is lan, wan, broadband_high, satellite, broadband_low,
       modem or default; fastrdp_lan_networks is a list of CIDRs (docs/performance.md);
       fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md);

@@ -22,9 +22,9 @@ Proxy module -> broker.sock:
 
   The module closes the connection without waiting for the "login" reply when its RDP
   client goes away (e.g. mstsc closed during an MFA push). The broker then cancels the
-  login (Broker.login_unless_abandoned): a push wait stops, a session start already
-  under way completes, nothing is recorded as connected. The module sends nothing else
-  while a login is pending; data instead of EOF is a protocol error.
+  login (Broker.login_unless_abandoned): a push or web approval wait stops, a session
+  start already under way completes, nothing is recorded as connected. The module sends
+  nothing else while a login is pending; data instead of EOF is a protocol error.
 
 fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}
@@ -33,6 +33,25 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   -> {"ok": true, "user": str, "default": str, "desktops": [{"name": str, "label": str}]}
   Refusals as for "login".
 
+  [mfa] mode web / push_or_web (mfa.WebApprovals): logins waiting for their user's
+  approval on the webgate's approval page. "user" is the name the webgate signed in
+  (resolved like a TLS login); only that account's logins are listed or decided.
+  {"op": "mfa_pending", "user": str}
+  -> {"ok": true, "user": str, "pending": [{"id": str, "method": "nla"|"tls",
+      "client_address": str|null, "age_s": int, "single_pending_conflict": bool}]}
+  {"op": "mfa_decide", "user": str, "id": str, "approve": bool, "auth_time": int}
+  -> {"ok": true, "approved": bool}
+  -> {"ok": false, "error": "not decided", "reason": "approval_unknown"|"approval_finished"|
+      "approval_conflict"|"approval_stale", "outcome": str (approval_finished only)}
+  "auth_time": the ID token's auth_time (Unix time) of the sign-in that decides. Approve
+  is refused for a sign-in more than [mfa] web_approval_max_auth_age seconds older than
+  the login ("approval_stale") and, with web_approval_single_pending, while the user has
+  more than one pending login ("approval_conflict"; every entry says so). Deny is always
+  accepted. "approval_unknown": no such pending login of this user (another user's id
+  looks the same); "approval_finished": it was already approved, denied, expired or
+  abandoned ("outcome": approved|denied|expired|abandoned, kept for 5 minutes). A missing
+  or malformed field is a protocol error.
+
 Refusals: "error" stays generic ("access denied", "session could not be started",
 "not permitted"); details go to the broker log only. "reason" is machine-readable; the
 proxy module maps it to an RDP Set Error Info code ([MS-RDPBCGR] 2.2.5.1.1):
@@ -40,8 +59,9 @@ proxy module maps it to an RDP Set Error Info code ([MS-RDPBCGR] 2.2.5.1.1):
                  policy (session_tgt = required), anything else              -> 0x7
   "not_allowed"  identity proven, but not in allow_groups, account check failed
                  (expired, locked, pam_access) or no permitted desktop        -> 0x9
-  "mfa_failed"   second factor rejected, missing or MFA service unavailable  -> 0x7
-  "mfa_timeout"  push not approved in time                                   -> 0x409
+  "mfa_failed"   second factor rejected (also Deny on the approval page),
+                 missing or MFA service unavailable                          -> 0x7
+  "mfa_timeout"  push or web approval not given in time                      -> 0x409
   "backend"      session could not be started                                -> 0x400
 "not_allowed" confirms the credentials, so a TLS password login that still owes its
 second factor gets "denied" instead (Broker.authz_reason). Receivers treat unknown
@@ -51,7 +71,8 @@ PAM module -> token.sock (root only):
   {"op": "redeem", "user": str, "token": str} -> {"ok": true, "password": str|null}
 
 Admin (root) -> broker.sock:
-  {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int, ...,
+  {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int,
+                       "mfa_pending_approvals": int, ...,
                        "tickets": {account: {...}}}
   {"op": "tickets", "user": str|absent} -> {"ok": true, "tickets": {account: {...}}}
       TGT metadata of each session user's (or one account's) default credential cache:

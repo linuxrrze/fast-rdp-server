@@ -281,6 +281,21 @@
         fastrdp_mfa_mode: push
         fastrdp_mfa_nla_kdc_enforced: true
 
+    - name: Broker.toml, MFA by web approval (with and without privacyIDEA push)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-{{ item.mode }}.toml"
+        mode: "0644"
+      vars:
+        fastrdp_mfa_mode: "{{ item.mode }}"
+        fastrdp_web_enabled: true
+        fastrdp_mfa_web_approval_timeout: 75
+        fastrdp_mfa_web_approval_max_auth_age: 0
+        fastrdp_mfa_web_approval_single_pending: false
+      loop:
+        - {mode: web}
+        - {mode: push_or_web}
+
     - name: Broker.toml, SSSD with fully qualified names (FreeIPA domain other than the realm)
       ansible.builtin.template:
         src: "{{ roles_dir }}/broker/templates/broker.toml.j2"

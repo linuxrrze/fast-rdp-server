@@ -172,6 +172,8 @@ class FakeIdP(BaseHTTPRequestHandler):
     codes: dict = {}
     issuer = ""
     acr = "mfa"
+    auth_age = 0          # seconds since the "authentication" (auth_time); None: no claim
+    authorize_queries: list = []
 
     def log_message(self, *a):
         pass
@@ -195,6 +197,7 @@ class FakeIdP(BaseHTTPRequestHandler):
             assert q["code_challenge_method"] == "S256" and q.get("acr_values") == "mfa"
             code = os.urandom(8).hex()
             FakeIdP.codes[code] = q
+            FakeIdP.authorize_queries.append(q)
             loc = q["redirect_uri"] + "?" + urllib.parse.urlencode({"code": code, "state": q["state"]})
             return self.reply(302, b"", [("Location", loc)])
         self.reply(404)
@@ -208,8 +211,11 @@ class FakeIdP(BaseHTTPRequestHandler):
         if not ok:
             return self.reply(400, b'{"error":"invalid_grant"}')
         now = int(time.time())
-        tok = jwt({"iss": self.issuer, "aud": "fastrdp-web", "exp": now + 300, "iat": now,
-                   "nonce": q["nonce"], "acr": FakeIdP.acr, "preferred_username": "alice"})
+        claims = {"iss": self.issuer, "aud": "fastrdp-web", "exp": now + 300, "iat": now,
+                  "nonce": q["nonce"], "acr": FakeIdP.acr, "preferred_username": "alice"}
+        if FakeIdP.auth_age is not None:
+            claims["auth_time"] = now - FakeIdP.auth_age
+        tok = jwt(claims)
         self.reply(200, json.dumps({"id_token": tok, "access_token": "x"}).encode())
 
 

@@ -9,6 +9,7 @@ browser ──https──▶ nginx :443
                     │                    1. OIDC login at Keycloak (code flow + PKCE, MFA proven by acr/amr)
                     │                    2. broker: web_token(user) ─▶ one-time "fastrdp-web1:…" token
                     │                    3. encrypted, signed Guacamole connection (30 s) ─▶ redirect
+                    │   /web/approve     approve or deny a waiting RDP login (fastrdp_mfa_mode web, push_or_web)
                     └── /guacamole/  ─▶ Guacamole (JSON auth only) ─▶ guacd
                                                                          │ RDP/TLS, user + web token
                                                                          ▼
@@ -137,6 +138,46 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
 3. User names: the `preferred_username` claim must equal the Linux account name (as
    SSSD resolves it). A `@realm` suffix is stripped. Use `fastrdp_web_username_claim`
    for a different claim.
+
+## Approving RDP logins
+
+With `fastrdp_mfa_mode: web` or `push_or_web` the web gateway is also where users
+approve their **native RDP logins** (mstsc, xfreerdp3, Remmina): the second factor of
+an RDP login becomes "sign in with MFA in a browser and click Approve". Modes, settings
+and the broker's checks: [auth-matrix.md](auth-matrix.md#web-approval).
+
+How users reach it:
+- Start the RDP login as usual. The client shows "connecting…" and waits (90 s by
+  default, `fastrdp_mfa_web_approval_timeout`).
+- Open `https://<rdp-fqdn>/web/approve` (a bookmark, or a phone). The webgate always
+  sends the browser to Keycloak for a **new** sign-in (`prompt=login`, `max_age=0`,
+  plus `acr_values=mfa` as for desktops), even if the user is signed in there already,
+  and refuses ID tokens whose `auth_time` shows a reused Keycloak session.
+- The page shows each waiting login of that user: client address, start time and age,
+  NLA or password login, and the buttons **Approve** and **Deny**. "No RDP login is
+  waiting" otherwise (reload after starting the login).
+- Approve: the RDP client continues at once. Deny: the client gets "access denied"
+  (Set Error Info 0x7). Nothing: it gives up after the timeout (0x409).
+
+What the page protects against:
+- **Only the signed-in user's logins** are shown or decided; the broker answers these
+  requests (`mfa_pending`, `mfa_decide`) only from the webgate's uid and checks the
+  account again.
+- The forms are CSRF-protected POSTs. The sign-in for this page is a separate cookie
+  (`fastrdp_web_approve`, 5 min) that cannot open desktops, and the desktop chooser's
+  sign-in cannot approve logins.
+- A sign-in may be at most `fastrdp_mfa_web_approval_max_auth_age` (30 s) older than
+  the login it approves; otherwise the page asks to sign in again.
+- **Two or more waiting logins** (`fastrdp_mfa_web_approval_single_pending`): the page
+  warns that somebody else may be using the password and offers only Deny. Deny them
+  all and start one new login.
+
+**Social engineering.** The danger of every approve button is an attacker who already
+has the password and asks the user, by phone or chat, to "approve the login quickly".
+Tell users: approve only a login you started yourself, just now, from the address
+shown; deny anything else and report it. **Deny** is always offered and always works,
+also with an old sign-in or several waiting logins; a denied login is logged by the
+broker (`web approval for alice from … DENIED`) and is a reason to change the password.
 
 ## Limits
 

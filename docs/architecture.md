@@ -29,7 +29,7 @@ troubleshooting): [backends/](backends/README.md).
 | fastrdp proxy module | `broker/proxy-module/` (C) | in the proxy | Binds NLA identity to the Kerberos principal, asks the broker, routes to the back-end, swaps credentials |
 | `fastrdp-brokerd` | `broker/brokerd/` (Python, stdlib only) | root | Account and group checks, MFA, desktop choice, session start/reuse, one-time tokens |
 | `pam_fastrdp_token` | `broker/pam_fastrdp_token/` (C) | in xrdp-sesman | xrdp accepts only one-time broker tokens; hands the real password on for the TGT |
-| fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)) |
+| fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)); approval page for RDP logins (`[mfa] mode = "web"`) |
 | xrdp + xorgxrdp | release tarballs + `patches/xrdp/`, built by Ansible or packaged as `fastrdp-xrdp` | `xrdp` (daemon), root (sesman) | X11 and wlroots desktops; H.264 via FFmpeg VA-API/NVENC/QSV (fastrdp patch) or x264 |
 | gnome-remote-desktop | distro package | the user | GNOME headless sessions, hardware H.264 (VA-API/NVENC) |
 | KRdp | distro package | the user | Plasma sessions (FreeRDP + PipeWire, VA-API H.264) |
@@ -53,7 +53,10 @@ troubleshooting): [backends/](backends/README.md).
    password from the client's TSCredentials are only used if the user matches that
    principal; the broker re-checks this.
 3. **Authorisation** (broker): PAM account phase (`/etc/pam.d/fastrdp` → SSSD,
-   including AD GPO "logon through RDS" rights), `allow_groups`, then MFA.
+   including AD GPO "logon through RDS" rights), `allow_groups`, then MFA: privacyIDEA
+   OTP or push, or (`[mfa] mode = "web"`/`"push_or_web"`) the login waits until its user
+   approves it on the webgate's `/web/approve` page after a fresh MFA sign-in at the IdP
+   ([auth-matrix.md](auth-matrix.md#web-approval)).
 4. **Desktop choice**, first match wins:
    1. a client hint `fastrdp:<desktop>` in the RDP *alternate shell* field;
    2. `~/.config/fastrdp/desktop`;
@@ -121,7 +124,10 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
     `/var/lib/fastrdp/sessions.json`.
 - **Sockets:**
   - `broker.sock` (0660, group `_fastrdp-broker`: proxy and webgate) accepts `login`/`end` only from
-    the proxy uid, and `status`/`logout` only from root.
+    the proxy uid, `web_token`/`web_desktops` and the web approval ops `mfa_pending`/`mfa_decide`
+    only from the webgate's uid (`[web] gateway_user`), and `status`/`logout` only from root.
+    The webgate names the user it signed in; `mfa_decide` acts only on that account's pending
+    logins and needs the sign-in's `auth_time`.
   - `token.sock` (0600) accepts only root, i.e. xrdp-sesman.
 
 ## Broker protocol
@@ -138,15 +144,16 @@ the RDP client sees:
 |---|---|---|
 | `denied` | bad or unknown credentials (never told apart), invalid web token, realm, policy (`session_tgt = required`), anything else | 0x7 SERVER_DENIED_CONNECTION |
 | `not_allowed` | identity proven, but not in `allow_groups`, PAM account check failed, or no permitted desktop | 0x9 SERVER_INSUFFICIENT_PRIVILEGES |
-| `mfa_failed` | second factor rejected or missing, no push-capable token, MFA service unreachable | 0x7 |
-| `mfa_timeout` | push not approved in time | 0x409 CB_CONNECTION_CANCELLED |
+| `mfa_failed` | second factor rejected or missing (also Deny on the approval page), no push-capable token, MFA service unreachable | 0x7 |
+| `mfa_timeout` | push or web approval not given in time | 0x409 CB_CONNECTION_CANCELLED |
 | `backend` | the session could not be started | 0x400 CB_DESTINATION_NOT_FOUND |
 
 `not_allowed` confirms that the credentials are valid. The broker therefore sends it only
 when the client knows that already (NLA: CredSSP succeeded; web: the IdP signed the user
 in) or no second factor is due. A TLS password login that still owes its second factor
 gets `denied`. Unknown reasons count as `denied`. The webgate uses the same reasons for its
-error pages.
+error pages. `mfa_decide` has its own refusal reasons (`approval_unknown`, `approval_finished`,
+`approval_conflict`, `approval_stale`; protocol.py), which only the approval page shows.
 
 ## Files on a deployed host
 

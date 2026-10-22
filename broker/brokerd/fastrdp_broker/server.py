@@ -14,10 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import conntype, home, identity, pamauth, tgt, tickets
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
-from .config import Config
+from .config import WEB_APPROVAL_MODES, Config
 from .grace import GraceKey, ReconnectGrace
 from .identity import IdentityError, LocalUser
-from .mfa import MfaDenied, SecondFactor, split_otp
+from .mfa import ApprovalError, MfaDenied, SecondFactor, split_otp
 from .protocol import ProtocolError, int_field, peer_uid, read_message, str_field, write_message
 from .state import StateStore
 from .tokens import WEB_TOKEN_PREFIX, TokenStore
@@ -52,6 +52,11 @@ class Broker:
                 "(FreeIPA: ipa service-mod TERMSRV/<host> --auth-ind=passkey --auth-ind=pkinit)",
                 ", ".join(cfg.auth.realms), cfg.mfa.mode,
             )
+        if cfg.mfa.mode in WEB_APPROVAL_MODES:
+            log.info("[mfa] %s: logins wait up to %ds for approval on the webgate's approval page "
+                     "(sign-in at most %ds older than the login%s)", cfg.mfa.mode,
+                     cfg.mfa.web_approval_timeout, cfg.mfa.web_approval_max_auth_age,
+                     "; one pending login per user" if cfg.mfa.web_approval_single_pending else "")
         # [mfa] reconnect_grace (grace.py): reconnects skip a recently passed second factor.
         self.grace = ReconnectGrace(cfg.mfa.reconnect_grace, cfg.mfa.reconnect_grace_same_address)
         if self.grace.enabled and cfg.mfa.mode != "none":
@@ -274,7 +279,10 @@ class Broker:
                     # privacyIDEA knows directory users by their short name, also
                     # with fully qualified SSSD names ('alice@example.com' -> 'alice').
                     mfa_user = identity.short_name(user.name, self.cfg.auth)
-                    factor = await self.mfa.verify(mfa_user, otp, password)
+                    # Web approval: the webgate names the local account (mfa_pending).
+                    factor = await self.mfa.verify(mfa_user, otp, password, account=user.name,
+                                                   method=str_field(msg, "method", required=True),
+                                                   client_address=str_field(msg, "client_address"))
                 except MfaDenied as exc:
                     raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
                 log.info("second factor ok for %s via %s", user.name, factor)
@@ -410,6 +418,33 @@ class Broker:
             "desktops": [d["name"] for d in desktops],
         }
 
+    # ------------------------------------------------------------ web approval
+    def mfa_pending(self, msg: dict) -> dict:
+        """fastrdp-webgate lists the user's logins waiting for web approval (mfa.WebApprovals)."""
+        user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
+        return {"ok": True, "user": user.name, "pending": self.mfa.approvals.list(user.name)}
+
+    def mfa_decide(self, msg: dict) -> dict:
+        """fastrdp-webgate approves or denies one of them for the user it signed in;
+        `auth_time` is that sign-in (ID token). Refusals carry an approval_* reason."""
+        user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
+        request_id = str_field(msg, "id", required=True, max_len=64)
+        approve = msg.get("approve")
+        auth_time = int_field(msg, "auth_time", 0, 2**40)
+        if not isinstance(approve, bool) or auth_time is None:
+            raise ProtocolError("mfa_decide needs 'approve' (bool) and 'auth_time' (int)")
+        try:
+            entry = self.mfa.approvals.decide(user.name, request_id, approve, auth_time)
+        except ApprovalError as exc:
+            log.warning("web approval decision by %s refused (%s): %s", user.name, exc.reason, exc)
+            reply = {"ok": False, "error": "not decided", "reason": exc.reason}
+            if exc.outcome:
+                reply["outcome"] = exc.outcome
+            return reply
+        log.info("web approval for %s from %s (%s login): %s on the approval page", user.name,
+                 entry.client_address, entry.method, "approved" if approve else "DENIED")
+        return {"ok": True, "approved": approve}
+
     # ---------------------------------------------------------------- admin
     async def reap(self) -> None:
         """Drop records of sessions that no longer exist (e.g. xrdp sessions ended in-session)."""
@@ -428,6 +463,7 @@ class Broker:
             "pending_tokens": len(self.tokens),
             "pending_web_tokens": len(self.web_tokens),
             "mfa_grace_entries": len(self.grace),
+            "mfa_pending_approvals": len(self.mfa.approvals),
             "tickets": await self.session_tickets(),
         }
 
@@ -488,6 +524,10 @@ class Broker:
                         reply = await self.issue_web_token(msg)
                     elif op == "web_desktops" and self.web_uid is not None and uid == self.web_uid:
                         reply = await self.web_desktops(msg)
+                    elif op == "mfa_pending" and self.web_uid is not None and uid == self.web_uid:
+                        reply = self.mfa_pending(msg)
+                    elif op == "mfa_decide" and self.web_uid is not None and uid == self.web_uid:
+                        reply = self.mfa_decide(msg)
                     elif op == "status" and uid == 0:
                         reply = await self.status()
                     elif op == "tickets" and uid == 0:

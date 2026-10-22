@@ -70,6 +70,12 @@ FreeRDP and Remmina settings for each login path (exact switches, errors): [free
 | `otp` | **refused** (no channel for an OTP) | OTP must be appended to the password |
 | `push` | push challenge | push challenge |
 | `otp_or_push` | push challenge | appended OTP if present, otherwise push |
+| `web` | approval on the web gateway's `/web/approve` page | approval on `/web/approve` |
+| `push_or_web` | push challenge **and** approval on `/web/approve`; the first answer wins | as NLA (an appended OTP is not split off) |
+
+`web` and `push_or_web` need `fastrdp_web_enabled: true`; `web` needs no privacyIDEA
+([Web approval](#web-approval)). Web logins (Guacamole) are unaffected by every mode:
+their second factor is at Keycloak.
 
 **`fastrdp_mfa_nla_kdc_enforced`** (broker `[mfa] nla_kdc_enforced`, default off):
 Kerberos NLA logins whose principal is in `[auth] realms` skip the second factor,
@@ -99,7 +105,7 @@ alice: nla login from 192.0.2.10; second factor skipped: reconnect grace (push p
 How it works:
 
 - **What earns grace:** only a login whose second factor privacyIDEA confirmed (OTP or
-  push) *and* whose session then started (the broker handed the target to the proxy).
+  push) or the user approved on the web approval page *and* whose session then started (the broker handed the target to the proxy).
   Refusals, wrong or missing OTPs, push timeouts, privacyIDEA errors and back-end errors
   record nothing. Logins that never asked privacyIDEA record nothing either: exempt
   groups, `nla_kdc_enforced`, web logins (their MFA is at Keycloak), `mode = "none"`.
@@ -173,6 +179,64 @@ Security review:
 
 During a push the client simply waits ("connecting…"). `fastrdp_proxy_broker_timeout`
 (default 120 s) must be larger than `push_timeout` (default 60 s).
+
+### Web approval
+
+**`fastrdp_mfa_mode: web`** (broker `[mfa] mode = "web"`): an RDP login that owes its
+second factor waits in the broker, as during a push, until the user approves it in a
+browser. **`push_or_web`** sends a privacyIDEA push at the same time; whichever answers
+first wins and the other is cancelled. Both need the web gateway
+(`fastrdp_web_enabled: true`, [web-access.md](web-access.md#approving-rdp-logins)).
+
+1. The user starts the login in mstsc/xfreerdp3 (NLA or TLS). The first factor, groups
+   and account are checked as always; the client shows "connecting…".
+2. The broker logs `web approval pending for alice from 192.0.2.10` and keeps the login
+   pending (memory only).
+3. The user opens `https://<host>/web/approve`. The webgate sends them to Keycloak for a
+   **fresh** sign-in (`prompt=login`, `max_age=0`) with the usual MFA proof
+   (`acr`/`amr`: passkey, TOTP, WebAuthn, privacyIDEA), and checks the ID token's
+   `auth_time`, so an existing Keycloak session does not count.
+4. The page lists the user's pending logins with client address, start time and login
+   method. **Approve** lets the broker continue (session start or reuse, as after a
+   push); **Deny** fails the login with `mfa_failed` (Set Error Info 0x7). Without a
+   decision within `fastrdp_mfa_web_approval_timeout` the login fails with
+   `mfa_timeout` (0x409). Closing the RDP client removes the pending login.
+
+| Variable (broker key) | Default | Meaning |
+|---|---|---|
+| `fastrdp_mfa_web_approval_timeout` (`web_approval_timeout`) | `90` | seconds a login waits for the decision, 10..540. In `push_or_web` it bounds the whole wait (keep `push_timeout` below it). Must be less than `fastrdp_proxy_broker_timeout` (default 120), which also has to cover the session start after the approval: raise both for slow GNOME/Plasma starts |
+| `fastrdp_mfa_web_approval_max_auth_age` (`web_approval_max_auth_age`) | `30` | the approving sign-in may be at most this many seconds older than the pending login (0..300). Signing in first and starting the login afterwards works only within this window; otherwise the page asks to sign in again |
+| `fastrdp_mfa_web_approval_single_pending` (`web_approval_single_pending`) | `true` | with two or more pending logins of one user, none can be approved (each can still be denied); the user denies them and starts one new login |
+
+**Why `single_pending`:** whoever has the user's password (or Kerberos ticket) can start
+an RDP login of their own at the moment the user starts theirs. The page shows both,
+and the user cannot reliably tell which one is theirs (a shared NAT address looks the
+same). Refusing approval while more than one is pending turns that race into a visible
+warning instead of a coin toss.
+
+**What the broker checks** for each decision (ops `mfa_pending`/`mfa_decide`, accepted
+only from the webgate's uid, `[web] gateway_user`): the request belongs to the account
+the webgate signed in (another user's request looks unknown); it is still pending
+(already approved, denied, timed out or abandoned requests get a clear refusal);
+`auth_time` and `single_pending` as above, for Approve. Deny is always accepted.
+
+**Reconnect grace:** a login passed by web approval records the factor `web`; reconnects
+within `fastrdp_mfa_reconnect_grace` skip the approval like they skip a push.
+Exempt groups and `fastrdp_mfa_nla_kdc_enforced` skip it before it starts, as for push.
+
+Security notes:
+- **Social engineering:** an attacker who has the password may call the user and ask
+  them to "approve the login on the web page". The page says to approve only a login
+  the user started themselves just now, from the address shown, and to deny everything
+  else. A denied login is logged (`web approval for alice from … DENIED`); treat
+  unexpected denials as a stolen password.
+- The approval sign-in needs the same MFA proof as the browser path (passkey, TOTP,
+  WebAuthn at Keycloak), so web approval is as strong as that, and lets users with
+  only a passkey reach RDP logins ([passkeys.md](passkeys.md)).
+- The approval cookie (`fastrdp_web_approve`, 5 minutes) only allows decisions, no
+  desktop access, and is separate from the desktop chooser's sign-in.
+- `fastrdpctl status` shows the number of pending approvals
+  (`mfa_pending_approvals`). Pending logins are memory only: a broker restart fails them.
 
 ### Splitting password and OTP
 

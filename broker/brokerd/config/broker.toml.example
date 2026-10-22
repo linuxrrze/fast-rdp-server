@@ -50,7 +50,7 @@ allow_groups = ["rdp-users"]      # empty list = every valid account
 allow_tls_password_login = true   # clients without NLA (password+OTP in one field)
 
 [mfa]
-mode = "otp_or_push"              # none | otp | push | otp_or_push
+mode = "otp_or_push"              # none | otp | push | otp_or_push | web | push_or_web
 exempt_groups = []
 otp_lengths = [6]                 # keep one TOTP length; see docs/auth-matrix.md
 yubikey_otp = true
@@ -65,6 +65,12 @@ yubikey_otp = true
 # `fastrdpctl clear-grace USER` revokes it. docs/auth-matrix.md#reconnect-grace
 #reconnect_grace = 0
 #reconnect_grace_same_address = true
+# mode "web": a login waits until its user approves it on https://<host>/web/approve
+# after a fresh MFA sign-in at the IdP; "push_or_web": a push at the same time, the
+# first answer wins. Both need [web] enabled. docs/auth-matrix.md#web-approval
+#web_approval_timeout = 90          # seconds; less than proxy.ini [FastRDP] Timeout
+#web_approval_max_auth_age = 30     # the sign-in may be this much older than the login
+#web_approval_single_pending = true # 2+ pending logins of a user: none can be approved
 
 [mfa.privacyidea]
 url = "https://privacyidea.example.com"

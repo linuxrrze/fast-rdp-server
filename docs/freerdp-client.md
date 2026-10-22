@@ -376,6 +376,9 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /sec:tls /cert:fingerprint:sha256:<fi
 - `otp`: the OTP must be appended.
 - `otp_or_push`: an appended OTP, or a push without one.
 - `push`: push.
+- `web` / `push_or_web`: approve the waiting login on `https://<host>/web/approve`
+  (with a push at the same time for `push_or_web`); an appended OTP is not split off
+  ([auth-matrix.md](auth-matrix.md#web-approval)).
 
 **Security caveats.**
 - The server is authenticated **only by its certificate**. There is no Kerberos mutual

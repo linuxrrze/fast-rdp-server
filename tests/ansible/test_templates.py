@@ -266,6 +266,21 @@ class BrokerToml(unittest.TestCase):
         mfa = broker_config.parse(toml("broker-mfa.toml")).mfa
         self.assertEqual((mfa.reconnect_grace, mfa.reconnect_grace_same_address), (600, False))
 
+    def test_web_approval(self):
+        for name in ("broker-lab.toml", "broker-minimal.toml", "broker-mfa.toml"):
+            mfa = broker_config.parse(toml(name)).mfa
+            self.assertEqual((mfa.web_approval_timeout, mfa.web_approval_max_auth_age,
+                              mfa.web_approval_single_pending), (90, 30, True), name)
+        web = broker_config.parse(toml("broker-web.toml"))
+        self.assertEqual(web.mfa.mode, "web")
+        self.assertEqual(web.mfa.privacyidea.url, "")         # web approval alone needs no privacyIDEA
+        self.assertTrue(web.web.enabled)
+        self.assertEqual((web.mfa.web_approval_timeout, web.mfa.web_approval_max_auth_age,
+                          web.mfa.web_approval_single_pending), (75, 0, False))
+        both = broker_config.parse(toml("broker-push_or_web.toml")).mfa
+        self.assertEqual(both.mode, "push_or_web")
+        self.assertEqual(both.privacyidea.url, "https://privacyidea.lab.example.com")
+
     def test_session_tgt_required(self):
         self.assertEqual(broker_config.parse(toml("broker-tgt-required.toml")).broker.session_tgt, "required")
 
@@ -399,6 +414,23 @@ class CommonChecks(unittest.TestCase):
             "group default not offered": dict(ok, fastrdp_group_desktops='{"rdp-kde": "plasma"}'),
             "desktop groups for unknown desktop": dict(ok, fastrdp_desktop_groups='{"plasma": ["x"]}'),
             "mfa without url": dict(ok, fastrdp_mfa_mode="push"),
+            "push_or_web without url": dict(ok, fastrdp_mfa_mode="push_or_web", fastrdp_web_enabled=True),
+            "web approval without web access": dict(ok, fastrdp_mfa_mode="web"),
+            "push_or_web without web access": dict(ok, fastrdp_mfa_mode="push_or_web",
+                                                   fastrdp_privacyidea_url="https://pi"),
+            "web approval timeout not below the proxy's": dict(
+                ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=120),
+            "web approval timeout above the proxy's": dict(
+                ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=200,
+                fastrdp_proxy_broker_timeout=150),
+            "web approval timeout too short": dict(ok, fastrdp_mfa_web_approval_timeout=5),
+            "web approval timeout over the limit": dict(ok, fastrdp_mfa_web_approval_timeout=541),
+            "web approval timeout in minutes": dict(ok, fastrdp_mfa_web_approval_timeout="2m"),
+            "proxy timeout over the module's limit": dict(ok, fastrdp_proxy_broker_timeout=601),
+            "proxy timeout zero": dict(ok, fastrdp_proxy_broker_timeout=0),
+            "web approval auth age negative": dict(ok, fastrdp_mfa_web_approval_max_auth_age=-1),
+            "web approval auth age over the limit": dict(ok, fastrdp_mfa_web_approval_max_auth_age=301),
+            "web approval single pending not a bool": dict(ok, fastrdp_mfa_web_approval_single_pending="maybe"),
             "unknown mfa mode": dict(ok, fastrdp_mfa_mode="sms", fastrdp_privacyidea_url="https://pi"),
             "unknown identity provider": dict(ok, fastrdp_identity_provider="ldap"),
             "xrdp port = front port": dict(ok, fastrdp_xrdp_port=3389),
@@ -469,6 +501,18 @@ class CommonChecks(unittest.TestCase):
             with self.subTest(grace):
                 self.assertEqual(self.run_checks(**ok, fastrdp_mfa_reconnect_grace=grace,
                                                  fastrdp_mfa_reconnect_grace_same_address=False), 0)
+
+    def test_web_approval_passes(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_web_enabled": True}
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web"), 0)       # no privacyIDEA
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="push_or_web",
+                                         fastrdp_privacyidea_url="https://pi"), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web", fastrdp_mfa_web_approval_timeout=540,
+                                         fastrdp_proxy_broker_timeout=600, fastrdp_mfa_web_approval_max_auth_age=0,
+                                         fastrdp_mfa_web_approval_single_pending=False), 0)
+        # without web approval the timeout is not compared with the proxy's
+        self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",
+                                         fastrdp_mfa_web_approval_timeout=300), 0)
 
     def test_fully_qualified_names_pass(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

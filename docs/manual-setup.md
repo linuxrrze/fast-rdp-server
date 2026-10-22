@@ -1484,8 +1484,10 @@ Role `mfa_privacyidea`; modes and privacyIDEA settings in [auth-matrix.md](auth-
   `ca_file = "/etc/fastrdp/privacyidea-ca.pem"`;
 - service admin for push triggers (`triggerchallenge` right): its password plus a newline
   in `/etc/fastrdp/privacyidea-service.secret` (`root:root 0600`), and `service_user`;
-- `broker.toml`: `[mfa] mode` (`otp`, `push`, `otp_or_push`), `exempt_groups`,
-  `otp_lengths`; `[mfa.privacyidea] url`, `realm`, `verify_tls`;
+- `broker.toml`: `[mfa] mode` (`otp`, `push`, `otp_or_push`; `web`/`push_or_web` approve
+  logins on the web gateway, which needs `[web] enabled`, see
+  [auth-matrix.md](auth-matrix.md#web-approval)), `exempt_groups`, `otp_lengths`;
+  `[mfa.privacyidea] url`, `realm`, `verify_tls`;
 - optional: `[mfa] reconnect_grace` (seconds, e.g. `600`; `0` = off) so that reconnects
   after a network drop skip a second factor passed shortly before, bound to the same
   client address unless `reconnect_grace_same_address = false`

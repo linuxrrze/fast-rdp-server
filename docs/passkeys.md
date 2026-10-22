@@ -22,7 +22,7 @@ stage 1 (dev mode, headless Chromium with a virtual authenticator; see
 | Path | Passkeys today? | How |
 |---|---|---|
 | **Web** (Keycloak → webgate → Guacamole) | **Yes, configuration only** | Keycloak is a full passkey relying party. A passkey with user verification (PIN or biometric) counts as MFA. fastrdp only needs the right Keycloak flow so that `acr` says `mfa` ([recipe](#recipe-a-acrmfa-via-a-forced-flow-recommended)); `fastrdp_web_passkeys: true` sets it up (opt-in, [tested]). The webgate refuses single-factor `amr` settings. |
-| **RDP, native** (mstsc, xfreerdp → proxy, Kerberos NLA) | **No direct way**; **indirect ways** with FreeIPA (Linux clients) or AD + Entra ID (Windows clients) | CredSSP/NLA has no FIDO2 mechanism. A passkey can only produce the **Kerberos TGT** that NLA then uses: FreeIPA passkey pre-authentication (sssd) on Linux clients, or Windows passkey/FIDO2 sign-in with Microsoft Entra Kerberos. The KDC can enforce this for `TERMSRV/<host>` with FreeIPA authentication indicators; `fastrdp_mfa_nla_kdc_enforced` then skips the push ([below](#kdc-enforced-strong-authentication-for-nla)). Lab stage. |
+| **RDP, native** (mstsc, xfreerdp → proxy, Kerberos NLA) | **No direct way**; **indirect ways** with FreeIPA (Linux clients) or AD + Entra ID (Windows clients) | CredSSP/NLA has no FIDO2 mechanism. A passkey can only produce the **Kerberos TGT** that NLA then uses: FreeIPA passkey pre-authentication (sssd) on Linux clients, or Windows passkey/FIDO2 sign-in with Microsoft Entra Kerberos. The KDC can enforce this for `TERMSRV/<host>` with FreeIPA authentication indicators; `fastrdp_mfa_nla_kdc_enforced` then skips the push ([below](#kdc-enforced-strong-authentication-for-nla)). Lab stage. **As the second factor, any client:** with `fastrdp_mfa_mode: web` (or `push_or_web`) the user approves the waiting RDP login on the web gateway after a Keycloak sign-in, which can be a passkey ([web approval](#passkeys-as-the-rdp-second-factor-web-approval)). |
 | **Inside the session** (websites in the remote desktop) | **Only software passkeys that live in the session** (KeePassXC or Bitwarden in the session's browser) | No server back-end (xrdp, gnome-remote-desktop, KRdp) implements WebAuthn redirection ([MS-RDPEWA]). USB redirection is disabled. Local platform authenticators and phones cannot reach the session. Feasibility design + codec prototype: [webauthn-redirection.md](webauthn-redirection.md). |
 
 YubiKey **PIV** smartcard logon (PKINIT) keeps working as documented in
@@ -429,7 +429,25 @@ This would add FIDO2 as an RDP second factor for mstsc and new FreeRDP clients. 
   front connection;
 - origin binding would rest on the broker.
 
-**Not recommended.** Push already works for all clients.
+**Not recommended.** Push already works for all clients, and web approval (next
+section) brings passkeys to every RDP client without a new channel.
+
+### Passkeys as the RDP second factor: web approval
+
+`fastrdp_mfa_mode: web` (or `push_or_web`, together with a privacyIDEA push) makes the
+broker hold an RDP login that owes its second factor until the user approves it on
+`https://<host>/web/approve`. That page signs the user in at Keycloak afresh
+(`prompt=login`, `max_age=0`, `acr=mfa`), so the passkey flow of
+[recipe A](#recipe-a-acrmfa-via-a-forced-flow-recommended) is what proves the second
+factor, for mstsc, xfreerdp3 and Remmina alike (NLA or TLS) and without anything on the
+client. Origin binding stays with the browser and Keycloak; the broker only checks that
+the approving sign-in is recent (`auth_time`) and belongs to the same account.
+
+Limits: the passkey proves the user signed in to the web page, not which RDP client
+they approved; the page shows the client address and refuses approval while two logins
+of the user wait (`fastrdp_mfa_web_approval_single_pending`). Users must not approve a
+login they did not start (social engineering). Details and settings:
+[auth-matrix.md](auth-matrix.md#web-approval), [web-access.md](web-access.md#approving-rdp-logins).
 
 ### YubiKey PIV vs. FIDO2
 
@@ -644,6 +662,11 @@ Not run: no FreeIPA, client or key here.
   `tests/lab/freeipa-passkey-nla.sh`.
 - Stage 3: [webauthn-redirection.md](webauthn-redirection.md),
   `prototypes/webauthn-redirection/`.
+- Web approval (passkeys as the RDP second factor): broker `[mfa] mode = "web"` /
+  `"push_or_web"` (`mfa.py` `WebApprovals`, ops `mfa_pending`/`mfa_decide` in
+  `server.py`), webgate `<prefix>/approve` (`app.py`, fresh sign-in in `oidc.py`),
+  Ansible `fastrdp_mfa_web_approval_*`; tests `broker/brokerd/tests/test_web_approval.py`,
+  `broker/webgate/tests/test_approve.py`.
 
 ## Open points (need a lab)
 

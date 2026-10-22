@@ -17,7 +17,7 @@
       tags: [tuning]
     - role: mfa_privacyidea
       tags: [mfa]
-      when: fastrdp_mfa_mode != 'none'
+      when: fastrdp_mfa_mode in ['otp', 'push', 'otp_or_push', 'push_or_web']
     - role: broker
       tags: [broker]
     - role: xrdp

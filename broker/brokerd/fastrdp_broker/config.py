@@ -95,7 +95,7 @@ class PrivacyIdeaSection:
 
 @dataclass
 class MfaSection:
-    # none | otp | push | otp_or_push
+    # none | otp | push | otp_or_push | web | push_or_web
     mode: str = "none"
     exempt_groups: list[str] = field(default_factory=list)
     otp_lengths: list[int] = field(default_factory=lambda: [6])
@@ -112,6 +112,16 @@ class MfaSection:
     # factor, never extended; memory only. 0 = off. docs/auth-matrix.md#reconnect-grace
     reconnect_grace: int = 0
     reconnect_grace_same_address: bool = True
+    # mode web / push_or_web: the user approves a pending RDP login on fastrdp-webgate's
+    # <prefix>/approve page after a fresh MFA sign-in at the IdP (mfa.WebApprovals).
+    # Seconds a login waits for the decision; less than proxy.ini [FastRDP] Timeout.
+    web_approval_timeout: int = 90
+    # The approving sign-in (ID token auth_time) must be newer than the pending login,
+    # or at most this many seconds older.
+    web_approval_max_auth_age: int = 30
+    # More than one pending login of a user: approving is refused for all of them (an
+    # attacker with the password may have started one alongside the user's own).
+    web_approval_single_pending: bool = True
     privacyidea: PrivacyIdeaSection = field(default_factory=PrivacyIdeaSection)
 
 
@@ -166,11 +176,16 @@ class Config:
 
 
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
-VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push")
+VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push", "web", "push_or_web")
+PRIVACYIDEA_MODES = ("otp", "push", "otp_or_push", "push_or_web")
+WEB_APPROVAL_MODES = ("web", "push_or_web")
 VALID_SESSION_TGT = ("auto", "off", "required")
 DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
 VALID_HOME_CHECK = ("create", "check", "off")
 MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
+# seconds; the proxy module caps [FastRDP] Timeout at 600 and needs time for the session start
+WEB_APPROVAL_TIMEOUT = (10, 540)
+MAX_WEB_APPROVAL_AUTH_AGE = 300
 
 
 def _section(cls, data: dict, where: str):
@@ -247,8 +262,10 @@ def parse(raw: dict) -> Config:
     mfa.privacyidea = pi
     if mfa.mode not in VALID_MFA_MODES:
         raise ConfigError(f"[mfa] mode must be one of {VALID_MFA_MODES}")
-    if mfa.mode != "none" and not pi.url:
-        raise ConfigError("[mfa.privacyidea] url is required when MFA is enabled")
+    if mfa.mode in PRIVACYIDEA_MODES and not pi.url:
+        raise ConfigError(f"[mfa.privacyidea] url is required for [mfa] mode = {mfa.mode!r}")
+    if mfa.mode in WEB_APPROVAL_MODES and not web.enabled:
+        raise ConfigError(f"[mfa] mode = {mfa.mode!r} needs [web] enabled (fastrdp-webgate's approval page)")
     if not isinstance(mfa.nla_kdc_enforced, bool):
         raise ConfigError("[mfa] nla_kdc_enforced must be true or false")
     if mfa.nla_kdc_enforced and not auth.realms:
@@ -263,6 +280,22 @@ def parse(raw: dict) -> Config:
         raise ConfigError(f"[mfa] reconnect_grace must be whole seconds in 0..{MAX_RECONNECT_GRACE}")
     if not isinstance(mfa.reconnect_grace_same_address, bool):
         raise ConfigError("[mfa] reconnect_grace_same_address must be true or false")
+    lo, hi = WEB_APPROVAL_TIMEOUT
+    if (
+        isinstance(mfa.web_approval_timeout, bool)
+        or not isinstance(mfa.web_approval_timeout, int)
+        or not lo <= mfa.web_approval_timeout <= hi
+    ):
+        raise ConfigError(f"[mfa] web_approval_timeout must be whole seconds in {lo}..{hi}")
+    if (
+        isinstance(mfa.web_approval_max_auth_age, bool)
+        or not isinstance(mfa.web_approval_max_auth_age, int)
+        or not 0 <= mfa.web_approval_max_auth_age <= MAX_WEB_APPROVAL_AUTH_AGE
+    ):
+        raise ConfigError(
+            f"[mfa] web_approval_max_auth_age must be whole seconds in 0..{MAX_WEB_APPROVAL_AUTH_AGE}")
+    if not isinstance(mfa.web_approval_single_pending, bool):
+        raise ConfigError("[mfa] web_approval_single_pending must be true or false")
 
     network = _section(NetworkSection, dict(raw.pop("network", {})), "network")
     try:

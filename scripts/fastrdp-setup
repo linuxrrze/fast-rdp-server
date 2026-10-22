@@ -90,7 +90,7 @@ VARIABLES = [
     ("front-end", "fastrdp_front_key_src", "", "PEM private key on this machine"),
     ("front-end", "fastrdp_allow_tls_logins", True,
      "accept clients without NLA (password, plus OTP, typed into one field)"),
-    ("MFA", "fastrdp_mfa_mode", "none", "none | otp | push | otp_or_push (docs/auth-matrix.md)"),
+    ("MFA", "fastrdp_mfa_mode", "none", "none | otp | push | otp_or_push | web | push_or_web (docs/auth-matrix.md)"),
     ("MFA", "fastrdp_privacyidea_url", "", "privacyIDEA base URL"),
     ("MFA", "fastrdp_privacyidea_realm", "", "privacyIDEA realm (\"\" = its default realm)"),
     ("MFA", "fastrdp_privacyidea_ca_src", "", "CA of privacyIDEA, on this machine (\"\" = system trust store)"),

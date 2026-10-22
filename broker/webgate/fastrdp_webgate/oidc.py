@@ -65,7 +65,10 @@ class Provider:
                 raise OidcError(f"discovery: bad {key}")
         self.meta = meta
 
-    def authorize_url(self, redirect_uri: str, state: str, nonce: str, challenge: str) -> str:
+    def authorize_url(self, redirect_uri: str, state: str, nonce: str, challenge: str,
+                      fresh: bool = False) -> str:
+        """fresh: the IdP must authenticate the user again even with a session of its own
+        (prompt=login; max_age=0 also makes auth_time a required claim)."""
         params = {
             "response_type": "code",
             "client_id": self.cfg.client_id,
@@ -78,6 +81,9 @@ class Provider:
         }
         if self.cfg.required_acr:
             params["acr_values"] = " ".join(self.cfg.required_acr)  # ask the IdP for step-up
+        if fresh:
+            params["prompt"] = "login"
+            params["max_age"] = "0"
         return self.meta["authorization_endpoint"] + "?" + urllib.parse.urlencode(params)
 
     def logout_url(self, post_logout_redirect_uri: str) -> str | None:
@@ -133,3 +139,14 @@ class Provider:
             amr = claims.get("amr")
             if not isinstance(amr, list) or not set(map(str, amr)) & set(self.cfg.required_amr_any):
                 raise OidcError(f"amr {amr!r} does not prove MFA")
+
+    def check_fresh(self, claims: dict, since: float) -> int:
+        """auth_time of a fresh login (authorize_url fresh=True), which must not be older
+        than `since`, when the webgate sent the browser to the IdP. An IdP that ignored
+        prompt=login/max_age=0 and reused its session fails here."""
+        auth_time = claims.get("auth_time")
+        if not isinstance(auth_time, int) or isinstance(auth_time, bool):
+            raise OidcError("id_token without auth_time")
+        if auth_time < since - CLOCK_SKEW:
+            raise OidcError(f"auth_time {auth_time} is before the login request: no fresh authentication")
+        return auth_time

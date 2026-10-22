@@ -33,6 +33,8 @@
     preflight_desktops: "{{ fastrdp_desktops | default(preflight_role_defaults.fastrdp_desktops) }}"
     preflight_gpu: "{{ fastrdp_gpu | default('auto') }}"
     preflight_mfa_mode: "{{ fastrdp_mfa_mode | default('none') }}"
+    # MFA modes that use privacyIDEA (web: approval on the web gateway only)
+    preflight_pi_needed: "{{ preflight_mfa_mode in ['otp', 'push', 'otp_or_push', 'push_or_web'] }}"
     preflight_kdc_enforced: >-
       {{ (fastrdp_mfa_nla_kdc_enforced | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_enforced) | bool)
          and preflight_mfa_mode != 'none' }}
@@ -81,7 +83,7 @@
       vars:
         missing: >-
           {{ ((preflight_required_vars
-               + (['fastrdp_privacyidea_url'] if preflight_mfa_mode != 'none' else []))
+               + (['fastrdp_privacyidea_url'] if preflight_pi_needed else []))
               | difference(query('ansible.builtin.varnames', '^fastrdp_')))
              + (['vault_fastrdp_join_password (vault.yml)']
                 if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0
@@ -651,7 +653,7 @@
         timeout: 10
       register: preflight_pi
       failed_when: false
-      when: preflight_mfa_mode != 'none' and preflight_pi_url | length > 0
+      when: preflight_pi_needed and preflight_pi_url | length > 0
 
     - name: Result - privacyIDEA
       vars:
@@ -670,7 +672,26 @@
              'detail': problems | join('; ') if problems else preflight_pi_url ~ ' healthy'
                        ~ (' (TLS not verified here: CA is checked from the controller copy at deploy time)' if preflight_pi_ca_src else ''),
              'fix': 'check URL, firewall/proxy from the host to privacyIDEA, and fastrdp_privacyidea_ca_src'}] }}
-      when: preflight_mfa_mode != 'none'
+      when: preflight_pi_needed
+
+    - name: Result - MFA web approval
+      vars:
+        approval_timeout: >-
+          {{ fastrdp_mfa_web_approval_timeout | default(preflight_role_defaults.fastrdp_mfa_web_approval_timeout) | int }}
+        proxy_timeout: "{{ fastrdp_proxy_broker_timeout | default(preflight_role_defaults.fastrdp_proxy_broker_timeout) | int }}"
+        problems: >-
+          {{ (['fastrdp_web_enabled is false (the approval page is on the web gateway)'] if not preflight_web_enabled else [])
+             + (['fastrdp_mfa_web_approval_timeout (' ~ approval_timeout ~ ' s) is not less than fastrdp_proxy_broker_timeout ('
+                 ~ proxy_timeout ~ ' s)'] if approval_timeout | int >= proxy_timeout | int else []) }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'MFA web approval',
+             'status': 'FAIL' if problems else 'PASS',
+             'detail': problems | join('; ') if problems else 'RDP logins wait up to ' ~ approval_timeout
+                       ~ ' s for approval on /web/approve (proxy waits ' ~ proxy_timeout ~ ' s)',
+             'fix': 'fastrdp_web_enabled: true; fastrdp_mfa_web_approval_timeout below fastrdp_proxy_broker_timeout, '
+                    ~ 'leaving time for the session start (docs/auth-matrix.md#web-approval)'}] }}
+      when: preflight_mfa_mode in ['web', 'push_or_web']
 
     - name: Probe the OIDC issuer from the host
       ansible.builtin.uri:

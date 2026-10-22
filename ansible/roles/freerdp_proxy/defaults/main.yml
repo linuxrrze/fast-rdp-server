@@ -11,5 +11,4 @@ fastrdp_freerdp_build_key: "{{ lookup('ansible.builtin.pipe', playbook_dir ~ '/.
 fastrdp_proxy_build_packages: [build-essential, cmake, pkgconf, libcjson-dev]
 # Minimum FreeRDP version: 3.32 adds [Target] CertificatePolicy used below.
 fastrdp_proxy_min_version: "3.32.0"
-# Seconds the proxy waits for the broker (must exceed the MFA push timeout).
-fastrdp_proxy_broker_timeout: 120
+# fastrdp_proxy_broker_timeout (proxy.ini [FastRDP] Timeout): role common
