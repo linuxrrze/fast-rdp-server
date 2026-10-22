@@ -1,3 +1,19 @@
+fast-rdp-server (0.5.2) unstable; urgency=medium
+
+  * Proxy broker timeout 180 s (was 120): room for the session start after a
+    90 s web approval; with web approval the roles require approval timeout
+    + 90 <= fastrdp_proxy_broker_timeout (approval capped at 510). Sites that
+    set fastrdp_proxy_broker_timeout: 120 explicitly must raise it.
+  * fastrdpctl desktop USER [DESKTOP | --clear]: show, set or clear the
+    desktop stored from the web gateway, and why a login gets which desktop.
+  * .rdp downloads carry audiomode/audiocapturemode from fastrdp_audio and
+    fastrdp_audio_input.
+  * Setup wizard offers web approval, KDC evidence and the audio switches;
+    preflight checks KDC evidence (fastrdp-freerdp3 >= 3.32.2-4, items,
+    Samba vs Microsoft AD) and the web approval timeouts.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 13:39:37 +0200
+
 fast-rdp-server (0.5.1) unstable; urgency=medium
 
   * Security: back-end TLS certificates pinned (the broker sends each target's
