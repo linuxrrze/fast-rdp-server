@@ -58,7 +58,8 @@ Groups allowed to log in (comma-separated, empty = every directory user) [none]:
 Desktops (comma-separated) [xfce]:
 Default desktop [xfce]:
 GPU: auto / nvidia / mesa (Intel, AMD) / none [auto]:
-MFA with privacyIDEA: none / push / otp / otp_or_push [none]:
+Sound in sessions? (y/n) [y]:
+MFA: none / push / otp / otp_or_push (privacyIDEA) / web / push_or_web (web approval) [none]:
 Browser access via Keycloak/OIDC + Guacamole? (y/n) [n]:
 Install method: apt (packages, recommended) / build (compile on the host) [build]:
 RDP certificate: self-signed (lab) / provided (PEM files) [self-signed]:
@@ -111,6 +112,7 @@ WARN  RDP certificate: self-signed certificate will be generated (lab only: clie
 | GPU | requested vs detected GPU, render nodes, NVIDIA driver, Secure Boot, Debian non-free |
 | CPU / RAM / disk | rough minimum and recommended sizes for the chosen desktops and install method |
 | privacyIDEA | `<url>/healthz/` answers from the host |
+| MFA from KDC evidence | `fastrdp_mfa_kdc_evidence_as_mfa`: items well-formed, realm set, `fastrdp-freerdp3` ≥ 3.32.2-4 installed or available (`build`: patch 0005 in the checkout); Samba/Microsoft AD caveats for `sid:S-1-18-3` (INFO when unused) |
 | web / OIDC | issuer discovery answers and reports the same issuer; client secret set |
 | install method | `apt`: repository suite and key reachable from the host |
 | RDP certificate | provided: valid, not expiring within 30 days, SAN contains the FQDN, key matches |
@@ -184,8 +186,9 @@ records), then start with step 1. Use FreeIPA instead with `ipa` as the director
 ## Path B: production checklist
 
 Run `make setup` and answer **production**. It then also asks for allowed groups,
-short or fully qualified account names, the AD GPO mode, MFA exempt groups, TLS logins and the APT key checksum, and
-defaults to a provided certificate. Work through the list before `make deploy`;
+short or fully qualified account names, the AD GPO mode, the microphone, MFA exempt groups,
+the web approval settings, KDC evidence as the second factor, TLS logins and the APT key
+checksum, and defaults to a provided certificate. Work through the list before `make deploy`;
 `make preflight` checks the items marked (P).
 
 **Directory and names**
@@ -218,6 +221,28 @@ defaults to a provided certificate. Work through the list before `make deploy`;
 - [ ] A break-glass group in `mfa_exempt_groups`, used sparingly.
 - [ ] privacyIDEA reachable from the RDP host over HTTPS (P); its CA file if private.
 - [ ] Mode `otp` refuses NLA logins: prefer `push` or `otp_or_push`.
+- [ ] Modes `web` and `push_or_web` (approval on `https://<fqdn>/web/approve` after a
+      fresh MFA sign-in at Keycloak) need browser access; `web` needs no privacyIDEA.
+      Setup asks for the wait (`fastrdp_mfa_web_approval_timeout`, 90 s), the maximum age
+      of the approving sign-in (30 s) and whether two pending logins block approval (yes),
+      and raises `fastrdp_proxy_broker_timeout` to the wait plus 90 s for the session start
+      ([auth-matrix.md](auth-matrix.md#web-approval)).
+- [ ] KDC evidence (`fastrdp_mfa_kdc_evidence_as_mfa`, default none): Kerberos NLA logins
+      whose ticket shows smart card/passkey pre-authentication skip the second factor.
+      FreeIPA: `ind:pkinit`, `ind:passkey`; Microsoft AD: `sid:S-1-18-4` (Windows Hello for
+      Business key trust), `sid:S-1-18-3` (needs the DC policy *KDC support for PKInit
+      Freshness Extension*) or an Authentication Mechanism Assurance group; Samba AD:
+      `sid:S-1-18-3` only, which is not hardware-bound. Setup refuses items that password
+      logons carry too (`ind:hardened`, `sid:S-1-18-1`/`-2`, Domain Users, ...); preflight
+      checks that `fastrdp-freerdp3` passes the evidence on, ≥ 3.32.2-4 (P)
+      ([passkeys.md](passkeys.md#kdc-evidence-per-login)).
+
+**Audio** ([audio.md](audio.md))
+- [ ] Sound (`fastrdp_audio`, default yes) and the microphone (`fastrdp_audio_input`,
+      default yes; asked in production). The microphone works only when the user also
+      allows it on the client (mstsc *Record from this computer*, FreeRDP `/microphone`,
+      the browser's permission); no loads the PipeWire xrdp module speaker-only and keeps
+      it off the web path. A default, not a policy: users can load the module themselves.
 
 **GPU** ([performance.md](performance.md))
 - [ ] `auto` picks NVIDIA, else Intel/AMD (Mesa), else none (P shows what it detects).

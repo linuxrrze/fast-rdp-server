@@ -686,11 +686,17 @@ fastrdp_mfa_kdc_evidence_as_mfa: ["sid:S-1-18-3"]                          # Sam
     AMA group), with Kerberos armoring, plus `fastrdp_mfa_nla_kdc_enforced` and
     `fastrdp_mfa_nla_kdc_enforced_by_ad_policy`: the KDC then refuses the other logins
     instead of fastrdp asking them for a push.
+- **Preflight** (`make preflight`, check *MFA from KDC evidence*): items as above, realm
+  set, `fastrdp-freerdp3` ≥ 3.32.2-4 installed or available from the APT sources (FAIL
+  when older); AD: WARN for indicator items, and per DC software (anonymous rootDSE
+  `vendorName` via `ldapsearch`, when installed) the Samba or Microsoft AD caveats of
+  `sid:S-1-18-3` above. `scripts/fastrdp-setup` asks for the items in production runs.
 - Tests: `broker/brokerd/tests/test_kdc_evidence.py`; `tests/proxy-module/test_pac.c`
   (Windows PACs from MIT's test suite, synthetic PAC with ExtraSids and resource groups,
   truncated and mutated buffers); `tests/proxy-e2e/run_smartcard.sh` (MIT KDC with
   `pkinit_indicator`: the broker gets `["ind:pkinit"]`), `run_nla.sh` (password logins:
-  `[]`, every CAMMAC and PAC verified), `run.sh` (TLS: no field); `tests/ansible`.
+  `[]`, every CAMMAC and PAC verified), `run.sh` (TLS: no field); `tests/ansible`;
+  `scripts/tests/test_preflight.py`, `scripts/tests/test_fastrdp_setup.py`.
 
 #### FreeIPA passkey → TGT → NLA (lab)
 

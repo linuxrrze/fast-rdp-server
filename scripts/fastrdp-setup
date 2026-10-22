@@ -61,7 +61,11 @@ ROLE_DEFAULTS = {
     "fastrdp_web_oidc_issuer": "https://keycloak.lab.example.com/realms/lab",
     "fastrdp_web_oidc_client_id": "fastrdp-web",
     "fastrdp_web_oidc_ca_src": "",
+    "fastrdp_proxy_broker_timeout": 120,
 }
+# The broker's [broker] session_start_timeout (config.py, not rendered): after a web
+# approval the session still has to start within the proxy's wait for the broker.
+SESSION_START_TIMEOUT = 90
 REQUIRED = object()   # marker: no usable role default; roles/common checks that it is set
 
 # Output order, section and comment of every variable the tool can write.
@@ -100,11 +104,22 @@ VARIABLES = [
     ("MFA", "fastrdp_privacyidea_service_password", "{{ vault_fastrdp_privacyidea_service_password | default('') }}", "from vault.yml"),
     ("MFA", "fastrdp_mfa_exempt_groups", [], "groups that skip MFA (break-glass accounts)"),
     ("MFA", "fastrdp_otp_lengths", [6], "TOTP length taken from the end of the password (use one length)"),
+    ("MFA", "fastrdp_mfa_kdc_evidence_as_mfa", [],
+     "Kerberos NLA logins with this KDC evidence in the ticket skip the second factor (docs/passkeys.md)"),
+    ("MFA", "fastrdp_mfa_web_approval_timeout", 90, "seconds an RDP login waits for approval on /web/approve"),
+    ("MFA", "fastrdp_mfa_web_approval_max_auth_age", 30, "the approving sign-in may be at most this many seconds older"),
+    ("MFA", "fastrdp_mfa_web_approval_single_pending", True,
+     "no approval while a user has two or more pending logins"),
+    ("MFA", "fastrdp_proxy_broker_timeout", 120,
+     "seconds the proxy waits for the broker: web approval plus the session start (90 s)"),
     ("desktops", "fastrdp_desktops", ["xfce"],
      "X11: xfce mate cinnamon lxqt plasma-x11 | Wayland: gnome plasma | wlroots: sway labwc wayfire"),
     ("desktops", "fastrdp_default_desktop", "xfce", "desktop for users without their own choice"),
     ("desktops", "fastrdp_group_desktops", {}, "per-group default desktop, e.g. {rdp-kde: plasma}"),
     ("desktops", "fastrdp_default_geometry", "1920x1080", "initial session size"),
+    ("audio", "fastrdp_audio", True, "sound in sessions (PipeWire, RDP audio output; docs/audio.md)"),
+    ("audio", "fastrdp_audio_input", True,
+     "applications may record from the client's microphone (false: speaker-only)"),
     ("web", "fastrdp_web_enabled", False, "browser access via Keycloak + Guacamole (docs/web-access.md)"),
     ("web", "fastrdp_web_public_url", "https://{{ fastrdp_fqdn }}", "URL users open in the browser"),
     ("web", "fastrdp_web_oidc_issuer", "https://keycloak.lab.example.com/realms/lab", "OIDC issuer (Keycloak realm URL)"),
@@ -336,6 +351,46 @@ def v_tls_logins(value, a):
     return v
 
 
+def v_web_enabled(value, a):
+    v = _bool(value)
+    if not v and _web_approval(a):
+        raise SetupError(f"MFA mode '{a['mfa_mode']}' needs browser access (the approval page is on the web gateway)")
+    return v
+
+
+def v_seconds(lo, hi):
+    def check(value, _a=None):
+        v = _str(value)
+        if isinstance(value, bool) or not re.match(r"^[0-9]+$", v) or not lo <= int(v) <= hi:
+            raise SetupError(f"whole seconds from {lo} to {hi}")
+        return int(v)
+    return check
+
+
+def v_approval_timeout(value, a=None):
+    # 10..510 as in roles/common: plus the session start it must fit the proxy's 600 s maximum
+    return v_seconds(10, 600 - SESSION_START_TIMEOUT)(value, a)
+
+
+# Same item syntax and refusals as roles/common and the broker (config.py KDC_EVIDENCE_ITEM,
+# KDC_EVIDENCE_NOT_MFA): these SIDs and "hardened" are in the tickets of password logons too.
+KDC_EVIDENCE_ITEM_RE = re.compile(r"^(ind:[!-~]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15})\Z")
+KDC_EVIDENCE_NOT_MFA_RE = re.compile(
+    r"^(ind:hardened|sid:S-1-18-[12]|sid:S-1-1-0|sid:S-1-5-11|sid:S-1-5-32-545|sid:S-1-5-21-.*-513)\Z")
+
+
+def v_kdc_evidence(value, _a=None):
+    items = []
+    for i in _list(value):
+        if not KDC_EVIDENCE_ITEM_RE.match(i):
+            raise SetupError(f"invalid item {i!r}: use ind:<indicator> or sid:S-1-... (e.g. ind:pkinit, sid:S-1-18-4)")
+        if KDC_EVIDENCE_NOT_MFA_RE.match(i):
+            raise SetupError(f"{i} is in the tickets of password logons too, it is no second factor")
+        if i not in items:
+            items.append(i)
+    return items
+
+
 # ----------------------------------------------------------------------------- questions
 
 def probe_apt_repo(url=APT_REPO_URL, timeout=5):
@@ -385,6 +440,19 @@ def _mfa(a):
 
 def _web(a):
     return bool(a.get("web_enabled"))
+
+
+def _pi(a):
+    """MFA modes that use privacyIDEA (web: approval on the web gateway only)."""
+    return a.get("mfa_mode", "none") in ("otp", "push", "otp_or_push", "push_or_web")
+
+
+def _web_approval(a):
+    return a.get("mfa_mode", "none") in ("web", "push_or_web")
+
+
+def _audio(a):
+    return bool(a.get("audio", True))
 
 
 QUESTIONS = [
@@ -441,27 +509,66 @@ QUESTIONS = [
       help="X11 (xrdp) sessions of clients that ask for auto-detection (mstsc's default) get a\n"
            "bitrate cap for WAN links. Clients from these networks get the uncapped LAN profile.\n"
            "Use the addresses the server sees (after NAT/VPN), e.g. 10.0.0.0/8, 2001:db8::/32."),
-    Q("mfa_mode", "MFA with privacyIDEA: none / push / otp / otp_or_push",
-      v_choice("none", "push", "otp", "otp_or_push"), "none",
-      help="push: approve on the phone (works with NLA). otp: code appended to the password\n"
-           "(TLS logins only). otp_or_push: OTP if appended, otherwise push."),
-    Q("privacyidea_url", "privacyIDEA URL", v_https_url, when=_mfa),
-    Q("privacyidea_realm", "privacyIDEA realm (empty = its default realm)", _str, "", when=_mfa),
+    Q("audio", "Sound in sessions? (y/n)", _bool, True,
+      help="y: xrdp desktops (X11, wlroots) get PipeWire with the xrdp module, GNOME pipewire-pulse;\n"
+           "Plasma (KRdp) has no audio. Clients still choose (mstsc 'Play on this computer',\n"
+           "FreeRDP /sound). n: no audio packages, the RDP sound channel is off (docs/audio.md)."),
+    Q("audio_input", "Microphone: may applications record from the client's microphone? (y/n)", _bool, True,
+      when=_audio, ask=_is_prod,
+      help="Only when the user opts in on the client as well (mstsc 'Record from this computer',\n"
+           "FreeRDP /microphone, the browser's permission on the web path). n: the PipeWire xrdp\n"
+           "module is loaded speaker-only and the web path does not offer the microphone. A default,\n"
+           "not a policy: users can load the module themselves, GNOME has no switch (docs/audio.md)."),
+    Q("mfa_mode", "MFA: none / push / otp / otp_or_push (privacyIDEA) / web / push_or_web (web approval)",
+      v_choice("none", "push", "otp", "otp_or_push", "web", "push_or_web"), "none",
+      help="privacyIDEA: push: approve on the phone (works with NLA). otp: code appended to the\n"
+           "password (TLS logins only). otp_or_push: OTP if appended, otherwise push.\n"
+           "Web gateway (browser access, asked below, must be on): web: approve the login on\n"
+           "https://<fqdn>/web/approve after a fresh MFA sign-in at Keycloak (passkey, TOTP; no\n"
+           "privacyIDEA). push_or_web: push and web approval at once, the first answer wins."),
+    Q("privacyidea_url", "privacyIDEA URL", v_https_url, when=_pi),
+    Q("privacyidea_realm", "privacyIDEA realm (empty = its default realm)", _str, "", when=_pi),
     Q("privacyidea_ca", "CA certificate of privacyIDEA on this machine (empty = system trust store)",
-      v_file(True), "", when=_mfa),
+      v_file(True), "", when=_pi),
     Q("privacyidea_service_user", "privacyIDEA service admin for push (empty = none)", _str, "",
-      when=lambda a: a.get("mfa_mode") in ("push", "otp_or_push"),
+      when=lambda a: a.get("mfa_mode") in ("push", "otp_or_push", "push_or_web"),
       help="Needed for push after Kerberos single sign-on (no password reaches the server).\n"
            "Without it, push is triggered with the user's password (policy otppin=userstore)."),
     Q("privacyidea_service_password", "Password of the service admin (stored in the vault)", v_secret,
-      when=lambda a: _mfa(a) and bool(a.get("privacyidea_service_user")), secret=True),
+      when=lambda a: _pi(a) and bool(a.get("privacyidea_service_user")), secret=True),
     Q("mfa_exempt_groups", "Groups exempt from MFA (comma-separated, empty = none)", v_groups, [],
       when=_mfa, ask=_is_prod),
+    Q("mfa_web_approval_timeout", "Seconds an RDP login waits for web approval", v_approval_timeout, 90,
+      when=_web_approval, ask=_is_prod,
+      help="10..510. The proxy waits this long plus 90 s for the session start; the assistant\n"
+           "raises fastrdp_proxy_broker_timeout to match (docs/auth-matrix.md#web-approval)."),
+    Q("mfa_web_approval_max_auth_age", "Maximum age in seconds of the approving sign-in (0..300)",
+      v_seconds(0, 300), 30, when=_web_approval, ask=_is_prod,
+      help="Signing in at Keycloak first and starting the RDP login afterwards works only within\n"
+           "this window; otherwise the approval page asks to sign in again."),
+    Q("mfa_web_approval_single_pending", "Refuse approval while a user has two or more pending logins? (y/n)",
+      _bool, True, when=_web_approval, ask=_is_prod,
+      help="y (recommended): someone with the password may start a login alongside the user's own;\n"
+           "the user cannot tell them apart, denies both and starts one new login."),
+    Q("mfa_kdc_evidence_as_mfa", "KDC evidence that replaces the second factor of Kerberos NLA logins "
+      "(comma-separated, empty = none)", v_kdc_evidence, [], when=_mfa, ask=_is_prod,
+      help="A Kerberos NLA login whose ticket carries one of these items skips the second factor;\n"
+           "all other logins keep it (docs/passkeys.md#kdc-evidence-per-login). Needs\n"
+           "fastrdp-freerdp3 >= 3.32.2-4 (preflight checks it).\n"
+           "  FreeIPA / MIT:  ind:pkinit, ind:passkey (smart card / passkey pre-authentication)\n"
+           "  Microsoft AD:   sid:S-1-18-4 (Windows Hello for Business key trust), sid:S-1-18-3\n"
+           "                  (PKINIT with freshness: needs the DC policy 'KDC support for PKInit\n"
+           "                  Freshness Extension'), or an Authentication Mechanism Assurance\n"
+           "                  group sid:S-1-5-21-...-<RID>\n"
+           "  Samba AD:       sid:S-1-18-3 only (not hardware-bound: software certificates get it too)\n"
+           "Refused (password logons have them): ind:hardened, sid:S-1-18-1, sid:S-1-18-2,\n"
+           "Everyone, Authenticated Users, Users, Domain Users (RID 513)."),
     Q("allow_tls_logins", "Allow TLS logins without NLA (password[+OTP] in one field)? (y/n)",
       v_tls_logins, True, ask=_is_prod,
       help="Needed for clients that cannot reach a KDC and for MFA mode otp. NLA-only is stricter; "
            "browser access then still uses TLS, from loopback (guacd) only."),
-    Q("web_enabled", "Browser access via Keycloak/OIDC + Guacamole? (y/n)", _bool, False),
+    Q("web_enabled", "Browser access via Keycloak/OIDC + Guacamole? (y/n)", v_web_enabled, _web_approval,
+      help="Needed for MFA modes web and push_or_web (the approval page is on the web gateway)."),
     Q("web_oidc_issuer", "OIDC issuer URL (e.g. https://keycloak.example.com/realms/main)", v_https_url,
       when=_web),
     Q("web_oidc_client_id", "OIDC client id", _str, "fastrdp-web", when=_web),
@@ -664,10 +771,13 @@ def variables_for(a):
         "fastrdp_privacyidea_service_user": a.get("privacyidea_service_user", ""),
         "fastrdp_mfa_exempt_groups": a.get("mfa_exempt_groups", []),
         "fastrdp_otp_lengths": [6],
+        "fastrdp_mfa_kdc_evidence_as_mfa": a.get("mfa_kdc_evidence_as_mfa", []),
         "fastrdp_desktops": a["desktops"],
         "fastrdp_default_desktop": a["default_desktop"],
         "fastrdp_group_desktops": {},
         "fastrdp_default_geometry": "1920x1080",
+        "fastrdp_audio": _audio(a),
+        "fastrdp_audio_input": bool(a.get("audio_input", True)),
         "fastrdp_gpu": a["gpu"],
         "fastrdp_x264_threads": 2,
         "fastrdp_backend_port_range": [33900, 34899],
@@ -684,13 +794,21 @@ def variables_for(a):
         v["fastrdp_ad_gpo_access_control"] = a.get("ad_gpo_access_control", "permissive")
     if a["identity_provider"] == "none":
         v["fastrdp_termsrv_keytab_src"] = a.get("termsrv_keytab", "")
-    if _mfa(a):
+    if _pi(a):
         v["fastrdp_privacyidea_url"] = a["privacyidea_url"]
         if "privacyidea_verify_tls" in a:
             v["fastrdp_privacyidea_verify_tls"] = a["privacyidea_verify_tls"]
         if a.get("privacyidea_service_user"):
             v["fastrdp_privacyidea_service_password"] = \
                 "{{ vault_fastrdp_privacyidea_service_password | default('') }}"
+    if _web_approval(a):
+        timeout = a.get("mfa_web_approval_timeout", 90)
+        v["fastrdp_mfa_web_approval_timeout"] = timeout
+        v["fastrdp_mfa_web_approval_max_auth_age"] = a.get("mfa_web_approval_max_auth_age", 30)
+        v["fastrdp_mfa_web_approval_single_pending"] = bool(a.get("mfa_web_approval_single_pending", True))
+        # the proxy's wait covers the approval and the session start after it
+        v["fastrdp_proxy_broker_timeout"] = max(ROLE_DEFAULTS["fastrdp_proxy_broker_timeout"],
+                                                timeout + SESSION_START_TIMEOUT)
     if a["install_method"] == "apt":
         v["fastrdp_apt_channel"] = a["apt_channel"]
         v["fastrdp_apt_key_checksum"] = a.get("apt_key_checksum", "")

@@ -5,11 +5,14 @@
 - the bash snippets it runs pass shellcheck (when shellcheck is installed);
 - ansible-playbook --syntax-check (when ansible-core is installed);
 - its list of required inventory variables matches scripts/fastrdp-setup;
-- it contains only read-only modules.
+- it contains only read-only modules;
+- the KDC proxy and KDC evidence probes with stub tools; the KDC evidence result with
+  ansible-playbook on localhost (when ansible-core is installed).
 """
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -232,6 +235,250 @@ class TestPreflightKdcProxy(unittest.TestCase):
         out = self.run_probe()
         self.assertIn("FAIL no _kerberos._tcp.lab.example.com SRV records on the host: set fastrdp_web_kdcproxy_kdcs",
                       out)
+
+
+STUB_TOOLS = {
+    # per host: files <dir>/<DOMAIN>.inst (dpkg status line), .cand (APT candidate), .ldap
+    # (samba | windows; missing: ldapsearch fails)
+    "dpkg-query": 'f="$(dirname "$0")/$DOMAIN.inst"; [ -r "$f" ] || exit 1; echo "$(cat "$f")"',
+    "apt-cache": 'f="$(dirname "$0")/$DOMAIN.cand"; echo "fastrdp-freerdp3:"\n'
+                 'if [ -r "$f" ]; then echo "  Candidate: $(cat "$f")"; else echo "  Candidate: (none)"; fi',
+    "ldapsearch": 'f="$(dirname "$0")/$DOMAIN.ldap"; [ -r "$f" ] || exit 255; echo "dn:"\n'
+                  '[ "$(cat "$f")" = samba ] && echo "vendorName: Samba Team (https://www.samba.org)"; exit 0',
+}
+
+
+def write_stubs(directory, tools=STUB_TOOLS):
+    for name, body in tools.items():
+        p = Path(directory) / name
+        p.write_text(f"#!/bin/bash\n{body}\n")
+        p.chmod(0o755)
+
+
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+@unittest.skipUnless(shutil.which("dpkg"), "dpkg not installed (dpkg --compare-versions)")
+class TestPreflightKdcEvidence(unittest.TestCase):
+    """fastrdp_mfa_kdc_evidence_as_mfa: FreeRDP version and DC software probe (stub tools)."""
+
+    NAME = "Read the FreeRDP version and the DC software (KDC evidence)"
+
+    def setUp(self):
+        play, ts = tasks()
+        self.task = next(t for t in ts if t.get("name") == self.NAME)
+        self.cmd = self.task["ansible.builtin.shell"]["cmd"]
+        self.min = str(play["vars"]["preflight_kdc_evidence_min_freerdp"])
+        self.tmp = tempfile.TemporaryDirectory()
+        self.stubs = Path(self.tmp.name) / "stubs"
+        self.stubs.mkdir()
+        write_stubs(self.stubs)
+        # only these tools: a host without ldapsearch is a PATH without the stub
+        self.tools = Path(self.tmp.name) / "tools"
+        self.tools.mkdir()
+        for tool in ("awk", "cat", "dirname", "dpkg", "grep", "timeout"):
+            (self.tools / tool).symlink_to(shutil.which(tool))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def host(self, domain, inst=None, cand=None, ldap=None):
+        for ext, value in (("inst", inst), ("cand", cand), ("ldap", ldap)):
+            if value is not None:
+                (self.stubs / f"{domain}.{ext}").write_text(value + "\n")
+
+    def run_probe(self, method="apt", idp="ipa", domain="lab.example.com", ldapsearch=True):
+        stubs = self.stubs
+        if not ldapsearch:
+            stubs = Path(self.tmp.name) / "stubs-no-ldap"
+            stubs.mkdir(exist_ok=True)
+            write_stubs(stubs, {k: v for k, v in STUB_TOOLS.items() if k != "ldapsearch"})
+            for f in self.stubs.glob(domain + ".*"):
+                shutil.copy(f, stubs)
+        env = {"PATH": f"{stubs}:{self.tools}", "METHOD": method, "MIN": self.min, "IDP": idp, "DOMAIN": domain}
+        r = subprocess.run(["/bin/bash", "-c", self.cmd], env=env, capture_output=True, text=True, timeout=60,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.splitlines()
+
+    def test_task(self):
+        self.assertEqual(set(self.task["environment"]), {"METHOD", "MIN", "IDP", "DOMAIN"})
+        self.assertIn("preflight_kdc_evidence", self.task["when"])
+
+    def test_min_version_is_the_freerdp_package_with_patch_0005(self):
+        changelog = (REPO / "packaging/freerdp/debian/changelog").read_text()
+        entries = re.split(r"\n(?=fastrdp-freerdp3 \()", changelog)
+        first = [e for e in entries if "kdc_evidence_as_mfa" in e][-1]
+        self.assertEqual(re.match(r"fastrdp-freerdp3 \(([^)]+)\)", first).group(1), self.min)
+        self.assertIn("0005-winpr-kerberos-acceptor-keep-the-KDC-evidence", (REPO / "patches/freerdp/series").read_text())
+
+    def test_freerdp_version(self):
+        d = "lab.example.com"
+        self.host(d, inst=f"install ok installed {self.min}")
+        self.assertEqual(self.run_probe(), [f"PASS fastrdp-freerdp3 {self.min} installed"])
+        self.host(d, inst="install ok installed 3.32.2-3", cand="3.32.2-5")
+        self.assertEqual(self.run_probe(),
+                         ["PASS fastrdp-freerdp3 3.32.2-5 available (installed: 3.32.2-3), deploy installs it"])
+        self.host(d, cand="3.32.2-3")
+        out = self.run_probe()
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("FAIL fastrdp-freerdp3 installed 3.32.2-3, available 3.32.2-3: older than"),
+                        out)
+        self.assertIn("never reaches the broker", out[0])
+        # removed, configuration files left: not installed
+        self.host(d, inst=f"deinstall ok config-files {self.min}")
+        (self.stubs / f"{d}.cand").unlink()
+        out = self.run_probe()
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("WARN fastrdp-freerdp3 neither installed nor in the host's APT sources"), out)
+        # build: compiled from this checkout, nothing to read on the host
+        self.assertEqual(self.run_probe(method="build"), [])
+
+    def test_dc_software(self):
+        self.host("samba.example.com", ldap="samba")
+        self.host("win.example.com", ldap="windows")
+        self.assertEqual(self.run_probe(method="build", idp="ad", domain="samba.example.com"), ["DC samba"])
+        self.assertEqual(self.run_probe(method="build", idp="ad", domain="win.example.com"), ["DC windows"])
+        self.assertEqual(self.run_probe(method="build", idp="ad", domain="down.example.com"), ["DC unknown"])
+        self.assertEqual(self.run_probe(method="build", idp="ad", domain="win.example.com", ldapsearch=False),
+                         ["DC unknown"])
+        self.assertEqual(self.run_probe(method="build", idp="ipa", domain="win.example.com"), [])
+
+
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+@unittest.skipUnless(shutil.which("dpkg"), "dpkg not installed (dpkg --compare-versions)")
+@unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-core not installed")
+class TestPreflightKdcEvidenceResult(unittest.TestCase):
+    """The 'MFA from KDC evidence' result, run by ansible-playbook on localhost per scenario."""
+
+    TASKS = ("Read the FreeRDP version and the DC software (KDC evidence)", "Result - MFA from KDC evidence")
+    BASE = {"fastrdp_realm": "LAB.EXAMPLE.COM", "fastrdp_identity_provider": "ipa", "fastrdp_mfa_mode": "push",
+            "fastrdp_install_method": "apt"}
+
+    def run_play(self, hosts, series="0005-winpr-kerberos-acceptor-keep-the-KDC-evidence-from-the-ticket.patch\n",
+                 names=None):
+        """hosts: name -> (inventory vars, stub files {ext: content}); names: the tasks to run
+        (default TASKS). Returns name -> result."""
+        play, ts = tasks()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "ansible").mkdir()
+            (tmp / "patches/freerdp").mkdir(parents=True)
+            (tmp / "patches/freerdp/series").write_text(series)
+            stubs = tmp / "stubs"
+            stubs.mkdir()
+            write_stubs(stubs)
+            defaults = {}
+            for f in sorted((REPO / "ansible/roles").glob("*/defaults/main.yml")):
+                defaults.update(yaml.safe_load(f.read_text()) or {})
+            pvars = dict(play["vars"])
+            pvars["preflight_role_defaults"] = {k: v for k, v in defaults.items()
+                                                if not (isinstance(v, str) and "{{" in v)}
+            inv = {}
+            for name, (hvars, files) in hosts.items():
+                hv = dict(self.BASE, fastrdp_domain=f"{name}.example.com", **hvars)
+                hv.update(ansible_connection="local", ansible_python_interpreter="{{ ansible_playbook_python }}")
+                inv[name] = hv
+                for ext, content in files.items():
+                    (stubs / f"{hv['fastrdp_domain']}.{ext}").write_text(content + "\n")
+            pb = [{"name": "KDC evidence", "hosts": "rdp_servers", "gather_facts": False, "vars": pvars,
+                   "tasks": [{"name": "Start", "ansible.builtin.set_fact": {"preflight_results": []}}]
+                   + [t for t in ts if t.get("name") in (names or self.TASKS)]
+                   + [{"name": "Save", "delegate_to": "localhost", "ansible.builtin.copy": {
+                       "content": "{{ preflight_results | to_json }}", "dest": str(tmp) + "/{{ inventory_hostname }}.json",
+                       "mode": "0644"}}]}]
+            (tmp / "ansible/pf.yml").write_text(yaml.safe_dump(pb, sort_keys=False))
+            (tmp / "hosts.yml").write_text(yaml.safe_dump({"all": {"children": {"rdp_servers": {"hosts": inv}}}}))
+            env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", ANSIBLE_LOCAL_TEMP=str(tmp),
+                       ANSIBLE_HOME=str(tmp), ANSIBLE_NOCOLOR="1")
+            r = subprocess.run(["ansible-playbook", "-i", str(tmp / "hosts.yml"), str(tmp / "ansible/pf.yml")],
+                               capture_output=True, text=True, env=env, timeout=300, check=False)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            out = {}
+            for name in hosts:
+                results = json.loads((tmp / f"{name}.json").read_text())
+                self.assertEqual(len(results), 1, results)
+                out[name] = results[0]
+        return out
+
+    def test_scenarios(self):
+        new = "install ok installed 3.32.2-4"
+        r = self.run_play({
+            "off": ({}, {}),
+            "ipa": ({"fastrdp_mfa_kdc_evidence_as_mfa": ["ind:pkinit", "ind:passkey"]}, {"inst": new}),
+            "old": ({"fastrdp_mfa_kdc_evidence_as_mfa": ["ind:pkinit"]},
+                    {"inst": "install ok installed 3.32.2-3", "cand": "3.32.2-3"}),
+            "samba": ({"fastrdp_identity_provider": "ad", "fastrdp_realm": "SAMBA.EXAMPLE.COM",
+                       "fastrdp_mfa_kdc_evidence_as_mfa": ["sid:S-1-18-3"]}, {"inst": new, "ldap": "samba"}),
+            "win": ({"fastrdp_identity_provider": "ad", "fastrdp_realm": "WIN.EXAMPLE.COM",
+                     "fastrdp_mfa_kdc_evidence_as_mfa": ["sid:S-1-18-3", "ind:pkinit"]}, {"inst": new, "ldap": "windows"}),
+            "whfb": ({"fastrdp_identity_provider": "ad", "fastrdp_realm": "WHFB.EXAMPLE.COM",
+                      "fastrdp_mfa_kdc_evidence_as_mfa": ["sid:S-1-18-4"]}, {"inst": new, "ldap": "windows"}),
+            "unknown": ({"fastrdp_identity_provider": "ad", "fastrdp_realm": "UNKNOWN.EXAMPLE.COM",
+                         "fastrdp_mfa_kdc_evidence_as_mfa": ["sid:S-1-18-4"]}, {"inst": new}),
+            "bad": ({"fastrdp_realm": "", "fastrdp_mfa_mode": "none",
+                     "fastrdp_mfa_kdc_evidence_as_mfa": ["ind:hardened", "sid:S-1-5-21-1-2-3-513", "pkinit"]},
+                    {"inst": new}),
+            "string": ({"fastrdp_mfa_kdc_evidence_as_mfa": "ind:pkinit"}, {"inst": new}),
+            "build": ({"fastrdp_install_method": "build", "fastrdp_mfa_kdc_evidence_as_mfa": ["ind:pkinit"]}, {}),
+        })
+        for name, res in r.items():
+            self.assertEqual(res["check"], "MFA from KDC evidence", name)
+        self.assertEqual((r["off"]["status"], r["off"]["detail"]),
+                         ("INFO", "not used (fastrdp_mfa_kdc_evidence_as_mfa empty)"))
+        self.assertEqual(r["ipa"]["status"], "PASS", r["ipa"])
+        self.assertIn("ind:pkinit or ind:passkey skip the second factor; fastrdp-freerdp3 3.32.2-4 installed",
+                      r["ipa"]["detail"])
+        self.assertEqual(r["old"]["status"], "FAIL", r["old"])
+        self.assertIn("never reaches the broker", r["old"]["detail"])
+        self.assertEqual(r["samba"]["status"], "WARN", r["samba"])
+        self.assertIn("Samba AD DC: only sid:S-1-18-3 can appear", r["samba"]["detail"])
+        self.assertIn("not hardware-bound", r["samba"]["detail"])
+        self.assertEqual(r["win"]["status"], "WARN", r["win"])
+        self.assertIn("KDC support for PKInit Freshness Extension", r["win"]["detail"])
+        self.assertIn("AD KDCs issue no authentication indicators: ind:pkinit never match", r["win"]["detail"])
+        self.assertEqual(r["whfb"]["status"], "PASS", r["whfb"])
+        self.assertEqual(r["unknown"]["status"], "WARN", r["unknown"])
+        self.assertIn("DC software not detected", r["unknown"]["detail"])
+        self.assertEqual(r["bad"]["status"], "FAIL", r["bad"])
+        for fragment in ("malformed: pkinit", "no second factor: ind:hardened, sid:S-1-5-21-1-2-3-513",
+                         "fastrdp_realm is empty", "fastrdp_mfa_mode is none"):
+            self.assertIn(fragment, r["bad"]["detail"])
+        self.assertEqual(r["string"]["status"], "FAIL", r["string"])
+        self.assertIn("must be a list", r["string"]["detail"])
+        self.assertEqual(r["build"]["status"], "PASS", r["build"])
+        self.assertIn("built from this checkout with patches/freerdp/0005", r["build"]["detail"])
+
+    def test_web_approval_timeouts(self):
+        """Same rule as roles/common: approval timeout 10..510, plus the broker's 90 s session
+        start at most fastrdp_proxy_broker_timeout (1..600)."""
+        web = {"fastrdp_mfa_mode": "web", "fastrdp_web_enabled": True}
+        r = self.run_play({
+            "fits": (dict(web, fastrdp_mfa_web_approval_timeout=90, fastrdp_proxy_broker_timeout=180), {}),
+            "max": (dict(web, fastrdp_mfa_web_approval_timeout=510, fastrdp_proxy_broker_timeout=600), {}),
+            "tight": (dict(web, fastrdp_mfa_web_approval_timeout=91, fastrdp_proxy_broker_timeout=180), {}),
+            "range": (dict(web, fastrdp_mfa_web_approval_timeout=520, fastrdp_proxy_broker_timeout=600), {}),
+            "proxy": (dict(web, fastrdp_proxy_broker_timeout=700), {}),
+            "noweb": ({"fastrdp_mfa_mode": "push_or_web", "fastrdp_mfa_web_approval_timeout": 30,
+                       "fastrdp_proxy_broker_timeout": 120}, {}),
+        }, names=("Result - MFA web approval",))
+        self.assertEqual(r["fits"]["status"], "PASS", r["fits"])
+        self.assertIn("RDP logins wait up to 90 s", r["fits"]["detail"])
+        self.assertEqual(r["max"]["status"], "PASS", r["max"])
+        self.assertEqual(r["tight"]["status"], "FAIL", r["tight"])
+        self.assertIn("(91 s) + 90 s session start exceeds fastrdp_proxy_broker_timeout (180 s)", r["tight"]["detail"])
+        self.assertEqual(r["range"]["status"], "FAIL", r["range"])
+        self.assertIn("is not whole seconds 10..510", r["range"]["detail"])
+        self.assertEqual(r["proxy"]["status"], "FAIL", r["proxy"])
+        self.assertIn("fastrdp_proxy_broker_timeout (700) is not whole seconds 1..600", r["proxy"]["detail"])
+        self.assertEqual(r["noweb"]["status"], "FAIL", r["noweb"])
+        self.assertIn("fastrdp_web_enabled is false", r["noweb"]["detail"])
+        self.assertNotIn("exceeds", r["noweb"]["detail"])
+
+    def test_build_without_patch_0005(self):
+        r = self.run_play({"build": ({"fastrdp_install_method": "build",
+                                      "fastrdp_mfa_kdc_evidence_as_mfa": ["ind:pkinit"]}, {})},
+                          series="0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch\n")
+        self.assertEqual(r["build"]["status"], "FAIL", r["build"])
+        self.assertIn("has no 0005", r["build"]["detail"])
 
 
 if __name__ == "__main__":

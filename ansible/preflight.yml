@@ -38,6 +38,10 @@
     preflight_kdc_enforced: >-
       {{ (fastrdp_mfa_nla_kdc_enforced | default(preflight_role_defaults.fastrdp_mfa_nla_kdc_enforced) | bool)
          and preflight_mfa_mode != 'none' }}
+    preflight_kdc_evidence: "{{ fastrdp_mfa_kdc_evidence_as_mfa | default(preflight_role_defaults.fastrdp_mfa_kdc_evidence_as_mfa) }}"
+    # fastrdp-freerdp3 with patches/freerdp/0005 (the acceptor keeps the KDC evidence of the
+    # ticket); older packages never pass it to the broker
+    preflight_kdc_evidence_min_freerdp: 3.32.2-4
     preflight_listen_port: "{{ fastrdp_listen_port | default(3389) | int }}"
     preflight_xrdp_port: "{{ fastrdp_xrdp_port | default(3390) | int }}"
     preflight_port_range: "{{ fastrdp_backend_port_range | default([33900, 34899]) }}"
@@ -677,20 +681,31 @@
     - name: Result - MFA web approval
       vars:
         approval_timeout: >-
-          {{ fastrdp_mfa_web_approval_timeout | default(preflight_role_defaults.fastrdp_mfa_web_approval_timeout) | int }}
-        proxy_timeout: "{{ fastrdp_proxy_broker_timeout | default(preflight_role_defaults.fastrdp_proxy_broker_timeout) | int }}"
+          {{ fastrdp_mfa_web_approval_timeout | default(preflight_role_defaults.fastrdp_mfa_web_approval_timeout) }}
+        proxy_timeout: "{{ fastrdp_proxy_broker_timeout | default(preflight_role_defaults.fastrdp_proxy_broker_timeout) }}"
+        # the broker's [broker] session_start_timeout (config.py, not rendered): the session
+        # start follows the approval within the same proxy wait (same rule as roles/common)
+        session_start: 90
         problems: >-
           {{ (['fastrdp_web_enabled is false (the approval page is on the web gateway)'] if not preflight_web_enabled else [])
-             + (['fastrdp_mfa_web_approval_timeout (' ~ approval_timeout ~ ' s) is not less than fastrdp_proxy_broker_timeout ('
-                 ~ proxy_timeout ~ ' s)'] if approval_timeout | int >= proxy_timeout | int else []) }}
+             + (['fastrdp_mfa_web_approval_timeout (' ~ approval_timeout ~ ') is not whole seconds 10..510']
+                if approval_timeout | string is not match('^[0-9]+$') or approval_timeout | int < 10
+                   or approval_timeout | int > 510 else [])
+             + (['fastrdp_proxy_broker_timeout (' ~ proxy_timeout ~ ') is not whole seconds 1..600']
+                if proxy_timeout | string is not match('^[0-9]+$') or proxy_timeout | int < 1
+                   or proxy_timeout | int > 600 else [])
+             + (['fastrdp_mfa_web_approval_timeout (' ~ approval_timeout ~ ' s) + ' ~ session_start
+                 ~ ' s session start exceeds fastrdp_proxy_broker_timeout (' ~ proxy_timeout ~ ' s)']
+                if approval_timeout | int + session_start | int > proxy_timeout | int else []) }}
       ansible.builtin.set_fact:
         preflight_results: >-
           {{ preflight_results + [{'check': 'MFA web approval',
              'status': 'FAIL' if problems else 'PASS',
              'detail': problems | join('; ') if problems else 'RDP logins wait up to ' ~ approval_timeout
-                       ~ ' s for approval on /web/approve (proxy waits ' ~ proxy_timeout ~ ' s)',
-             'fix': 'fastrdp_web_enabled: true; fastrdp_mfa_web_approval_timeout below fastrdp_proxy_broker_timeout, '
-                    ~ 'leaving time for the session start (docs/auth-matrix.md#web-approval)'}] }}
+                       ~ ' s for approval on /web/approve (proxy waits ' ~ proxy_timeout ~ ' s, '
+                       ~ session_start ~ ' s of it for the session start)',
+             'fix': 'fastrdp_web_enabled: true; fastrdp_proxy_broker_timeout at least fastrdp_mfa_web_approval_timeout + '
+                    ~ session_start ~ ' (the session start after the approval), at most 600 (docs/auth-matrix.md#web-approval)'}] }}
       when: preflight_mfa_mode in ['web', 'push_or_web']
 
     - name: Probe the OIDC issuer from the host
@@ -879,6 +894,106 @@
                     ~ allowed | map('regex_replace', '^', '--auth-ind=') | join(' ')
                     ~ ' (or let the identity role do it), or set fastrdp_mfa_nla_kdc_enforced: false; docs/passkeys.md'}] }}
       when: preflight_kdc_enforced
+
+    # ------------------------------------------------------------------ KDC evidence as MFA
+    # fastrdp_mfa_kdc_evidence_as_mfa: the proxy's FreeRDP must pass the ticket's evidence on
+    # (fastrdp-freerdp3 >= 3.32.2-4, patch 0005), and which SIDs appear depends on the DC
+    # software. Read-only: dpkg/apt-cache, and an anonymous LDAP rootDSE read (vendorName:
+    # Samba says so, Microsoft AD has none) when ldapsearch is installed.
+    - name: Read the FreeRDP version and the DC software (KDC evidence)
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -uo pipefail
+          if [ "$METHOD" = apt ]; then
+              # shellcheck disable=SC2016
+              inst=$(dpkg-query -W -f='${Status} ${Version}\n' fastrdp-freerdp3 2>/dev/null | awk '$3 == "installed" { print $4 }')
+              cand=$(apt-cache policy fastrdp-freerdp3 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }')
+              [ "$cand" = "(none)" ] && cand=
+              new_enough() { [ -n "$1" ] && dpkg --compare-versions "$1" ge "$MIN"; }
+              if new_enough "$inst"; then
+                  echo "PASS fastrdp-freerdp3 $inst installed"
+              elif new_enough "$cand"; then
+                  echo "PASS fastrdp-freerdp3 $cand available (installed: ${inst:-none}), deploy installs it"
+              elif [ -n "$inst$cand" ]; then
+                  echo "FAIL fastrdp-freerdp3 installed ${inst:-none}, available ${cand:-none}: older than $MIN" \
+                       "(patch 0005), the KDC evidence never reaches the broker"
+              else
+                  echo "WARN fastrdp-freerdp3 neither installed nor in the host's APT sources yet:" \
+                       "deploy must install $MIN or newer from the fastrdp repository"
+              fi
+          fi
+          if [ "$IDP" = ad ] && [ -n "$DOMAIN" ]; then
+              if ! command -v ldapsearch >/dev/null 2>&1; then
+                  echo "DC unknown"
+              elif ! out=$(timeout 6 ldapsearch -x -LLL -H "ldap://$DOMAIN" -o nettimeout=3 -l 3 -s base -b "" vendorName 2>/dev/null) \
+                      || ! grep -q '^dn:' <<<"$out"; then
+                  echo "DC unknown"
+              elif grep -qi '^vendorName:.*samba' <<<"$out"; then
+                  echo "DC samba"
+              else
+                  echo "DC windows"
+              fi
+          fi
+          exit 0
+      environment:
+        METHOD: "{{ preflight_install_method }}"
+        MIN: "{{ preflight_kdc_evidence_min_freerdp }}"
+        IDP: "{{ preflight_idp }}"
+        DOMAIN: "{{ preflight_domain }}"
+      register: preflight_kdc_evidence_probe
+      changed_when: false
+      failed_when: false
+      when: preflight_kdc_evidence | length > 0
+
+    - name: Result - MFA from KDC evidence
+      vars:
+        out: "{{ preflight_kdc_evidence_probe.stdout_lines | default([]) }}"
+        is_list: "{{ preflight_kdc_evidence is sequence and preflight_kdc_evidence is not string }}"
+        items: "{{ preflight_kdc_evidence | map('string') | list if is_list else [] }}"
+        # same item syntax and refusals as roles/common (and the broker's config.py)
+        malformed: >-
+          {{ items | reject('match', '^(ind:[!-~]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15})\Z') | list }}
+        refused: >-
+          {{ items | select('match', '^(ind:hardened|sid:S-1-18-[12]|sid:S-1-1-0|sid:S-1-5-11|sid:S-1-5-32-545|sid:S-1-5-21-.*-513)\Z') | list }}
+        indicators: "{{ items | select('match', '^ind:') | list }}"
+        fresh: "{{ 'sid:S-1-18-3' in items }}"
+        dc: "{{ out | select('match', '^DC ') | map('regex_replace', '^DC ', '') | first | default('unknown') }}"
+        series: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../patches/freerdp/series', errors='ignore') | default('', true) }}"
+        problems: >-
+          {{ ([] if is_list else ['fastrdp_mfa_kdc_evidence_as_mfa must be a list'])
+             + (['malformed: ' ~ malformed | join(', ') ~ ' (ind:<indicator> or sid:S-1-...)'] if malformed else [])
+             + (['in the tickets of password logons too, no second factor: ' ~ refused | join(', ')] if refused else [])
+             + (['fastrdp_realm is empty: the broker needs [auth] realms for KDC evidence'] if not preflight_realm else [])
+             + (out | select('match', '^FAIL ') | map('regex_replace', '^FAIL ', '') | list)
+             + (['patches/freerdp/series of this checkout has no 0005 (KDC evidence): the built FreeRDP never passes it on']
+                if preflight_install_method == 'build' and series is not search('(?m)^0005-') else []) }}
+        warnings: >-
+          {{ (out | select('match', '^WARN ') | map('regex_replace', '^WARN ', '') | list)
+             + (['fastrdp_mfa_mode is none: the evidence has no effect'] if preflight_mfa_mode == 'none' else [])
+             + (['fastrdp_mfa_nla_kdc_enforced is on: it decides first, the evidence decides nothing'] if preflight_kdc_enforced else [])
+             + (['AD KDCs issue no authentication indicators: ' ~ indicators | join(', ') ~ ' never match']
+                if preflight_idp == 'ad' and indicators else [])
+             + (['Samba AD DC: only sid:S-1-18-3 can appear (no S-1-18-4/-5/-6, no AMA groups), and it is not hardware-bound '
+                 ~ '(a certificate in software gets it too)'] if preflight_idp == 'ad' and dc == 'samba' else [])
+             + (['Microsoft AD adds sid:S-1-18-3 only with the DC policy "KDC support for PKInit Freshness Extension" '
+                 ~ '(off by default), and it is not hardware-bound'] if preflight_idp == 'ad' and dc == 'windows' and fresh else [])
+             + (['DC software not detected (needs ldapsearch and an anonymous rootDSE read): Samba AD adds only sid:S-1-18-3, '
+                 ~ 'Microsoft AD adds it only with the DC policy "KDC support for PKInit Freshness Extension"; '
+                 ~ 'it is not hardware-bound'] if preflight_idp == 'ad' and dc == 'unknown' else []) }}
+        version: >-
+          {{ (out | select('match', '^PASS ') | map('regex_replace', '^PASS ', '') | first | default(''))
+             if preflight_install_method == 'apt' else 'built from this checkout with patches/freerdp/0005' }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'MFA from KDC evidence',
+             'status': ('FAIL' if problems else ('WARN' if warnings else 'PASS')) if items or not is_list else 'INFO',
+             'detail': ((problems + warnings) | join('; ') if (problems + warnings)
+                        else 'Kerberos NLA logins with ' ~ items | join(' or ') ~ ' skip the second factor; ' ~ version)
+                       if items or not is_list else 'not used (fastrdp_mfa_kdc_evidence_as_mfa empty)',
+             'fix': 'fastrdp_mfa_kdc_evidence_as_mfa: items ind:<indicator> (FreeIPA ind:pkinit, ind:passkey) or sid:S-1-... '
+                    ~ '(AD sid:S-1-18-4, sid:S-1-18-3, an AMA group); fastrdp-freerdp3 >= ' ~ preflight_kdc_evidence_min_freerdp
+                    ~ '; docs/passkeys.md#kdc-evidence-per-login'}] }}
 
     - name: Probe the APT repository from the host
       ansible.builtin.uri:

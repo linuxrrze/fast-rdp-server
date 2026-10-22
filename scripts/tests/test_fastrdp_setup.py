@@ -511,6 +511,122 @@ class TestValidation(SetupTestCase):
             self.assertEqual(json.loads(q), s)
 
 
+@unittest.skipIf(yaml is None, "PyYAML not installed")
+class TestMfaAndAudioOptions(SetupTestCase):
+    """MFA modes web/push_or_web, web approval settings, KDC evidence and audio."""
+
+    ENV = {"FASTRDP_JOIN_PASSWORD": "x", "FASTRDP_WEB_OIDC_CLIENT_SECRET": "z"}
+    WEB = {"web_oidc_issuer": "https://sso.lab.example.com/realms/lab"}
+
+    def main(self, answers):
+        inv, _ = self.generate(answers, "--force", env=self.ENV)
+        return yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+
+    def assert_rejected(self, answers, fragment):
+        rc, _o, err = self.run_tool(answers, env=self.ENV)
+        self.assertEqual(rc, 2, err)
+        self.assertIn(fragment, err)
+
+    def test_web_approval(self):
+        main = self.main(dict(LAB, mfa_mode="web", **self.WEB))
+        self.assertEqual(main["fastrdp_mfa_mode"], "web")
+        self.assertIs(main["fastrdp_web_enabled"], True)        # default with web approval
+        # no privacyIDEA in mode web; approval settings at their role defaults are not written
+        for k in ("fastrdp_privacyidea_url", "fastrdp_mfa_web_approval_timeout",
+                  "fastrdp_mfa_web_approval_max_auth_age", "fastrdp_mfa_web_approval_single_pending"):
+            self.assertNotIn(k, main)
+        # the proxy waits for the approval plus the session start
+        need = 90 + setup.SESSION_START_TIMEOUT
+        if need > setup.ROLE_DEFAULTS["fastrdp_proxy_broker_timeout"]:
+            self.assertEqual(main["fastrdp_proxy_broker_timeout"], need)
+        else:
+            self.assertNotIn("fastrdp_proxy_broker_timeout", main)
+        main = self.main(dict(LAB, mfa_mode="web", mfa_web_approval_timeout="300",
+                              mfa_web_approval_max_auth_age=60, mfa_web_approval_single_pending="n", **self.WEB))
+        self.assertEqual(main["fastrdp_mfa_web_approval_timeout"], 300)
+        self.assertEqual(main["fastrdp_proxy_broker_timeout"], 300 + setup.SESSION_START_TIMEOUT)
+        self.assertEqual(main["fastrdp_mfa_web_approval_max_auth_age"], 60)
+        self.assertIs(main["fastrdp_mfa_web_approval_single_pending"], False)
+        main = self.main(dict(LAB, mfa_mode="web", mfa_web_approval_timeout=510, **self.WEB))
+        self.assertEqual(main["fastrdp_proxy_broker_timeout"], 600)        # the proxy's maximum
+        # push_or_web: privacyIDEA as for push, plus the approval page
+        main = self.main(dict(LAB, mfa_mode="push_or_web", privacyidea_url="https://pi.lab.example.com",
+                              privacyidea_service_user="svc", privacyidea_service_password="pw", **self.WEB))
+        self.assertEqual(main["fastrdp_privacyidea_url"], "https://pi.lab.example.com")
+        self.assertEqual(main["fastrdp_privacyidea_service_user"], "svc")
+        self.assertIs(main["fastrdp_web_enabled"], True)
+        # other modes: the approval settings are neither asked nor written
+        main = self.main(dict(LAB, mfa_mode="push", privacyidea_url="https://pi.lab.example.com",
+                              mfa_web_approval_timeout=300))
+        self.assertNotIn("fastrdp_mfa_web_approval_timeout", main)
+        self.assertNotIn("fastrdp_proxy_broker_timeout", main)
+
+    def test_web_approval_rejections(self):
+        self.assert_rejected(dict(LAB, mfa_mode="web", web_enabled=False),
+                             "web_enabled: MFA mode 'web' needs browser access")
+        self.assert_rejected(dict(LAB, mfa_mode="push_or_web", **self.WEB), "privacyidea_url: missing answer")
+        for value, fragment in (("5", "from 10 to 510"), (511, "from 10 to 510"), ("1m", "from 10 to 510"),
+                                (True, "from 10 to 510")):
+            with self.subTest(value=value):
+                self.assert_rejected(dict(LAB, mfa_mode="web", mfa_web_approval_timeout=value, **self.WEB), fragment)
+        self.assert_rejected(dict(LAB, mfa_mode="web", mfa_web_approval_max_auth_age=301, **self.WEB),
+                             "from 0 to 300")
+
+    def test_kdc_evidence(self):
+        pi = {"mfa_mode": "push", "privacyidea_url": "https://pi.lab.example.com"}
+        main = self.main(dict(LAB, mfa_kdc_evidence_as_mfa="sid:S-1-18-4, sid:S-1-5-21-1-2-3-1300 sid:S-1-18-4",
+                              **pi))
+        self.assertEqual(main["fastrdp_mfa_kdc_evidence_as_mfa"], ["sid:S-1-18-4", "sid:S-1-5-21-1-2-3-1300"])
+        main = self.main(dict(LAB, mfa_kdc_evidence_as_mfa=["ind:pkinit", "ind:passkey"], **pi))
+        self.assertEqual(main["fastrdp_mfa_kdc_evidence_as_mfa"], ["ind:pkinit", "ind:passkey"])
+        self.assertNotIn("fastrdp_mfa_kdc_evidence_as_mfa", self.main(dict(LAB, **pi)))
+        # no effect without MFA: not written
+        self.assertNotIn("fastrdp_mfa_kdc_evidence_as_mfa", self.main(dict(LAB, mfa_kdc_evidence_as_mfa="ind:pkinit")))
+        for item in ("ind:hardened", "sid:S-1-18-1", "sid:S-1-18-2", "sid:S-1-1-0", "sid:S-1-5-11",
+                     "sid:S-1-5-32-545", "sid:S-1-5-21-1111-2222-3333-513"):
+            with self.subTest(item=item):
+                self.assert_rejected(dict(LAB, mfa_kdc_evidence_as_mfa=["ind:pkinit", item], **pi),
+                                     "it is no second factor")
+        for item in ("pkinit", "sid:X-1-18-4", "SID:S-1-18-4", "sid:S-1-18-4x", "ind:" + "x" * 65):
+            with self.subTest(item=item):
+                self.assert_rejected(dict(LAB, mfa_kdc_evidence_as_mfa=[item], **pi), "invalid item")
+
+    def test_kdc_evidence_rules_match_roles_common(self):
+        checks = (ROLES / "common/tasks/main.yml").read_text()
+        block = checks.split("fastrdp_mfa_kdc_evidence_as_mfa | map('string')", 1)[1]
+        item = re.search(r"reject\('match', '([^']+)'\)", block).group(1)
+        refused = re.search(r"select\('match', '([^']+)'\)", block).group(1)
+        self.assertEqual(setup.KDC_EVIDENCE_ITEM_RE.pattern, item)
+        self.assertEqual(setup.KDC_EVIDENCE_NOT_MFA_RE.pattern, refused)
+
+    def test_audio(self):
+        main = self.main(LAB)
+        self.assertNotIn("fastrdp_audio", main)
+        self.assertNotIn("fastrdp_audio_input", main)
+        main = self.main(dict(LAB, audio_input="n"))
+        self.assertIs(main["fastrdp_audio_input"], False)
+        self.assertNotIn("fastrdp_audio", main)
+        # no audio: the microphone question does not apply
+        main = self.main(dict(LAB, audio="no", audio_input="n"))
+        self.assertIs(main["fastrdp_audio"], False)
+        self.assertNotIn("fastrdp_audio_input", main)
+
+    def test_advanced_questions_only_in_production(self):
+        qs = {q.key: q for q in setup.QUESTIONS}
+        lab, prod = {"profile": "lab"}, {"profile": "production"}
+        for key in ("audio_input", "mfa_kdc_evidence_as_mfa", "mfa_web_approval_timeout",
+                    "mfa_web_approval_max_auth_age", "mfa_web_approval_single_pending"):
+            self.assertFalse(qs[key].ask(lab), key)
+            self.assertTrue(qs[key].ask(prod), key)
+        self.assertTrue(qs["audio"].ask(lab))
+        web = {"mfa_mode": "web"}
+        self.assertTrue(qs["mfa_web_approval_timeout"].when(web))
+        self.assertFalse(qs["privacyidea_url"].when(web))
+        self.assertTrue(qs["privacyidea_url"].when({"mfa_mode": "push_or_web"}))
+        self.assertTrue(qs["web_enabled"].default_for(web))
+        self.assertFalse(qs["mfa_kdc_evidence_as_mfa"].when({"mfa_mode": "none"}))
+
+
 class FakeTTY(io.StringIO):
     """stdin of an interactive run: these lines, then Ctrl-D (or Ctrl-C with interrupt=True)."""
 
