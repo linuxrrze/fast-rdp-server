@@ -94,7 +94,8 @@ VARIABLES = [
     ("front-end", "fastrdp_front_key_src", "", "PEM private key on this machine"),
     ("front-end", "fastrdp_allow_tls_logins", True,
      "accept clients without NLA (password, plus OTP, typed into one field)"),
-    ("MFA", "fastrdp_mfa_mode", "none", "none | otp | push | otp_or_push | web | push_or_web (docs/auth-matrix.md)"),
+    ("MFA", "fastrdp_mfa_mode", "none", "second factor of RDP logins: none | web (Keycloak) | push | otp | otp_or_push "
+     "(privacyIDEA) | push_or_web (both) (docs/auth-matrix.md)"),
     ("MFA", "fastrdp_privacyidea_url", "", "privacyIDEA base URL"),
     ("MFA", "fastrdp_privacyidea_realm", "", "privacyIDEA realm (\"\" = its default realm)"),
     ("MFA", "fastrdp_privacyidea_ca_src", "", "CA of privacyIDEA, on this machine (\"\" = system trust store)"),
@@ -519,13 +520,32 @@ QUESTIONS = [
            "FreeRDP /microphone, the browser's permission on the web path). n: the PipeWire xrdp\n"
            "module is loaded speaker-only and the web path does not offer the microphone. A default,\n"
            "not a policy: users can load the module themselves, GNOME has no switch (docs/audio.md)."),
-    Q("mfa_mode", "MFA: none / push / otp / otp_or_push (privacyIDEA) / web / push_or_web (web approval)",
+    Q("mfa_mode", "Second factor for RDP logins: none / web (Keycloak) / push / otp / otp_or_push "
+      "(privacyIDEA) / push_or_web (both)",
       v_choice("none", "push", "otp", "otp_or_push", "web", "push_or_web"), "none",
-      help="privacyIDEA: push: approve on the phone (works with NLA). otp: code appended to the\n"
-           "password (TLS logins only). otp_or_push: OTP if appended, otherwise push.\n"
-           "Web gateway (browser access, asked below, must be on): web: approve the login on\n"
-           "https://<fqdn>/web/approve after a fresh MFA sign-in at Keycloak (passkey, TOTP; no\n"
-           "privacyIDEA). push_or_web: push and web approval at once, the first answer wins."),
+      help="Which system provides the second factor (MFA) of RDP logins (mstsc, FreeRDP, ...)?\n"
+           "The RDP client cannot ask for it, so the login waits while the user confirms elsewhere.\n"
+           "\n"
+           "  none         no second factor (password or Kerberos only)\n"
+           "\n"
+           "  Keycloak's MFA (passkey, Windows Hello, TOTP, WebAuthn); no privacyIDEA needed:\n"
+           "  web          the user opens https://<fqdn>/web/approve (link, bookmark, QR code on\n"
+           "               the waiting screen), signs in at Keycloak with MFA and clicks Approve.\n"
+           "               Needs browser access (asked below) and Keycloak enforcing MFA for\n"
+           "               acr=mfa (docs/web-access.md#keycloak-setup).\n"
+           "\n"
+           "  privacyIDEA (its app or tokens):\n"
+           "  push         the user approves a push notification in the privacyIDEA app\n"
+           "  otp          one-time code appended to the password; TLS logins only (no NLA,\n"
+           "               so not with Kerberos single sign-on)\n"
+           "  otp_or_push  appended code if there is one, otherwise push\n"
+           "\n"
+           "  Both:\n"
+           "  push_or_web  privacyIDEA push and Keycloak web approval at once; whichever the\n"
+           "               user answers first counts\n"
+           "\n"
+           "Browser logins (Guacamole) always use Keycloak's MFA, whatever is chosen here.\n"
+           "Details: docs/auth-matrix.md (MFA modes)."),
     Q("privacyidea_url", "privacyIDEA URL", v_https_url, when=_pi),
     Q("privacyidea_realm", "privacyIDEA realm (empty = its default realm)", _str, "", when=_pi),
     Q("privacyidea_ca", "CA certificate of privacyIDEA on this machine (empty = system trust store)",

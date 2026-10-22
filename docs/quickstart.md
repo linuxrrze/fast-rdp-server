@@ -59,7 +59,7 @@ Desktops (comma-separated) [xfce]:
 Default desktop [xfce]:
 GPU: auto / nvidia / mesa (Intel, AMD) / none [auto]:
 Sound in sessions? (y/n) [y]:
-MFA: none / push / otp / otp_or_push (privacyIDEA) / web / push_or_web (web approval) [none]:
+Second factor for RDP logins: none / web (Keycloak) / push / otp / otp_or_push (privacyIDEA) / push_or_web (both) [none]:
 Browser access via Keycloak/OIDC + Guacamole? (y/n) [n]:
 Install method: apt (packages, recommended) / build (compile on the host) [build]:
 RDP certificate: self-signed (lab) / provided (PEM files) [self-signed]:
@@ -216,6 +216,19 @@ checksum, and defaults to a provided certificate. Work through the list before `
       admin machine (P). The web path uses the same certificate.
 
 **MFA** ([auth-matrix.md](auth-matrix.md))
+
+Which mode to choose for the second factor of RDP logins:
+
+| You want the second factor from | Mode | Users confirm by |
+|---|---|---|
+| nobody (password / Kerberos only) | `none` | – |
+| **Keycloak** (passkey, Windows Hello, TOTP, WebAuthn) | `web` | signing in at `https://<fqdn>/web/approve` and clicking Approve |
+| **privacyIDEA** | `push` | the push in the privacyIDEA app |
+| privacyIDEA, code typed with the password | `otp` (TLS logins only), `otp_or_push` | appending the code to the password |
+| both, whichever answers first | `push_or_web` | the push, or the approval page |
+
+Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice.
+
 - [ ] privacyIDEA realm reading the same users; `otppin=none` for OTP.
 - [ ] For push after Kerberos SSO: a service admin with the `triggerchallenge` right.
 - [ ] A break-glass group in `mfa_exempt_groups`, used sparingly.

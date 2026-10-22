@@ -81,7 +81,9 @@ fastrdp_tls_login_sources: >-
 fastrdp_accept_remote_guard: false
 
 # ---------------------------------------------------------------- MFA
-fastrdp_mfa_mode: none               # none | otp | push | otp_or_push | web | push_or_web (docs/auth-matrix.md)
+# Second factor of RDP logins (docs/auth-matrix.md): none; web = Keycloak's MFA (users approve
+# on <public_url>/web/approve); push | otp | otp_or_push = privacyIDEA; push_or_web = both.
+fastrdp_mfa_mode: none
 fastrdp_privacyidea_url: ""          # REQUIRED for otp, push, otp_or_push, push_or_web
 fastrdp_privacyidea_realm: ""
 fastrdp_privacyidea_ca_src: ""       # PEM on the controller; "" = system trust store
