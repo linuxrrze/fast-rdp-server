@@ -1978,5 +1978,47 @@ class BrowserSso(unittest.TestCase):
         self.assertIn("heim_org.h5l.kcm-socket", text)
 
 
+
+class HandlerFlush(unittest.TestCase):
+    """The base role's upgrade handlers run at the identity role's flush_handlers, before the
+    roles that install the units: a unit that does not exist yet (systemctl exit 5) is no error,
+    any other failure is (handler_flush.yml with a fake systemctl; the 0.6.1 deploy failure)."""
+
+    def run_flush(self, fail_unit=""):
+        with tempfile.TemporaryDirectory(prefix="fastrdp-flush.") as d:
+            log = Path(d, "calls")
+            fake = Path(d, "systemctl")
+            fake.write_text(
+                "#!/bin/sh\n"
+                f'echo "$*" >> {log}\n'
+                'case "$2" in\n'
+                "  fastrdp-webgate.service) exit 5 ;;\n"
+                f"  {fail_unit or 'none.invalid'}) exit 1 ;;\n"
+                "esac\n"
+                "exit 0\n")
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}", ANSIBLE_LOCALHOST_WARNING="false",
+                       ANSIBLE_INVENTORY_UNPARSED_WARNING="false", ANSIBLE_NOCOLOR="1",
+                       ANSIBLE_PYTHON_INTERPRETER=sys.executable, ANSIBLE_FORCE_HANDLERS="1")
+            env.pop("ANSIBLE_CONFIG", None)
+            res = subprocess.run([shutil.which("ansible-playbook"), "-i", "localhost,", str(HERE / "handler_flush.yml")],
+                                 env=env, capture_output=True, text=True, cwd=HERE)
+            calls = log.read_text().splitlines() if log.exists() else []
+        return res, calls
+
+    def test_missing_unit_is_no_error(self):
+        res, calls = self.run_flush()
+        self.assertEqual(res.returncode, 0, res.stdout[-3000:])
+        self.assertIn("after-flush", res.stdout)
+        for unit in ("fastrdp-brokerd.service", "fastrdp-proxy.service", "fastrdp-webgate.service",
+                     "xrdp-sesman.service", "xrdp.service"):
+            self.assertIn(f"try-restart {unit}", calls)
+        self.assertTrue(all(c.startswith("try-restart ") for c in calls), calls)
+
+    def test_other_failures_still_fail(self):
+        res, _ = self.run_flush(fail_unit="fastrdp-brokerd.service")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertNotIn("after-flush", res.stdout)
+
 if __name__ == "__main__":
     unittest.main()

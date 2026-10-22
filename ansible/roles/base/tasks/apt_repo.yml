@@ -84,7 +84,7 @@
         update_cache: true
         cache_valid_time: 0
       when: older | length > 0
-      notify: [Restart fastrdp-brokerd, Restart fastrdp-proxy, Restart fastrdp-webgate]
+      notify: Try-restart fastrdp services after an upgrade
 
     # The vendored FreeRDP/xrdp packages have their own versions (packaging/*/debian/changelog
     # of this checkout): a patch-only change bumps their revision, which the fastrdp packages'
@@ -99,7 +99,7 @@
       loop: "{{ fastrdp_outdated_pkgs.stdout_lines | map('split') | selectattr('0', 'defined') | selectattr('0', 'eq', 'vendored') | list }}"
       loop_control:
         label: "{{ item.1 }} {{ item.2 }}"
-      notify: [Restart fastrdp-proxy, Restart xrdp]
+      notify: Try-restart vendored services after an upgrade
 
     # If the repository has nothing newer, stop here: newer roles would write settings the
     # installed packages reject. (Check mode upgrades nothing, so nothing to check.)

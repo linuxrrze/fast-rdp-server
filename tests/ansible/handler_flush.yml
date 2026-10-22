@@ -1,0 +1,28 @@
+---
+# The base role's upgrade handlers (roles/base/handlers/main.yml) as the identity role's
+# meta: flush_handlers runs them: before broker/freerdp_proxy/web_gateway installed their
+# units. A fake systemctl on PATH (test_templates.HandlerFlush) logs the calls and answers 5
+# (not installed) for fastrdp-webgate.service.
+- name: Base upgrade handlers flushed before the services exist
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  handlers:
+    - name: Base handlers
+      ansible.builtin.import_tasks: ../../ansible/roles/base/handlers/main.yml
+  tasks:
+    - name: Packages upgraded
+      ansible.builtin.debug:
+        msg: upgraded
+      changed_when: true
+      notify:
+        - Try-restart fastrdp services after an upgrade
+        - Try-restart vendored services after an upgrade
+        - Try-restart fastrdp-proxy
+
+    - name: Flush like the identity role
+      ansible.builtin.meta: flush_handlers
+
+    - name: Still running after the flush
+      ansible.builtin.debug:
+        msg: after-flush

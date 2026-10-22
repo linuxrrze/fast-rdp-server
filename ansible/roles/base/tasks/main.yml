@@ -61,7 +61,7 @@
     - {src: "{{ fastrdp_front_cert_src }}", dest: front.crt, mode: "0644"}
     - {src: "{{ fastrdp_front_key_src }}", dest: front.key, mode: "0640"}
   when: fastrdp_front_cert_src | length > 0
-  notify: Restart fastrdp-proxy
+  notify: Try-restart fastrdp-proxy
 
 - name: Front-end TLS certificate (self-signed, lab only)
   ansible.builtin.command:

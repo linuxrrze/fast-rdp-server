@@ -198,7 +198,7 @@
     src: fastrdp-web.nft.j2
     dest: /etc/nftables.d/fastrdp-web.nft
     mode: "0644"
-  notify: Reload nftables
+  notify: Reload nftables (web gateway)
 
 - name: KDC proxy for off-network Kerberos clients (opt-in, fastrdp_web_kdcproxy)
   ansible.builtin.include_tasks: kdcproxy.yml

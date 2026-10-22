@@ -12,8 +12,30 @@
   ansible.builtin.command: mount -o remount /proc  # noqa: command-instead-of-module - remount only, fstab is managed by the task
   changed_when: true
 
-- name: Restart fastrdp-proxy
-  ansible.builtin.service:
-    name: fastrdp-proxy
-    state: restarted
-  failed_when: false
+# The base role runs before the roles that install the services below, and the identity
+# role flushes handlers (meta: flush_handlers) before those roles run: on a new host, or one
+# where the web gateway was just enabled, a unit may not exist yet. try-restart restarts
+# running units only and exits 5 for a unit that is not installed. Own names: a handler with
+# the same name in a later role (freerdp_proxy, xrdp, web_gateway) would replace this one.
+- name: Try-restart fastrdp services after an upgrade
+  ansible.builtin.command:  # noqa: command-instead-of-module - no module state for try-restart
+    argv: [systemctl, try-restart, "{{ item }}"]
+  loop: [fastrdp-brokerd.service, fastrdp-proxy.service, fastrdp-webgate.service]
+  register: fastrdp_try_restart
+  changed_when: fastrdp_try_restart.rc == 0
+  failed_when: fastrdp_try_restart.rc not in [0, 5]
+
+- name: Try-restart vendored services after an upgrade
+  ansible.builtin.command:  # noqa: command-instead-of-module - no module state for try-restart
+    argv: [systemctl, try-restart, "{{ item }}"]
+  loop: [fastrdp-proxy.service, xrdp-sesman.service, xrdp.service]
+  register: fastrdp_try_restart
+  changed_when: fastrdp_try_restart.rc == 0
+  failed_when: fastrdp_try_restart.rc not in [0, 5]
+
+- name: Try-restart fastrdp-proxy
+  ansible.builtin.command:  # noqa: command-instead-of-module - no module state for try-restart
+    argv: [systemctl, try-restart, fastrdp-proxy.service]
+  register: fastrdp_try_restart
+  changed_when: fastrdp_try_restart.rc == 0
+  failed_when: fastrdp_try_restart.rc not in [0, 5]

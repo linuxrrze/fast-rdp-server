@@ -83,16 +83,39 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
-    def test_cross_role_handlers_guarded(self):
-        # the base role's package upgrade notifies the web gateway's restart on every host;
-        # without the guard a host without the web gateway fails in the handler (no unit)
-        repo = (ANSIBLE / "roles" / "base" / "tasks" / "apt_repo.yml").read_text()
-        self.assertIn("Restart fastrdp-webgate", repo)
-        handlers = (ANSIBLE / "roles" / "web_gateway" / "handlers" / "main.yml").read_text()
-        block = handlers.split("- name: Restart fastrdp-webgate", 1)[1].split("\n- name:", 1)[0]
-        self.assertIn("when: fastrdp_web_enabled | bool", block)
-        site = (ANSIBLE / "site.yml").read_text()
-        self.assertIn("when: fastrdp_web_enabled | bool", site.split("role: web_gateway", 1)[1].split("- role:", 1)[0])
+    def test_roles_notify_only_their_own_handlers(self):
+        # base runs first and the identity role flushes handlers (meta: flush_handlers) before
+        # broker/freerdp_proxy/web_gateway install their units; a handler of a later role run
+        # from there fails on a host where the unit does not exist yet (0.6.1 deploy failure)
+        roles = ANSIBLE / "roles"
+        owner = {}
+        for f in roles.glob("*/handlers/main.yml"):
+            for name in re.findall(r"(?m)^- name: (.+)$", f.read_text()):
+                owner[name] = f.parent.parent.name
+        for f in sorted(roles.glob("*/tasks/*.yml")):
+            role = f.parent.parent.name
+            text = f.read_text()
+            self.assertNotRegex(text, r"(?m)^\s*notify:\s*$", f"{f}: multi-line notify (not checked)")
+            for m in re.finditer(r"(?m)^\s*notify: (.+)$", text):
+                value = m.group(1).strip()
+                names = [n.strip() for n in value.strip("[]").split(",")] if value.startswith("[") else [value]
+                for name in names:
+                    self.assertEqual(owner.get(name), role, f"{f}: notify {name!r} is not a {role} handler")
+        handlers = (roles / "base" / "handlers" / "main.yml").read_text()
+        for name in ("Try-restart fastrdp services after an upgrade",
+                     "Try-restart vendored services after an upgrade", "Try-restart fastrdp-proxy"):
+            block = handlers.split(f"- name: {name}", 1)[1].split("\n- name:", 1)[0]
+            self.assertIn("try-restart", block)
+            self.assertIn("failed_when: fastrdp_try_restart.rc not in [0, 5]", block)
+
+    def test_handler_names_unique_across_roles(self):
+        # with two handlers of the same name only the last loaded one runs (base's tolerant
+        # "Restart fastrdp-proxy" was silently replaced by freerdp_proxy's)
+        seen = {}
+        for f in sorted((ANSIBLE / "roles").glob("*/handlers/main.yml")):
+            for name in re.findall(r"(?m)^- name: (.+)$", f.read_text()):
+                self.assertNotIn(name, seen, f"handler {name!r} in {f.parent.parent.name} and {seen.get(name)}")
+                seen[name] = f.parent.parent.name
 
     def test_join_passwords_never_on_a_command_line(self):
         # /proc/<pid>/cmdline is world-readable: join passwords go on stdin or into the
