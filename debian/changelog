@@ -1,3 +1,26 @@
+fast-rdp-server (0.5.1) unstable; urgency=medium
+
+  * Security: back-end TLS certificates pinned (the broker sends each target's
+    SHA-256, proxy.ini CertificatePolicy=deny; hand-written proxy.ini files must
+    change "allow" to "deny"); missing homes created outside the broker's
+    ProtectHome sandbox; FreeIPA join password on stdin; CI signing key only in
+    the steps that use it, actions pinned to commit SHAs.
+  * MFA web approval ([mfa] mode = web / push_or_web): approve a pending RDP
+    login on the web gateway after a fresh Keycloak sign-in (passkeys, Windows
+    Hello).
+  * MFA from KDC evidence per login ([mfa] kdc_evidence_as_mfa): FreeIPA
+    authentication indicators and AD PAC SIDs (S-1-18-3/-4, AMA groups) skip
+    the second factor (fastrdp-freerdp3 3.32.2-4).
+  * Desktop choice for RDP logins on the web gateway's chooser page, .rdp
+    file download.
+  * Audio and microphone for xrdp, wlroots and GNOME sessions
+    (fastrdp_audio, fastrdp_audio_input).
+  * Base role: package check by script, stops if packages stay older than
+    the roles; CI deploys GitHub Pages from main and checks the site is live.
+  * Docs: MFA options with mstsc, Windows Hello (incl. Samba AD), audio.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 12:14:49 +0200
+
 fast-rdp-server (0.5.0) unstable; urgency=medium
 
   * Kerberos NLA from Windows mstsc with AD: user-to-user acceptor
