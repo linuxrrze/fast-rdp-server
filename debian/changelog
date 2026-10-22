@@ -1,3 +1,23 @@
+fast-rdp-server (0.7.0) unstable; urgency=medium
+
+  * Waiting screen on by default (fastrdp_proxy_waiting_screen and the
+    module's [FastRDP] WaitingScreen default) with a new look: antialiased
+    Roboto text on a card with rounded corners, countdown bar, QR code tile.
+  * The waiting screen's QR code opens the approval for that login
+    (<approve_url>?login=<id>); it can be approved although other logins of
+    the user wait. [ui] approve_url now at most 184 characters.
+  * Web sign-ins that do not prove MFA get a "Second factor required" page
+    and an actionable log line; the setup wizard and preflight cover
+    Keycloak's MFA for acr=mfa (fastrdp_web_passkeys).
+  * Deploy fix: the base role's upgrade handlers use systemctl try-restart
+    and no longer fail when a service is not installed yet (identity's
+    flush_handlers); handler names unique across roles (the web gateway's
+    "Reload nftables" replaced the base role's).
+  * Notifications: Android without Google services (ntfy app, UnifiedPush),
+    fastrdp_web_notify_webpush_extra_hosts.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 21:34:42 +0200
+
 fast-rdp-server (0.6.1) unstable; urgency=medium
 
   * Deploy fix: the web gateway's restart handler (notified by the base
