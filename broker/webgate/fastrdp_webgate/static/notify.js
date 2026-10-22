@@ -18,12 +18,16 @@
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const standalone = window.navigator.standalone === true ||
     window.matchMedia("(display-mode: standalone)").matches;
+  // Chrome, Edge, Samsung Internet and Firefox on Android need Google's push service
+  // (docs/notifications.md#android-without-google-services)
+  const android = /Android/.test(navigator.userAgent) ? " On Android without Google services, use " +
+    "the ntfy app (F-Droid), or IronFox/Fennec with a UnifiedPush app." : "";
 
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     say(ios && !standalone
       ? "On iPhone and iPad: tap Share, then “Add to Home Screen”, open fastrdp from the " +
         "home screen and come back to this page there (iOS 16.4 or later)."
-      : "This browser cannot receive push notifications. Use the ntfy app instead, if offered.");
+      : "This browser cannot receive push notifications. Use the ntfy app instead, if offered." + android);
     return;
   }
 
@@ -90,7 +94,7 @@
         await register(s);
         window.location.reload();
       } catch (e) {
-        say("Could not turn notifications on: " + e.message);
+        say("Could not turn notifications on: " + e.message + android);
       } finally {
         button.disabled = false;
       }

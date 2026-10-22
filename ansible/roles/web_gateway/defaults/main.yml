@@ -45,6 +45,11 @@ fastrdp_web_notify_ntfy_token: "{{ vault_fastrdp_web_notify_ntfy_token | default
 # (/etc/fastrdp/webgate-vapid.pem) is generated once; replacing it invalidates every
 # browser subscription.
 fastrdp_web_notify_vapid_subject: "mailto:root@{{ fastrdp_fqdn }}"
+# webpush: push services accepted besides the browsers' own (FCM, Mozilla, Apple, WNS),
+# e.g. [ntfy.example.com] for your ntfy server as UnifiedPush distributor of IronFox or
+# Fennec on Android without Google services. DNS names (and their subdomains), https on
+# port 443 only. Only your own server: the gateway POSTs there for any signed-in user.
+fastrdp_web_notify_webpush_extra_hosts: []
 # At most N notifications per user within SECONDS ("N/SECONDS"); above that one alert
 # without a link per window.
 fastrdp_web_notify_rate_limit: "3/600"

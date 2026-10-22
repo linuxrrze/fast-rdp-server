@@ -458,6 +458,7 @@
         fastrdp_web_notify_ntfy_token: tk_example
         fastrdp_web_notify_rate_limit: 5/3600
         fastrdp_web_notify_alert_on_deny: false
+        fastrdp_web_notify_webpush_extra_hosts: [NTFY.lab.example.com]
 
     - name: Nginx site without and with the KDC proxy (web_gateway)
       ansible.builtin.template:

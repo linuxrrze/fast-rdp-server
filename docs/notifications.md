@@ -18,7 +18,7 @@ Off by default. Two channels, usable together:
 
 | | ntfy | Web Push |
 |---|---|---|
-| What users install | the ntfy app (Android, iOS) or nothing (ntfy web app) | nothing: a browser (Chrome, Edge, Firefox, Safari); on iPhone/iPad the page added to the home screen (iOS 16.4+) |
+| What users install | the ntfy app (Android: Google Play or F-Droid; iOS) or nothing (ntfy web app) | nothing: a browser (Chrome, Edge, Firefox, Safari); on iPhone/iPad the page added to the home screen (iOS 16.4+); on Android the browsers need Google Play Services ([without them](#android-without-google-services)) |
 | Server side | an ntfy server you run (or ntfy.sh) and an access token | nothing: the browsers' push services (Google FCM, Mozilla, Apple, Microsoft WNS) |
 | Content seen by third parties | the ntfy server (and, for iOS, ntfy.sh: see [privacy](#what-leaves-the-host)) | encrypted end to end (RFC 8291); the push service sees only metadata |
 | Follow-up when the login ends | a new message only for **denied** or **timed out** (`alert_on_deny`) | the notification is replaced ("… was approved / denied / not approved in time") |
@@ -55,7 +55,9 @@ the desktop chooser (Keycloak with MFA). The page lists the user's devices with
 
 - **This browser (Web Push):** name the device, click *Turn on notifications in this
   browser*, allow notifications. Works in desktop browsers and on Android (Chrome,
-  Firefox, Edge). **iPhone/iPad:** open the page in Safari, *Share → Add to Home Screen*,
+  Firefox, Edge, Samsung Internet) with Google Play Services: these browsers receive Web
+  Push through Google's FCM; for phones without it see
+  [Android without Google services](#android-without-google-services). **iPhone/iPad:** open the page in Safari, *Share → Add to Home Screen*,
   open *fastrdp* from the home screen, sign in there and turn notifications on in that
   window (Apple delivers Web Push only to home-screen web apps, iOS 16.4 or later).
 - **ntfy app:** *Set up ntfy* creates the user's own topic (`fastrdp-` and 128 random
@@ -77,6 +79,7 @@ the page and **Deny**, and change the password.
 | `fastrdp_web_notify_ntfy_url` | `""` | the ntfy server, `https://` (checked) |
 | `fastrdp_web_notify_ntfy_token` | `vault_fastrdp_web_notify_ntfy_token` | access token with write access to `fastrdp-*`; written to `/etc/fastrdp/webgate-ntfy.token` (`root:_fastrdp-web 0640`). `""`: publish without a token |
 | `fastrdp_web_notify_vapid_subject` | `mailto:root@<fqdn>` | contact for the push services (RFC 8292), `mailto:` or `https://` |
+| `fastrdp_web_notify_webpush_extra_hosts` | `[]` | push service hosts accepted in addition to the built-in ones (FCM, Mozilla, Apple, WNS), e.g. `[ntfy.example.com]` for [UnifiedPush](#android-without-google-services); DNS names, each with its subdomains (checked: no URL, port, wildcard or IP address). `webpush_extra_hosts` in `webgate.toml` |
 | `fastrdp_web_notify_rate_limit` | `"3/600"` | notifications per user and window (1..100 per 60..86400 s) |
 | `fastrdp_web_notify_alert_on_deny` | `true` | ntfy: a message when a notified login is denied or times out |
 | `fastrdp_web_notify_show_code` | `true` | the two-digit code in the notification |
@@ -134,9 +137,54 @@ the background; Apple delivers its notifications through APNs, which only ntfy.s
 use. With `upstream-base-url: https://ntfy.sh` the server sends ntfy.sh a poll request
 per message with the SHA-256 of the topic URL (no content); ntfy.sh wakes the app via
 APNs and the app fetches the message from your server. ntfy.sh and Apple see when
-messages arrive for that (hashed) topic, not the text. Android works without it
-(the app keeps its own connection, or uses FCM for ntfy.sh only). Web Push is the
-alternative on iOS.
+messages arrive for that (hashed) topic, not the text. Android works without it: the
+ntfy app keeps its own connection to a self-hosted server; the Google Play build uses
+Firebase (FCM) for ntfy.sh topics only, the F-Droid build never
+([docs.ntfy.sh](https://docs.ntfy.sh/subscribe/phone/)). Web Push is the alternative on
+iOS.
+
+## Android without Google services
+
+GrapheneOS without sandboxed Google Play, LineageOS without GApps, /e/OS, CalyxOS,
+Huawei phones without GMS: Chrome, Chromium, Edge, Samsung Internet and the stock
+Firefox for Android get Web Push only through Google's FCM, so without Google Play
+Services *Turn on notifications in this browser* fails or nothing ever arrives. The
+opt-in page says so on Android when subscribing fails.
+
+**Recommended: ntfy.** Enable the `ntfy` backend ([recipe](#ntfy-server-recipe)); on the
+phone:
+
+1. Install ntfy from F-Droid (the Google Play build works too: for a self-hosted server
+   it uses its own connection, not Firebase).
+2. Open `https://<host>/web/notify`, *Set up ntfy*, and subscribe with the link or the QR
+   code (or by hand: topic, *Use another server*, the ntfy account).
+3. Allow ntfy to show notifications (Android 13 and later ask).
+4. Exempt ntfy from battery optimisation (*Settings → Apps → ntfy → Battery →
+   Unrestricted*; the wording varies), so Android does not stop its connection.
+5. The F-Droid build keeps the connection as a foreground service with a permanent
+   notification. To hide it, turn off that notification's category (long-press it,
+   or ntfy's notification settings); messages still arrive.
+
+**Alternative: Web Push through UnifiedPush.** IronFox and Fennec (Firefox forks from
+F-Droid) receive Web Push through a UnifiedPush distributor app instead of FCM
+([F-Droid blog](https://f-droid.org/en/2026/01/08/unifiedpush-5-years.html); IronFox 152.0.5,
+Fennec 152.0.4). The browser then gives the page the distributor's endpoint:
+
+- **Sunup** (uses Mozilla's push service): the endpoint is presumably on
+  `push.services.mozilla.com`, which is allowed by default. Not tested on a device yet.
+- **ntfy as distributor:** the endpoint is on the user's ntfy server
+  (`https://ntfy.example.com/up…`). Add that host to
+  `fastrdp_web_notify_webpush_extra_hosts` (otherwise the page says "This browser's push
+  service is not allowed here."), and let the ntfy server accept anonymous writes to
+  UnifiedPush topics: `ntfy access '*' 'up*' write-only`. With
+  `visitor-subscriber-rate-limiting` ntfy answers HTTP 507 for a topic nobody is
+  subscribed to; the webgate logs it as a refused push. Not tested on a device yet.
+
+The webgate sends the same RFC 8291-encrypted request with VAPID as to any push service
+(never the ntfy token), so the ntfy server sees only the encrypted payload.
+
+**microG** may make the Google-dependent browsers receive Web Push; this is not tested
+and not supported.
 
 ## What leaves the host
 
@@ -161,6 +209,12 @@ link is the approval page.
   Mozilla, Apple, WNS and their subdomains), so a signed-in user cannot make the webgate
   call internal addresses. Redirects are never followed (the ntfy token never goes
   elsewhere).
+- `fastrdp_web_notify_webpush_extra_hosts` (`webpush_extra_hosts`) widens that list:
+  add only your own ntfy server. Any signed-in user can then make the webgate POST
+  encrypted bodies to any `https://` URL on that host (port 443), e.g. any `up*` topic; an
+  internal ntfy host becomes reachable from the gateway for exactly that, which is the
+  intent. Adding the public ntfy.sh would let users make your gateway publish to arbitrary
+  ntfy.sh `up*` topics.
 - Opt-in requires the desktop chooser's sign-in (MFA at the IdP); forms and the
   subscription POST carry the CSRF token; at most 10 devices per user.
 - The opt-in page runs only its own script (`<prefix>/static/notify.js`), no inline
@@ -182,6 +236,7 @@ link is the approval page.
 - `preflight.yml` does not check the ntfy server yet ([backlog](backlog.md#web-approval)).
 
 Not tested on real devices yet: delivery to iOS (home-screen web app, ntfy app with
-upstream), Android Chrome/Firefox, Windows Edge (WNS), and a real ntfy server; the Web
+upstream), Android Chrome/Firefox, IronFox/Fennec with UnifiedPush (Sunup or ntfy),
+Windows Edge (WNS), and a real ntfy server; the Web
 Push encryption is checked against the RFC 8291 test vector and the requests against
 local test servers (`broker/webgate/tests/test_notify.py`).

@@ -715,6 +715,12 @@ class CommonChecks(unittest.TestCase):
             "notification rate limit window too short": dict(web, fastrdp_web_notify_rate_limit="3/10"),
             "notification rate limit zero": dict(web, fastrdp_web_notify_rate_limit="0/600"),
             "notification alert not a bool": dict(web, fastrdp_web_notify_alert_on_deny="maybe"),
+            "push hosts as a string": dict(web, fastrdp_web_notify_webpush_extra_hosts="ntfy.example.com"),
+            "push host a URL": dict(web, fastrdp_web_notify_webpush_extra_hosts=["https://ntfy.example.com"]),
+            "push host with a port": dict(web, fastrdp_web_notify_webpush_extra_hosts=["ntfy.example.com:8443"]),
+            "push host a wildcard": dict(web, fastrdp_web_notify_webpush_extra_hosts=["*.example.com"]),
+            "push host an IP address": dict(web, fastrdp_web_notify_webpush_extra_hosts=["10.0.0.5"]),
+            "push host without a dot": dict(web, fastrdp_web_notify_webpush_extra_hosts=["ntfy"]),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -762,6 +768,8 @@ class CommonChecks(unittest.TestCase):
                                          fastrdp_web_notify_rate_limit="10/3600"), 0)
         self.assertEqual(self.run_checks(**web, fastrdp_mfa_mode="push_or_web", fastrdp_privacyidea_url="https://pi",
                                          fastrdp_web_notify_backends=["webpush"]), 0)
+        self.assertEqual(self.run_checks(**web, fastrdp_mfa_mode="web", fastrdp_web_notify_backends=["webpush"],
+                                         fastrdp_web_notify_webpush_extra_hosts=["ntfy.example.com"]), 0)
 
     def test_web_approval_passes(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_web_enabled": True}
@@ -867,6 +875,8 @@ class WebgateToml(unittest.TestCase):
     def test_notifications_off_by_default(self):
         n = webgate_config.parse(toml("webgate.toml")).notify
         self.assertEqual((n.backends, n.ntfy_token_file), ([], ""))
+        self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts), (webgate_config.DEFAULT_PUSH_HOSTS, []))
+        self.assertNotIn("webpush_", (OUT / "webgate.toml").read_text())
 
     def test_notifications(self):
         n = webgate_config.parse(toml("webgate-notify.toml")).notify
@@ -877,6 +887,8 @@ class WebgateToml(unittest.TestCase):
                          ("/etc/fastrdp/webgate-vapid.pem", "mailto:root@rdp1.lab.example.com"))
         self.assertEqual((n.rate(), n.alert_on_deny, n.show_code, n.state_dir),
                          ((5, 3600), False, True, "/var/lib/fastrdp-webgate"))
+        # the extra host is added to the browsers' push services, not instead of them
+        self.assertEqual(n.webpush_allowed_hosts, webgate_config.DEFAULT_PUSH_HOSTS + ["ntfy.lab.example.com"])
         self.assertNotIn("tk_example", (OUT / "webgate-notify.toml").read_text())   # the token stays in its file
 
     def test_rdp_port_follows_the_proxy_port(self):

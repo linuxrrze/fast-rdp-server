@@ -103,6 +103,9 @@ class NotifySection:
     vapid_private_key_file: str = ""  # PEM, EC P-256 (openssl ecparam -name prime256v1 -genkey)
     vapid_subject: str = ""          # mailto:admin@example.com or https://... (RFC 8292)
     webpush_allowed_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_PUSH_HOSTS))
+    # Added to webpush_allowed_hosts, e.g. the site's own ntfy server as a UnifiedPush
+    # distributor (browsers on Android without Google services, docs/notifications.md).
+    webpush_extra_hosts: list[str] = field(default_factory=list)
     # At most N notifications per user within the given seconds; above that one alert
     # without a link per window.
     rate_limit: str = "3/600"
@@ -214,12 +217,15 @@ def _check_notify(cfg: Config) -> None:
             raise ConfigError("notify.vapid_subject must be mailto:<address> or an https:// URL (RFC 8292)")
         if not cfg.webgate.public_url.startswith("https://") and not _local_http(cfg.webgate.public_url):
             raise ConfigError("webpush needs an https:// webgate.public_url (service workers)")
-        hosts = n.webpush_allowed_hosts
-        if not isinstance(hosts, list) or not hosts or not all(
-                isinstance(h, str) and DNS_NAME.fullmatch(h) and "." in h and not h.replace(".", "").isdigit()
-                for h in hosts):
-            raise ConfigError("notify.webpush_allowed_hosts must be a list of DNS names (push services)")
-        n.webpush_allowed_hosts = [h.lower() for h in hosts]
+        for key in ("webpush_allowed_hosts", "webpush_extra_hosts"):
+            hosts = getattr(n, key)
+            if not isinstance(hosts, list) or (not hosts and key == "webpush_allowed_hosts") or not all(
+                    isinstance(h, str) and DNS_NAME.fullmatch(h) and "." in h and not h.replace(".", "").isdigit()
+                    for h in hosts):
+                raise ConfigError(f"notify.{key} must be a list of DNS names (push services)")
+        n.webpush_extra_hosts = [h.lower() for h in n.webpush_extra_hosts]
+        n.webpush_allowed_hosts = list(dict.fromkeys(
+            [h.lower() for h in n.webpush_allowed_hosts] + n.webpush_extra_hosts))
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:

@@ -276,6 +276,9 @@ What the page protects against:
   from the home screen and turn notifications on there (iOS 16.4+);
 - *ntfy app*: *Set up ntfy*, then subscribe to the topic shown (QR code) on the
   organisation's ntfy server.
+- Android without Google services (GrapheneOS, LineageOS, /e/OS, ...): browsers there get
+  no Web Push; use the ntfy app (F-Droid) or see
+  [Android without Google services](notifications.md#android-without-google-services).
 
 Then every RDP login waiting for their approval brings "approve your RDP login from
 192.0.2.10 (code 42)"; tapping it opens the approval page, where the sign-in and the

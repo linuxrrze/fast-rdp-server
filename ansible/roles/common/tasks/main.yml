@@ -199,6 +199,8 @@
     backends: "{{ fastrdp_web_notify_backends | default([]) }}"
     backend_list: "{{ backends if backends is sequence and backends is not string and backends is not mapping else [] }}"
     rate: "{{ fastrdp_web_notify_rate_limit | default('3/600') | string }}"
+    push_hosts: "{{ fastrdp_web_notify_webpush_extra_hosts | default([]) }}"
+    push_host_list: "{{ push_hosts if push_hosts is sequence and push_hosts is not string and push_hosts is not mapping else [] }}"
   ansible.builtin.assert:
     that:
       - backends is sequence and backends is not string and backends is not mapping
@@ -215,6 +217,9 @@
       - (rate ~ '/0').split('/')[1] | int >= 60 and (rate ~ '/0').split('/')[1] | int <= 86400
       - fastrdp_web_notify_alert_on_deny | default(true) | string | lower in ['true', 'false']
       - fastrdp_web_notify_show_code | default(true) | string | lower in ['true', 'false']
+      - push_hosts is sequence and push_hosts is not string and push_hosts is not mapping
+      - push_host_list | map('string') | reject('match', '^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]([A-Za-z0-9-]*[A-Za-z0-9])?\Z')
+        | list | length == 0
     fail_msg: >-
       fastrdp_web_notify_backends is a list of ntfy and webpush, only with
       fastrdp_web_enabled and fastrdp_mfa_mode web or push_or_web (notifications are sent
@@ -222,8 +227,10 @@
       (https://), webpush an https:// fastrdp_web_public_url and
       fastrdp_web_notify_vapid_subject mailto:<address> or https://...;
       fastrdp_web_notify_rate_limit is "N/SECONDS" (1..100 per 60..86400 s);
-      fastrdp_web_notify_alert_on_deny and fastrdp_web_notify_show_code are true or false
-      (docs/notifications.md).
+      fastrdp_web_notify_alert_on_deny and fastrdp_web_notify_show_code are true or false;
+      fastrdp_web_notify_webpush_extra_hosts is a list of DNS names with at least one dot,
+      e.g. [ntfy.example.com] (the host and every host below it; no "*.", no URL, no port,
+      no IP address) (docs/notifications.md).
     quiet: true
 
 - name: Required site settings are present and consistent

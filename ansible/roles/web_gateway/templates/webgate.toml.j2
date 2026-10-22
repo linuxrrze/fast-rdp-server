@@ -46,6 +46,9 @@ ntfy_url = {{ fastrdp_web_notify_ntfy_url | string | to_json }}
 ntfy_token_file = "{{ '/etc/fastrdp/webgate-ntfy.token' if fastrdp_web_notify_ntfy_token | length > 0 else '' }}"
 vapid_private_key_file = "/etc/fastrdp/webgate-vapid.pem"
 vapid_subject = {{ fastrdp_web_notify_vapid_subject | string | to_json }}
+{% if fastrdp_web_notify_webpush_extra_hosts | length > 0 %}
+webpush_extra_hosts = {{ fastrdp_web_notify_webpush_extra_hosts | map('string') | map('lower') | list | to_json }}
+{% endif %}
 rate_limit = {{ fastrdp_web_notify_rate_limit | string | to_json }}
 alert_on_deny = {{ fastrdp_web_notify_alert_on_deny | bool | lower }}
 show_code = {{ fastrdp_web_notify_show_code | bool | lower }}

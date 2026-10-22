@@ -150,7 +150,7 @@ class NotifyConfigTests(unittest.TestCase):
         n = config.parse(dict(self.BASE)).notify
         self.assertEqual((n.backends, n.rate(), n.alert_on_deny, n.show_code, n.state_dir),
                          ([], (3, 600), True, True, "/var/lib/fastrdp-webgate"))
-        self.assertIn("fcm.googleapis.com", n.webpush_allowed_hosts)
+        self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts), (config.DEFAULT_PUSH_HOSTS, []))
 
     def test_valid(self):
         n = self.parse(backends=["ntfy", "webpush"], ntfy_url="https://ntfy.example.com/",
@@ -161,6 +161,19 @@ class NotifyConfigTests(unittest.TestCase):
                          ("https://ntfy.example.com", (5, 3600), ["fcm.googleapis.com"]))
         self.assertEqual(self.parse(backends=["ntfy"], ntfy_url="http://127.0.0.1:8080").notify.ntfy_url,
                          "http://127.0.0.1:8080")
+
+    def test_extra_push_hosts(self):
+        good = {"backends": ["webpush"], "vapid_private_key_file": "/k.pem", "vapid_subject": "mailto:a@b.c"}
+        n = self.parse(**good, webpush_extra_hosts=["NTFY.example.com", "fcm.googleapis.com"]).notify
+        self.assertEqual(n.webpush_allowed_hosts, config.DEFAULT_PUSH_HOSTS + ["ntfy.example.com"])
+        self.assertTrue(webpush.endpoint_allowed("https://ntfy.example.com/upAbC?up=1", n.webpush_allowed_hosts))
+        self.assertTrue(webpush.endpoint_allowed("https://fcm.googleapis.com/fcm/send/x", n.webpush_allowed_hosts))
+        self.assertFalse(webpush.endpoint_allowed("https://ntfy.example.com:8443/up", n.webpush_allowed_hosts))
+        self.assertFalse(webpush.endpoint_allowed("https://ntfy.sh/upAbC", n.webpush_allowed_hosts))
+        n = self.parse(**good, webpush_allowed_hosts=["push.apple.com"], webpush_extra_hosts=["ntfy.example.com"]).notify
+        self.assertEqual(n.webpush_allowed_hosts, ["push.apple.com", "ntfy.example.com"])
+        self.assertEqual(self.parse(**good, webpush_extra_hosts=[]).notify.webpush_allowed_hosts,
+                         config.DEFAULT_PUSH_HOSTS)
 
     def test_invalid(self):
         good = {"vapid_private_key_file": "/k.pem", "vapid_subject": "mailto:a@b.c"}
@@ -175,6 +188,12 @@ class NotifyConfigTests(unittest.TestCase):
             ({"backends": ["webpush"], "vapid_private_key_file": "/k.pem", "vapid_subject": "root"}, "vapid_subject"),
             ({"backends": ["webpush"], **good, "webpush_allowed_hosts": ["127.0.0.1"]}, "allowed_hosts"),
             ({"backends": ["webpush"], **good, "webpush_allowed_hosts": []}, "allowed_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["10.0.0.5"]}, "extra_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["https://ntfy.example.com"]}, "extra_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["ntfy.example.com:8443"]}, "extra_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["*.example.com"]}, "extra_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["localhost"]}, "extra_hosts"),
+            ({"backends": ["webpush"], **good, "webpush_extra_hosts": "ntfy.example.com"}, "extra_hosts"),
             ({"backends": ["ntfy"], "ntfy_url": "https://n", "state_dir": "rel"}, "state_dir"),
             ({"rate_limit": "3"}, "rate_limit"),
             ({"rate_limit": "0/600"}, "rate_limit"),
@@ -744,6 +763,10 @@ class NotifyPageTests(unittest.TestCase):
                 self.assertEqual(h["X-Content-Type-Options"], "nosniff")
                 self.assertTrue(body)
         self.assertIn(b"notificationclick", self.fetch("/web/sw.js")[2])
+        script = self.fetch("/web/static/notify.js")[2].decode()
+        self.assertIn("On Android without Google services, use the ntfy app (F-Droid), or IronFox/Fennec "
+                      "with a UnifiedPush app.", script.replace('" +\n    "', ""))
+        self.assertNotIn("innerHTML", script)                  # messages go in as text only
         self.assertEqual(self.fetch("/web/static/../app.py")[0], 404)
         self.assertEqual(self.fetch("/web/static/nothing.js")[0], 404)
 
