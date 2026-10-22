@@ -13,6 +13,7 @@ proxy.
 | [gnome.md](gnome.md) | GDM headless session + gnome-remote-desktop | `gnome` |
 | [plasma.md](plasma.md) | `kwin_wayland --virtual` + KRdp | `plasma` |
 | [web.md](web.md) | browser access path (Keycloak → webgate → Guacamole → proxy) | any of the above |
+| [windows.md](windows.md) | real Windows RDP hosts behind fastrdp's MFA (research, **not implemented**, backlog B1) | – |
 
 Broker driver code: `broker/brokerd/fastrdp_broker/backends/{xrdp,gnome,plasma}.py`.
 wlroots desktops use the `xrdp` driver; the web path uses whichever driver the
