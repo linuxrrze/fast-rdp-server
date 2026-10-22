@@ -167,7 +167,10 @@ have sound; **Plasma (Wayland) has none**: choose `plasma-x11` when you need sou
   audiocapturemode:i:1
   ```
   `audiomode:i:2` turns sound off; `audioqualitymode:i:0|1|2` is dynamic, medium or high
-  quality.
+  quality. Without `audiocapturemode:i:1` mstsc does not record. The `.rdp` files from
+  the web gateway's chooser page ([web-access.md](web-access.md#rdp-apps)) already
+  contain both lines as the server offers them (`audiocapturemode:i:0` without a
+  microphone, `audiomode:i:2` without sound).
 - **FreeRDP:** `/sound` and `/microphone` (Linux: `/sound:sys:pulse /microphone:sys:pulse`
   for PipeWire's PulseAudio server); details in [freerdp-client.md](freerdp-client.md) §16.
 - **Windows App** (macOS, iOS, Android) and **Remmina** use the same channels: Windows

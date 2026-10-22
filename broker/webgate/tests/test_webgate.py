@@ -276,7 +276,7 @@ class FlowTests(unittest.TestCase):
         provider = Provider(cfg.oidc, "csecret")
         provider.discover()
         self.key = guacjson.parse_key(KEY_HEX)
-        app = Webgate(cfg, provider, Signer("cookie-secret"), self.key)
+        self.app = app = Webgate(cfg, provider, Signer("cookie-secret"), self.key)
         web = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
         threading.Thread(target=web.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{web.server_port}"
@@ -437,13 +437,26 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(h["Cache-Control"], "no-store")
         lines = body.split("\r\n")
         self.assertEqual(lines[:2], ["full address:s:rdp1.lab.example.com", "alternate shell:s:fastrdp:gnome"])
-        for line in ("enablecredsspsupport:i:1", "authentication level:i:2", "prompt for credentials:i:0"):
+        for line in ("enablecredsspsupport:i:1", "authentication level:i:2", "prompt for credentials:i:0",
+                     "audiomode:i:0", "audiocapturemode:i:1"):
             self.assertIn(line, lines)
         self.assertEqual(lines[-1], "")
         # nothing about the user, no credentials or tokens
         for word in ("alice", "username", "password", "TOK", "fastrdp-web1", "cookie"):
             self.assertNotIn(word, body.lower() if word.islower() else body)
         self.assertEqual([r["op"] for r in self.seen], ["web_desktops"])  # no token issued
+
+    def test_rdp_file_audio(self):
+        # [webgate] rdp_audio / rdp_audio_input follow fastrdp_audio / fastrdp_audio_input
+        self.login()
+        w = self.app.cfg.webgate
+        for audio, mic, expected in ((True, True, ["audiomode:i:0", "audiocapturemode:i:1"]),
+                                     (True, False, ["audiomode:i:0", "audiocapturemode:i:0"]),
+                                     (False, True, ["audiomode:i:2", "audiocapturemode:i:0"])):
+            w.rdp_audio, w.rdp_audio_input = audio, mic
+            with self.subTest(audio=audio, mic=mic):
+                lines = self.fetch(self.base + "/web/rdp/gnome.rdp")[2].split("\r\n")
+                self.assertEqual([ln for ln in lines if ln.startswith("audio")], expected)
 
     def test_rdp_file_only_for_allowed_desktops(self):
         self.login()

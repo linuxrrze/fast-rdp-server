@@ -97,6 +97,23 @@ Admin (root) -> broker.sock:
   {"op": "logout", "user": str} -> {"ok": true}
   {"op": "clear_grace", "user": str|absent} -> {"ok": true, "cleared": int}
       forget [mfa] reconnect_grace entries of one local account (absent: all)
+  {"op": "desktop_pref", "user": str, "set": str|absent, "clear": bool|absent}
+  -> {"ok": true, "user": str, "rdp_desktop": str|null, "rdp_desktop_allowed": bool,
+      "home_desktop": str|null, "desktop": str|null, "source": str, "group": str|null,
+      "allowed": [str], "login_allowed": bool}
+  -> {"ok": false, "error": str, "reason": "not_allowed", "user": str, "allowed": [str]}
+      fastrdpctl desktop: the desktop stored for the account's RDP logins (the one
+      web_set_desktop stores; "user" resolved like a TLS login). "set" stores a desktop
+      the account may use (else "not_allowed", with the desktops it may use), "clear":
+      true removes it (both at once: protocol error); a failed write gives
+      "unavailable". The reply then shows the state afterwards: "rdp_desktop" the stored
+      desktop (also one no longer allowed: "rdp_desktop_allowed" false, ignored),
+      "home_desktop" ~/.config/fastrdp/desktop (null: none, unreadable or
+      home_read_timeout), "desktop" what an RDP login without a client hint gets now
+      (null: no permitted desktop) and "source" why: web_pref (the stored desktop),
+      home_file, group_default ("group" names the group, [defaults.groups]) or default
+      ([defaults] desktop); "none" if no desktop is permitted. "login_allowed": the
+      account is in [auth] allow_groups (or no groups are configured).
 """
 
 from __future__ import annotations

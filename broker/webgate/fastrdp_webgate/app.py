@@ -141,7 +141,9 @@ class Webgate:
     def rdp_file(self, desktop: str) -> str:
         """.rdp file for mstsc / the Windows App: the proxy and the desktop, the settings of
         docs/client-guide.md. No user name (the webgate does not know the UPN mstsc should
-        send, docs/client-guide.md) and nothing secret: the user logs in as usual."""
+        send, docs/client-guide.md) and nothing secret: the user logs in as usual. Sound
+        and microphone as the server offers them ([webgate] rdp_audio, rdp_audio_input):
+        mstsc's own defaults would play sound but never record."""
         w = self.cfg.webgate
         address = w.rdp_host if w.rdp_port == 3389 else f"{w.rdp_host}:{w.rdp_port}"
         lines = [
@@ -154,6 +156,9 @@ class Webgate:
             "networkautodetect:i:1",
             "bandwidthautodetect:i:1",
             "connection type:i:7",
+            # 0 = play on this computer, 2 = do not play; capture 1 = record from this computer
+            f"audiomode:i:{0 if w.rdp_audio else 2}",
+            f"audiocapturemode:i:{1 if w.rdp_audio and w.rdp_audio_input else 0}",
         ]
         return "\r\n".join(lines) + "\r\n"
 

@@ -349,7 +349,7 @@ front** of the proxy.
 
 | Option | mstsc → fastrdp | Status | User experience | Phishing resistance | Requirements |
 |---|---|---|---|---|---|
-| privacyIDEA **push** after Kerberos NLA | yes | **supported** (lab L15) | password or SSO, mstsc waits until the push is approved | low–medium: push fatigue, an attacker's push can be approved | privacyIDEA + app; `fastrdp_privacyidea_service_user` for SSO logins; proxy `Timeout` (120 s) > push timeout (60 s) |
+| privacyIDEA **push** after Kerberos NLA | yes | **supported** (lab L15) | password or SSO, mstsc waits until the push is approved | low–medium: push fatigue, an attacker's push can be approved | privacyIDEA + app; `fastrdp_privacyidea_service_user` for SSO logins; proxy `Timeout` (180 s) ≥ push timeout (60 s) + session start (90 s) |
 | **Web approval** (Keycloak passkey sign-in on the web gateway, approve the pending login) | yes, same waiting point as push | **supported** (`[mfa] mode = web` / `push_or_web`; real Keycloak + mstsc untested) | like push, approved in a browser | the factor is a passkey (origin-bound); the approval itself can still be talked into, like a push | Keycloak passkeys ([passkeys.md](passkeys.md) stage 1), reachable web gateway |
 | **Smart card / PIV / YubiKey PIV** (PKINIT on the client, TSSmartCardCreds) | yes | **supported** (soft token e2e; real card + AD: lab L7) | insert card, PIN in mstsc | high (key on the card, KDC-bound) | AD PKI (KDC certificates, NTAuth, UPN SAN) and an AD rule that makes it MFA (§3.9) |
 | **Windows Hello for Business certificate** (used as a virtual smart card) | yes, as a smart card [inference] | **possible**, untested (lab L19) | face/fingerprint/PIN in mstsc | high (TPM-bound key) | WHfB certificate trust, or a certificate in the WHfB container (AD CS / Intune, Passport KSP); same AD rule as smart cards |
@@ -374,7 +374,7 @@ Notes on the options above:
 - **Push** works without interaction on any NLA login. The broker call runs in the
   proxy's PostConnect, i.e. after the front connection sequence has finished
   (Font Map sent), so mstsc probably shows an empty session window rather than
-  "Configuring remote session…" while the broker waits (Timeout 120 s,
+  "Configuring remote session…" while the broker waits (Timeout 180 s,
   `proxy.ini.j2`; lab test S3 in [rdp-spec-conformance.md](rdp-spec-conformance.md)).
 - **OTP appended to the password does not work with NLA at all, not even when typed.**
   - With CredSSP+Kerberos the client uses the typed string as the Kerberos password for
@@ -392,6 +392,8 @@ Notes on the options above:
   mstsc timeout for an activated connection without graphics was found; FreeRDP waited 60 s
   in a test ([freerdp-client.md](freerdp-client.md)). What mstsc shows meanwhile ("Configuring
   remote session…" per [client-guide.md](client-guide.md), or an empty window) is lab S3/L15.
+  The proxy waits up to `fastrdp_proxy_broker_timeout` (180 s) for the push or approval
+  (60/90 s) and the session start after it ([auth-matrix.md](auth-matrix.md)).
   Timeout → Set Error Info 0x409, refusal → 0x7. After a network drop mstsc reconnects
   without auto-reconnect cookies: a new push or approval unless `reconnect_grace` is set.
 - **TLS path with mstsc.** `enablecredsspsupport:i:0` (default 1) turns NLA off; "the

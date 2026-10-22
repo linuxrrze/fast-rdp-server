@@ -117,6 +117,16 @@ class ConfigGapTests(unittest.TestCase):
             with self.subTest(port=bad), self.assertRaisesRegex(config.ConfigError, "rdp_port"):
                 parse(webgate={"rdp_port": bad})
 
+    def test_rdp_audio(self):
+        cfg = parse()
+        self.assertEqual((cfg.webgate.rdp_audio, cfg.webgate.rdp_audio_input), (True, True))
+        cfg = parse(webgate={"rdp_audio": True, "rdp_audio_input": False})
+        self.assertEqual((cfg.webgate.rdp_audio, cfg.webgate.rdp_audio_input), (True, False))
+        for key in ("rdp_audio", "rdp_audio_input"):
+            for bad in ("true", 1, "no"):
+                with self.subTest(key=key, value=bad), self.assertRaisesRegex(config.ConfigError, key):
+                    parse(webgate={key: bad})
+
     def test_normalisation(self):
         cfg = parse(webgate={"path_prefix": "web/"}, oidc={"strip_domains": ["Lab.Example.COM"]},
                     guacamole={"rdp_parameters": {"color-depth": 32, "x": True}})

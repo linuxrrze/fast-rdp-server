@@ -332,18 +332,25 @@ def choose_desktop(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PR
     `pref`: the preference already read by the caller (None = none); by default the
     file is read here, synchronously (not at all if `web_pref` decides).
     """
+    return desktop_choice(cfg, user, hint, pref, web_pref)[0]
+
+
+def desktop_choice(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PREF,
+                   web_pref: str | None = None) -> tuple[str, str, str | None]:
+    """choose_desktop() and why: (desktop, source, group). source: "hint", "web_pref",
+    "home_file", "group_default" (group: the group whose default it is) or "default"."""
     hinted = hinted_desktop(cfg, user, hint)
     if hinted:
-        return hinted
+        return hinted, "hint", None
     if web_pref and desktop_allowed(cfg, web_pref, user):
-        return web_pref
+        return web_pref, "web_pref", None
     if pref is _READ_PREF:
         pref = read_desktop_pref(user)
     if pref and desktop_allowed(cfg, pref, user):
-        return pref
+        return pref, "home_file", None
     for group, desk in cfg.group_defaults.items():
         if group in user.groups and desktop_allowed(cfg, desk, user):
-            return desk
+            return desk, "group_default", group
     if desktop_allowed(cfg, cfg.default_desktop, user):
-        return cfg.default_desktop
+        return cfg.default_desktop, "default", None
     raise IdentityError("no desktop is permitted for this user", "not_allowed")

@@ -61,7 +61,7 @@ ROLE_DEFAULTS = {
     "fastrdp_web_oidc_issuer": "https://keycloak.lab.example.com/realms/lab",
     "fastrdp_web_oidc_client_id": "fastrdp-web",
     "fastrdp_web_oidc_ca_src": "",
-    "fastrdp_proxy_broker_timeout": 120,
+    "fastrdp_proxy_broker_timeout": 180,
 }
 # The broker's [broker] session_start_timeout (config.py, not rendered): after a web
 # approval the session still has to start within the proxy's wait for the broker.
@@ -110,7 +110,7 @@ VARIABLES = [
     ("MFA", "fastrdp_mfa_web_approval_max_auth_age", 30, "the approving sign-in may be at most this many seconds older"),
     ("MFA", "fastrdp_mfa_web_approval_single_pending", True,
      "no approval while a user has two or more pending logins"),
-    ("MFA", "fastrdp_proxy_broker_timeout", 120,
+    ("MFA", "fastrdp_proxy_broker_timeout", 180,
      "seconds the proxy waits for the broker: web approval plus the session start (90 s)"),
     ("desktops", "fastrdp_desktops", ["xfce"],
      "X11: xfce mate cinnamon lxqt plasma-x11 | Wayland: gnome plasma | wlroots: sway labwc wayfire"),

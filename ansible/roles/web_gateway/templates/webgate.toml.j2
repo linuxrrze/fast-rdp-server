@@ -9,6 +9,9 @@ broker_socket = "/run/fastrdp/broker.sock"
 desktops = {{ fastrdp_web_desktops | to_json }}
 rdp_host = "{{ fastrdp_web_rdp_host }}"
 rdp_port = {{ fastrdp_web_rdp_port | int }}
+{# .rdp downloads: audiomode / audiocapturemode as the server offers sound and microphone #}
+rdp_audio = {{ fastrdp_audio | bool | lower }}
+rdp_audio_input = {{ (fastrdp_audio | bool and fastrdp_audio_input | bool) | lower }}
 
 [oidc]
 issuer = "{{ fastrdp_web_oidc_issuer }}"

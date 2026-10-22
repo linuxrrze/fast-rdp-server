@@ -41,6 +41,11 @@ class WebgateSection:
     # "" = the host name of public_url.
     rdp_host: str = ""
     rdp_port: int = 3389
+    # What the server offers (Ansible fastrdp_audio, fastrdp_audio_input), for the .rdp
+    # downloads: audiomode:i:0 (play on this computer) or 2 (no sound), and
+    # audiocapturemode:i:1 (microphone) only with rdp_audio_input (docs/audio.md).
+    rdp_audio: bool = True
+    rdp_audio_input: bool = True
 
 
 @dataclass
@@ -130,6 +135,9 @@ def parse(raw: dict) -> Config:
     port = cfg.webgate.rdp_port
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         raise ConfigError("webgate.rdp_port must be a port number 1..65535")
+    for key in ("rdp_audio", "rdp_audio_input"):
+        if not isinstance(getattr(cfg.webgate, key), bool):
+            raise ConfigError(f"webgate.{key} must be true or false")
     cfg.guacamole.rdp_parameters = {str(k): str(v) for k, v in cfg.guacamole.rdp_parameters.items()}
     return cfg
 

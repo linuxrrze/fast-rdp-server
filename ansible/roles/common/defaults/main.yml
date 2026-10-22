@@ -123,8 +123,8 @@ fastrdp_mfa_reconnect_grace_same_address: true
 # Web approval (fastrdp_mfa_mode web or push_or_web; needs fastrdp_web_enabled;
 # docs/auth-matrix.md#web-approval): the RDP login waits until the user approves it on
 # https://<fqdn>/web/approve after a fresh MFA sign-in at Keycloak (passkey, TOTP, ...).
-# Seconds to wait, 10..540 and less than fastrdp_proxy_broker_timeout (which must also
-# leave time for the session start):
+# Seconds to wait, 10..510; fastrdp_proxy_broker_timeout must be at least this plus 90
+# (the broker's session_start_timeout, for the session start after the approval):
 fastrdp_mfa_web_approval_timeout: 90
 # The approving sign-in may be at most this many seconds older than the login (0..300):
 fastrdp_mfa_web_approval_max_auth_age: 30
@@ -132,10 +132,12 @@ fastrdp_mfa_web_approval_max_auth_age: 30
 # may have started one alongside the user's own); the user denies them and retries.
 fastrdp_mfa_web_approval_single_pending: true
 
-# Seconds the proxy waits for the broker (proxy.ini [FastRDP] Timeout, at most 600): more
-# than an MFA push (push_timeout 60) or web approval (fastrdp_mfa_web_approval_timeout)
-# plus the session start. Here, not in role freerdp_proxy: the common checks compare them.
-fastrdp_proxy_broker_timeout: 120
+# Seconds the proxy waits for the broker (proxy.ini [FastRDP] Timeout, at most 600): an
+# MFA push (privacyIDEA push_timeout 60) or web approval (fastrdp_mfa_web_approval_timeout
+# 90) plus the session start (broker session_start_timeout 90; slow GNOME/Plasma starts).
+# With web approval at least fastrdp_mfa_web_approval_timeout + 90 (checked). Here, not in
+# role freerdp_proxy: the common checks compare them.
+fastrdp_proxy_broker_timeout: 180
 
 # ---------------------------------------------------------------- web access
 # Browser path (Keycloak + Guacamole, role web_gateway). Read by the broker and proxy

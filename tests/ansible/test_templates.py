@@ -210,6 +210,14 @@ class Audio(unittest.TestCase):
         params = webgate_config.parse(toml("audio-own-webgate.toml")).guacamole.rdp_parameters
         self.assertEqual(params, {"enable-audio-input": "true", "disable-audio": "true"})   # YAML true
 
+    def test_rdp_file_audio(self):
+        # [webgate] rdp_audio / rdp_audio_input: audiomode / audiocapturemode of the .rdp downloads
+        for name, expected in (("webgate.toml", (True, True)), ("audio-no-mic-webgate.toml", (True, False)),
+                               ("audio-none-webgate.toml", (False, False))):   # no microphone without audio
+            with self.subTest(name):
+                w = webgate_config.parse(toml(name)).webgate
+                self.assertEqual((w.rdp_audio, w.rdp_audio_input), expected)
+
     def test_packages_per_switch(self):
         import yaml
         defaults = yaml.safe_load((self.XRDP / "defaults/main.yml").read_text())
@@ -343,7 +351,7 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual(p["Plugins"]["Modules"], "fastrdp")
         self.assertEqual(p["Plugins"]["Required"], "fastrdp")
         self.assertEqual(p["FastRDP"]["BrokerSocket"], "/run/fastrdp/broker.sock")
-        self.assertEqual(p["FastRDP"]["Timeout"], "120")
+        self.assertEqual(p["FastRDP"]["Timeout"], "180")
         self.assertEqual(p["Channels"]["PassthroughIsBlacklist"], "true")
         # Remote Credential Guard: off unless fastrdp_accept_remote_guard (fastrdp_plugin.c)
         self.assertEqual(p["FastRDP"]["AcceptRemoteGuard"], remote_guard)
@@ -586,13 +594,17 @@ class CommonChecks(unittest.TestCase):
             "web approval without web access": dict(ok, fastrdp_mfa_mode="web"),
             "push_or_web without web access": dict(ok, fastrdp_mfa_mode="push_or_web",
                                                    fastrdp_privacyidea_url="https://pi"),
+            # the proxy's wait also covers the session start (session_start_timeout 90)
+            "web approval timeout leaves no time for the session start": dict(
+                ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=91),
             "web approval timeout not below the proxy's": dict(
-                ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=120),
+                ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=180),
             "web approval timeout above the proxy's": dict(
                 ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=200,
                 fastrdp_proxy_broker_timeout=150),
             "web approval timeout too short": dict(ok, fastrdp_mfa_web_approval_timeout=5),
-            "web approval timeout over the limit": dict(ok, fastrdp_mfa_web_approval_timeout=541),
+            "web approval timeout over the limit": dict(ok, fastrdp_mfa_web_approval_timeout=511,
+                                                        fastrdp_proxy_broker_timeout=600),
             "web approval timeout in minutes": dict(ok, fastrdp_mfa_web_approval_timeout="2m"),
             "proxy timeout over the module's limit": dict(ok, fastrdp_proxy_broker_timeout=601),
             "proxy timeout zero": dict(ok, fastrdp_proxy_broker_timeout=0),
@@ -694,7 +706,7 @@ class CommonChecks(unittest.TestCase):
         self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web"), 0)       # no privacyIDEA
         self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="push_or_web",
                                          fastrdp_privacyidea_url="https://pi"), 0)
-        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web", fastrdp_mfa_web_approval_timeout=540,
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web", fastrdp_mfa_web_approval_timeout=510,
                                          fastrdp_proxy_broker_timeout=600, fastrdp_mfa_web_approval_max_auth_age=0,
                                          fastrdp_mfa_web_approval_single_pending=False), 0)
         # without web approval the timeout is not compared with the proxy's

@@ -580,6 +580,41 @@ class Broker:
         log.warning("reconnect grace cleared for %s (%d entries)", user or "all users", n)
         return {"ok": True, "cleared": n}
 
+    async def desktop_pref(self, msg: dict) -> dict:
+        """fastrdpctl desktop USER [DESKTOP | --clear]: the desktop stored for the user's
+        RDP logins (as web_set_desktop stores it), and what an RDP login without a
+        client hint gets now and why. "set" stores a desktop the user may use, "clear"
+        removes the stored one."""
+        user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
+        desktop = str_field(msg, "set", max_len=64)
+        clear = msg.get("clear", False)
+        if not isinstance(clear, bool) or (clear and desktop is not None):
+            raise ProtocolError("desktop_pref takes 'set' (str) or 'clear' (true), not both")
+        allowed = [d for d in self.cfg.desktops if identity.desktop_allowed(self.cfg, d, user)]
+        if desktop is not None and desktop not in allowed:
+            log.warning("fastrdpctl: desktop %r not stored for %s: not allowed for the user",
+                        desktop, user.name)
+            return {"ok": False, "error": f"desktop {desktop!r} is not allowed for {user.name}",
+                    "reason": "not_allowed", "user": user.name, "allowed": allowed}
+        if desktop is not None or clear:
+            try:
+                self.desktop_prefs.set(user.name, desktop)
+            except (PrefsError, OSError) as exc:
+                log.error("%s: desktop preference not stored: %s", user.name, exc)
+                return {"ok": False, "error": "not stored", "reason": "unavailable"}
+            log.warning("%s: desktop for RDP logins %s by fastrdpctl", user.name,
+                        f"set to {desktop}" if desktop else "cleared")
+        stored, stored_allowed = self.web_desktop_pref(user)
+        home = await self.read_desktop_pref(user)
+        try:
+            chosen, source, group = identity.desktop_choice(self.cfg, user, None, pref=home, web_pref=stored)
+        except IdentityError:
+            chosen, source, group = None, "none", None
+        return {"ok": True, "user": user.name, "rdp_desktop": stored,
+                "rdp_desktop_allowed": stored_allowed, "home_desktop": home, "desktop": chosen,
+                "source": source, "group": group, "allowed": allowed,
+                "login_allowed": identity.user_allowed(user, self.cfg.auth)}
+
     # ------------------------------------------------------------- sockets
     async def handle_broker_client(self, reader, writer) -> None:
         uid = peer_uid(writer)
@@ -613,6 +648,8 @@ class Broker:
                         reply = await self.logout(msg)
                     elif op == "clear_grace" and uid == 0:
                         reply = await self.clear_grace(msg)
+                    elif op == "desktop_pref" and uid == 0:
+                        reply = await self.desktop_pref(msg)
                     else:
                         log.warning("op %r not permitted for uid %d", op, uid)
                         reply = {"ok": False, "error": "not permitted", "reason": "denied"}

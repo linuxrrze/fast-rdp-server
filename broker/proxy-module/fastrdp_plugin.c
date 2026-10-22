@@ -35,7 +35,7 @@
  * Configuration (proxy ini):
  *   [FastRDP]
  *   BrokerSocket = /run/fastrdp/broker.sock
- *   Timeout      = 120        ; seconds, must exceed the MFA push timeout
+ *   Timeout      = 180        ; seconds (1..600): MFA push/web approval + session start
  *   AllowTls     = false      ; accept non-NLA logins (password [+OTP] in client info)
  *   AllowTlsFrom =            ; non-NLA logins only from these peers: comma-separated
  *                             ; addresses/CIDRs (fastrdp_addr.h); empty = any peer
@@ -90,7 +90,7 @@
 #define PLUGIN_DESC "fastrdp session broker integration"
 #define CONFIG_SECTION "FastRDP"
 #define DEFAULT_SOCKET "/run/fastrdp/broker.sock"
-#define DEFAULT_TIMEOUT_S 120
+#define DEFAULT_TIMEOUT_S 180 /* Ansible fastrdp_proxy_broker_timeout */
 #define MAX_REPLY (64 * 1024)
 
 typedef struct
@@ -937,7 +937,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	cJSON_AddNumberToObject(req, "connection_type",
 	                        freerdp_settings_get_uint32(front, FreeRDP_ConnectionType));
 
-	long timeout = strtol(config_str(pdata, "Timeout", "120"), NULL, 10);
+	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);
 	if (timeout <= 0 || timeout > 600)
 		timeout = DEFAULT_TIMEOUT_S;
 	const brokerCallResult called = broker_call(

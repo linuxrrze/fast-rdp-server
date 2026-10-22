@@ -1400,7 +1400,7 @@ PrivateKeyFile=/etc/fastrdp/front.key
 
 [FastRDP]
 BrokerSocket=/run/fastrdp/broker.sock
-Timeout=120
+Timeout=180
 ; TLS logins are needed for password+OTP clients and for the web path (guacd has no
 ; Kerberos); the broker decides which credentials it accepts on them.
 AllowTls=true
@@ -1421,8 +1421,9 @@ but TLS logins are not (only guacd on loopback needs TLS then), else empty. The 
 checks the TCP peer address (IPv4-mapped IPv6 counts as IPv4), not the address the
 client claims, before anything reaches the broker, and refuses others with Set Error Info
 `ERRINFO_SERVER_DENIED_CONNECTION` (0x7); an unparsable entry is logged and matches
-nothing. NLA logins are not affected. `Timeout` (`fastrdp_proxy_broker_timeout`)
-must exceed the MFA push timeout; a login whose client disconnects while the broker
+nothing. NLA logins are not affected. `Timeout` (`fastrdp_proxy_broker_timeout`, 1..600, the
+module's default 180) must cover the MFA push or web approval plus the session start
+([auth-matrix.md](auth-matrix.md)); a login whose client disconnects while the broker
 still waits (MFA push) is abandoned at once, and the broker stops waiting.
 `AcceptRemoteGuard` (`fastrdp_accept_remote_guard`, default `false`): with `false`, a
 client that requires Remote Credential Guard (`mstsc /remoteGuard`, GPO "Require Remote

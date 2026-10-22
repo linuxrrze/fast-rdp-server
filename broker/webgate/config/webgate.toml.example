@@ -11,6 +11,11 @@ desktops = ["xfce", "mate", "gnome", "plasma"]
 # "full address" (DNS name, never an IP address; "" = the host of public_url).
 rdp_host = "rdp1.lab.example.com"
 rdp_port = 3389
+# Sound and microphone in the .rdp file, as the server offers them (docs/audio.md):
+# audiomode:i:0 (play on this computer; false: 2, no sound) and audiocapturemode:i:1
+# (record from this computer; only with both true, else 0).
+rdp_audio = true
+rdp_audio_input = true
 
 [oidc]
 issuer = "https://keycloak.lab.example.com/realms/lab"

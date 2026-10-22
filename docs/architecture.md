@@ -167,4 +167,4 @@ error pages. `mfa_decide` has its own refusal reasons (`approval_unknown`, `appr
 | `/etc/pam.d/{fastrdp,fastrdp-tgt,fastrdp-session,xrdp-sesman}` | PAM stacks (`broker/session/pam/`; `fastrdp-tgt`: session TGT for GNOME/Plasma) |
 | `/run/fastrdp/` | sockets, desktop choice per user, Plasma session env files |
 | `/var/lib/fastrdp/` | session state, per-user back-end certificates |
-| `/usr/lib/fastrdp/python/` | broker package; admin CLI `fastrdpctl status|tickets [USER]|logout USER|clear-grace [USER]` (status: sessions and each session user's TGT expiry/renewal, `tickets.py`) |
+| `/usr/lib/fastrdp/python/` | broker package; admin CLI `fastrdpctl status|tickets [USER]|logout USER|clear-grace [USER]|desktop USER [DESKTOP\|--clear]` (status: sessions and each session user's TGT expiry/renewal, `tickets.py`; desktop: the desktop stored for a user's RDP logins, `desktopprefs.py`) |

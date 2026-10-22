@@ -122,7 +122,8 @@ class MfaSection:
     reconnect_grace_same_address: bool = True
     # mode web / push_or_web: the user approves a pending RDP login on fastrdp-webgate's
     # <prefix>/approve page after a fresh MFA sign-in at the IdP (mfa.WebApprovals).
-    # Seconds a login waits for the decision; less than proxy.ini [FastRDP] Timeout.
+    # Seconds a login waits for the decision; plus session_start_timeout at most
+    # proxy.ini [FastRDP] Timeout.
     web_approval_timeout: int = 90
     # The approving sign-in (ID token auth_time) must be newer than the pending login,
     # or at most this many seconds older.
@@ -191,8 +192,9 @@ VALID_SESSION_TGT = ("auto", "off", "required")
 DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
 VALID_HOME_CHECK = ("create", "check", "off")
 MAX_RECONNECT_GRACE = 3600  # seconds; longer is "MFA once per shift", not a reconnect aid
-# seconds; the proxy module caps [FastRDP] Timeout at 600 and needs time for the session start
-WEB_APPROVAL_TIMEOUT = (10, 540)
+# seconds; the proxy module caps [FastRDP] Timeout at 600, which also has to cover the
+# session start after the approval (session_start_timeout, 90): 600 - 90
+WEB_APPROVAL_TIMEOUT = (10, 510)
 MAX_WEB_APPROVAL_AUTH_AGE = 300
 # [mfa] kdc_evidence_as_mfa items (what fastrdp_plugin.c kdc_evidence() reports)
 KDC_EVIDENCE_ITEM = re.compile(r"ind:[\x21-\x7e]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15}")

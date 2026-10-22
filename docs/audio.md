@@ -135,7 +135,9 @@ audio choose `plasma-x11` (xrdp).
     `load_pw_modules.sh`) leaves the microphone unused per host
     (`fastrdp_audio_input: false`);
   - g-r-d: none;
-  - Guacamole (web path): `enable-audio-input` (from `fastrdp_audio_input`).
+  - Guacamole (web path): `enable-audio-input` (from `fastrdp_audio_input`);
+  - the `.rdp` files of the web gateway's chooser page: `audiomode` and
+    `audiocapturemode` (from `fastrdp_audio`, `fastrdp_audio_input`; below).
 - `fastrdp_audio_input: false` is a **default, not a policy**: the module runs in the
   user's own PipeWire, so a user can load it with a source again (`pw-cli load-module
   libpipewire-module-xrdp source.stream.props=...`), and GNOME sessions keep their
@@ -149,7 +151,7 @@ audio choose `plasma-x11` (xrdp).
 
 | Client | Audio out | Microphone |
 |---|---|---|
-| mstsc / `.rdp` | `audiomode:i:0` play on this computer (`1` on the remote computer, `2` off); `audioqualitymode:i:0\|1\|2` dynamic, medium, high | `audiocapturemode:i:1` |
+| mstsc / `.rdp` | `audiomode:i:0` play on this computer (`1` on the remote computer, `2` off); `audioqualitymode:i:0\|1\|2` dynamic, medium, high. Downloaded from the chooser page: `0`, or `2` with `fastrdp_audio: false` | `audiocapturemode:i:1` (mstsc's default is `0`). Downloaded from the chooser page: `1` with `fastrdp_audio` and `fastrdp_audio_input`, else `0` |
 | Windows App, Remmina | same channels ("Audio output: local"; "Redirect local microphone") [not verified through fastrdp] | same |
 | FreeRDP 3 | `/sound[:sys:pulse\|alsa\|fake,...]` (static and dynamic rdpsnd); `/audio-mode:0\|1\|2` redirect, server, none | `/microphone[:sys:pulse,dev:...]` |
 | Guacamole 1.6.0 (web path) | on by default (static `rdpsnd`, PCM) | `enable-audio-input`, set from `fastrdp_audio_input` (an entry in `fastrdp_web_rdp_parameters` wins); HTTPS and the browser's permission |
@@ -164,8 +166,8 @@ Status: **implemented, not yet tested on a host.** Settings in `roles/common`:
 
 | Setting | Default | Effect |
 |---|---|---|
-| `fastrdp_audio` | `true` | xrdp role: `fastrdp_xrdp_audio_packages` (`pipewire`, `pipewire-bin`, `wireplumber`, `pipewire-pulse`, `pipewire-module-xrdp`, `pulseaudio-utils`; no recommends), fastrdp's loader; `xrdp.ini` `rdpsnd=true`. gnome_rd role: `pipewire-pulse`. `false`: nothing installed (packages from earlier runs stay), `rdpsnd=false` |
-| `fastrdp_audio_input` | `true` | `false`: `sesman.ini` `[SessionVariables] FASTRDP_AUDIO_INPUT=false`, the module loaded sink-only, the package's autostart entry hidden; Guacamole `enable-audio-input: "false"`. The proxy is unchanged |
+| `fastrdp_audio` | `true` | xrdp role: `fastrdp_xrdp_audio_packages` (`pipewire`, `pipewire-bin`, `wireplumber`, `pipewire-pulse`, `pipewire-module-xrdp`, `pulseaudio-utils`; no recommends), fastrdp's loader; `xrdp.ini` `rdpsnd=true`. gnome_rd role: `pipewire-pulse`. `false`: nothing installed (packages from earlier runs stay), `rdpsnd=false`, `.rdp` downloads `audiomode:i:2` and `audiocapturemode:i:0` (`webgate.toml` `rdp_audio = false`) |
+| `fastrdp_audio_input` | `true` | `false`: `sesman.ini` `[SessionVariables] FASTRDP_AUDIO_INPUT=false`, the module loaded sink-only, the package's autostart entry hidden; Guacamole `enable-audio-input: "false"`; `.rdp` downloads `audiocapturemode:i:0` (`webgate.toml` `rdp_audio_input = false`). The proxy is unchanged |
 
 `pipewire-module-xrdp` is in Debian 13 main and Ubuntu 26.04 universe (as with
 `python3-kdcproxy`, the roles expect universe to be enabled).
@@ -201,11 +203,29 @@ not a policy; GNOME unaffected) are listed under
 `fastrdp_web_rdp_parameters` sets it; audio out stays Guacamole's default (on). YAML
 booleans there reach Guacamole as `"true"`/`"false"`.
 
+**`.rdp` downloads** (chooser page, [web-access.md](web-access.md#rdp-apps)): mstsc
+plays sound by default but never records, so the files carry both lines, from
+`webgate.toml` `[webgate] rdp_audio` (`fastrdp_audio`) and `rdp_audio_input`
+(`fastrdp_audio` and `fastrdp_audio_input`):
+
+| `fastrdp_audio` | `fastrdp_audio_input` | `.rdp` lines |
+|---|---|---|
+| `true` | `true` | `audiomode:i:0`, `audiocapturemode:i:1` |
+| `true` | `false` | `audiomode:i:0`, `audiocapturemode:i:0` |
+| `false` | any | `audiomode:i:2`, `audiocapturemode:i:0` |
+
+With `fastrdp_audio: false` the server has no sound (`rdpsnd=false`, nothing installed),
+so the file says "do not play" (`2`) instead of leaving mstsc's default "play on this
+computer", which would only open an empty channel. The lines are the same for every
+desktop: a Plasma (Wayland) session simply has no sound. Users can still change them in
+mstsc (Show Options → Local Resources) before connecting.
+
 **Plasma (KRdp):** nothing to do; users who need sound choose `plasma-x11`.
 
 **Tests** ([tests/README.md](../tests/README.md)):
 - `tests/ansible/test_templates.py` (`Audio`): `rdpsnd`, `FASTRDP_AUDIO_INPUT` and no
   `PULSE_SCRIPT` per switch, Guacamole `enable-audio-input` (default, off, own value),
+  `webgate.toml` `rdp_audio`/`rdp_audio_input` (default, no microphone, no audio),
   packages and tasks per switch, packaging, the common checks; `xrdp-audio` with a stub
   `load_pw_modules.sh` and `pw-cli` (with microphone, sink-only, other modules untouched,
   nothing outside xrdp sessions, autostart only while the package's entry is hidden).
@@ -233,7 +253,8 @@ booleans there reach Guacamole as `"true"`/`"false"`.
    `/sound:sys:pulse` into a null sink and `/microphone:sys:pulse,dev:<null-sink
    monitor or a sine source>`.
 5. `fastrdp_audio_input: false`: no `xrdp-source` after a new login; the web path does
-   not offer the microphone.
+   not offer the microphone; an `.rdp` file downloaded from the chooser page says
+   `audiocapturemode:i:0`.
 
 ## Open questions (lab)
 

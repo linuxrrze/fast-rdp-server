@@ -46,14 +46,14 @@ class WebApprovalConfigTests(unittest.TestCase):
         self.assertEqual(cfg.mfa.mode, "push_or_web")
 
     def test_valid(self):
-        cfg = config.parse({**MINIMAL, "mfa": {"mode": "web", "web_approval_timeout": 540,
+        cfg = config.parse({**MINIMAL, "mfa": {"mode": "web", "web_approval_timeout": 510,
                                                "web_approval_max_auth_age": 0,
                                                "web_approval_single_pending": False}})
         self.assertEqual((cfg.mfa.web_approval_timeout, cfg.mfa.web_approval_max_auth_age,
-                          cfg.mfa.web_approval_single_pending), (540, 0, False))
+                          cfg.mfa.web_approval_single_pending), (510, 0, False))
 
     def test_invalid(self):
-        for bad in (9, 541, 90.5, "90", True):
+        for bad in (9, 511, 90.5, "90", True):
             with self.subTest(timeout=bad), self.assertRaisesRegex(config.ConfigError, "approval_timeout must"):
                 config.parse({**MINIMAL, "mfa": {"web_approval_timeout": bad}})
         for bad in (-1, 301, "30", False):

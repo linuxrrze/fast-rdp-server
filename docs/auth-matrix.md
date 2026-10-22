@@ -193,7 +193,13 @@ Security review:
   each have their own broker and grace; the web path is unchanged.
 
 During a push the client simply waits ("connecting…"). `fastrdp_proxy_broker_timeout`
-(default 120 s) must be larger than `push_timeout` (default 60 s).
+(default 180 s, proxy.ini `[FastRDP] Timeout`, at most 600) is one wait for the whole
+broker call: the push (privacyIDEA `push_timeout`, default 60 s) or web approval
+(`fastrdp_mfa_web_approval_timeout`, default 90 s) **plus** the session start that
+follows it (broker `session_start_timeout`, 90 s; first GNOME/Plasma starts can take
+most of it). With web approval the common checks require
+`fastrdp_proxy_broker_timeout` ≥ `fastrdp_mfa_web_approval_timeout` + 90; for push,
+keep it at least `push_timeout` + 90 (privacyIDEA's setting is not checked).
 
 ### Web approval
 
@@ -219,7 +225,7 @@ first wins and the other is cancelled. Both need the web gateway
 
 | Variable (broker key) | Default | Meaning |
 |---|---|---|
-| `fastrdp_mfa_web_approval_timeout` (`web_approval_timeout`) | `90` | seconds a login waits for the decision, 10..540. In `push_or_web` it bounds the whole wait (keep `push_timeout` below it). Must be less than `fastrdp_proxy_broker_timeout` (default 120), which also has to cover the session start after the approval: raise both for slow GNOME/Plasma starts |
+| `fastrdp_mfa_web_approval_timeout` (`web_approval_timeout`) | `90` | seconds a login waits for the decision, 10..510. In `push_or_web` it bounds the whole wait (keep `push_timeout` below it). `fastrdp_proxy_broker_timeout` (default 180) must be at least this plus 90 s for the session start after the approval (`session_start_timeout`; checked): raise the proxy's timeout along with this one. 510 = the module's 600 s limit minus the session start |
 | `fastrdp_mfa_web_approval_max_auth_age` (`web_approval_max_auth_age`) | `30` | the approving sign-in may be at most this many seconds older than the pending login (0..300). Signing in first and starting the login afterwards works only within this window; otherwise the page asks to sign in again |
 | `fastrdp_mfa_web_approval_single_pending` (`web_approval_single_pending`) | `true` | with two or more pending logins of one user, none can be approved (each can still be denied); the user denies them and starts one new login |
 

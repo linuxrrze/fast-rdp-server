@@ -233,11 +233,13 @@
       - fastrdp_mfa_reconnect_grace | int <= 3600
       - fastrdp_mfa_reconnect_grace_same_address | string | lower in ['true', 'false']
       - fastrdp_mfa_web_approval_timeout | string is match('^[0-9]+$')
-      - fastrdp_mfa_web_approval_timeout | int >= 10 and fastrdp_mfa_web_approval_timeout | int <= 540
+      - fastrdp_mfa_web_approval_timeout | int >= 10 and fastrdp_mfa_web_approval_timeout | int <= 510
       - fastrdp_proxy_broker_timeout | string is match('^[0-9]+$') and fastrdp_proxy_broker_timeout | int >= 1
         and fastrdp_proxy_broker_timeout | int <= 600
+      # 90: the broker's [broker] session_start_timeout (config.py, not rendered), the
+      # session start that follows the approval within the same proxy wait
       - fastrdp_mfa_mode not in ['web', 'push_or_web']
-        or fastrdp_mfa_web_approval_timeout | int < fastrdp_proxy_broker_timeout | int
+        or fastrdp_mfa_web_approval_timeout | int + 90 <= fastrdp_proxy_broker_timeout | int
       - fastrdp_mfa_web_approval_max_auth_age | string is match('^[0-9]+$')
       - fastrdp_mfa_web_approval_max_auth_age | int <= 300
       - fastrdp_mfa_web_approval_single_pending | string | lower in ['true', 'false']
@@ -266,8 +268,8 @@
       items, not ind:hardened, sid:S-1-18-1, sid:S-1-18-2 or Domain Users (docs/passkeys.md);
       fastrdp_mfa_reconnect_grace is whole seconds 0..3600 and
       fastrdp_mfa_reconnect_grace_same_address true or false (docs/auth-matrix.md);
-      fastrdp_mfa_web_approval_timeout is whole seconds 10..540 and, with web approval, less
-      than fastrdp_proxy_broker_timeout (whole seconds 1..600);
+      fastrdp_mfa_web_approval_timeout is whole seconds 10..510 and, with web approval, at
+      least 90 s (session start) below fastrdp_proxy_broker_timeout (whole seconds 1..600);
       fastrdp_mfa_web_approval_max_auth_age whole seconds 0..300 and
       fastrdp_mfa_web_approval_single_pending true or false (docs/auth-matrix.md#web-approval);
       fastrdp_xrdp_autodetect_profile is lan, wan, broadband_high, satellite, broadband_low,

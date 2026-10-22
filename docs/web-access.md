@@ -152,13 +152,20 @@ user (also those not offered in the browser, `fastrdp_web_desktops`), with two a
   and the group default ([desktop-matrix.md](desktop-matrix.md#choosing-a-desktop)).
   **Use the default again** removes it. The page shows which desktop RDP logins get
   now, and whether it was chosen there. The broker checks the desktop against the
-  user's allowed desktops when it is chosen and again at every login.
+  user's allowed desktops when it is chosen and again at every login. Admins see,
+  set and remove it with `fastrdpctl desktop USER [DESKTOP | --clear]` (root; it
+  also tells which desktop RDP logins get now and why,
+  [desktop-matrix.md](desktop-matrix.md#choosing-a-desktop)).
 - **Download .rdp file** gives an `.rdp` file (`application/x-rdp`) for that desktop:
   `full address` (`fastrdp_web_rdp_host`, default `fastrdp_fqdn`, and
   `fastrdp_web_rdp_port`, default `fastrdp_listen_port`, written only if not 3389),
   `alternate shell:s:fastrdp:<desktop>` and the settings of
   [client-guide.md](client-guide.md#windows-remote-desktop-connection-mstsc) (NLA with
-  CredSSP, `authentication level:i:2`, network auto-detection). It holds no user name,
+  CredSSP, `authentication level:i:2`, network auto-detection), and sound and
+  microphone as the server offers them: `audiomode:i:0` (play on this computer; `2`
+  with `fastrdp_audio: false`) and `audiocapturemode:i:1` (record from this computer;
+  `0` with `fastrdp_audio_input: false` or `fastrdp_audio: false`;
+  [audio.md](audio.md#implementation-backlog-a1)). It holds no user name,
   password or token: the user logs in as usual, with the UPN. The file is not signed,
   so mstsc warns that the publisher cannot be identified.
 

@@ -413,8 +413,9 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /sec:tls /cert:fingerprint:sha256:<fi
 - None of these runs while the broker waits. Raise `/timeout` only for slow links,
   e.g. `/timeout:60000` over a satellite connection.
 
-**Server side.** `fastrdp_proxy_broker_timeout` (default 120 s) must be larger than
-privacyIDEA's `push_timeout` (default 60 s) ([auth-matrix.md](auth-matrix.md)).
+**Server side.** `fastrdp_proxy_broker_timeout` (default 180 s) must cover privacyIDEA's
+`push_timeout` (default 60 s) or the web approval (90 s) plus the session start (up to
+90 s) ([auth-matrix.md](auth-matrix.md)).
 
 A real 60-second push wait with FreeRDP and Remmina is still to be confirmed [lab].
 
