@@ -41,6 +41,18 @@
     - fastrdp_install_method == 'build'
     - fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
 
+# Created by the X11 desktops' packages; a host with wlroots desktops only has none.
+- name: X session directory for wlroots desktops
+  ansible.builtin.file:
+    path: /usr/share/xsessions
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - fastrdp_install_method == 'build'
+    - fastrdp_desktops | intersect(fastrdp_wlroots_desktops) | length > 0
+
 - name: X session entries for wlroots desktops
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../broker/session/xsessions/fastrdp-{{ item }}.desktop"

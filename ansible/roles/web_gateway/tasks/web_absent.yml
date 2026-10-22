@@ -1,0 +1,44 @@
+---
+# fastrdp_web_enabled is false: stop a web gateway an earlier run set up and take it off
+# nginx and the firewall. Nothing to do on hosts that never had one. Packages, nginx itself,
+# container images, secrets and /etc/fastrdp/webgate.toml stay: switched on again, the
+# gateway comes back with the same keys (web push subscriptions stay valid).
+- name: Installed units
+  ansible.builtin.service_facts:
+
+- name: Webgate stopped and disabled
+  ansible.builtin.systemd_service:
+    name: fastrdp-webgate.service
+    state: stopped
+    enabled: false
+  when: "'fastrdp-webgate.service' in ansible_facts.services"
+
+# Generated from the quadlets: removing those (below) disables them.
+- name: Guacamole containers stopped
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+  loop: [fastrdp-guacamole.service, fastrdp-guacd.service]
+  when: item in ansible_facts.services
+
+- name: Guacamole quadlets removed
+  ansible.builtin.file:
+    path: "/etc/containers/systemd/{{ item }}"
+    state: absent
+  loop: [fastrdp-guacd.container, fastrdp-guacamole.container]
+  notify: Reload systemd units (web gateway)
+
+- name: KDC proxy (behind the web gateway) removed as well
+  ansible.builtin.import_tasks: kdcproxy_absent.yml
+
+- name: Reverse proxy disabled
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/fastrdp-web.conf
+    state: absent
+  notify: Reload nginx
+
+- name: Firewall rules of the web gateway removed
+  ansible.builtin.file:
+    path: /etc/nftables.d/fastrdp-web.nft
+    state: absent
+  notify: Reload nftables (web gateway)

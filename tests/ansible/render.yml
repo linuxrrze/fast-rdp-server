@@ -287,6 +287,7 @@
         fastrdp_mfa_reconnect_grace: 600
         fastrdp_mfa_reconnect_grace_same_address: false
         fastrdp_privacyidea_ca_src: files/pi-ca.pem
+        fastrdp_broker_pi_ca: {stat: {exists: true, checksum: "{{ '0123456789abcdef' * 4 }}"}}   # broker role's stat
         fastrdp_privacyidea_service_user: pi-service
         fastrdp_privacyidea_verify_tls: false
         fastrdp_allow_tls_logins: false

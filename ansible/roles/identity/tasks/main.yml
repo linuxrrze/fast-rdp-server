@@ -142,12 +142,19 @@
   changed_when: false
   when: fastrdp_identity_provider == 'ad'
 
+# Check mode creates no keytab (the join and extraction commands only say they would).
+- name: TERMSRV keytab
+  ansible.builtin.stat:
+    path: /etc/fastrdp/termsrv.keytab
+  register: fastrdp_termsrv_keytab
+
 - name: Keytab permissions
   ansible.builtin.file:
     path: /etc/fastrdp/termsrv.keytab
     owner: root
     group: _fastrdp-proxy
     mode: "0640"
+  when: not ansible_check_mode or fastrdp_termsrv_keytab.stat.exists
 
 # A snippet, not sssd.conf: on FreeIPA, ipa-client-install owns sssd.conf. sssd reads
 # conf.d only when sssd.conf exists (written by the join, or provided for "none").
@@ -194,7 +201,9 @@
       /etc/krb5.keytab has one with the TERMSRV keys and FASTRDP_TERMSRV_KEYTAB_MACHINE is not
       "no" in /etc/fastrdp/termsrv.conf; klist -k /etc/krb5.keytab shows the host keytab.
     quiet: true
-  when: fastrdp_identity_provider == 'ad'
+  when:
+    - fastrdp_identity_provider == 'ad'
+    - fastrdp_termsrv_keytab_list is not skipped   # check mode runs no klist
 
 - name: SSSD running
   ansible.builtin.service:

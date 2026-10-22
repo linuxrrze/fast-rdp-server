@@ -495,6 +495,9 @@ class BrokerToml(unittest.TestCase):
         self.assertEqual(cfg.broker.home_create_roots, ["/home"])  # [broker] keys before the table
 
     def test_mfa_variant_accepted_by_broker(self):
+        # the CA's checksum (comment) changes broker.toml with the CA: the broker restarts
+        self.assertIn("\n# ca_file sha256 " + "0123456789abcdef" * 4 + " ", (OUT / "broker-mfa.toml").read_text())
+        self.assertNotIn("ca_file sha256", (OUT / "broker-lab.toml").read_text())
         cfg = broker_config.parse(toml("broker-mfa.toml"))
         self.assertEqual(cfg.auth.realms, ["LAB.EXAMPLE.COM"])
         self.assertFalse(cfg.auth.allow_tls_password_login)
@@ -1718,7 +1721,7 @@ class KdcProxy(unittest.TestCase):
         self.assertGreater(settings["timeout"], 30)
 
     def test_role_wiring(self):
-        main = (self.ROLE / "tasks/main.yml").read_text()
+        main = (self.ROLE / "tasks/web.yml").read_text()
         self.assertIn("include_tasks: kdcproxy.yml\n  when: fastrdp_web_kdcproxy | bool", main)
         self.assertIn("include_tasks: kdcproxy_absent.yml\n  when: not fastrdp_web_kdcproxy | bool", main)
         self.assertLess(main.index("include_tasks: kdcproxy.yml"), main.index("src: nginx-fastrdp-web.conf.j2"))

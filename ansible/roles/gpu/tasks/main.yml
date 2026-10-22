@@ -32,6 +32,15 @@
     name: "{{ fastrdp_gpu_packages }}"
     state: present
 
+# ubuntu-drivers is not in minimal/cloud images
+- name: NVIDIA driver installer (Ubuntu)
+  ansible.builtin.apt:
+    name: ubuntu-drivers-common
+    state: present
+  when:
+    - fastrdp_gpu_effective == 'nvidia'
+    - ansible_facts.distribution == 'Ubuntu'
+
 - name: NVIDIA driver (Ubuntu)
   ansible.builtin.command: ubuntu-drivers install
   args:

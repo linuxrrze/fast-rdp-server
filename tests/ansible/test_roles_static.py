@@ -149,6 +149,82 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("else ansible_facts.fqdn) | lower }}", text)
         self.assertIn('fastrdp_hostname: "{{ ansible_facts.hostname }}"', text)
 
+    def test_service_accounts_before_the_broker(self):
+        # broker.toml names _fastrdp-proxy and, with [web] enabled, _fastrdp-web; the broker
+        # resolves both at start (pwd.getpwnam), so they exist before the broker role runs
+        # (0.7.0: a fresh host with the web path had a broker that did not start)
+        site = (ANSIBLE / "site.yml").read_text()
+        self.assertLess(site.index("- role: base\n"), site.index("- role: broker\n"))
+        base = (ANSIBLE / "roles" / "base" / "tasks" / "main.yml").read_text()
+        web = (ANSIBLE / "roles" / "web_gateway" / "tasks" / "web.yml").read_text()
+        for user, sysusers, when in (("_fastrdp-proxy", "fastrdp-proxy-module", None),
+                                     ("_fastrdp-web", "fastrdp-webgate", "fastrdp_web_enabled | bool")):
+            with self.subTest(user=user):
+                # same account as the package's sysusers.d entry (u NAME - "GECOS" HOME SHELL)
+                line = next(x for x in (REPO / "debian" / f"{sysusers}.sysusers").read_text().splitlines()
+                            if x.startswith("u "))
+                m = re.fullmatch(r'u (\S+) - "([^"]*)" (\S+) (\S+)', line)
+                self.assertEqual(m.group(1), user)
+                task = (f"  ansible.builtin.user:\n    name: {user}\n    comment: {m.group(2)}\n"
+                        f"    system: true\n    shell: {m.group(4)}\n    home: {m.group(3)}\n"
+                        "    create_home: false\n")
+                self.assertIn(task + (f"  when: {when}\n" if when else ""), base)
+        self.assertIn(task, web)          # web_gateway keeps the same account for --tags web
+        self.assertIn('gateway_user = "_fastrdp-web"',
+                      (ANSIBLE / "roles" / "broker" / "templates" / "broker.toml.j2").read_text())
+
+    def test_xsessions_directory_before_wlroots_entries(self):
+        # only the X11 desktops' packages create /usr/share/xsessions; copy does not
+        tasks = (ANSIBLE / "roles" / "desktops" / "tasks" / "main.yml").read_text()
+        self.assertLess(tasks.index("    path: /usr/share/xsessions\n    state: directory"),
+                        tasks.index('dest: "/usr/share/xsessions/fastrdp-{{ item }}.desktop"'))
+
+    def test_web_gateway_removed_when_disabled(self):
+        # fastrdp_web_enabled true -> false stops the gateway; a "when" on the role in site.yml
+        # would skip the teardown and the role's handlers
+        site = (ANSIBLE / "site.yml").read_text()
+        entry = site.split("- role: web_gateway", 1)[1].split("\n    - role:", 1)[0]
+        self.assertNotIn("when:", entry)
+        role = ANSIBLE / "roles" / "web_gateway"
+        main = (role / "tasks" / "main.yml").read_text()
+        self.assertIn("import_tasks: web.yml\n  when: fastrdp_web_enabled | bool\n", main)
+        self.assertIn("import_tasks: web_absent.yml\n  when: not fastrdp_web_enabled | bool\n", main)
+        absent = (role / "tasks" / "web_absent.yml").read_text()
+        for path in ("/etc/nginx/sites-enabled/fastrdp-web.conf", "/etc/nftables.d/fastrdp-web.nft",
+                     '"/etc/containers/systemd/{{ item }}"'):
+            self.assertIn(f"    path: {path}\n    state: absent\n", absent)
+        self.assertIn("import_tasks: kdcproxy_absent.yml", absent)
+        self.assertIn("name: fastrdp-webgate.service\n    state: stopped\n    enabled: false\n", absent)
+        # units only if installed: a no-op on hosts that never had the web path
+        self.assertEqual(absent.count("in ansible_facts.services"), 2)
+        # packages and data stay
+        self.assertNotIn("ansible.builtin.apt", absent)
+        self.assertNotRegex(absent, r"path: \"?/etc/fastrdp/")
+        # the reload copes with nginx stopped or not installed
+        handlers = (role / "handlers" / "main.yml").read_text()
+        block = handlers.split("- name: Reload nginx\n", 1)[1].split("\n- name:", 1)[0]
+        self.assertIn("argv: [systemctl, try-reload-or-restart, nginx.service]", block)
+        self.assertIn("failed_when: fastrdp_nginx_reload.rc not in [0, 5]", block)
+
+    def test_restarts_for_changed_certificates(self):
+        role = ANSIBLE / "roles" / "web_gateway"
+        web = (role / "tasks" / "web.yml").read_text()
+        # nginx serves the front certificate the fingerprint is taken from
+        self.assertIn("dest: /etc/fastrdp/front.fingerprint", web.split("notify: [Restart fastrdp-webgate, Reload nginx]")[0]
+                      .rsplit("- name:", 1)[1])
+        # the webgate reads the IdP CA once
+        idp = web.split("dest: /etc/fastrdp/webgate-idp-ca.pem", 1)[1].split("\n- name:", 1)[0]
+        self.assertIn("notify: Restart fastrdp-webgate", idp)
+        # the broker reads the privacyIDEA CA once: its checksum is in broker.toml
+        broker = (ANSIBLE / "roles" / "broker" / "tasks" / "main.yml").read_text()
+        self.assertLess(broker.index("path: /etc/fastrdp/privacyidea-ca.pem"), broker.index("src: broker.toml.j2"))
+        self.assertIn("fastrdp_broker_pi_ca.stat.checksum",
+                      (ANSIBLE / "roles" / "broker" / "templates" / "broker.toml.j2").read_text())
+        # first start of a container pulls the image
+        for quadlet in ("fastrdp-guacd.container.j2", "fastrdp-guacamole.container.j2"):
+            text = (role / "templates" / quadlet).read_text()
+            self.assertIn("TimeoutStartSec=900\n", text.split("[Service]", 1)[1].split("\n[", 1)[0])
+
 
 if __name__ == "__main__":
     unittest.main()

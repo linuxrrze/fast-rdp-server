@@ -20,12 +20,21 @@
     daemon_reload: true
   loop: [fastrdp-kdcproxy.socket, fastrdp-kdcproxy.service]
 
+# Also notified with the web gateway switched off (web_absent.yml), where nginx may be
+# stopped or gone: try-reload-or-restart acts on a running unit only, exit 5 = not installed.
 - name: Reload nginx
-  ansible.builtin.systemd_service:
-    name: nginx.service
-    state: reloaded
+  ansible.builtin.command:  # noqa: command-instead-of-module - no module state for try-reload-or-restart
+    argv: [systemctl, try-reload-or-restart, nginx.service]
+  register: fastrdp_nginx_reload
+  changed_when: fastrdp_nginx_reload.rc == 0
+  failed_when: fastrdp_nginx_reload.rc not in [0, 5]
 
 - name: Reload nftables (web gateway)
   ansible.builtin.systemd_service:
     name: nftables.service
     state: reloaded
+
+# web_absent.yml removed the quadlets: the generator drops their units.
+- name: Reload systemd units (web gateway)
+  ansible.builtin.systemd_service:
+    daemon_reload: true

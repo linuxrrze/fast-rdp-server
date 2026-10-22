@@ -96,6 +96,16 @@
       loop: [/etc/systemd/system/fastrdp-brokerd.service, /usr/local/sbin/fastrdpctl]
       notify: Restart fastrdp-brokerd
 
+# The broker reads the CA once at start; its checksum in broker.toml makes a new CA
+# (copied by the mfa_privacyidea role) a config change, which restarts the broker.
+- name: Checksum of the privacyIDEA CA
+  ansible.builtin.stat:
+    path: /etc/fastrdp/privacyidea-ca.pem
+    checksum_algorithm: sha256
+    get_mime: false
+  register: fastrdp_broker_pi_ca
+  when: fastrdp_privacyidea_ca_src | length > 0
+
 # validate: a config the broker rejects never replaces the working one (with force_handlers
 # the restart would otherwise run and stop the broker).
 - name: Broker configuration

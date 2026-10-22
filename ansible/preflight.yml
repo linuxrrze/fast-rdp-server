@@ -98,7 +98,7 @@
                + (['fastrdp_privacyidea_url'] if preflight_pi_needed else []))
               | difference(query('ansible.builtin.varnames', '^fastrdp_')))
              + (['vault_fastrdp_join_password (vault.yml)']
-                if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0
+                if preflight_idp in ['ad', 'ipa'] and vault_fastrdp_join_password | default('') | length == 0
                    and fastrdp_join_password | default(vault_fastrdp_join_password | default('')) | length == 0 else [])
              | sort }}
       ansible.builtin.set_fact:

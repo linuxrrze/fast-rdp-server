@@ -189,7 +189,7 @@ fastrdp_desktop_picker_timeout: 10
 fastrdp_desktop_picker_when_running: preselect
 
 # ---------------------------------------------------------------- desktops
-fastrdp_desktops: [xfce]             # xfce mate cinnamon lxqt budgie i3 sway labwc wayfire gnome plasma
+fastrdp_desktops: [xfce]             # xfce mate cinnamon lxqt plasma-x11 sway labwc wayfire gnome plasma
 fastrdp_default_desktop: xfce        # must be one of fastrdp_desktops
 fastrdp_group_desktops: {}           # default desktop per group, e.g. {rdp-kde: plasma}
 # Restrict desktops to groups, e.g. {plasma: [rdp-kde]}; desktops not listed are open

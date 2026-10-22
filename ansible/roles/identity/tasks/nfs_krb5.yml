@@ -48,3 +48,9 @@
     name: gssproxy
     enabled: true
     state: started
+
+# Before the automounts (autofs.yml) and SMB mounts: the first access may come right after
+# they start. Pending here: only this file's gssproxy/rpc-gssd restarts (identity flushed
+# everything earlier in main.yml).
+- name: Apply the gssproxy and rpc.gssd configuration
+  ansible.builtin.meta: flush_handlers

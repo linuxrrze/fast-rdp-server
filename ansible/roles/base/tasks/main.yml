@@ -34,13 +34,28 @@
     name: _fastrdp-broker
     system: true
 
+# As the packages' sysusers.d entries (debian/*.sysusers): a system user with a group of
+# the same name. Here, not in the roles that use them: the broker resolves both at start.
 - name: Proxy service account
   ansible.builtin.user:
     name: _fastrdp-proxy
+    comment: fastrdp RDP front-end
     system: true
     shell: /usr/sbin/nologin
     home: /nonexistent
     create_home: false
+
+# broker.toml names it with [web] enabled = true (the broker role runs before web_gateway);
+# a missing account stops the broker at start. Kept when the web path is switched off.
+- name: Web gateway service account
+  ansible.builtin.user:
+    name: _fastrdp-web
+    comment: fastrdp web gateway
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+  when: fastrdp_web_enabled | bool
 
 - name: Config directory
   ansible.builtin.file:
@@ -73,12 +88,19 @@
     creates: /etc/fastrdp/front.crt
   when: fastrdp_front_cert_src | length == 0
 
+# Check mode creates no key (the tasks above only say they would).
+- name: Front-end key
+  ansible.builtin.stat:
+    path: /etc/fastrdp/front.key
+  register: fastrdp_front_key
+
 - name: Front-end key permissions
   ansible.builtin.file:
     path: /etc/fastrdp/front.key
     owner: root
     group: _fastrdp-proxy
     mode: "0640"
+  when: not ansible_check_mode or fastrdp_front_key.stat.exists
 
 - name: Firewall - drop-in directory exists
   ansible.builtin.file:

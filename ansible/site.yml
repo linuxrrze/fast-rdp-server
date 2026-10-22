@@ -30,6 +30,5 @@
       when: "'plasma' in fastrdp_desktops"
     - role: freerdp_proxy
       tags: [proxy]
-    - role: web_gateway
+    - role: web_gateway   # fastrdp_web_enabled false: removes an earlier run's gateway
       tags: [web]
-      when: fastrdp_web_enabled | bool

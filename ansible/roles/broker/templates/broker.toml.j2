@@ -45,6 +45,9 @@ web_approval_max_auth_age = {{ fastrdp_mfa_web_approval_max_auth_age | int }}
 web_approval_single_pending = {{ fastrdp_mfa_web_approval_single_pending | bool | lower }}
 
 [mfa.privacyidea]
+{% if fastrdp_broker_pi_ca.stat.checksum | default('') | length > 0 %}
+# ca_file sha256 {{ fastrdp_broker_pi_ca.stat.checksum }} (read at start: a new CA restarts the broker)
+{% endif %}
 url = "{{ fastrdp_privacyidea_url if fastrdp_mfa_mode in ['otp', 'push', 'otp_or_push', 'push_or_web'] else '' }}"
 realm = "{{ fastrdp_privacyidea_realm }}"
 ca_file = "{{ '/etc/fastrdp/privacyidea-ca.pem' if fastrdp_privacyidea_ca_src | length > 0 else '' }}"

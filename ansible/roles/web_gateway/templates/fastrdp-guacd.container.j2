@@ -16,6 +16,8 @@ UserNS=auto
 
 [Service]
 Restart=always
+# The first start pulls the image: more than systemd's default 90 s on slow links.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

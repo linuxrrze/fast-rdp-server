@@ -1,7 +1,10 @@
 # Web access (browser) – Keycloak + Guacamole
 
 Optional path for users without an RDP client. Enable with `fastrdp_web_enabled: true`
-(Ansible role `web_gateway`).
+(Ansible role `web_gateway`). Set back to `false`, the next run stops and disables
+fastrdp-webgate, the Guacamole containers (quadlets removed) and the KDC proxy, and removes
+the nginx site link and `/etc/nftables.d/fastrdp-web.nft`; packages, nginx itself, images,
+secrets and `/etc/fastrdp/webgate.toml` stay, so switching it on again keeps the keys.
 
 ```
 browser ──https──▶ nginx :443
