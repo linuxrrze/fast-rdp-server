@@ -4,12 +4,16 @@
     name: freeipa-client
     state: present
 
+# The password on stdin, not --password: a command line is readable by every local user
+# (/proc/<pid>/cmdline) while the enrolment runs. With --principal, --unattended and no
+# --password, ipa-client-install reads it from a non-tty stdin and hands it to kinit on
+# stdin (ipaclient/install/client.py), like realm join on AD (ad.yml).
 - name: Enrol in FreeIPA
   ansible.builtin.command:
     cmd: >-
       ipa-client-install --unattended --mkhomedir --domain={{ fastrdp_domain }}
       --realm={{ fastrdp_realm }} --principal={{ fastrdp_join_user }}
-      --password={{ fastrdp_join_password }}
+    stdin: "{{ fastrdp_join_password }}"
     creates: /etc/ipa/default.conf
   no_log: true
 

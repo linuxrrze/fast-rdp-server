@@ -83,6 +83,20 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("fastrdp_roles_version:", (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text())
         self.assertNotIn("name: Validate broker configuration", tasks)
 
+    def test_join_passwords_never_on_a_command_line(self):
+        # /proc/<pid>/cmdline is world-readable: join passwords go on stdin or into the
+        # environment of the task, never into the command (security review)
+        tasks = ANSIBLE / "roles" / "identity" / "tasks"
+        ipa = (tasks / "ipa.yml").read_text()
+        self.assertNotIn("--password=", ipa)
+        self.assertIn('stdin: "{{ fastrdp_join_password }}"', ipa)
+        self.assertIn('stdin: "{{ fastrdp_join_password }}"', (tasks / "ad.yml").read_text())
+        for f in sorted(tasks.glob("*.yml")):
+            for line in f.read_text().splitlines():
+                if "fastrdp_join_password" in line:
+                    self.assertRegex(line.strip(), r"^(stdin|JOIN_PW|fastrdp_join_password):|^- |^#",
+                                     f"{f.name}: {line.strip()}")
+
     def test_gdm_headless_static_user(self):
         # dbus-daemon (Ubuntu 26.04) drops the unit's DynamicUser client; static gdm user,
         # with the sandboxing DynamicUser implied, and not root (root bypasses GDM's polkit rule)
