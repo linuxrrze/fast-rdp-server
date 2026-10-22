@@ -1,3 +1,17 @@
+fast-rdp-server (0.6.1) unstable; urgency=medium
+
+  * Deploy fix: the web gateway's restart handler (notified by the base
+    role's package upgrade on every host) failed on hosts without the web
+    gateway ("Could not find the requested service fastrdp-webgate.service");
+    it now runs only with fastrdp_web_enabled.
+  * Importable Keycloak client for the web gateway
+    (docs/examples/keycloak-fastrdp-web-client.json, verified on Keycloak
+    26.8.1); make test-keycloak works again with ansible-core 2.21.
+  * Setup wizard: clearer second-factor question (web = Keycloak,
+    push/otp/otp_or_push = privacyIDEA, push_or_web = both).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 18:03:41 +0200
+
 fast-rdp-server (0.6.0) unstable; urgency=medium
 
   * Approval notifications for web approval (opt in at /web/notify): ntfy
