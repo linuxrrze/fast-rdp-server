@@ -45,7 +45,9 @@ jobs:
             ca-certificates git make gcc libc6-dev pkgconf libpam0g-dev libpam-modules \
             libcjson-dev python3 python3-venv python3-cryptography \
             dpkg-dev curl patch xz-utils reprepro gnupg gpgv nodejs
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
       - name: ansible-lint, shellcheck (same versions as the documented dev setup)
         run: |
           python3 -m venv /opt/lint
@@ -88,7 +90,9 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git patch dpkg-dev
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
       - name: Cache key (upstream sha256 + patches + packaging)
         id: key
         run: |
@@ -99,7 +103,7 @@ jobs:
           echo "sums=$(printf '%s' "$sums" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - name: Restore build
         id: cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: vendored-out
           key: >-
@@ -135,11 +139,11 @@ jobs:
         run: make test-xrdp-encoder XRDP_SRC="${{ steps.build.outputs.dir }}/src/xrdp"
       - name: Save build
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: vendored-out
           key: ${{ steps.cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: vendored-${{ matrix.codename }}-${{ matrix.pkg }}
           path: vendored-out/
@@ -164,8 +168,10 @@ jobs:
           rm -f /etc/dpkg/dpkg.cfg.d/excludes
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: vendored-${{ matrix.codename }}-*
           path: vendored
@@ -194,7 +200,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" binutils
           # users, library resolution, RPATH/RUNPATH, imports, units, xrdp FFmpeg build
           FASTRDP_TESTS_STRICT=1 tests/packaging/check-installed.sh
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: debs-${{ matrix.codename }}
           path: out/
@@ -224,8 +230,10 @@ jobs:
           chmod +x /usr/sbin/policy-rc.d
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: vendored-${{ matrix.codename }}-freerdp
           path: vendored
@@ -269,7 +277,9 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git gcc libc6-dev libwinpr3-dev libkrb5-dev krb5-kdc krb5-admin-server
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
       - name: tests/krb5-spnego/run.sh
         shell: bash
         run: |
@@ -303,19 +313,20 @@ jobs:
       group: apt-repository
       cancel-in-progress: false
       queue: max
+    # The signing key, its passphrase and the token only in the steps that use them, not
+    # job-wide: the job also runs third-party actions (pinned to commit SHAs).
     env:
-      APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
-      APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
       APT_REPO_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Tools
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates gh git gnupg reprepro
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: artifacts
       - name: Collect packages per distro
@@ -334,6 +345,8 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then echo "name=stable" >> "$GITHUB_OUTPUT"
           else echo "name=testing" >> "$GITHUB_OUTPUT"; fi
       - name: Signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
           if [ -z "$APT_SIGNING_KEY" ]; then
             echo "::error::secret APT_SIGNING_KEY is not set (docs/packaging.md)"
@@ -354,6 +367,9 @@ jobs:
       # gh-pages tip -> publish.sh (other channel carried over) -> one orphan commit,
       # pushed with --force-with-lease on that tip; rebuilt if gh-pages moved meanwhile.
       - name: Build repository and push to gh-pages
+        env:
+          APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           packaging/ci/publish-gh-pages.sh \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages site \
@@ -362,11 +378,22 @@ jobs:
       # pages.yml deploys the gh-pages tip on main, also for tags: a deployment from a tag
       # run reports success without going live (docs/packaging.md "Pages"). It queues
       # behind this job in the apt-repository group.
+      # The imported secret key is on disk in $GNUPGHOME (and cached by gpg-agent):
+      # gone before any later step, also when signing or the push failed.
+      - name: Remove the signing key
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ]; then
+            gpgconf --kill gpg-agent || true
+            rm -rf "$GNUPGHOME"
+          fi
       - name: Deploy gh-pages (pages workflow on main)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
       - name: GitHub release with the packages
         if: steps.channel.outputs.name == 'stable'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           # .source.tar.xz: corresponding source of the vendored packages (docs/licensing.md)
           files: |

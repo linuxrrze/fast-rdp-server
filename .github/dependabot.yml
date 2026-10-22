@@ -1,0 +1,11 @@
+# Update PRs for the GitHub Actions in .github/workflows: they are pinned to commit SHAs
+# (docs/packaging.md "Signing key and secrets"), Dependabot bumps SHA and version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

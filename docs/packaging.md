@@ -268,6 +268,17 @@ Then delete `apt-signing-key.asc` and `$GNUPGHOME` (or keep them offline).
 Publishing is skipped in forks (`repository_owner` check) and fails loudly if the
 secret is missing.
 
+Who can read the key in CI: only the step that imports it (`APT_SIGNING_KEY`) and the
+step that signs and pushes (passphrase, `GH_TOKEN`) get the secrets, not the whole
+job; the next step kills `gpg-agent` and deletes the imported keyring
+(`$RUNNER_TEMP/gnupg`), also after a failure, before the job's later steps (among
+them the third-party `softprops/action-gh-release`) run. Checkouts keep no token in
+`.git/config` (`persist-credentials: false`; the gh-pages push passes it in the URL).
+All actions are pinned to commit SHAs with the version as a comment; Dependabot
+(`.github/dependabot.yml`) opens weekly update PRs for them. A moved tag of an action
+therefore cannot reach the key, which would let it sign packages every fastrdp host
+installs as root.
+
 ### Pages
 
 `.github/workflows/pages.yml` deploys the site (`actions/configure-pages`,
