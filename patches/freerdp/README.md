@@ -257,3 +257,42 @@ PAC); `tests/proxy-module/test_pac.c` covers the parser with Windows PACs.
 ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** FreeRDP offers the ticket's verified authorization data itself.
+
+## 0006 – [server,proxy] drop Server Status Info PDUs the front client did not announce
+
+**Problem.** `pf_client_server_status_info()` in `server/proxy/pf_update.c` forwarded
+every Server Status Info PDU ([MS-RDPBCGR] 2.2.5.2) of the back-end to the front client.
+A client announces support with RNS_UD_CS_SUPPORT_STATUSINFO_PDU in the
+`earlyCapabilityFlags` of its Client Core Data (2.2.1.3.2); 3.3.5.7.2: the server MUST NOT
+send the PDU unless the client did.
+
+**Who is affected.** freerdp-proxy in front of a back-end that sends the PDU although the
+proxy's back-end hop did not announce it, or of a back-end hop whose settings a module
+changed. The hop starts from a copy of the front settings
+(`pf_context_create_client_context()`), so it announces exactly what the front client
+announced, and a conforming back-end stays quiet. Clients that announce
+support (mstsc, FreeRDP) see no difference.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp server with conforming back-ends | no: defence in depth, the proxy no longer depends on the back-end for this rule |
+| fastrdp's regression suite | no: no test back-end sends the PDU |
+
+**Fix.** Check `FreeRDP_SupportStatusInfoPdu` in the front peer's settings
+(`ps->context.settings`: TRUE by default in server mode, cleared by
+`updateEarlyClientCaps()` when the client did not set the flag) and drop the PDU with a
+DEBUG message (`dropping server status info 0x…`) when it is off. Forwarding is unchanged
+otherwise. Settings copied from the back-end on a reactivation
+(`proxy_server_reactivate()`) carry the same value, because the hop's value came from the
+front.
+
+**Regression test.** None dedicated: no test back-end sends a Server Status Info PDU, and
+faking one needs a back-end that breaks the rule. `tests/proxy-e2e/run.sh` (39/39 against
+3.32.2-5) shows that forwarding is otherwise unchanged.
+
+**Status upstream.** Still present in 3.32.2. Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** a FreeRDP release checks the front client's capability before forwarding.

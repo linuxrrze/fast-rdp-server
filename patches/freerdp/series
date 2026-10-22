@@ -3,3 +3,4 @@
 0003-core-nla-accept-TSRemoteGuardCreds-without-supplementalCreds.patch
 0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch
 0005-winpr-kerberos-acceptor-keep-the-KDC-evidence-from-the-ticket.patch
+0006-server-proxy-drop-Server-Status-Info-PDUs-the-client-did-not-announce.patch

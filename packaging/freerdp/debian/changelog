@@ -1,3 +1,11 @@
+fastrdp-freerdp3 (3.32.2-5) unstable; urgency=medium
+
+  * patches/freerdp: server/proxy: drop a back-end's Server Status Info PDU
+    instead of forwarding it when the front client did not announce
+    RNS_UD_CS_SUPPORT_STATUSINFO_PDU ([MS-RDPBCGR] 3.3.5.7.2).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Thu, 22 Oct 2026 14:08:43 +0200
+
 fastrdp-freerdp3 (3.32.2-4) unstable; urgency=medium
 
   * patches/freerdp: winpr/kerberos: the Kerberos acceptor keeps what the KDC

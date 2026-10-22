@@ -131,5 +131,11 @@ the new attributes). With a deliberately wrong verification key (user-to-user an
 keytab) the indicator is dropped and the proxy logs the failed svc-verifier / PAC
 signature, so the e2e checks fail.
 
+2026-10-22, `3.32.2-5` (patch 0006, the proxy forwards Server Status Info PDUs only to
+clients that announced them): sysroot build of the full `build-freerdp.sh` configuration,
+TLS e2e suite 39/39. No suite exercises the drop itself (no test back-end sends the PDU);
+NLA and smartcard suites not rerun (no KDC on the build host; 0006 touches only
+`server/proxy/pf_update.c`).
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.
