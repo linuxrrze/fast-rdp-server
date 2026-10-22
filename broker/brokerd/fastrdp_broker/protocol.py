@@ -30,8 +30,17 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}
   -> {"ok": true, "user": str, "token": "fastrdp-web1:...", "desktops": [str]}
   {"op": "web_desktops", "user": str}
-  -> {"ok": true, "user": str, "default": str, "desktops": [{"name": str, "label": str}]}
+  -> {"ok": true, "user": str, "default": str, "rdp_desktop": str|null,
+      "desktops": [{"name": str, "label": str}]}
+  {"op": "web_set_desktop", "user": str, "desktop": str|null}
+  -> {"ok": true, "user": str, "rdp_desktop": str|null}
   Refusals as for "login".
+
+  "default": the desktop an RDP login without a client hint gets now; "rdp_desktop":
+  the desktop the user chose for RDP logins on the chooser page (desktopprefs.py; null:
+  none, or no longer allowed). web_set_desktop stores it (null removes it); a desktop the
+  user may not use is refused ("not_allowed"), a failed write gives "unavailable". The
+  "desktop" field must be present.
 
   [mfa] mode web / push_or_web (mfa.WebApprovals): logins waiting for their user's
   approval on the webgate's approval page. "user" is the name the webgate signed in

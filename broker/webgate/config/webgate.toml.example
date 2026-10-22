@@ -7,6 +7,10 @@ cookie_secret_file = "/etc/fastrdp/webgate-cookie.secret"
 session_lifetime = 900
 broker_socket = "/run/fastrdp/broker.sock"
 desktops = ["xfce", "mate", "gnome", "plasma"]
+# The proxy as RDP clients reach it: "Download .rdp file" on the chooser page puts it into
+# "full address" (DNS name, never an IP address; "" = the host of public_url).
+rdp_host = "rdp1.lab.example.com"
+rdp_port = 3389
 
 [oidc]
 issuer = "https://keycloak.lab.example.com/realms/lab"

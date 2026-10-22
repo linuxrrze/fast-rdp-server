@@ -139,6 +139,34 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
    SSSD resolves it). A `@realm` suffix is stripped. Use `fastrdp_web_username_claim`
    for a different claim.
 
+## RDP apps
+
+mstsc and the Windows App have no field for the desktop (FreeRDP and Remmina do:
+[client-guide.md](client-guide.md)). The chooser page at `https://<rdp-fqdn>/web/`
+therefore also lists, under **Remote Desktop app**, every desktop the broker allows the
+user (also those not offered in the browser, `fastrdp_web_desktops`), with two actions:
+
+- **Use for Remote Desktop logins** stores that desktop in the broker
+  (`/var/lib/fastrdp/desktop-prefs/<user>`, root only, op `web_set_desktop`). Every
+  later RDP login without a client hint gets it, ahead of `~/.config/fastrdp/desktop`
+  and the group default ([desktop-matrix.md](desktop-matrix.md#choosing-a-desktop)).
+  **Use the default again** removes it. The page shows which desktop RDP logins get
+  now, and whether it was chosen there. The broker checks the desktop against the
+  user's allowed desktops when it is chosen and again at every login.
+- **Download .rdp file** gives an `.rdp` file (`application/x-rdp`) for that desktop:
+  `full address` (`fastrdp_web_rdp_host`, default `fastrdp_fqdn`, and
+  `fastrdp_web_rdp_port`, default `fastrdp_listen_port`, written only if not 3389),
+  `alternate shell:s:fastrdp:<desktop>` and the settings of
+  [client-guide.md](client-guide.md#windows-remote-desktop-connection-mstsc) (NLA with
+  CredSSP, `authentication level:i:2`, network auto-detection). It holds no user name,
+  password or token: the user logs in as usual, with the UPN. The file is not signed,
+  so mstsc warns that the publisher cannot be identified.
+
+Both need the chooser's sign-in; the button is a CSRF-protected POST. Set
+`fastrdp_web_rdp_host` when clients reach the proxy under another name than
+`fastrdp_fqdn` (it must be a DNS name with a `TERMSRV/` principal, never an IP
+address), and `fastrdp_web_rdp_port` when a forwarded port differs from the proxy's.
+
 ## Approving RDP logins
 
 With `fastrdp_mfa_mode: web` or `push_or_web` the web gateway is also where users
@@ -309,6 +337,7 @@ GPO path with mstsc, AD as the KDC, kpasswd through the proxy.
 | `/etc/fastrdp/webgate.toml` | config (example: `broker/webgate/config/webgate.toml.example`) |
 | `/etc/fastrdp/guacamole-json.key` | 128-bit key shared by webgate and Guacamole (generated once) |
 | `/etc/fastrdp/webgate-cookie.secret` | signs the webgate's session cookies (generated once) |
+| `/var/lib/fastrdp/desktop-prefs/` | broker (root, 0700): desktop chosen for RDP logins per user ([RDP apps](#rdp-apps)) |
 | `/etc/nginx/sites-enabled/fastrdp-web.conf` | TLS front (same certificate as the RDP front-end) |
 | `fastrdp-kdcproxy.socket`, `fastrdp-kdcproxy.service` | KDC proxy (opt-in): socket `/run/fastrdp-kdcproxy.sock` (`root:www-data 0660`), gunicorn as a dynamic user |
 | `/etc/fastrdp/kdcproxy.conf`, `/etc/fastrdp/kdcproxy-gunicorn.conf.py` | KDC proxy: realm and KDCs, gunicorn settings (removed again with `fastrdp_web_kdcproxy: false`) |

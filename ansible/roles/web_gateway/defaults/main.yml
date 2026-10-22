@@ -15,6 +15,11 @@ fastrdp_web_required_acr: [mfa]
 fastrdp_web_required_amr_any: []
 fastrdp_web_desktops: "{{ fastrdp_desktops }}"
 fastrdp_web_session_lifetime: 900   # webgate login only; RDP sessions are not affected
+# The proxy as RDP clients reach it, for "Download .rdp file" on the chooser page
+# (mstsc "full address"). Change it if clients connect through another name or a
+# forwarded port; a DNS name, never an IP address (Windows then falls back to NTLM).
+fastrdp_web_rdp_host: "{{ fastrdp_fqdn }}"
+fastrdp_web_rdp_port: "{{ fastrdp_listen_port }}"
 fastrdp_guacamole_version: 1.6.0
 fastrdp_guacamole_image: "docker.io/guacamole/guacamole:{{ fastrdp_guacamole_version }}"
 fastrdp_guacd_image: "docker.io/guacamole/guacd:{{ fastrdp_guacamole_version }}"

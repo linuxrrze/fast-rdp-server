@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path("/etc/fastrdp/webgate.toml")
+DNS_NAME = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*")
 
 
 class ConfigError(Exception):
@@ -33,6 +36,11 @@ class WebgateSection:
     session_lifetime: int = 900
     broker_socket: str = "/run/fastrdp/broker.sock"
     desktops: list[str] = field(default_factory=list)  # offered in the chooser; broker enforces access
+    # The fastrdp proxy as RDP clients reach it, for the chooser's .rdp downloads (mstsc):
+    # a DNS name (never an IP address: Windows then uses NTLM, which is refused).
+    # "" = the host name of public_url.
+    rdp_host: str = ""
+    rdp_port: int = 3389
 
 
 @dataclass
@@ -110,6 +118,18 @@ def parse(raw: dict) -> Config:
         raise ConfigError(f"oidc.required_acr: {', '.join(weak_acr)} means no assurance")
     cfg.oidc.strip_domains = [d.lower() for d in cfg.oidc.strip_domains]
     cfg.webgate.path_prefix = "/" + cfg.webgate.path_prefix.strip("/")
+    host = cfg.webgate.rdp_host
+    if not isinstance(host, str) or (host and (not DNS_NAME.fullmatch(host)
+                                               or host.replace(".", "").isdigit())):
+        raise ConfigError("webgate.rdp_host must be the DNS name RDP clients connect to (no IP address)")
+    if not host:
+        # a lab's https://127.0.0.1 too; the name ends up in .rdp files, so no other characters
+        cfg.webgate.rdp_host = urllib.parse.urlsplit(cfg.webgate.public_url).hostname or ""
+        if not DNS_NAME.fullmatch(cfg.webgate.rdp_host):
+            raise ConfigError("set webgate.rdp_host: public_url has no usable host name")
+    port = cfg.webgate.rdp_port
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise ConfigError("webgate.rdp_port must be a port number 1..65535")
     cfg.guacamole.rdp_parameters = {str(k): str(v) for k, v in cfg.guacamole.rdp_parameters.items()}
     return cfg
 

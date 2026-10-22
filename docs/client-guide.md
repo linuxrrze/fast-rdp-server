@@ -63,7 +63,16 @@ error messages: [freerdp-client.md](freerdp-client.md).
 
 ## Windows Remote Desktop Connection (mstsc)
 
-Domain-joined Windows uses Kerberos automatically. Useful `.rdp` lines:
+Domain-joined Windows uses Kerberos automatically.
+
+**Desktop:** mstsc and the Windows App have no field for it. If your site has web
+access, sign in at `https://<rdp-fqdn>/web/` and either click **Use for Remote Desktop
+logins** next to a desktop (applies to every later login), or **Download .rdp file**
+and open that file (applies to logins with that file). Without web access, put the
+`alternate shell` line below into your own `.rdp` file. Details:
+[web-access.md](web-access.md#rdp-apps).
+
+Useful `.rdp` lines:
 
 ```
 full address:s:rdp1.lab.example.com
@@ -144,8 +153,17 @@ The exact cause is only in the server log.
 
 ## Choosing your default desktop
 
-Write the desktop name to `~/.config/fastrdp/desktop`, e.g.
-`echo plasma > ~/.config/fastrdp/desktop`. It applies from the next login.
+- **On the web page** (if your site has web access): sign in at
+  `https://<rdp-fqdn>/web/` and click **Use for Remote Desktop logins** next to the
+  desktop. It applies from the next login of any RDP client that does not name a
+  desktop itself; **Use the default again** undoes it. This is the way for mstsc and
+  the Windows App, and it works with Kerberized NFS homes.
+- **In the home directory:** write the desktop name to `~/.config/fastrdp/desktop`,
+  e.g. `echo plasma > ~/.config/fastrdp/desktop`. It applies from the next login,
+  unless a desktop was chosen on the web page. On Kerberized NFS homes the server
+  cannot read it; use the web page.
+- **Per connection:** the client's desktop hint (`fastrdp:<desktop>`, sections above)
+  wins over both.
 
 Available names: see `fastrdp_desktops` in the inventory (`xfce`, `mate`,
 `cinnamon`, `lxqt`, `plasma-x11`, `gnome`, `plasma`, and the wlroots desktops

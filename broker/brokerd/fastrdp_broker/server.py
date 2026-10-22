@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import conntype, home, identity, pamauth, tgt, tickets
 from .backends import BACKENDS, Backend, BackendError, LoginRequest, Target
 from .config import WEB_APPROVAL_MODES, Config
+from .desktopprefs import DesktopPrefs, PrefsError
 from .grace import GraceKey, ReconnectGrace
 from .identity import IdentityError, LocalUser
 from .mfa import ApprovalError, MfaDenied, SecondFactor, split_otp
@@ -38,6 +39,8 @@ class Broker:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.state = StateStore(cfg.broker.state_dir)
+        # Desktops chosen for RDP logins on the webgate's chooser page (web_set_desktop).
+        self.desktop_prefs = DesktopPrefs(cfg.broker.state_dir)
         self.tokens = TokenStore(cfg.broker.token_ttl)
         # One-time tokens for browser logins (fastrdp-webgate -> Guacamole -> proxy).
         self.web_tokens = TokenStore(cfg.web.token_ttl, WEB_TOKEN_PREFIX)
@@ -92,11 +95,27 @@ class Broker:
             )
             return None
 
+    def web_desktop_pref(self, user: LocalUser) -> tuple[str | None, bool]:
+        """(desktop the user chose on the webgate for RDP logins or None, allowed now)."""
+        try:
+            pref = self.desktop_prefs.get(user.name)
+        except (PrefsError, OSError) as exc:
+            log.warning("%s: desktop preference not read: %s", user.name, exc)
+            return None, False
+        return pref, bool(pref) and identity.desktop_allowed(self.cfg, pref, user)
+
     async def choose_desktop(self, user: LocalUser, hint: str | None) -> str:
-        """identity.choose_desktop, reading the user's preference file off the event loop."""
+        """identity.choose_desktop: the desktop chosen on the webgate (desktopprefs.py),
+        else the user's preference file, read off the event loop."""
         hinted = identity.hinted_desktop(self.cfg, user, hint)
         if hinted:
             return hinted
+        web_pref, allowed = self.web_desktop_pref(user)
+        if web_pref and allowed:
+            return web_pref
+        if web_pref:
+            log.info("%s: desktop %s chosen on the web gateway is not allowed (any more); ignored",
+                     user.name, web_pref)
         pref = await self.read_desktop_pref(user)
         return identity.choose_desktop(self.cfg, user, None, pref=pref)
 
@@ -405,7 +424,27 @@ class Broker:
         """fastrdp-webgate lists the desktops for its chooser (no token issued)."""
         user, desktops = await self._web_user(msg)
         default = await self.choose_desktop(user, None)
-        return {"ok": True, "user": user.name, "desktops": desktops, "default": default}
+        web_pref, allowed = self.web_desktop_pref(user)
+        return {"ok": True, "user": user.name, "desktops": desktops, "default": default,
+                "rdp_desktop": web_pref if allowed else None}
+
+    async def web_set_desktop(self, msg: dict) -> dict:
+        """fastrdp-webgate stores the desktop the user chose for RDP logins (null: none)."""
+        user, desktops = await self._web_user(msg)
+        if "desktop" not in msg:
+            raise ProtocolError("web_set_desktop needs 'desktop' (str or null)")
+        desktop = str_field(msg, "desktop", max_len=64)
+        if desktop is not None and desktop not in {d["name"] for d in desktops}:
+            raise Denied(f"{user.name} chose desktop {desktop!r} for RDP logins, which is not allowed",
+                         "not_allowed")
+        try:
+            self.desktop_prefs.set(user.name, desktop)
+        except (PrefsError, OSError) as exc:
+            log.error("%s: desktop preference not stored: %s", user.name, exc)
+            return {"ok": False, "error": "not stored", "reason": "unavailable"}
+        log.info("%s: desktop for RDP logins %s on the web gateway", user.name,
+                 f"set to {desktop}" if desktop else "reset to the default")
+        return {"ok": True, "user": user.name, "rdp_desktop": desktop}
 
     async def issue_web_token(self, msg: dict) -> dict:
         """fastrdp-webgate asks for a one-time login token after OIDC login."""
@@ -524,6 +563,8 @@ class Broker:
                         reply = await self.issue_web_token(msg)
                     elif op == "web_desktops" and self.web_uid is not None and uid == self.web_uid:
                         reply = await self.web_desktops(msg)
+                    elif op == "web_set_desktop" and self.web_uid is not None and uid == self.web_uid:
+                        reply = await self.web_set_desktop(msg)
                     elif op == "mfa_pending" and self.web_uid is not None and uid == self.web_uid:
                         reply = self.mfa_pending(msg)
                     elif op == "mfa_decide" and self.web_uid is not None and uid == self.web_uid:

@@ -5,6 +5,8 @@
   GET  <prefix>/           not logged in -> redirect to the IdP; logged in -> desktop chooser
   GET  <prefix>/callback   OIDC redirect target
   POST <prefix>/connect    -> broker web token -> encrypted Guacamole connection -> Guacamole
+  POST <prefix>/rdp-desktop  desktop for RDP logins (mstsc, Windows App; broker web_set_desktop)
+  GET  <prefix>/rdp/<desktop>.rdp  .rdp file for mstsc that names the desktop (alternate shell)
   GET  <prefix>/logout     drop the session, IdP logout if supported
   GET  <prefix>/approve    [mfa] mode web / push_or_web: fresh MFA sign-in at the IdP, then
                            the user's RDP logins waiting for approval (broker mfa_pending)
@@ -39,6 +41,7 @@ APPROVE_TTL = 300
 SAFE_USER = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SAFE_DESKTOP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+RDP_FILE = re.compile(r"/rdp/([A-Za-z0-9_-]{1,64})\.rdp")
 METHOD_LABELS = {"nla": "RDP client, Kerberos (NLA)", "tls": "RDP client, password"}
 
 
@@ -79,6 +82,11 @@ def broker_web_token(path: str, user: str, timeout: float = 15) -> dict:
 def broker_web_desktops(path: str, user: str, timeout: float = 15) -> dict:
     """Desktops the broker allows this user (no token is issued)."""
     return broker_request(path, "web_desktops", user, timeout)
+
+
+def broker_web_set_desktop(path: str, user: str, desktop: str | None, timeout: float = 15) -> dict:
+    """Store the desktop for the user's RDP logins in the broker (None: the default again)."""
+    return broker_request(path, "web_set_desktop", user, timeout, desktop=desktop)
 
 
 def broker_mfa_pending(path: str, user: str, timeout: float = 15) -> list[dict]:
@@ -130,6 +138,25 @@ class Webgate:
             c[name]["secure"] = True
         return c.output(header="").strip()
 
+    def rdp_file(self, desktop: str) -> str:
+        """.rdp file for mstsc / the Windows App: the proxy and the desktop, the settings of
+        docs/client-guide.md. No user name (the webgate does not know the UPN mstsc should
+        send, docs/client-guide.md) and nothing secret: the user logs in as usual."""
+        w = self.cfg.webgate
+        address = w.rdp_host if w.rdp_port == 3389 else f"{w.rdp_host}:{w.rdp_port}"
+        lines = [
+            f"full address:s:{address}",
+            f"alternate shell:s:fastrdp:{desktop}",
+            "enablecredsspsupport:i:1",
+            "authentication level:i:2",
+            "prompt for credentials:i:0",
+            "use redirection server name:i:0",
+            "networkautodetect:i:1",
+            "bandwidthautodetect:i:1",
+            "connection type:i:7",
+        ]
+        return "\r\n".join(lines) + "\r\n"
+
     def connection_payload(self, user: str, token: str, desktop: str | None) -> dict:
         g = self.cfg.guacamole
         params = {
@@ -169,7 +196,8 @@ def make_handler(app: Webgate):
             log.info("%s %s", self.command, self.path.split("?", 1)[0])
 
         # -------------------------------------------------------- plumbing
-        def send(self, status: int, body: str = "", headers: list[tuple[str, str]] = ()):
+        def send(self, status: int, body: str = "", headers: list[tuple[str, str]] = (),
+                 content_type: str = "text/html; charset=utf-8"):
             data = body.encode()
             self.send_response(status)
             self.send_header("Cache-Control", "no-store")
@@ -181,7 +209,7 @@ def make_handler(app: Webgate):
             for k, v in headers:
                 self.send_header(k, v)
             if data:
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -239,6 +267,11 @@ def make_handler(app: Webgate):
                 return self.redirect(app.prefix + "/")
             if path == "/healthz":
                 return self.send(200, "ok")
+            if m := RDP_FILE.fullmatch(path):
+                sess, _ = self.session()
+                if not sess:
+                    return self.redirect(app.prefix + "/")
+                return self.rdp_download(sess["user"], m.group(1))
             return self.error_page(404, "Not found.")
 
         def start_login(self, approve: bool = False):
@@ -286,31 +319,98 @@ def make_handler(app: Webgate):
             ])
 
         def chooser(self, user: str, csrf: str):
-            # Only desktops the broker allows this user (and the site offers on the web).
+            # Only desktops the broker allows this user; the browser path also only those
+            # the site offers on the web ([webgate] desktops).
             try:
                 reply = broker_web_desktops(app.cfg.webgate.broker_socket, user)
             except (OSError, BrokerError) as exc:
                 return self.broker_refused("desktop list", user, exc)
-            allowed = [d for d in reply.get("desktops", []) if app.offers(d.get("name", ""))]
+            allowed = [d for d in reply.get("desktops", []) if SAFE_DESKTOP.fullmatch(str(d.get("name", "")))]
+            if not allowed:
+                return self.error_page(403, "No remote desktop is available for your account.")
             default = reply.get("default", "")
             options = "".join(
                 f'<option value="{html.escape(d["name"])}"{" selected" if d["name"] == default else ""}>'
                 f'{html.escape(d.get("label") or d["name"])}</option>'
-                for d in allowed
+                for d in allowed if app.offers(d["name"])
             )
-            if not options:
-                return self.error_page(403, "No remote desktop is available for your account.")
-            body = (
-                f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
-                f'<form method="post" action="{app.prefix}/connect">'
-                f'<input type="hidden" name="csrf" value="{csrf}">'
-                f'<label>Desktop <select name="desktop">{options}'
-                f'</select></label> <button type="submit">Connect</button></form>'
+            body = f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
+            if options:
+                body += (
+                    f'<form method="post" action="{app.prefix}/connect">'
+                    f'<input type="hidden" name="csrf" value="{csrf}">'
+                    f'<label>Desktop <select name="desktop">{options}'
+                    f'</select></label> <button type="submit">Connect</button></form>'
+                )
+            body += self.rdp_section(allowed, reply.get("rdp_desktop"), default, csrf)
+            body += (
                 f'<form method="post" action="{app.prefix}/logout">'
                 f'<input type="hidden" name="csrf" value="{csrf}">'
                 f'<button type="submit">Sign out</button></form>'
             )
             self.send(200, page("Remote desktop", body))
+
+        def rdp_section(self, allowed: list[dict], chosen: str | None, default: str, csrf: str) -> str:
+            """Desktop for logins with an RDP app (mstsc, Windows App: no desktop choice of
+            their own): store it in the broker, or download an .rdp file that names it."""
+            labels = {d["name"]: d.get("label") or d["name"] for d in allowed}
+            current = labels.get(default, default)
+            how = "chosen here" if chosen else "the default"
+            rows = []
+            for d in allowed:
+                name = html.escape(d["name"])
+                if d["name"] == chosen:
+                    use = "<b>used for Remote Desktop logins</b>"
+                else:
+                    use = (f'<form method="post" action="{app.prefix}/rdp-desktop" style="display:inline">'
+                           f'<input type="hidden" name="csrf" value="{csrf}">'
+                           f'<input type="hidden" name="desktop" value="{name}">'
+                           f'<button type="submit">Use for Remote Desktop logins</button></form>')
+                rows.append(f'<li style="margin:.6rem 0">{html.escape(labels[d["name"]])}<br>{use} '
+                            f'<a href="{app.prefix}/rdp/{name}.rdp" download>Download .rdp file</a></li>')
+            reset = ""
+            if chosen:
+                reset = (f'<form method="post" action="{app.prefix}/rdp-desktop">'
+                         f'<input type="hidden" name="csrf" value="{csrf}">'
+                         f'<input type="hidden" name="desktop" value="">'
+                         f'<button type="submit">Use the default again</button></form>')
+            return (
+                "<h2>Remote Desktop app</h2>"
+                "<p>Logins with Remote Desktop Connection (mstsc) or the Windows App currently get "
+                f"<b>{html.escape(current)}</b> ({how}), unless the client names a desktop.</p>"
+                f'<ul style="padding-left:1.2rem">{"".join(rows)}</ul>{reset}'
+            )
+
+        def rdp_download(self, user: str, desktop: str):
+            try:
+                reply = broker_web_desktops(app.cfg.webgate.broker_socket, user)
+            except (OSError, BrokerError) as exc:
+                return self.broker_refused("desktop list", user, exc)
+            if desktop not in [d.get("name") for d in reply.get("desktops", [])]:
+                log.warning("%s asked for an .rdp file for desktop %s, which is not allowed", user, desktop)
+                return self.error_page(403, "This desktop is not available for your account.")
+            log.info("%s downloaded an .rdp file for desktop %s", user, desktop)
+            filename = f"{app.cfg.webgate.rdp_host}-{desktop}.rdp"
+            self.send(200, app.rdp_file(desktop),
+                      [("Content-Disposition", f'attachment; filename="{filename}"')],
+                      content_type="application/x-rdp")
+
+        def set_rdp_desktop(self, user: str, form: dict):
+            desktop = form.get("desktop") or None
+            if desktop is not None and not SAFE_DESKTOP.fullmatch(desktop):
+                return self.error_page(400, "Unknown desktop.")
+            try:
+                broker_web_set_desktop(app.cfg.webgate.broker_socket, user, desktop)
+            except BrokerError as exc:
+                if exc.reason == "not_allowed" and desktop:
+                    # also a user outside allow_groups: the chooser page says so next
+                    log.warning("%s chose desktop %s for RDP logins, refused", user, desktop)
+                    return self.error_page(403, "This desktop is not available for your account.")
+                return self.broker_refused("desktop for RDP logins", user, exc)
+            except OSError as exc:
+                return self.broker_refused("desktop for RDP logins", user, exc)
+            log.info("%s: desktop for RDP logins %s", user, desktop or "reset to the default")
+            self.redirect(app.prefix + "/")
 
         # ------------------------------------------------------ approval
         def approval_session(self) -> tuple[dict | None, str | None]:
@@ -409,7 +509,7 @@ def make_handler(app: Webgate):
         # ---------------------------------------------------------- POST
         def do_POST(self):
             path, _ = self.route()
-            if path not in ("/connect", "/logout", "/approve"):
+            if path not in ("/connect", "/logout", "/approve", "/rdp-desktop"):
                 return self.error_page(404, "Not found.")
             try:
                 length = int(self.headers.get("Content-Length", "0") or 0)
@@ -425,6 +525,8 @@ def make_handler(app: Webgate):
                 return self.redirect(app.prefix + "/")
             if not secrets.compare_digest(form.get("csrf", ""), app.signer.csrf(raw)):
                 return self.error_page(403, "Form expired, please try again.")
+            if path == "/rdp-desktop":
+                return self.set_rdp_desktop(sess["user"], form)
             if path == "/logout":
                 target = app.provider.logout_url(app.cfg.webgate.public_url.rstrip("/") + app.prefix + "/")
                 return self.redirect(target or app.prefix + "/",

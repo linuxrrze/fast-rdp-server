@@ -559,9 +559,11 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /auth-pkg
 - The `fastrdp:` prefix is optional (`identity.py` `hinted_desktop`).
 - Order (`choose_desktop`):
   1. the hint, if that desktop exists and the user may use it (`fastrdp_desktop_groups`);
-  2. `~/.config/fastrdp/desktop`;
-  3. the group default (`fastrdp_group_desktops`);
-  4. `fastrdp_default_desktop`.
+  2. the desktop chosen on the web gateway's chooser page
+     ([web-access.md](web-access.md#rdp-apps));
+  3. `~/.config/fastrdp/desktop`;
+  4. the group default (`fastrdp_group_desktops`);
+  5. `fastrdp_default_desktop`.
 - An unknown or forbidden hint is ignored silently. You then get the next desktop in
   that order, not an error.
 - Names: `fastrdp_desktops` in the inventory.

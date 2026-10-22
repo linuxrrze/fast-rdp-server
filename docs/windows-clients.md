@@ -847,6 +847,11 @@ password (useful with Credential Guard). Clients should use the UPN (also
 `marcel.ritter@corp.example.com` for account `mritter`) or `LAB.EXAMPLE.COM\alice`;
 non-joined clients not `LAB\alice`.
 
+mstsc and the Windows App have no desktop field: the desktop comes from
+`alternate shell:s:fastrdp:<desktop>`, or from the choice users make on the web
+gateway's chooser page, which also offers these `.rdp` files for download
+([web-access.md](web-access.md#rdp-apps)).
+
 ## 5. Bugs and gaps (summary)
 
 | # | Where | Kind | Proposal |

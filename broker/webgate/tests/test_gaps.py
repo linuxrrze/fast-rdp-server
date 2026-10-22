@@ -103,6 +103,20 @@ class ConfigGapTests(unittest.TestCase):
         parse(webgate={"public_url": "http://localhost:8090"})
         parse(webgate={"public_url": "http://127.0.0.1:8090"})
 
+    def test_rdp_host_and_port(self):
+        # the name RDP clients connect to, for the chooser's .rdp downloads
+        cfg = parse(webgate={"public_url": "https://web.example.com:8443/x"})
+        self.assertEqual((cfg.webgate.rdp_host, cfg.webgate.rdp_port), ("web.example.com", 3389))
+        cfg = parse(webgate={"rdp_host": "rdp1.lab.example.com", "rdp_port": 3399})
+        self.assertEqual((cfg.webgate.rdp_host, cfg.webgate.rdp_port), ("rdp1.lab.example.com", 3399))
+        self.assertEqual(config.load(EXAMPLE).webgate.rdp_host, "rdp1.lab.example.com")
+        for bad in ("10.0.0.1", "rdp1.example.com\nusername:s:x", "rdp 1", "-rdp", "rdp1.example.com:3389", 1):
+            with self.subTest(host=bad), self.assertRaisesRegex(config.ConfigError, "rdp_host"):
+                parse(webgate={"rdp_host": bad})
+        for bad in (0, 65536, "3389", True):
+            with self.subTest(port=bad), self.assertRaisesRegex(config.ConfigError, "rdp_port"):
+                parse(webgate={"rdp_port": bad})
+
     def test_normalisation(self):
         cfg = parse(webgate={"path_prefix": "web/"}, oidc={"strip_domains": ["Lab.Example.COM"]},
                     guacamole={"rdp_parameters": {"color-depth": 32, "x": True}})

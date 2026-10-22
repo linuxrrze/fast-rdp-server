@@ -219,8 +219,10 @@ class FakeIdP(BaseHTTPRequestHandler):
         self.reply(200, json.dumps({"id_token": tok, "access_token": "x"}).encode())
 
 
-def fake_broker(path, seen, allowed=("xfce", "gnome")):
-    """allowed: desktops the broker permits this user (a mutable list may change later)."""
+def fake_broker(path, seen, allowed=("xfce", "gnome"), prefs=None):
+    """allowed: desktops the broker permits this user (a mutable list may change later);
+    prefs: user -> desktop for RDP logins (web_set_desktop)."""
+    prefs = {} if prefs is None else prefs
     srv = socket.socket(socket.AF_UNIX)
     srv.bind(path)
     srv.listen(5)
@@ -231,8 +233,16 @@ def fake_broker(path, seen, allowed=("xfce", "gnome")):
             req = json.loads(conn.makefile().readline())
             seen.append(req)
             if req["op"] == "web_desktops":
-                reply = {"ok": True, "user": req["user"], "default": allowed[0] if allowed else "",
+                chosen = prefs.get(req["user"])
+                reply = {"ok": True, "user": req["user"], "rdp_desktop": chosen,
+                         "default": chosen or (allowed[0] if allowed else ""),
                          "desktops": [{"name": d, "label": d.upper()} for d in allowed]}
+            elif req["op"] == "web_set_desktop":
+                if req["desktop"] is not None and req["desktop"] not in allowed:
+                    reply = {"ok": False, "error": "access denied", "reason": "not_allowed"}
+                else:
+                    prefs[req["user"]] = req["desktop"]
+                    reply = {"ok": True, "user": req["user"], "rdp_desktop": req["desktop"]}
             else:
                 reply = {"ok": True, "user": req["user"], "token": "fastrdp-web1:TOK",
                          "desktops": list(allowed)}
@@ -255,10 +265,11 @@ class FlowTests(unittest.TestCase):
         threading.Thread(target=idp.serve_forever, daemon=True).start()
         self.seen = []
         self.allowed = ["xfce", "gnome"]
-        fake_broker(f"{self.tmp}/b.sock", self.seen, self.allowed)
+        self.prefs = {}
+        fake_broker(f"{self.tmp}/b.sock", self.seen, self.allowed, self.prefs)
         cfg = config.parse({
             "webgate": {"public_url": "http://127.0.0.1:1", "broker_socket": f"{self.tmp}/b.sock",
-                        "desktops": ["xfce", "gnome"]},
+                        "desktops": ["xfce", "gnome"], "rdp_host": "rdp1.lab.example.com"},
             "oidc": {"issuer": FakeIdP.issuer, "client_id": "fastrdp-web", "required_acr": ["mfa"]},
             "guacamole": {"url": "/guacamole/", "connection_port": 3389},
         })
@@ -373,6 +384,89 @@ class FlowTests(unittest.TestCase):
         status, h, _ = self.fetch(self.base + "/web/logout", urllib.parse.urlencode({"csrf": csrf}).encode())
         self.assertEqual(status, 303)
         self.assertEqual(self.fetch(self.base + "/web/")[0], 303)  # logged out -> IdP again
+
+    # ------------------------------------------- RDP apps (mstsc, Windows App)
+    def csrf(self):
+        _, _, body = self.fetch(self.base + "/web/")
+        return body.split('name="csrf" value="')[1].split('"')[0]
+
+    def set_rdp_desktop(self, desktop, csrf):
+        return self.fetch(self.base + "/web/rdp-desktop",
+                          urllib.parse.urlencode({"csrf": csrf, "desktop": desktop}).encode())
+
+    def test_rdp_desktop_set_and_reset(self):
+        self.login()
+        _, _, body = self.fetch(self.base + "/web/")
+        self.assertIn("currently get <b>XFCE</b> (the default)", body)
+        self.assertIn('name="desktop" value="gnome"><button type="submit">Use for Remote Desktop logins', body)
+        self.assertNotIn("Use the default again", body)
+        status, h, _ = self.set_rdp_desktop("gnome", self.csrf())
+        self.assertEqual((status, h["Location"]), (303, "/web/"))
+        self.assertEqual(self.seen[-1], {"op": "web_set_desktop", "user": "alice", "desktop": "gnome"})
+        _, _, body = self.fetch(self.base + "/web/")
+        self.assertIn("currently get <b>GNOME</b> (chosen here)", body)
+        self.assertIn("GNOME<br><b>used for Remote Desktop logins</b>", body)
+        self.assertIn("Use the default again", body)
+        status, _, _ = self.set_rdp_desktop("", self.csrf())
+        self.assertEqual(status, 303)
+        self.assertEqual(self.seen[-1], {"op": "web_set_desktop", "user": "alice", "desktop": None})
+        self.assertIn("(the default)", self.fetch(self.base + "/web/")[2])
+
+    def test_rdp_desktop_needs_csrf_and_sign_in(self):
+        status, h, _ = self.set_rdp_desktop("gnome", "nope")  # not signed in
+        self.assertEqual((status, h["Location"]), (303, "/web/"))
+        self.login()
+        status, _, _ = self.set_rdp_desktop("gnome", "nope")
+        self.assertEqual(status, 403)
+        self.assertNotIn("web_set_desktop", [r["op"] for r in self.seen])
+        self.assertEqual(self.prefs, {})
+
+    def test_rdp_desktop_refused(self):
+        self.login()
+        csrf = self.csrf()
+        self.assertEqual(self.set_rdp_desktop("../x", csrf)[0], 400)
+        self.assertEqual(self.set_rdp_desktop("mate", csrf)[0], 403)  # the broker refuses it
+        self.assertEqual(self.prefs, {})
+
+    def test_rdp_file(self):
+        self.login()
+        status, h, body = self.fetch(self.base + "/web/rdp/gnome.rdp")
+        self.assertEqual(status, 200)
+        self.assertEqual(h["Content-Type"], "application/x-rdp")
+        self.assertEqual(h["Content-Disposition"], 'attachment; filename="rdp1.lab.example.com-gnome.rdp"')
+        self.assertEqual(h["Cache-Control"], "no-store")
+        lines = body.split("\r\n")
+        self.assertEqual(lines[:2], ["full address:s:rdp1.lab.example.com", "alternate shell:s:fastrdp:gnome"])
+        for line in ("enablecredsspsupport:i:1", "authentication level:i:2", "prompt for credentials:i:0"):
+            self.assertIn(line, lines)
+        self.assertEqual(lines[-1], "")
+        # nothing about the user, no credentials or tokens
+        for word in ("alice", "username", "password", "TOK", "fastrdp-web1", "cookie"):
+            self.assertNotIn(word, body.lower() if word.islower() else body)
+        self.assertEqual([r["op"] for r in self.seen], ["web_desktops"])  # no token issued
+
+    def test_rdp_file_only_for_allowed_desktops(self):
+        self.login()
+        status, h, body = self.fetch(self.base + "/web/rdp/mate.rdp")
+        self.assertEqual(status, 403)
+        self.assertIn("text/html", h["Content-Type"])
+        self.assertNotIn("full address", body)
+        self.assertEqual(self.fetch(self.base + "/web/rdp/../x.rdp")[0], 404)
+        self.assertEqual(self.fetch(self.base + "/web/rdp/gnome")[0], 404)
+
+    def test_rdp_file_needs_sign_in(self):
+        status, h, _ = self.fetch(self.base + "/web/rdp/gnome.rdp")
+        self.assertEqual((status, h["Location"]), (303, "/web/"))
+        self.assertEqual(self.seen, [])
+
+    def test_rdp_section_lists_desktops_not_offered_in_the_browser(self):
+        # [webgate] desktops limits the browser path only; RDP logins are not affected.
+        self.allowed[:] = ["xfce", "gnome", "plasma"]
+        self.login()
+        _, _, body = self.fetch(self.base + "/web/")
+        self.assertNotIn('<option value="plasma"', body)
+        self.assertIn('href="/web/rdp/plasma.rdp"', body)
+        self.assertEqual(self.fetch(self.base + "/web/rdp/plasma.rdp")[0], 200)
 
     def test_forged_session_cookie(self):
         forged = Signer("other-secret").dumps("session", {"user": "root"}, 600)

@@ -59,9 +59,11 @@ troubleshooting): [backends/](backends/README.md).
    ([auth-matrix.md](auth-matrix.md#web-approval)).
 4. **Desktop choice**, first match wins:
    1. a client hint `fastrdp:<desktop>` in the RDP *alternate shell* field;
-   2. `~/.config/fastrdp/desktop`;
-   3. a group default (`[defaults.groups]`);
-   4. the global default.
+   2. the desktop chosen for RDP logins on the webgate's chooser page (`web_set_desktop`,
+      stored in `<state_dir>/desktop-prefs/<user>`, root only);
+   3. `~/.config/fastrdp/desktop`;
+   4. a group default (`[defaults.groups]`);
+   5. the global default.
 
    Per-desktop `groups` restrict who may use each desktop.
 5. **Session** (broker back-end driver):
@@ -124,7 +126,7 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
     `/var/lib/fastrdp/sessions.json`.
 - **Sockets:**
   - `broker.sock` (0660, group `_fastrdp-broker`: proxy and webgate) accepts `login`/`end` only from
-    the proxy uid, `web_token`/`web_desktops` and the web approval ops `mfa_pending`/`mfa_decide`
+    the proxy uid, `web_token`/`web_desktops`/`web_set_desktop` and the web approval ops `mfa_pending`/`mfa_decide`
     only from the webgate's uid (`[web] gateway_user`), and `status`/`logout` only from root.
     The webgate names the user it signed in; `mfa_decide` acts only on that account's pending
     logins and needs the sign-in's `auth_time`.

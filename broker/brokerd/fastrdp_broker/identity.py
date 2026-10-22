@@ -324,15 +324,19 @@ def hinted_desktop(cfg: Config, user: LocalUser, hint: str | None) -> str | None
 _READ_PREF = object()
 
 
-def choose_desktop(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PREF) -> str:
-    """Client hint > user preference file > group default > global default.
+def choose_desktop(cfg: Config, user: LocalUser, hint: str | None, pref=_READ_PREF,
+                   web_pref: str | None = None) -> str:
+    """Client hint > desktop chosen on the webgate (`web_pref`, desktopprefs.py) >
+    user preference file > group default > global default. Each only if allowed.
 
     `pref`: the preference already read by the caller (None = none); by default the
-    file is read here, synchronously.
+    file is read here, synchronously (not at all if `web_pref` decides).
     """
     hinted = hinted_desktop(cfg, user, hint)
     if hinted:
         return hinted
+    if web_pref and desktop_allowed(cfg, web_pref, user):
+        return web_pref
     if pref is _READ_PREF:
         pref = read_desktop_pref(user)
     if pref and desktop_allowed(cfg, pref, user):

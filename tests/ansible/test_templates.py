@@ -396,6 +396,11 @@ class CommonChecks(unittest.TestCase):
     def test_minimal_passes(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com"), 0)
 
+    def test_rdp_file_name_and_port(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        self.assertEqual(self.run_checks(fastrdp_web_rdp_host="rdp.example.com", fastrdp_web_rdp_port=443, **ok), 0)
+        self.assertEqual(self.run_checks(fastrdp_listen_port=3399, **ok), 0)
+
     def test_host_name(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
         # the inventory name (an FQDN) is fastrdp_fqdn, whatever reverse DNS says
@@ -468,6 +473,11 @@ class CommonChecks(unittest.TestCase):
             "domain not a DNS name": dict(ok, fastrdp_domain="exa_mple.com"),
             "accept remote guard not a bool": dict(ok, fastrdp_accept_remote_guard="maybe"),
             "accept remote guard as a list": dict(ok, fastrdp_accept_remote_guard=["true"]),
+            ".rdp file host an IP address": dict(ok, fastrdp_web_rdp_host="192.0.2.10"),
+            ".rdp file host not a DNS name": dict(ok, fastrdp_web_rdp_host="rdp1.example.com;x"),
+            ".rdp file host with a port": dict(ok, fastrdp_web_rdp_host="rdp1.example.com:3389"),
+            ".rdp file port out of range": dict(ok, fastrdp_web_rdp_port=65536),
+            ".rdp file port not a number": dict(ok, fastrdp_web_rdp_port="rdp"),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -576,6 +586,8 @@ class WebgateToml(unittest.TestCase):
         self.assertEqual(cfg.webgate.public_url, "https://rdp1.lab.example.com")
         self.assertEqual(cfg.webgate.path_prefix, "/web")
         self.assertEqual(cfg.webgate.desktops, ["xfce", "mate", "gnome", "plasma"])
+        # "Download .rdp file": the proxy's name and port (fastrdp_fqdn, fastrdp_listen_port)
+        self.assertEqual((cfg.webgate.rdp_host, cfg.webgate.rdp_port), ("rdp1.lab.example.com", 3389))
         self.assertEqual(cfg.oidc.issuer, "https://keycloak.lab.example.com/realms/lab")
         self.assertEqual(cfg.oidc.strip_domains, ["lab.example.com"])
         self.assertEqual(cfg.oidc.required_acr, ["mfa"])
@@ -585,6 +597,11 @@ class WebgateToml(unittest.TestCase):
         # values are strings for Guacamole, whatever YAML type they had
         self.assertEqual(cfg.guacamole.rdp_parameters,
                          {"enable-font-smoothing": "true", "color-depth": "32", "resize-method": "display-update"})
+
+    def test_rdp_port_follows_the_proxy_port(self):
+        cfg = webgate_config.parse(toml("webgate-ports.toml"))
+        self.assertEqual((cfg.webgate.rdp_host, cfg.webgate.rdp_port), ("rdp1.lab.example.com", 3399))
+        self.assertEqual(cfg.guacamole.connection_port, 3399)
 
 
 class NfsKrb5Homes(unittest.TestCase):

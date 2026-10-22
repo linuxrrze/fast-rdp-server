@@ -92,6 +92,12 @@ loop** (`server.py`, `choose_desktop` was synchronous) and caught only errors fr
 `EACCES` from `open()` was already handled (fallback to the group or global default).
 Both problems are fixed now (see [Changes](#changes-in-this-repository)).
 
+A desktop preference no longer needs the home: users choose it on the web gateway's
+chooser page (**Use for Remote Desktop logins**), and the broker keeps it in
+`/var/lib/fastrdp/desktop-prefs/<user>` on local disk. It comes before
+`~/.config/fastrdp/desktop`, and when it decides, the home is not read at all
+([desktop-matrix.md](desktop-matrix.md#choosing-a-desktop)).
+
 ### The user, before any TGT exists
 
 - `pam_systemd` (session phase) makes logind start `user@UID.service`. That unit has
@@ -632,7 +638,9 @@ provide.
 Implemented (see [Changes](#changes-in-this-repository)):
 
 1. **Broker robustness:** the preference file is read off the event loop, with a
-   time limit, and any I/O error means "no preference".
+   time limit, and any I/O error means "no preference". A desktop chosen on the web
+   gateway's chooser page is stored under `/var/lib/fastrdp` instead and works with
+   these homes ([web-access.md](web-access.md#rdp-apps)).
 2. **Ansible option `fastrdp_nfs_krb5_homes`** (default `false`, role `identity`):
    installs `nfs-common` and `gssproxy`, writes the two files from Q5a, restarts
    gssproxy and rpc-gssd. The directory side (delegation) stays manual.
@@ -810,7 +818,8 @@ credentials"), xfreerdp, Keycloak web path.
 2. **Broker:** stop the NFS server (hard mount) and log in: the login must answer
    within `home_read_timeout` with the default desktop, other users' logins must not
    stall. With the server up, check that root gets `EACCES` on
-   `~/.config/fastrdp/desktop` and that a desktop preference is ignored.
+   `~/.config/fastrdp/desktop` and that a desktop preference is ignored, while a
+   desktop chosen on the web chooser page (**Use for Remote Desktop logins**) is used.
 3. **GNOME/Plasma TGT:** for NLA with delegated password and for TLS, confirm the
    broker log `Kerberos TGT stored for the gnome session` and a TGT in the user's
    KCM (`sudo -u pw1 klist -l`), present before the session's first home access

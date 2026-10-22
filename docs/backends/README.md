@@ -65,8 +65,9 @@ Facts common to all back-ends (from `server.py`, `backends/base.py`, the proxy m
   (role `common`, default `[]`) and `fastrdp_termsrv_enctypes` (default AES256 +
   AES128; the role fails without AES keys).
 - **Desktop choice:** client hint `fastrdp:<desktop>` in the alternate-shell field,
-  then `~/.config/fastrdp/desktop`, then `[defaults.groups]`, then `[defaults] desktop`
-  (`identity.choose_desktop`). A hint for a desktop the user may not use is ignored
+  then the desktop chosen on the webgate's chooser page (`<state_dir>/desktop-prefs/<user>`,
+  `desktopprefs.py`), then `~/.config/fastrdp/desktop`, then `[defaults.groups]`, then
+  `[defaults] desktop` (`identity.choose_desktop`). A hint for a desktop the user may not use is ignored
   silently and the next rule applies (RDP clients). The broker reads the preference
   file as root in a worker thread for at most `[broker] home_read_timeout` seconds
   (default 3, `0` = never); an unreadable or hanging home (NFS with `sec=krb5*`,

@@ -132,6 +132,22 @@
       (docs/desktop-matrix.md#browsers-and-kerberos-sso).
     quiet: true
 
+# Role web_gateway's defaults: the name and port in the chooser's .rdp downloads.
+- name: RDP file settings (web_gateway role)
+  vars:
+    rdp_host: "{{ fastrdp_web_rdp_host | default(fastrdp_fqdn) | string }}"
+    rdp_port: "{{ fastrdp_web_rdp_port | default(fastrdp_listen_port) | string }}"
+  ansible.builtin.assert:
+    that:
+      - rdp_host is match('^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\Z')
+      - rdp_host is not match('^[0-9.]+\Z')
+      - rdp_port is match('^[0-9]{1,5}\Z') and rdp_port | int >= 1 and rdp_port | int <= 65535
+    fail_msg: >-
+      fastrdp_web_rdp_host is the DNS name RDP clients connect to (no IP address: Windows
+      then uses NTLM, which is refused) and fastrdp_web_rdp_port a port 1-65535
+      (docs/web-access.md#rdp-apps).
+    quiet: true
+
 # Role web_gateway's defaults. The KDCs go into kdcproxy.conf as they are (one
 # space-separated line), and the realm becomes its section name.
 - name: KDC proxy settings (web_gateway role)

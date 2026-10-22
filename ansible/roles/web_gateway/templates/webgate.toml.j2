@@ -7,6 +7,8 @@ cookie_secret_file = "/etc/fastrdp/webgate-cookie.secret"
 session_lifetime = {{ fastrdp_web_session_lifetime }}
 broker_socket = "/run/fastrdp/broker.sock"
 desktops = {{ fastrdp_web_desktops | to_json }}
+rdp_host = "{{ fastrdp_web_rdp_host }}"
+rdp_port = {{ fastrdp_web_rdp_port | int }}
 
 [oidc]
 issuer = "{{ fastrdp_web_oidc_issuer }}"

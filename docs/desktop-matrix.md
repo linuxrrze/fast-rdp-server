@@ -53,11 +53,22 @@ Notes:
 Users get exactly one desktop per login. The broker picks it in this order:
 
 1. Client hint: put `fastrdp:<desktop>` into the RDP *alternate shell* field
-   - mstsc `.rdp`: `alternate shell:s:fastrdp:gnome`
+   - mstsc `.rdp`: `alternate shell:s:fastrdp:gnome` (the web gateway's chooser
+     page downloads such a file, [web-access.md](web-access.md#rdp-apps))
    - xfreerdp3: `/shell:fastrdp:gnome`
-2. `~/.config/fastrdp/desktop` containing the desktop name, e.g. `plasma`.
-3. A group default from `fastrdp_group_desktops`.
-4. `fastrdp_default_desktop`.
+2. The desktop chosen with **Use for Remote Desktop logins** on the web gateway's
+   chooser page ([web-access.md](web-access.md#rdp-apps)). The broker keeps it in
+   `/var/lib/fastrdp/desktop-prefs/<user>` (root only), not in the home directory, so
+   it also works with Kerberized NFS homes. For mstsc and the Windows App, which have
+   no desktop field of their own.
+3. `~/.config/fastrdp/desktop` containing the desktop name, e.g. `plasma`.
+4. A group default from `fastrdp_group_desktops`.
+5. `fastrdp_default_desktop`.
+
+Each step counts only if the user may use that desktop (`fastrdp_desktop_groups`).
+A choice from step 2 that is no longer allowed is skipped (broker log: `desktop …
+chosen on the web gateway is not allowed (any more); ignored`) and kept: it applies
+again once the user is back in the desktop's group.
 
 A user can have one running session per back-end. Switching from `xfce` to `gnome`
 starts a second session; the X11 one keeps running until logout or timeout.

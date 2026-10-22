@@ -334,7 +334,7 @@
         - {name: several, roots: [/home, /srv/home]}
         - {name: none, roots: []}
 
-    - name: Proxy.ini and broker.toml with non-default ports (smoke test parser)
+    - name: Proxy.ini, broker.toml and webgate.toml with non-default ports (smoke test parser)
       ansible.builtin.template:
         src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
         dest: "{{ render_out }}/{{ item.dest }}"
@@ -345,6 +345,7 @@
       loop:
         - {role: freerdp_proxy, src: proxy.ini.j2, dest: proxy-ports.ini}
         - {role: broker, src: broker.toml.j2, dest: broker-ports.toml}
+        - {role: web_gateway, src: webgate.toml.j2, dest: webgate-ports.toml}
 
     - name: Resource limits drop-ins (tuning role)
       ansible.builtin.template:
