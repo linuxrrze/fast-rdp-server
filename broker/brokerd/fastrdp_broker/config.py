@@ -144,6 +144,10 @@ class BackendSection:
     port: int = 0  # fixed port (xrdp); 0 = allocate per session
     security: str = "tls"  # tls | nla : how the proxy talks to this backend
     listener_user: str = ""  # expected owner of the listening socket ("" = session user)
+    # TLS certificate the back-end presents; the proxy accepts only this one (its SHA-256
+    # goes to the module with the target). "" = the per-user certificate the broker
+    # creates (<state_dir>/users/<name>/tls.crt, gnome and plasma).
+    certificate: str = ""
     unit: str = ""  # systemd unit template for per-user sessions
 
 
@@ -281,7 +285,8 @@ def parse(raw: dict) -> Config:
 
     backend_defaults = {
         # xrdp binds its socket as root, then drops to runtime_user: the listener is uid 0.
-        "xrdp": {"port": 3390, "security": "tls", "listener_user": "root"},
+        "xrdp": {"port": 3390, "security": "tls", "listener_user": "root",
+                 "certificate": "/etc/xrdp/cert.pem"},
         "gnome": {"security": "nla", "unit": "gnome-headless-session@{user}.service"},
         "plasma": {"security": "nla", "unit": "fastrdp-plasma@{user}.service"},
     }
@@ -292,6 +297,10 @@ def parse(raw: dict) -> Config:
         b = _section(BackendSection, merged, f"backends.{name}")
         if b.security not in ("tls", "nla"):
             raise ConfigError(f"[backends.{name}] security must be 'tls' or 'nla'")
+        if b.certificate and not os.path.isabs(b.certificate):
+            raise ConfigError(f"[backends.{name}] certificate must be an absolute path")
+        if name == "xrdp" and not b.certificate:
+            raise ConfigError("[backends.xrdp] certificate is required (the certificate in xrdp.ini)")
         backends[name] = b
     if backends_raw:
         raise ConfigError(f"unknown backends: {', '.join(backends_raw)}")

@@ -25,8 +25,10 @@ fastrdp's own build (xrdp 0.10.6.1 + `patches/xrdp/`, xorgxrdp 0.10.5; versions 
    4. records a `Session(backend="xrdp", port=0)` in `/var/lib/fastrdp/sessions.json`
       and returns `127.0.0.1:3390`, `username=<user>`, `password=<token>`,
       `security=tls`.
-3. The proxy connects to xrdp over TLS (`/etc/xrdp/cert.pem`, self-signed,
-   `CertificatePolicy=allow` in `proxy.ini`) and auto-logs in with user + token.
+3. The proxy connects to xrdp over TLS (`/etc/xrdp/cert.pem`, self-signed). It
+   accepts only that certificate: the broker sends its SHA-256 with the target
+   (`[backends.xrdp] certificate`), `CertificatePolicy=deny` in `proxy.ini` refuses
+   any other. Then it auto-logs in with user + token.
 4. xrdp (`require_credentials=true`, `hidelogwindow=true`, `[Xorg] username=ask
    password=ask`) passes the credentials to xrdp-sesman. sesman runs PAM service
    `xrdp-sesman` (`/etc/pam.d/xrdp-sesman`):

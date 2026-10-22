@@ -128,7 +128,7 @@ class NlaLoginTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = make_cfg(self.tmp.name)  # realms = ["EXAMPLE.COM"]
         self.broker = Broker(self.cfg)
-        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "u", "t", "", "tls"))
+        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "u", "t", "", "tls", "ab" * 32))
         for b in self.broker.backends.values():
             b.ensure = self.ensure
         self.nss = FakeNss()

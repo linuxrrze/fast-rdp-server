@@ -5,8 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import logging
 import os
+import re
 import stat
 import tempfile
 import time
@@ -192,6 +196,28 @@ async def ensure_backend_cert(user: LocalUser, state_dir: str) -> tuple[str, str
             os.chmod(src, mode)
             os.replace(src, dst)  # replaces whatever was there, including a symlink
     return crt, key
+
+
+_PEM_CERT = re.compile(rb"-----BEGIN CERTIFICATE-----\s+([A-Za-z0-9+/=\s]+?)-----END CERTIFICATE-----")
+
+
+def cert_sha256(path: str) -> str:
+    """SHA-256 of the (first) certificate in a PEM file, over its DER encoding: what the
+    proxy module compares with the certificate the back-end presents (lower-case hex)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as fh:
+            pem = fh.read(1 << 20)
+    except OSError as exc:
+        raise CommandError(f"back-end certificate {path}: {exc.strerror}") from None
+    m = _PEM_CERT.search(pem)
+    try:
+        der = base64.b64decode(b"".join(m.group(1).split()), validate=True) if m else b""
+    except binascii.Error:
+        der = b""
+    if not der:
+        raise CommandError(f"back-end certificate {path}: no PEM certificate")
+    return hashlib.sha256(der).hexdigest()
 
 
 async def wait_for_listener(port: int, uid: int, timeout: float) -> None:

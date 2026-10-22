@@ -174,6 +174,8 @@ class ProxyIni(unittest.TestCase):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
+        # the module pins back-end certificates and refuses to route with another policy
+        self.assertEqual(p["Target"]["CertificatePolicy"], "deny")
         self.assertEqual(p["Security"]["ServerNlaSecurity"], "true")
         self.assertEqual(p["Security"]["ServerRdpSecurity"], "false")
         self.assertEqual(p["Security"]["ClientAllowFallbackToTls"], "false")

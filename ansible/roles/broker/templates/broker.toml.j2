@@ -85,3 +85,5 @@ allowed_clients = ["127.0.0.1", "::1"]
 [backends.xrdp]
 port = {{ fastrdp_xrdp_port }}
 listener_user = "root"   # xrdp binds as root, then drops to runtime_user
+# xrdp.ini "certificate": the proxy accepts only this certificate from xrdp
+certificate = "/etc/xrdp/cert.pem"

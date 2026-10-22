@@ -101,9 +101,16 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
   unused tokens bound to the user. Plain passwords fail.
 - **Back-end certificates** are per-user self-signed certificates on loopback,
   in root-owned directories (`/var/lib/fastrdp/users/<user>/`, files owned by the
-  user), so users cannot redirect root's writes with symlinks. The
-  proxy uses `CertificatePolicy=allow` for them; the uid check and the nftables
-  owner rule replace certificate pinning.
+  user), so users cannot redirect root's writes with symlinks.
+- **Back-end certificates are pinned:** the broker sends the SHA-256 of the
+  certificate the back-end must present with every target (xrdp:
+  `[backends.xrdp] certificate`, `/etc/xrdp/cert.pem`; GNOME/Plasma: the user's
+  `tls.crt`). The module puts it in the back-end connection's
+  `CertificateAcceptedFingerprints`, and `CertificatePolicy=deny` refuses every
+  other certificate (the module refuses to route with another policy). The loopback
+  ports are unprivileged: without the pin, a local user who binds one while the
+  back-end is down (xrdp restarting) would get the session's input and could show a
+  fake login screen. The uid check and the nftables owner rule stay.
 - **Secrets:**
   - The proxy wipes the front password (module copy and front settings) after
     handing it to the broker.

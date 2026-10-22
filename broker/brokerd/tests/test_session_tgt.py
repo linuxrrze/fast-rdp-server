@@ -32,7 +32,9 @@ class SessionTgtTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.klist = mock.AsyncMock(return_value=sysutil.Result(0, "", ""))
         self.ensure.side_effect = lambda req: self.calls.append("ensure") or self.ensure.return_value
         for p in (mock.patch("fastrdp_broker.pamauth.establish_credentials", self.establish),
-                  mock.patch("fastrdp_broker.sysutil.run_dropped", self.klist)):
+                  mock.patch("fastrdp_broker.sysutil.run_dropped", self.klist),
+                  # real back-end reuse paths: no certificate files here
+                  mock.patch("fastrdp_broker.sysutil.cert_sha256", return_value="ab" * 32)):
             p.start()
             self.patches.append(p)
 

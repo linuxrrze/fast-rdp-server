@@ -7,6 +7,9 @@ REFUSALS -> that refusal (reasons: broker/brokerd/fastrdp_broker/protocol.py); a
 else -> "access denied" with reason "denied".
 Users 'lanuser' / 'bogususer' get target connection_type "lan" / "bogus" (the module
 must apply the first and ignore the second).
+Targets carry cert_sha256 from $E2E_CERT_SHA256 (the certificate the next proxy presents;
+default: 64 zeros); user 'badcert' gets another fingerprint, user 'nocert' none (the module
+must refuse both: back-end certificate pin).
 User 'pushwait' stands for a pending MFA push: the reply comes after PUSH_WAIT seconds
 unless the proxy closes the connection first; either way a "pushwait" record with the
 seconds waited and whether the peer closed goes to the log.
@@ -30,6 +33,7 @@ REFUSALS = {
 }
 
 CONNECTION_TYPES = {"lanuser": "lan", "bogususer": "bogus"}
+CERT_SHA256 = os.environ.get("E2E_CERT_SHA256", "0" * 64)
 PUSH_WAIT = 8.0
 
 path, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -66,7 +70,11 @@ def serve(conn: socket.socket) -> None:
                 rep = {"ok": True, "user": req["user"], "desktop": "xfce", "target": {
                     "host": "127.0.0.1", "port": 1 if req["password"] == "deadport" else port,
                     "username": req["user"], "password": "fastrdp1:TOKEN", "domain": "",
-                    "security": "tls"}}
+                    "security": "tls", "cert_sha256": CERT_SHA256}}
+                if req["user"] == "badcert":
+                    rep["target"]["cert_sha256"] = "f" * 64
+                elif req["user"] == "nocert":
+                    del rep["target"]["cert_sha256"]
                 ct = CONNECTION_TYPES.get(req["user"])
                 if ct:
                     rep["target"]["connection_type"] = ct

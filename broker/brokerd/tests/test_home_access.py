@@ -105,7 +105,7 @@ class BrokerHomeTests(unittest.IsolatedAsyncioTestCase):
         self.cfg = make_cfg(self.tmp.name, web=True)
         self.cfg.broker.home_read_timeout = 0.3
         self.broker = Broker(self.cfg)
-        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "alice", "tok", "", "tls"))
+        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "alice", "tok", "", "tls", "ab" * 32))
         for b in self.broker.backends.values():
             b.ensure = self.ensure
         self.user = home_user("/nfs/home/alice", groups=("rdp-users",))

@@ -198,7 +198,7 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
         self.cfg.auth.allow_groups = ["rdp-users"]  # directory group "rdp-users@example.com"
         self.cfg.broker.home_read_timeout = 0
         self.broker = Broker(self.cfg)
-        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "u", "t", "", "tls"))
+        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "u", "t", "", "tls", "ab" * 32))
         for b in self.broker.backends.values():
             b.ensure = self.ensure
         self.nss = FakeNss().__enter__()

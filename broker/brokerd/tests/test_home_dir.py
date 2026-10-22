@@ -389,7 +389,7 @@ class BrokerHomeCheckTests(unittest.IsolatedAsyncioTestCase):
         self.cfg = make_cfg(self.tmp.name)
         self.cfg.broker.home_check = "create"
         self.broker = Broker(self.cfg)
-        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "marcel", "tok", "", "tls"))
+        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "marcel", "tok", "", "tls", "ab" * 32))
         for b in self.broker.backends.values():
             b.ensure = self.ensure
         self.home = os.path.join(self.tmp.name, "autofs/srv/home/marcel")

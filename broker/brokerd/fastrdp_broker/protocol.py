@@ -9,7 +9,7 @@ Proxy module -> broker.sock:
    "height": int|null, "connection_type": int}
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
-                 "domain": str, "security": "tls"|"nla"}}
+                 "domain": str, "security": "tls"|"nla", "cert_sha256": str}}
   -> {"ok": false, "error": str, "reason": str}
 
   {"op": "end", "session_id": str}  -> {"ok": true}

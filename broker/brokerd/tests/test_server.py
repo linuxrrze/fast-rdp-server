@@ -63,7 +63,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = make_cfg(self.tmp.name, web=True)
         self.broker = Broker(self.cfg)
-        self.target = Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls")
+        self.target = Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls", "ab" * 32)
         self.ensure = mock.AsyncMock(return_value=self.target)
         self.broker.backends["xrdp"].ensure = self.ensure
         self.patches = [

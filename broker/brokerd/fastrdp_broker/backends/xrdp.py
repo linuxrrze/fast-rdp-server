@@ -83,6 +83,7 @@ class XrdpBackend(Backend):
         else:
             self._write_desktop_choice(req.user, req.desktop.xsession)
             self.state.put(Session(user=req.user.name, backend=self.name, desktop=req.desktop.name))
+        cert = self.cert_sha256(req.user.name)  # before a token exists
         token = self.tokens.issue(req.user.name, req.password)
         return Target(
             host=self.bcfg.host,
@@ -91,6 +92,7 @@ class XrdpBackend(Backend):
             password=token,
             domain="",
             security=self.bcfg.security,
+            cert_sha256=cert,
         )
 
     async def logout(self, user: LocalUser) -> None:

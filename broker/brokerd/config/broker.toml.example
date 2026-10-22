@@ -121,6 +121,8 @@ backend = "plasma"
 host = "127.0.0.1"
 port = 3390
 listener_user = "root"   # xrdp binds as root, then drops privileges
+# xrdp.ini "certificate": the proxy accepts only this certificate from xrdp
+certificate = "/etc/xrdp/cert.pem"
 
 [backends.gnome]
 unit = "gnome-headless-session@{user}.service"

@@ -151,7 +151,7 @@ Host=127.0.0.1
 Port=23689
 [Target]
 FixedTarget=false
-CertificatePolicy=allow
+CertificatePolicy=deny
 SmartcardAuth=false
 [Security]
 ServerNlaSecurity=true

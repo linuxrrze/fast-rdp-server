@@ -15,6 +15,12 @@
  *                         so the user's password never reaches a back-end directly;
  *                         set the connection type the broker chose (xrdp encoder
  *                         profile, see connection_type_from_target()).
+ *                         Pin the back-end's TLS certificate to the SHA-256 the broker
+ *                         sent with the target (CertificateAcceptedFingerprints); with
+ *                         [Target] CertificatePolicy=deny (required) nothing else is
+ *                         accepted, so a local user who binds a back-end port while
+ *                         the back-end is down cannot pose as it.
+ *   ClientX509Certificate reached only for a certificate the pin refused: log it.
  *   ServerSessionEnd      notify the broker and wipe secrets.
  *
  * The broker call can take as long as an MFA push. It is abandoned as soon as the front
@@ -56,6 +62,7 @@
 #include <winpr/stream.h>
 #include <winpr/synch.h>
 
+#include <freerdp/crypto/certificate.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/settings.h>
@@ -66,6 +73,8 @@
 /* pServerContext: the proxyData of a freerdp_peer in peer callbacks that have no proxy
  * hook (peer->RemoteCredentials). The module is built against exactly one FreeRDP. */
 #include <freerdp/private/proxy_server.h>
+/* pClientContext.remote_pem: the certificate the back-end presented (ClientX509Certificate) */
+#include <freerdp/private/proxy_client.h>
 
 #include "fastrdp_addr.h"
 #include "fastrdp_spnego.h"
@@ -94,6 +103,7 @@ typedef struct
 	char* target_domain;
 	BOOL target_nla;
 	UINT32 target_connection_type; /* 0 = keep the client's */
+	char target_cert_sha256[65];   /* the back-end's certificate, lower-case hex */
 } fastrdpSession;
 
 static void wipe_free(char** s)
@@ -675,6 +685,17 @@ refuse:
 	return FALSE;
 }
 
+/* 64 lower-case hex digits: the broker's cert_sha256 (sysutil.cert_sha256) */
+static BOOL is_sha256_hex(const char* s)
+{
+	if (!s || strlen(s) != 64)
+		return FALSE;
+	for (const char* c = s; *c; c++)
+		if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f')))
+			return FALSE;
+	return TRUE;
+}
+
 static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* param)
 {
 	proxyFetchTargetEventInfo* ev = (proxyFetchTargetEventInfo*)param;
@@ -700,6 +721,16 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	{
 		WLog_WARN(TAG, "[%s] RemoteApp (INFO_RAIL) requested but not offered, refusing",
 		          pdata->session_id);
+		goto out;
+	}
+
+	/* The back-end certificate is pinned in fastrdp_client_pre_connect(); any policy but
+	 * deny would accept a certificate the pin refused. */
+	if (pdata->config->TargetCertPolicy != FREERDP_PROXY_CERT_POLICY_DENY)
+	{
+		WLog_ERR(TAG, "[%s] proxy.ini [Target] CertificatePolicy must be deny (fastrdp pins "
+		              "the back-end certificate itself), refusing",
+		         pdata->session_id);
 		goto out;
 	}
 
@@ -797,8 +828,9 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	const char* tpass = json_str(target, "password");
 	const char* tdom = json_str(target, "domain");
 	const char* sec = json_str(target, "security");
+	const char* fp = json_str(target, "cert_sha256");
 	if (!host || !cJSON_IsNumber(port) || port->valueint <= 0 || port->valueint > 65535 || !tuser ||
-	    !tpass || !sec)
+	    !tpass || !sec || !is_sha256_hex(fp))
 	{
 		WLog_ERR(TAG, "[%s] malformed broker reply", pdata->session_id);
 		goto out;
@@ -809,6 +841,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	s->target_domain = _strdup(tdom ? tdom : "");
 	s->target_nla = strcmp(sec, "nla") == 0;
 	s->target_connection_type = connection_type_from_target(pdata, target);
+	memcpy(s->target_cert_sha256, fp, sizeof(s->target_cert_sha256)); /* 64 + NUL, checked */
 	ev->target_address = _strdup(host);
 	if (!s->target_user || !s->target_password || !s->target_domain || !ev->target_address)
 		goto out;
@@ -839,9 +872,9 @@ out:
 	 * client context copied it too; ClientPreConnect replaces that copy. */
 	if (s)
 		wipe_free(&s->password);
-	const char* fp = freerdp_settings_get_string(front, FreeRDP_Password);
-	if (fp)
-		memset((void*)fp, 0, strlen(fp));
+	const char* fpw = freerdp_settings_get_string(front, FreeRDP_Password);
+	if (fpw)
+		memset((void*)fpw, 0, strlen(fpw));
 	(void)freerdp_settings_set_string(front, FreeRDP_Password, NULL);
 	return rc;
 }
@@ -883,6 +916,16 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteCredentialGuard, FALSE) ||
 	    !freerdp_settings_set_pointer_len(settings, FreeRDP_LoadBalanceInfo, NULL, 0))
 		return FALSE;
+	/* The back-end's certificate: only the broker's (the TLS code accepts a listed
+	 * fingerprint before the proxy's verify callback, which CertificatePolicy=deny makes
+	 * refuse everything else). No certificate accepted earlier counts. */
+	char pin[sizeof("sha256:") + sizeof(s->target_cert_sha256)];
+	(void)snprintf(pin, sizeof(pin), "sha256:%s", s->target_cert_sha256);
+	if (!s->target_cert_sha256[0] ||
+	    !freerdp_settings_set_string(settings, FreeRDP_CertificateAcceptedFingerprints, pin) ||
+	    !freerdp_settings_set_string(settings, FreeRDP_AcceptedCert, NULL) ||
+	    !freerdp_settings_set_uint32(settings, FreeRDP_AcceptedCertLength, 0))
+		return FALSE;
 	/* The front list ("!ntlm", fastrdp_server_session_init()) was copied as well. The
 	 * back-end hop authenticates with the broker's one-time secret over NTLM (GNOME
 	 * Remote Desktop, KRdp); without NLA the list is unused. */
@@ -900,6 +943,38 @@ static BOOL fastrdp_client_login_failure(proxyPlugin* plugin, proxyData* pdata, 
 	WLog_WARN(TAG, "[%s] back-end connection failed", pdata->session_id);
 	set_front_errinfo(pdata, ERRINFO_CB_DESTINATION_NOT_FOUND);
 	return TRUE;
+}
+
+/* HOOK_TYPE_CLIENT_VERIFY_X509 (custom = the proxy's client context): FreeRDP's TLS code
+ * calls the proxy's verify callback, and with it this hook, only for a certificate that is
+ * not in CertificateAcceptedFingerprints, i.e. not the one the broker named. The proxy
+ * accepts a certificate here only if every module's hook returns TRUE, and its built-in
+ * "config" module has none, so the hook cannot accept anything; it says why the back-end
+ * was refused and returns FALSE ([Target] CertificatePolicy=deny then refuses). */
+static BOOL fastrdp_client_x509_refused(proxyPlugin* plugin, proxyData* pdata, void* custom)
+{
+	pClientContext* pc = (pClientContext*)custom;
+	fastrdpSession* s = get_session(plugin, pdata);
+	char* got = NULL;
+	/* sealed with a terminating NUL by the proxy (pf_client_verify_X509_certificate) */
+	const size_t len = (pc && pc->remote_pem) ? Stream_Length(pc->remote_pem) : 0;
+	const char* pem = len ? (const char*)Stream_Buffer(pc->remote_pem) : NULL;
+	if (pem && len >= 2 && pem[len - 1] == '\0')
+	{
+		rdpCertificate* cert = freerdp_certificate_new_from_pem(pem);
+		if (cert)
+			got = freerdp_certificate_get_fingerprint_by_hash_ex(cert, "sha256", FALSE);
+		freerdp_certificate_free(cert);
+	}
+	WLog_ERR(TAG,
+	         "[%s] back-end %s:%u presented certificate sha256 %s, the broker expects %s: "
+	         "refusing (another process on the back-end port?)",
+	         pdata->session_id, (pc && pc->remote_hostname) ? pc->remote_hostname : "?",
+	         pc ? (unsigned)pc->remote_port : 0U, got ? got : "(unreadable)",
+	         (s && s->target_cert_sha256[0]) ? s->target_cert_sha256 : "(none)");
+	free(got);
+	set_front_errinfo(pdata, ERRINFO_CB_DESTINATION_NOT_FOUND);
+	return FALSE;
 }
 
 /* A Server Redirection PDU ([MS-RDPBCGR] 2.2.13) from a back-end would make the proxy
@@ -1093,6 +1168,7 @@ FREERDP_API FREERDP_ENTRY_POINT(BOOL proxy_module_entry_point(proxyPluginsManage
 	plugin.ClientPreConnect = fastrdp_client_pre_connect;
 	plugin.ClientLoginFailure = fastrdp_client_login_failure;
 	plugin.ClientRedirect = fastrdp_client_redirect;
+	plugin.ClientX509Certificate = fastrdp_client_x509_refused;
 	plugin.ServerSessionInitialize = fastrdp_server_session_init;
 	plugin.ServerSessionEnd = fastrdp_session_end;
 	plugin.userdata = userdata;

@@ -1324,8 +1324,12 @@ Port=3389
 ; Targets come from the broker (ServerFetchTargetAddr), never from client routing tokens.
 FixedTarget=false
 ; Back-ends are loopback-only; the broker checks the listener's uid before routing
-; and nftables lets only this service connect to them.
-CertificatePolicy=allow
+; and nftables lets only this service connect to them. The fastrdp module pins each
+; back-end's TLS certificate to the one the broker names (xrdp: /etc/xrdp/cert.pem,
+; GNOME/Plasma: the user's certificate); deny refuses every other one, so a local
+; user who binds a back-end port while the back-end is down cannot pose as it.
+; The module refuses to route with any other policy.
+CertificatePolicy=deny
 TlsSecLevel=1
 SmartcardAuth=false
 

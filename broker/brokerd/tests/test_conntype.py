@@ -112,7 +112,7 @@ class LoginReply(unittest.IsolatedAsyncioTestCase):
         self.broker = Broker(cfg)
         for name in ("xrdp", "gnome"):
             self.broker.backends[name].ensure = mock.AsyncMock(
-                return_value=Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls"))
+                return_value=Target("127.0.0.1", 3390, "alice", "fastrdp1:tok", "", "tls", "ab" * 32))
         self.patches = [
             mock.patch("fastrdp_broker.identity.resolve", side_effect=lambda n, r, a: fake_user(n)),
             mock.patch("fastrdp_broker.identity.resolve_login",

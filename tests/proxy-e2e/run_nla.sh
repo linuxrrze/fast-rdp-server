@@ -132,7 +132,7 @@ Host=127.0.0.1
 Port=$2
 [Target]
 FixedTarget=false
-CertificatePolicy=allow
+CertificatePolicy=deny
 SmartcardAuth=false
 [Security]
 ServerNlaSecurity=true

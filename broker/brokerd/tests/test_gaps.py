@@ -10,6 +10,8 @@ import json
 import os
 import pwd
 import socket
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -493,6 +495,78 @@ class SysutilTests(unittest.IsolatedAsyncioTestCase):
                 await sysutil.ensure_backend_cert(user(), d)
 
 
+@unittest.skipUnless(shutil.which("openssl"), "needs openssl")
+class CertificateFingerprintTests(unittest.IsolatedAsyncioTestCase):
+    """The back-end certificate pin the proxy module enforces (security review #2: a local
+    user who binds the back-end port while it is down must not be accepted as it)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.crt = os.path.join(self.tmp.name, "cert.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=t",
+                        "-keyout", os.path.join(self.tmp.name, "key.pem"), "-out", self.crt],
+                       check=True, capture_output=True)
+        out = subprocess.run(["openssl", "x509", "-in", self.crt, "-noout", "-fingerprint", "-sha256"],
+                             check=True, capture_output=True, text=True).stdout
+        self.fp = out.strip().split("=", 1)[1].replace(":", "").lower()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_same_as_openssl(self):
+        self.assertEqual(sysutil.cert_sha256(self.crt), self.fp)
+        self.assertRegex(self.fp, r"^[0-9a-f]{64}$")
+
+    def test_first_certificate_of_a_file_with_more(self):
+        other = Path(self.tmp.name, "chain.pem")
+        other.write_text("subject=CN = t\n" + Path(self.crt).read_text() + Path(self.crt).read_text()
+                         .replace("BEGIN CERTIFICATE", "BEGIN X").replace("END CERTIFICATE", "END X"))
+        self.assertEqual(sysutil.cert_sha256(str(other)), self.fp)
+
+    def test_unusable_files_refused(self):
+        os.symlink(self.crt, os.path.join(self.tmp.name, "link.pem"))
+        Path(self.tmp.name, "key-only.pem").write_text("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n")
+        Path(self.tmp.name, "bad.pem").write_text("-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n")
+        for name, msg in (("missing.pem", "No such file"), ("link.pem", "symbolic links"),
+                          ("key-only.pem", "no PEM certificate"), ("bad.pem", "no PEM certificate")):
+            with self.subTest(name), self.assertRaisesRegex(sysutil.CommandError, msg):
+                sysutil.cert_sha256(os.path.join(self.tmp.name, name))
+
+    async def test_target_carries_the_backend_certificate(self):
+        cfg = make_cfg(self.tmp.name)
+        cfg.backends["xrdp"].certificate = self.crt
+        state, tokens = StateStore(cfg.broker.state_dir), TokenStore(60)
+        b = XrdpBackend(cfg, state, tokens)
+        req = LoginRequest(user(), cfg.desktops["mate"], "pw", 1280, 720)
+        with mock.patch("fastrdp_broker.netcheck.listener_uids", return_value={0}):
+            self.assertEqual((await b.ensure(req)).cert_sha256, self.fp)
+        # no certificate: refused, and no token was issued for it
+        cfg.backends["xrdp"].certificate = os.path.join(self.tmp.name, "gone.pem")
+        state.drop("alice", "xrdp")
+        with mock.patch("fastrdp_broker.netcheck.listener_uids", return_value={0}), \
+                self.assertRaisesRegex(BackendError, "back-end certificate .*gone.pem"):
+            await b.ensure(req)
+        self.assertEqual(len(tokens), 1)
+        # gnome/plasma: the per-user certificate of sysutil.ensure_backend_cert
+        g = GnomeBackend(cfg, state, tokens)
+        self.assertEqual(g.certificate_for("alice"), os.path.join(cfg.broker.state_dir, "users", "alice", "tls.crt"))
+
+    def test_config(self):
+        self.assertEqual(config.parse(raw_example_cfg()).backends["xrdp"].certificate, "/etc/xrdp/cert.pem")
+        self.assertEqual(config.parse(raw_example_cfg()).backends["gnome"].certificate, "")
+        for value, msg in (("", "certificate is required"), ("cert.pem", "absolute path")):
+            raw = raw_example_cfg()
+            raw.setdefault("backends", {}).setdefault("xrdp", {})["certificate"] = value
+            with self.subTest(value), self.assertRaisesRegex(config.ConfigError, msg):
+                config.parse(raw)
+
+
+def raw_example_cfg() -> dict:
+    with open(EXAMPLE, "rb") as fh:
+        return tomllib.load(fh)
+
+
 # ---------------------------------------------------------------- backends
 class BackendTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -505,6 +579,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.free_ports = [
             mock.patch("fastrdp_broker.netcheck.listeners", return_value=[]),
             mock.patch("fastrdp_broker.netcheck.port_in_use", return_value=False),
+            # back-end certificates: CertificateFingerprintTests
+            mock.patch("fastrdp_broker.sysutil.cert_sha256", return_value="ab" * 32),
         ]
         for p in self.free_ports:
             p.start()
@@ -695,7 +771,7 @@ class _BrokerHarness:
         for p in self.patches:
             p.start()
         self.broker = Broker(self.cfg)
-        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "alice", "t", "", "tls"))
+        self.ensure = mock.AsyncMock(return_value=Target("127.0.0.1", 3390, "alice", "t", "", "tls", "ab" * 32))
         for b in self.broker.backends.values():
             b.ensure = self.ensure
         self.task = asyncio.create_task(self.broker.serve())

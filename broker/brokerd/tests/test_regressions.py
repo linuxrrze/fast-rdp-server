@@ -61,6 +61,7 @@ class XrdpSessionTests(unittest.TestCase):
         req = LoginRequest(self.user, self.cfg.desktops[desktop], None, 1280, 800)
         uid = self.backend.expected_listener_uid(self.user)
         with mock.patch.object(sysutil, "run", fake.run), \
+                mock.patch.object(sysutil, "cert_sha256", return_value="ab" * 32), \
                 mock.patch("fastrdp_broker.backends.xrdp.netcheck.listener_uids", return_value={uid}):
             return asyncio.run(self.backend.ensure(req))
 

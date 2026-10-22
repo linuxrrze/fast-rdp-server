@@ -2,11 +2,12 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 from __future__ import annotations
 
+import os
 import pwd
 import secrets
 from dataclasses import asdict, dataclass
 
-from .. import netcheck
+from .. import netcheck, sysutil
 from ..config import BackendSection, Config, Desktop
 from ..identity import LocalUser
 from ..state import Session, StateStore
@@ -25,6 +26,9 @@ class Target:
     password: str
     domain: str
     security: str
+    # SHA-256 (hex) of the back-end's TLS certificate: the proxy refuses any other one,
+    # so whoever binds the port while the back-end is down cannot pose as it
+    cert_sha256: str
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -80,6 +84,18 @@ class Backend:
     def new_secret() -> str:
         return secrets.token_urlsafe(24)
 
+    def certificate_for(self, user_name: str) -> str:
+        """The certificate the back-end presents: configured, or the per-user one
+        (sysutil.ensure_backend_cert)."""
+        return self.bcfg.certificate or os.path.join(
+            self.cfg.broker.state_dir, "users", user_name, "tls.crt")
+
+    def cert_sha256(self, user_name: str) -> str:
+        try:
+            return sysutil.cert_sha256(self.certificate_for(user_name))
+        except sysutil.CommandError as exc:
+            raise BackendError(str(exc)) from None
+
     def target_for(self, session: Session) -> Target:
         return Target(
             host=self.bcfg.host,
@@ -88,6 +104,7 @@ class Backend:
             password=session.rdp_password,
             domain="",
             security=self.bcfg.security,
+            cert_sha256=self.cert_sha256(session.user),
         )
 
     def expected_listener_uid(self, user: LocalUser) -> int:
