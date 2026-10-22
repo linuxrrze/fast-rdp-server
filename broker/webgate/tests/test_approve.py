@@ -171,15 +171,27 @@ class ApproveTests(unittest.TestCase):
 
     def test_mfa_required(self):
         FakeIdP.acr = "1"
-        status, _, _ = self.sign_in()
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            status, _, body = self.sign_in()
         self.assertEqual(status, 403)
+        self.assertIn("<title>Second factor required</title>", body)
+        self.assertIn(f'(<a href="{FakeIdP.issuer}/account">{FakeIdP.issuer}/account</a>)', body)
+        self.assertIn('<a href="/web/approve">Sign in again</a>', body)   # always a fresh sign-in
+        self.assertIn("OIDC login of alice refused: acr '1' does not prove MFA (required: mfa; amr: None). "
+                      "Keycloak issues acr 'mfa' only with a level-2 (MFA) step", logs.output[0])
         self.assertFalse(self.cookie("fastrdp_web_approve"))
-        self.assertEqual(self.fetch("/web/approve")[0], 303)   # back to the IdP
+        status, h, _ = self.fetch("/web/approve")              # back to the IdP
+        self.assertEqual(status, 303)
+        self.assertEqual(dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))["prompt"],
+                         "login")
         self.assertEqual(self.broker.seen, [])
 
     def test_reused_idp_session_refused(self):
         FakeIdP.auth_age = 3600     # the IdP ignored prompt=login/max_age=0
-        self.assertEqual(self.sign_in()[0], 403)
+        status, _, body = self.sign_in()
+        self.assertEqual(status, 403)
+        self.assertIn("Login was not accepted.", body)      # not the second-factor page
+        self.assertNotIn("Second factor", body)
         FakeIdP.auth_age = None     # no auth_time at all
         self.assertEqual(self.sign_in()[0], 403)
         self.assertFalse(self.cookie("fastrdp_web_approve"))

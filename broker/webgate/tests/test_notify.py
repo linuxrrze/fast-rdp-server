@@ -685,6 +685,23 @@ class NotifyPageTests(unittest.TestCase):
         # the chooser links to it
         self.assertIn("/web/notify", self.fetch("/web/")[2].decode())
 
+    def test_sign_in_without_mfa(self):
+        FakeIdP.acr = "1"
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            status, _, body = self.sign_in()
+        body = body.decode()
+        self.assertEqual(status, 403)
+        self.assertIn("<title>Second factor required</title>", body)
+        self.assertIn(f'(<a href="{FakeIdP.issuer}/account">', body)
+        self.assertIn('<a href="/web/notify?login=fresh">Sign in again</a>', body)
+        self.assertIn("OIDC login of alice refused: acr '1' does not prove MFA", logs.output[0])
+        # sign in again: fresh at the IdP, back to the opt-in page
+        FakeIdP.acr = "mfa"
+        status, h, _ = self.sign_in("/web/notify?login=fresh")
+        self.assertEqual(FakeIdP.authorize_queries[-1]["prompt"], "login")
+        self.assertEqual((status, h["Location"]), (303, "/web/notify"))
+        self.assertIn("Signed in as <b>alice</b>", self.page()[1])
+
     def test_approval_sign_in_is_not_enough(self):
         appr = self.app.signer.dumps("approve", {"user": "alice", "auth_time": int(time.time())}, 300)
         req = urllib.request.Request(self.base + "/web/notify", headers={"Cookie": f"fastrdp_web_approve={appr}"})

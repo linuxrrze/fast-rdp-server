@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastrdp_webgate import config, guacjson  # noqa: E402
 from fastrdp_webgate.app import Webgate, make_handler  # noqa: E402
 from fastrdp_webgate.cookies import Signer  # noqa: E402
-from fastrdp_webgate.oidc import OidcError, Provider  # noqa: E402
+from fastrdp_webgate.oidc import MfaError, OidcError, Provider  # noqa: E402
 
 KEY_HEX = "4c0b569e4c96df157eee1b65dd0e4d41"
 REF_SCRIPT = os.environ.get("GUAC_ENCRYPT_JSON")  # guacamole-client doc/encrypt-json.sh
@@ -99,8 +99,10 @@ class IdTokenTests(unittest.TestCase):
 
     def test_mfa_required(self):
         self.p.check_mfa(self.claims())
-        with self.assertRaises(OidcError):
+        with self.assertRaises(MfaError) as cm:     # an OidcError with the claims (app.mfa_refused)
             self.p.check_mfa(self.claims(acr="1"))
+        self.assertIsInstance(cm.exception, OidcError)
+        self.assertEqual((cm.exception.claim, cm.exception.claims["preferred_username"]), ("acr", "alice"))
 
     def test_amr_must_be_a_list(self):
         p = Provider(config.OidcSection(issuer="https://idp", client_id="web", required_amr_any=["otp"]), "s")
@@ -172,6 +174,7 @@ class FakeIdP(BaseHTTPRequestHandler):
     codes: dict = {}
     issuer = ""
     acr = "mfa"
+    amr = None            # list: amr claim; None: none
     auth_age = 0          # seconds since the "authentication" (auth_time); None: no claim
     authorize_queries: list = []
 
@@ -215,6 +218,8 @@ class FakeIdP(BaseHTTPRequestHandler):
                   "nonce": q["nonce"], "acr": FakeIdP.acr, "preferred_username": "alice"}
         if FakeIdP.auth_age is not None:
             claims["auth_time"] = now - FakeIdP.auth_age
+        if FakeIdP.amr is not None:
+            claims["amr"] = FakeIdP.amr
         tok = jwt(claims)
         self.reply(200, json.dumps({"id_token": tok, "access_token": "x"}).encode())
 
@@ -261,7 +266,8 @@ class FlowTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(dir="/tmp")
         idp = ThreadingHTTPServer(("127.0.0.1", 0), FakeIdP)
         FakeIdP.issuer = f"http://127.0.0.1:{idp.server_port}"
-        FakeIdP.acr = "mfa"
+        FakeIdP.acr, FakeIdP.amr, FakeIdP.authorize_queries = "mfa", None, []
+        self.addCleanup(setattr, FakeIdP, "amr", None)
         threading.Thread(target=idp.serve_forever, daemon=True).start()
         self.seen = []
         self.allowed = ["xfce", "gnome"]
@@ -367,6 +373,82 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(status, 403)
         status, h, _ = self.fetch(self.base + "/web/")
         self.assertEqual(status, 303)  # still not logged in -> back to the IdP
+
+    def test_no_mfa_page(self):
+        # Field report: Keycloak without a level-2 step for acr=mfa issues acr "1"; the
+        # user saw only "Login was not accepted", the log no hint at the cause.
+        FakeIdP.acr = "1"
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            status, h, body = self.login()
+        self.assertEqual(status, 403)
+        self.assertIn("<title>Second factor required</title>", body)
+        self.assertIn("Your sign-in at <b>127.0.0.1</b> did not use a second factor (MFA). Sign in "
+                      "again with your passkey, security key or authenticator app.", body)
+        account = FakeIdP.issuer + "/account"
+        self.assertIn(f'add one in your account settings (<a href="{account}">{account}</a>) or contact '
+                      "your administrator.", body)
+        self.assertIn('<a href="/web/?login=fresh">Sign in again</a>', body)
+        self.assertNotIn("Login was not accepted", body)
+        self.assertNotIn("fastrdp-web", body)             # no client id or other config
+        self.assertNotIn("<script", body)
+        self.assertEqual(h["Content-Security-Policy"], "default-src 'none'; style-src 'unsafe-inline'; "
+                                                       "form-action 'self'")
+        self.assertEqual(logs.output, [
+            "WARNING:fastrdp.webgate:OIDC login of alice refused: acr '1' does not prove MFA (required: "
+            "mfa; amr: None). Keycloak issues acr 'mfa' only with a level-2 (MFA) step for this client: "
+            "fastrdp_web_passkeys: true, or a step-up browser flow (docs/web-access.md#keycloak-setup)"])
+        self.assertFalse([c for c in self.jar if c.name == "fastrdp_web" and c.value])
+        # Sign in again: a fresh login at the IdP (prompt=login), back to the chooser
+        FakeIdP.acr = "mfa"
+        status, h, _ = self.fetch(self.base + "/web/?login=fresh")
+        self.assertEqual(status, 303)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
+        self.assertEqual((q["prompt"], q["max_age"], q["acr_values"]), ("login", "0", "mfa"))
+        _, h, _ = self.fetch(h["Location"])
+        status, h, _ = self.fetch(h["Location"])
+        self.assertEqual((status, h["Location"]), (303, "/web/"))
+        self.assertIn("Signed in as <b>alice</b>", self.fetch(self.base + "/web/")[2])
+
+    def test_plain_login_not_fresh(self):
+        self.login()
+        self.assertNotIn("prompt", FakeIdP.authorize_queries[-1])
+
+    def test_no_mfa_amr(self):
+        self.app.cfg.oidc.required_amr_any = ["otp", "hwk"]
+        FakeIdP.amr = ["pwd"]
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            status, _, body = self.login()
+        self.assertEqual(status, 403)
+        self.assertIn("did not use a second factor (MFA)", body)
+        self.assertIn("OIDC login of alice refused: amr ['pwd'] does not prove MFA (required: one of "
+                      "otp, hwk; acr: 'mfa')", logs.output[0])
+        FakeIdP.amr = ["pwd", "hwk"]
+        self.assertEqual(self.login()[1]["Location"], "/web/")
+
+    def test_no_mfa_page_escaped(self):
+        # issuer with a realm path in markup characters (they reach the account link)
+        self.app.cfg.oidc.issuer = FakeIdP.issuer = FakeIdP.issuer + '/realms/a"<b>&c'
+        FakeIdP.acr = "1"
+        with self.assertLogs("fastrdp.webgate", "WARNING"):
+            status, _, body = self.login()
+        self.assertEqual(status, 403)
+        self.assertIn("/realms/a&quot;&lt;b&gt;&amp;c/account", body)
+        self.assertNotIn("<b>&c", body)
+        self.assertNotIn('a"<', body)
+
+    def test_other_refusals_keep_the_generic_page(self):
+        status, h, _ = self.fetch(self.base + "/web/")
+        _, h, _ = self.fetch(h["Location"])
+        loc = h["Location"]
+        status, _, body = self.fetch(loc.replace("state=", "state=x"))      # state mismatch
+        self.assertEqual(status, 400)
+        self.assertIn("Login state mismatch or expired.", body)
+        with self.assertLogs("fastrdp.webgate", "WARNING") as logs:
+            status, _, body = self.fetch(loc.replace("code=", "code=x"))    # token endpoint refuses
+        self.assertEqual(status, 403)
+        self.assertIn("Login was not accepted.", body)
+        self.assertNotIn("Second factor", body)
+        self.assertTrue(logs.output[0].startswith("WARNING:fastrdp.webgate:OIDC login refused: "))
 
     def test_bad_content_length(self):
         self.login()

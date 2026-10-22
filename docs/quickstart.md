@@ -66,13 +66,34 @@ RDP certificate: self-signed (lab) / provided (PEM files) [self-signed]:
 New ansible-vault password for vault.yml:
 ```
 
+With browser access (`y`, the default for MFA modes `web` and `push_or_web`) the web
+questions follow. Keycloak must mark the sign-in as MFA (`acr=mfa`): the client's ACR map
+alone is not enough, Keycloak needs a level-2 step for it. The assistant explains this and
+offers to let Ansible configure it (`fastrdp_web_passkeys`, [web-access.md](web-access.md#passkeys-through-ansible-opt-in)):
+
+```
+Browser access via Keycloak/OIDC + Guacamole? (y/n) [y]:
+OIDC issuer URL (e.g. https://keycloak.example.com/realms/main): https://sso.lab.example.com/realms/lab
+OIDC client id [fastrdp-web]:
+OIDC client secret (stored in the vault):
+CA certificate of the IdP on this machine (empty = system trust store) [none]:
+Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n) [n]: y
+Keycloak admin login: client (service account, recommended) / user (admin user) [client]:
+Realm of the Keycloak admin client or user [master]:
+Service-account client id: fastrdp-admin
+Secret of the service-account client (stored in the vault):
+```
+
+`n` keeps Keycloak as it is and prints: *Make sure Keycloak enforces MFA for acr=mfa (a
+level-2 step, docs/web-access.md#keycloak-setup), otherwise every web sign-in is refused.*
+
 It writes `ansible/inventories/mylab/`:
 
 | File | Contents |
 |---|---|
 | `hosts.yml` | the host(s) in group `rdp_servers`, SSH user |
 | `group_vars/all/main.yml` | only the variables the roles need without a default, plus the ones that differ from the role defaults; each with a comment |
-| `group_vars/all/vault.yml` | the secrets (join password, privacyIDEA service password, OIDC client secret), encrypted with `ansible-vault` |
+| `group_vars/all/vault.yml` | the secrets (join password, privacyIDEA service password, OIDC client secret, Keycloak admin secret), encrypted with `ansible-vault` |
 | `setup-answers.json` | your answers without secrets; `scripts/fastrdp-setup --answers .../setup-answers.json --force` regenerates the inventory |
 
 At the end it prints the next commands with your inventory filled in.
@@ -114,6 +135,7 @@ WARN  RDP certificate: self-signed certificate will be generated (lab only: clie
 | privacyIDEA | `<url>/healthz/` answers from the host |
 | MFA from KDC evidence | `fastrdp_mfa_kdc_evidence_as_mfa`: items well-formed, realm set, `fastrdp-freerdp3` ≥ 3.32.2-4 installed or available (`build`: patch 0005 in the checkout); Samba/Microsoft AD caveats for `sid:S-1-18-3` (INFO when unused) |
 | web / OIDC | issuer discovery answers and reports the same issuer; client secret set |
+| Keycloak MFA for acr=mfa | `fastrdp_web_passkeys: true`: admin credentials set (FAIL without). Otherwise the discovery document's `acr_values_supported`: WARN unless it lists `mfa` or a level ≥ 2 (Keycloak shows only the realm's ACR map and the levels of the realm's browser flow; the client's ACR map and client policies are not visible, so a WARN may be a false alarm) |
 | install method | `apt`: repository suite and key reachable from the host |
 | RDP certificate | provided: valid, not expiring within 30 days, SAN contains the FQDN, key matches |
 
@@ -270,6 +292,12 @@ Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice
 **Web access** ([web-access.md](web-access.md))
 - [ ] Keycloak client (confidential, standard flow), redirect URI
       `https://<fqdn>/web/callback`, ACR mapping `mfa`.
+- [ ] Keycloak enforces MFA for `acr=mfa` (a level-2 step; the ACR mapping alone gives
+      `acr` 1 and every web sign-in is refused): `web_passkeys` = y (Ansible configures it,
+      needs a service-account client with *manage-realm* + *manage-clients*, or an admin
+      user) or a step-up flow by hand ([web-access.md](web-access.md#keycloak-setup)) (P).
+- [ ] Users have a second factor registered in Keycloak (passkey, security key or
+      authenticator app).
 - [ ] Issuer URL exactly as the discovery document reports it (P); ports 443/80 free (P).
 
 **Install method** ([packaging.md](packaging.md))
@@ -315,6 +343,8 @@ on missing or invalid answers instead of asking.
   "mfa_exempt_groups": ["breakglass"],
   "web_enabled": true,
   "web_oidc_issuer": "https://sso.corp.example.com/realms/corp",
+  "web_passkeys": true,
+  "keycloak_admin_client_id": "fastrdp-admin",
   "install_method": "apt",
   "tls": "provided",
   "tls_cert": "/secure/rdp.corp.example.com.fullchain.pem",
@@ -324,6 +354,7 @@ on missing or invalid answers instead of asking.
 
 ```sh
 export FASTRDP_JOIN_PASSWORD=... FASTRDP_PRIVACYIDEA_SERVICE_PASSWORD=... FASTRDP_WEB_OIDC_CLIENT_SECRET=...
+export FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET=...      # web_passkeys (or FASTRDP_KEYCLOAK_ADMIN_PASSWORD)
 scripts/fastrdp-setup --non-interactive --answers corp.json --vault-password-file ~/.fastrdp-vault
 scripts/fastrdp-setup --help            # all answer keys
 ```
@@ -359,3 +390,4 @@ and `make lint`.
 | MFA push: client waits, then fails | privacyIDEA unreachable from the host (preflight), no service admin for SSO logins, or the push was not approved within `push_timeout` (60 s) |
 | Black screen or no GPU acceleration with NVIDIA | Reboot after the first run (driver + `nvidia-drm modeset=1`); Secure Boot needs the module key enrolled |
 | Web login: *issuer mismatch* or MFA required | `fastrdp_web_oidc_issuer` must equal the issuer in Keycloak's discovery document; configure the ACR mapping `mfa` ([web-access.md](web-access.md)) |
+| Web sign-in or `/web/approve`: page *Second factor required*; journal `OIDC login of alice refused: acr '1' does not prove MFA` | Keycloak has no level-2 (MFA) step for `acr=mfa` (the client's ACR map alone is not enough), or the user signed in without a second factor. Set `fastrdp_web_passkeys: true` with admin credentials (or re-run the assistant with `web_passkeys` = y) and deploy, or configure a step-up flow ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)); users register a second factor in Keycloak's account console (`<issuer>/account`) |

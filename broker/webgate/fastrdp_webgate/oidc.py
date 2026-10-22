@@ -28,6 +28,18 @@ class OidcError(Exception):
     pass
 
 
+class MfaError(OidcError):
+    """A valid ID token whose acr / amr does not prove MFA: the user signed in without a
+    second factor, or the IdP does not mark it (Keycloak: no level-2 step for the
+    requested acr). `claim`: "acr" or "amr", the check that failed; `claims`: the
+    token's claims, all other checks passed."""
+
+    def __init__(self, message: str, claim: str, claims: dict):
+        super().__init__(message)
+        self.claim = claim
+        self.claims = claims
+
+
 def b64url_decode(part: str) -> bytes:
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
@@ -133,12 +145,14 @@ class Provider:
         return claims
 
     def check_mfa(self, claims: dict) -> None:
+        """MfaError (an OidcError) if acr / amr do not prove MFA; claims: already checked
+        by id_token_claims."""
         if self.cfg.required_acr and claims.get("acr") not in self.cfg.required_acr:
-            raise OidcError(f"acr {claims.get('acr')!r} does not prove MFA")
+            raise MfaError(f"acr {claims.get('acr')!r} does not prove MFA", "acr", claims)
         if self.cfg.required_amr_any:
             amr = claims.get("amr")
             if not isinstance(amr, list) or not set(map(str, amr)) & set(self.cfg.required_amr_any):
-                raise OidcError(f"amr {amr!r} does not prove MFA")
+                raise MfaError(f"amr {amr!r} does not prove MFA", "amr", claims)
 
     def check_fresh(self, claims: dict, since: float) -> int:
         """auth_time of a fresh login (authorize_url fresh=True), which must not be older

@@ -177,7 +177,7 @@ PAGE_JS = r"""(() => {
   const vis = id => { const e = document.getElementById(id); return !!e && e.type !== 'hidden' && e.offsetParent !== null; };
   if (location.href.startsWith(%(gate)s)) {
     if (t.includes('Signed in as')) return 'chooser';
-    if (t.includes('was not accepted')) return 'refused';
+    if (t.includes('was not accepted') || t.includes('Second factor required')) return 'refused';
     return 'gate-other';
   }
   if (location.href.startsWith(%(probe)s)) return 'probe';

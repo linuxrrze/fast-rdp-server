@@ -151,7 +151,8 @@ Summary (details and residual risks in [web-access.md](../web-access.md)):
 | Symptom | Checks |
 |---|---|
 | Browser error page "You are not allowed to use remote desktops." | `journalctl -u fastrdp-webgate -g "broker refused"`; broker: `journalctl -u fastrdp-brokerd -g denied` (group, account) |
-| "Login was not accepted." | `journalctl -u fastrdp-webgate -g "OIDC login refused"` (issuer, audience, missing `acr`/`amr`) |
+| "Login was not accepted." | `journalctl -u fastrdp-webgate -g "OIDC login refused"` (token endpoint, issuer, audience, nonce, `auth_time`) |
+| "Second factor required" | `journalctl -u fastrdp-webgate -g "OIDC login of"`: `acr`/`amr` without MFA proof; Keycloak needs a level-2 step for `acr=mfa` ([web-access.md](../web-access.md#symptom-acr-1-does-not-prove-mfa)) |
 | "Your account name cannot be used here." | username claim with a domain not in `fastrdp_web_strip_domains`, or invalid characters |
 | Guacamole shows a connection error | `journalctl -u fastrdp-guacd -u fastrdp-guacamole`; proxy: `journalctl -u fastrdp-proxy`; broker: `web token from unexpected client address`, `invalid or reused web token`, `web token presented but [web] is disabled` |
 | Certificate error in guacd | `/etc/fastrdp/front.fingerprint` vs. `openssl x509 -in /etc/fastrdp/front.crt -noout -fingerprint -sha256`; re-run the role after a certificate change |

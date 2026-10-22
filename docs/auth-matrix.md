@@ -217,7 +217,9 @@ first wins and the other is cancelled. Both need the web gateway
 3. The user opens `https://<host>/web/approve`. The webgate sends them to Keycloak for a
    **fresh** sign-in (`prompt=login`, `max_age=0`) with the usual MFA proof
    (`acr`/`amr`: passkey, TOTP, WebAuthn, privacyIDEA), and checks the ID token's
-   `auth_time`, so an existing Keycloak session does not count.
+   `auth_time`, so an existing Keycloak session does not count. A sign-in without that
+   proof gets the page *Second factor required*
+   ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)).
 4. The page lists the user's pending logins with client address, start time, login
    method and a two-digit **code**, the same one the [waiting screen](#waiting-screen) and
    the notification show, so the user can tell which login is theirs. **Approve** lets the broker continue (session start or reuse, as after a

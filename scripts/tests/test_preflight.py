@@ -7,7 +7,8 @@
 - its list of required inventory variables matches scripts/fastrdp-setup;
 - it contains only read-only modules;
 - the KDC proxy and KDC evidence probes with stub tools; the KDC evidence result with
-  ansible-playbook on localhost (when ansible-core is installed).
+  ansible-playbook on localhost (when ansible-core is installed);
+- the Keycloak MFA check against a stub discovery document (ansible-playbook on localhost).
 """
 
 import importlib.machinery
@@ -19,7 +20,9 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -479,6 +482,82 @@ class TestPreflightKdcEvidenceResult(unittest.TestCase):
                           series="0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch\n")
         self.assertEqual(r["build"]["status"], "FAIL", r["build"])
         self.assertIn("has no 0005", r["build"]["detail"])
+
+
+class StubDiscovery(BaseHTTPRequestHandler):
+    """/realms/<realm>/.well-known/openid-configuration with acr_values_supported per realm
+    (None: HTTP 500)."""
+    acr = {}
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        realm = self.path.split("/")[2]
+        values = self.acr.get(realm)
+        issuer = f"http://127.0.0.1:{self.server.server_port}/realms/{realm}"
+        body = b"" if values is None else json.dumps({"issuer": issuer, "acr_values_supported": values}).encode()
+        self.send_response(500 if values is None else 200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@unittest.skipIf(yaml is None or not shutil.which("ansible-playbook"), "PyYAML or ansible-core not installed")
+class TestPreflightKeycloakMfa(unittest.TestCase):
+    """'Keycloak MFA for acr=mfa': discovery's acr_values_supported (realm ACR map + LoA levels of
+    the realm's browser flow; Keycloak lists "0", "1" without step-up) and fastrdp_web_passkeys."""
+
+    TASKS = ("Probe the OIDC issuer from the host", "Result - Keycloak MFA for acr=mfa")
+    BASE = TestPreflightKdcEvidenceResult.BASE
+    run_play = TestPreflightKdcEvidenceResult.run_play
+
+    def test_scenarios(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), StubDiscovery)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        StubDiscovery.acr = {"plain": ["0", "1"], "stepup": ["0", "1", "2"], "realmmap": ["mfa", "0", "1"],
+                             "broken": None}
+
+        def web(realm="plain", **kw):
+            return ({"fastrdp_web_enabled": True, "fastrdp_mfa_mode": "web",
+                     "fastrdp_web_oidc_issuer": f"http://127.0.0.1:{srv.server_port}/realms/{realm}", **kw}, {})
+        r = self.run_play({
+            "plain": web(),
+            "webonly": web(fastrdp_mfa_mode="none"),
+            "stepup": web("stepup"),
+            "realmmap": web("realmmap"),
+            "broken": web("broken"),
+            "amr": web(fastrdp_web_required_acr=[], fastrdp_web_required_amr_any=["otp"]),
+            "passkeys": web(fastrdp_web_passkeys=True, vault_fastrdp_keycloak_admin_client_secret="s"),
+            "adminuser": web(fastrdp_web_passkeys=True, fastrdp_keycloak_admin_user="admin",
+                             vault_fastrdp_keycloak_admin_password="pw"),
+            "nocreds": web(fastrdp_web_passkeys=True, fastrdp_keycloak_admin_user="admin"),
+        })
+        for name, res in r.items():
+            self.assertEqual(res["check"], "Keycloak MFA for acr=mfa", name)
+            self.assertIn("docs/web-access.md#keycloak-setup", res["fix"])
+        self.assertEqual(r["plain"]["status"], "WARN", r["plain"])
+        self.assertEqual(r["plain"]["detail"],
+                         "fastrdp_web_passkeys is false and Keycloak advertises acr_values_supported [0, 1] only "
+                         "(no level-2 step in the realm's browser flow; a client policy is not visible here): make "
+                         "sure Keycloak enforces MFA for acr=mfa, otherwise every web sign-in and every RDP login "
+                         "approval is refused (log: acr '1' does not prove MFA)")
+        self.assertEqual(r["webonly"]["status"], "WARN", r["webonly"])
+        self.assertIn("otherwise every web sign-in is refused", r["webonly"]["detail"])
+        for name in ("stepup", "realmmap"):
+            self.assertEqual(r[name]["status"], "PASS", r[name])
+            self.assertIn("Keycloak advertises step-up", r[name]["detail"])
+        self.assertEqual(r["broken"]["status"], "WARN", r["broken"])
+        self.assertIn("cannot read acr_values_supported", r["broken"]["detail"])
+        self.assertEqual(r["amr"]["status"], "INFO", r["amr"])
+        for name in ("passkeys", "adminuser"):
+            self.assertEqual(r[name]["status"], "PASS", r[name])
+            self.assertIn("the deployment configures the MFA flow for acr=mfa", r[name]["detail"])
+        self.assertEqual(r["nocreds"]["status"], "FAIL", r["nocreds"])
+        self.assertIn("needs Keycloak admin credentials", r["nocreds"]["detail"])
 
 
 if __name__ == "__main__":

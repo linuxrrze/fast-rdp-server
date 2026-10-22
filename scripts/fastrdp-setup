@@ -61,6 +61,10 @@ ROLE_DEFAULTS = {
     "fastrdp_web_oidc_issuer": "https://keycloak.lab.example.com/realms/lab",
     "fastrdp_web_oidc_client_id": "fastrdp-web",
     "fastrdp_web_oidc_ca_src": "",
+    "fastrdp_web_passkeys": False,
+    "fastrdp_keycloak_admin_realm": "master",
+    "fastrdp_keycloak_admin_client_id": "admin-cli",
+    "fastrdp_keycloak_admin_user": "",
     "fastrdp_proxy_broker_timeout": 180,
 }
 # The broker's [broker] session_start_timeout (config.py, not rendered): after a web
@@ -126,6 +130,13 @@ VARIABLES = [
     ("web", "fastrdp_web_oidc_issuer", "https://keycloak.lab.example.com/realms/lab", "OIDC issuer (Keycloak realm URL)"),
     ("web", "fastrdp_web_oidc_client_id", "fastrdp-web", "confidential OIDC client; its secret is in vault.yml"),
     ("web", "fastrdp_web_oidc_ca_src", "", "CA of the IdP, on this machine (\"\" = system trust store)"),
+    ("web", "fastrdp_web_passkeys", False,
+     "Ansible configures Keycloak's MFA flow for acr=mfa, incl. passkeys (docs/web-access.md)"),
+    ("web", "fastrdp_keycloak_admin_realm", "master", "realm of the Keycloak admin client or user"),
+    ("web", "fastrdp_keycloak_admin_client_id", "admin-cli",
+     "Keycloak service-account client (manage-realm, manage-clients); its secret is in vault.yml"),
+    ("web", "fastrdp_keycloak_admin_user", "",
+     "Keycloak admin user (password grant via admin-cli); its password is in vault.yml"),
     ("performance", "fastrdp_gpu", "auto", "auto | nvidia | mesa | none"),
     ("performance", "fastrdp_x264_threads", 2, "x264 threads per xrdp session"),
     ("performance", "fastrdp_backend_port_range", [33900, 34899], "loopback ports for back-end sessions"),
@@ -141,11 +152,16 @@ VAULT_KEYS = {
     "join_password": "vault_fastrdp_join_password",
     "privacyidea_service_password": "vault_fastrdp_privacyidea_service_password",
     "web_oidc_client_secret": "vault_fastrdp_web_oidc_client_secret",   # read by the web_gateway role default
+    # read by the web_gateway role defaults (fastrdp_keycloak_admin_client_secret / _password)
+    "keycloak_admin_client_secret": "vault_fastrdp_keycloak_admin_client_secret",
+    "keycloak_admin_password": "vault_fastrdp_keycloak_admin_password",
 }
 SECRET_ENV = {
     "join_password": "FASTRDP_JOIN_PASSWORD",
     "privacyidea_service_password": "FASTRDP_PRIVACYIDEA_SERVICE_PASSWORD",
     "web_oidc_client_secret": "FASTRDP_WEB_OIDC_CLIENT_SECRET",
+    "keycloak_admin_client_secret": "FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET",
+    "keycloak_admin_password": "FASTRDP_KEYCLOAK_ADMIN_PASSWORD",
 }
 
 
@@ -359,6 +375,23 @@ def v_web_enabled(value, a):
     return v
 
 
+def v_keycloak_name(what):
+    """A Keycloak realm or client id: required, one word (it ends up in admin REST URLs)."""
+    def check(value, _a=None):
+        v = _str(value)
+        if not re.match(r"^[A-Za-z0-9._-]{1,255}$", v):
+            raise SetupError(f"a {what} is needed (letters, digits, '.', '_', '-')")
+        return v
+    return check
+
+
+def v_keycloak_admin_user(value, a=None):
+    v = v_user(value, a)
+    if not v:
+        raise SetupError("a user name is needed")
+    return v
+
+
 def v_seconds(lo, hi):
     def check(value, _a=None):
         v = _str(value)
@@ -416,12 +449,13 @@ def _default_install_method(a):
 
 class Q:
     def __init__(self, key, prompt, validate, default=None, when=None, secret=False, help=None,
-                 ask=None):
+                 ask=None, warn=None):
         self.key, self.prompt, self.validate = key, prompt, validate
         self.default = default          # value or callable(answers)
         self.when = when or (lambda a: True)
         self.ask = ask or (lambda a: True)   # False: not asked interactively, default used
         self.secret, self.help = secret, help
+        self.warn = warn or (lambda a: None)  # callable(answers) -> text shown after the answer
 
     def default_for(self, a):
         return self.default(a) if callable(self.default) else self.default
@@ -450,6 +484,30 @@ def _pi(a):
 
 def _web_approval(a):
     return a.get("mfa_mode", "none") in ("web", "push_or_web")
+
+
+def _keycloak_admin(a):
+    """Ansible configures Keycloak's MFA flow (fastrdp_web_passkeys): admin login needed."""
+    return _web(a) and bool(a.get("web_passkeys"))
+
+
+def _keycloak_admin_client(a):
+    return _keycloak_admin(a) and a.get("keycloak_admin_auth", "client") == "client"
+
+
+def _keycloak_admin_user(a):
+    return _keycloak_admin(a) and a.get("keycloak_admin_auth") == "user"
+
+
+KEYCLOAK_MFA_WARNING = (
+    "Make sure Keycloak enforces MFA for acr=mfa (a level-2 step, docs/web-access.md#keycloak-setup), "
+    "otherwise every web sign-in is refused.")
+
+
+def _warn_no_keycloak_mfa(a):
+    if _web(a) and not a.get("web_passkeys"):
+        return "  NOTE: " + KEYCLOAK_MFA_WARNING
+    return None
 
 
 def _audio(a):
@@ -595,6 +653,34 @@ QUESTIONS = [
     Q("web_oidc_client_secret", "OIDC client secret (stored in the vault)", v_secret, when=_web, secret=True),
     Q("web_oidc_ca", "CA certificate of the IdP on this machine (empty = system trust store)",
       v_file(True), "", when=_web),
+    Q("web_passkeys", "Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n)", _bool, False,
+      when=_web, warn=_warn_no_keycloak_mfa,
+      help="The web gateway accepts only sign-ins that Keycloak marks as MFA (acr=mfa,\n"
+           "fastrdp_web_required_acr); desktops in the browser and /web/approve alike. The client's\n"
+           "ACR map (mfa -> 2, part of the sample client) is not enough: Keycloak issues acr=mfa only\n"
+           "with a level-2 (MFA) step for it, otherwise acr 1 and the web gateway refuses the sign-in\n"
+           "(log: acr '1' does not prove MFA).\n"
+           "  y  Ansible configures it through Keycloak's admin REST API (fastrdp_web_passkeys):\n"
+           "     forced flow fastrdp-mfa for acr=mfa (passkey, or password + OTP/security key),\n"
+           "     passkey policy, client policy and ACR map. Recommended when you may administer the\n"
+           "     realm; needs an admin login (next questions). Changes realm-wide settings.\n"
+           "  n  you configure a step-up flow in Keycloak yourself (docs/web-access.md#keycloak-setup).\n"
+           "Either way users need a second factor (passkey, security key or authenticator app)\n"
+           "registered in Keycloak."),
+    Q("keycloak_admin_auth", "Keycloak admin login: client (service account, recommended) / user (admin user)",
+      v_choice("client", "user"), "client", when=_keycloak_admin,
+      help="client: a confidential client with a service account that holds the realm-management\n"
+           "roles manage-realm and manage-clients (client credentials). user: an admin user and its\n"
+           "password (password grant via admin-cli)."),
+    Q("keycloak_admin_realm", "Realm of the Keycloak admin client or user", v_keycloak_name("realm"), "master",
+      when=_keycloak_admin),
+    Q("keycloak_admin_client_id", "Service-account client id", v_keycloak_name("client id"),
+      when=_keycloak_admin_client),
+    Q("keycloak_admin_client_secret", "Secret of the service-account client (stored in the vault)", v_secret,
+      when=_keycloak_admin_client, secret=True),
+    Q("keycloak_admin_user", "Keycloak admin user", v_keycloak_admin_user, when=_keycloak_admin_user),
+    Q("keycloak_admin_password", "Password of the Keycloak admin user (stored in the vault)", v_secret,
+      when=_keycloak_admin_user, secret=True),
     Q("web_public_url", "Public web URL", v_web_url, "https://{{ fastrdp_fqdn }}", when=_web,
       ask=lambda a: False),
     Q("install_method", "Install method: apt (packages, recommended) / build (compile on the host)",
@@ -755,6 +841,8 @@ def resolve(given, interactive, env=os.environ, last=None, stream_in=None, strea
                     hint = f" (or environment variable {SECRET_ENV[q.key]})" if q.key in SECRET_ENV else ""
                     raise SetupError(f"missing answer{hint}")
                 a[q.key] = q.validate(default, a)
+            if interactive and q.warn(a):
+                print(q.warn(a), file=asks["stream_out"])
             if last is not None:
                 last.save(a)
         except SetupError as e:
@@ -837,6 +925,13 @@ def variables_for(a):
         v["fastrdp_web_oidc_client_id"] = a["web_oidc_client_id"]
         v["fastrdp_web_oidc_ca_src"] = a.get("web_oidc_ca", "")
         v["fastrdp_web_public_url"] = a.get("web_public_url", ROLE_DEFAULTS["fastrdp_web_public_url"])
+        v["fastrdp_web_passkeys"] = bool(a.get("web_passkeys", False))
+    if _keycloak_admin(a):
+        v["fastrdp_keycloak_admin_realm"] = a["keycloak_admin_realm"]
+        if _keycloak_admin_client(a):
+            v["fastrdp_keycloak_admin_client_id"] = a["keycloak_admin_client_id"]
+        else:
+            v["fastrdp_keycloak_admin_user"] = a["keycloak_admin_user"]
     return v
 
 
@@ -1045,6 +1140,10 @@ def next_steps(a, inv_dir, vault_mode, password_file):
     if a["install_method"] == "build":
         lines += ["", "Note: install method 'build' compiles FreeRDP and xrdp on the host (about 10-20 min",
                   "on the first run). Once the APT repository is published, re-run with install_method=apt."]
+    if _web(a) and not a.get("web_passkeys"):
+        lines += ["", "Keycloak: the web gateway accepts only sign-ins that Keycloak marks as MFA (acr=mfa).",
+                  "  " + KEYCLOAK_MFA_WARNING,
+                  "  Or answer web_passkeys=y: Ansible then configures it (incl. passkeys)."]
     if vault_mode == "plaintext":
         lines += ["", f"WARNING: {inv_dir}/group_vars/all/vault.yml is NOT encrypted. Run:",
                   f"  ansible-vault encrypt {inv_dir}/group_vars/all/vault.yml"]

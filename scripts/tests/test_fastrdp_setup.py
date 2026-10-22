@@ -572,6 +572,102 @@ class TestMfaAndAudioOptions(SetupTestCase):
         self.assert_rejected(dict(LAB, mfa_mode="web", mfa_web_approval_max_auth_age=301, **self.WEB),
                              "from 0 to 300")
 
+    def vault(self, inv):
+        return bytes.fromhex((inv / "group_vars/all/vault.yml").read_text().splitlines()[1]).decode()
+
+    def test_keycloak_mfa(self):
+        # Field report: web mode without fastrdp_web_passkeys and without a step-up flow in
+        # Keycloak refused every sign-in (acr '1'); the assistant never mentioned it.
+        inv, out = self.generate(dict(LAB, mfa_mode="web", **self.WEB), "--force", env=self.ENV)
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertNotIn("fastrdp_web_passkeys", main)                  # role default false
+        self.assertIn("Make sure Keycloak enforces MFA for acr=mfa (a level-2 step, "
+                      "docs/web-access.md#keycloak-setup), otherwise every web sign-in is refused.", out)
+        self.assertNotIn("vault_fastrdp_keycloak", self.vault(inv))
+        # service-account client (the default login), secret in the vault
+        inv, out = self.generate(dict(LAB, mfa_mode="web", web_passkeys="y", keycloak_admin_realm="ops",
+                                      keycloak_admin_client_id="fastrdp-admin", **self.WEB), "--force",
+                                 env=dict(self.ENV, FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET="kc-Secret-9"))
+        text = (inv / "group_vars/all/main.yml").read_text()
+        main = yaml.safe_load(text)
+        self.assertIs(main["fastrdp_web_passkeys"], True)
+        self.assertEqual((main["fastrdp_keycloak_admin_realm"], main["fastrdp_keycloak_admin_client_id"]),
+                         ("ops", "fastrdp-admin"))
+        self.assertNotIn("fastrdp_keycloak_admin_user", main)
+        self.assertNotIn("kc-Secret-9", text + (inv / "setup-answers.json").read_text() + out)
+        self.assertIn('vault_fastrdp_keycloak_admin_client_secret: "kc-Secret-9"', self.vault(inv))
+        self.assertNotIn("Make sure Keycloak enforces MFA", out)
+        # admin user instead; realm master is the role default (not written)
+        inv, _ = self.generate(dict(LAB, mfa_mode="push_or_web", privacyidea_url="https://pi.lab.example.com",
+                                    web_passkeys=True, keycloak_admin_auth="user", keycloak_admin_user="kcadmin",
+                                    keycloak_admin_password="kc-Pw-1", **self.WEB), "--force", env=self.ENV)
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertEqual(main["fastrdp_keycloak_admin_user"], "kcadmin")
+        for k in ("fastrdp_keycloak_admin_realm", "fastrdp_keycloak_admin_client_id"):
+            self.assertNotIn(k, main)
+        self.assertIn('vault_fastrdp_keycloak_admin_password: "kc-Pw-1"', self.vault(inv))
+        self.assertNotIn("vault_fastrdp_keycloak_admin_client_secret", self.vault(inv))
+        # plain browser access (MFA none) asks it too; without browser access nothing is written
+        main = self.main(dict(LAB, web_enabled=True, web_passkeys=True, keycloak_admin_auth="user",
+                              keycloak_admin_user="kcadmin", keycloak_admin_password="pw", **self.WEB))
+        self.assertIs(main["fastrdp_web_passkeys"], True)
+        main = self.main(dict(LAB, web_passkeys=True, keycloak_admin_user="kcadmin"))
+        self.assertNotIn("fastrdp_web_passkeys", main)
+        self.assertNotIn("fastrdp_keycloak_admin_user", main)
+
+    def test_keycloak_mfa_rejections(self):
+        web = dict(LAB, mfa_mode="web", web_passkeys=True, **self.WEB)
+        self.assert_rejected(dict(web, keycloak_admin_client_id="fastrdp-admin"),
+                             "keycloak_admin_client_secret: missing answer (or environment variable "
+                             "FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET)")
+        self.assert_rejected(dict(web, keycloak_admin_client_id="fastrdp-admin", keycloak_admin_client_secret=""),
+                             "keycloak_admin_client_secret: a value is needed")
+        self.assert_rejected(dict(web, keycloak_admin_client_secret="s"), "keycloak_admin_client_id: missing answer")
+        self.assert_rejected(dict(web, keycloak_admin_client_id="a b", keycloak_admin_client_secret="s"),
+                             "a client id is needed")
+        self.assert_rejected(dict(web, keycloak_admin_realm="", keycloak_admin_client_id="c",
+                                  keycloak_admin_client_secret="s"), "keycloak_admin_realm: a realm is needed")
+        self.assert_rejected(dict(web, keycloak_admin_auth="token"), "choose one of: client, user")
+        self.assert_rejected(dict(web, keycloak_admin_auth="user", keycloak_admin_password="pw"),
+                             "keycloak_admin_user: missing answer")
+        self.assert_rejected(dict(web, keycloak_admin_auth="user", keycloak_admin_user="kcadmin"),
+                             "FASTRDP_KEYCLOAK_ADMIN_PASSWORD")
+        self.assert_rejected(dict(web, web_passkeys="maybe"), "web_passkeys: answer yes or no")
+
+    def test_keycloak_mfa_help(self):
+        qs = {q.key: q for q in setup.QUESTIONS}
+        q = qs["web_passkeys"]
+        self.assertEqual(q.prompt, "Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n)")
+        for fragment in ("only sign-ins that Keycloak marks as MFA (acr=mfa", "fastrdp_web_required_acr",
+                         "ACR map (mfa -> 2", "is not enough", "level-2 (MFA) step",
+                         "docs/web-access.md#keycloak-setup", "second factor", "registered"):
+            self.assertIn(fragment, q.help)
+        self.assertFalse(q.default_for({}))      # answers files without the key: as before
+        self.assertTrue(q.when({"web_enabled": True}))
+        self.assertFalse(q.when({"web_enabled": False}))
+        self.assertTrue(q.ask({"profile": "lab"}))
+        self.assertIn("otherwise every web sign-in is refused", q.warn({"web_enabled": True, "web_passkeys": False}))
+        self.assertIsNone(q.warn({"web_enabled": True, "web_passkeys": True}))
+        self.assertFalse(qs["keycloak_admin_client_id"].when({"web_enabled": True, "web_passkeys": False}))
+        self.assertTrue(qs["keycloak_admin_client_secret"].secret)
+        self.assertTrue(qs["keycloak_admin_password"].secret)
+        self.assertNotIn("keycloak_admin_client_secret", setup.REMEMBERED_KEYS)
+
+    def test_keycloak_mfa_interactive(self):
+        # every answer given except web_passkeys, which is asked (Enter: the default)
+        given = dict(LAB, mfa_mode="web", web_oidc_client_secret="z", name="rdp1", become_password=False,
+                     domain="lab.example.com", realm="LAB.EXAMPLE.COM", join_user="Administrator", allow_groups=[],
+                     default_desktop="xfce", web_enabled=True, tls="self-signed", **self.WEB)
+        given.update({q.key: q.default for q in setup.QUESTIONS if q.key not in given and q.key != "web_passkeys"
+                      and q.default is not None and not callable(q.default)})
+        out = io.StringIO()
+        a = setup.resolve(given, True, env={}, stream_in=io.StringIO("\n"), stream_out=out)
+        self.assertIs(a["web_passkeys"], False)
+        text = out.getvalue()
+        self.assertIn("The web gateway accepts only sign-ins that Keycloak marks as MFA", text)
+        self.assertIn("Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n) [n]: ", text)
+        self.assertIn("  NOTE: Make sure Keycloak enforces MFA for acr=mfa", text)
+
     def test_kdc_evidence(self):
         pi = {"mfa_mode": "push", "privacyidea_url": "https://pi.lab.example.com"}
         main = self.main(dict(LAB, mfa_kdc_evidence_as_mfa="sid:S-1-18-4, sid:S-1-5-21-1-2-3-1300 sid:S-1-18-4",

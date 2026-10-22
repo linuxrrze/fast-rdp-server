@@ -50,7 +50,9 @@ answered first (that login was already pending, so it is notified; the follow-up
 ## Users: turning it on
 
 On `https://<host>/web/notify` (also linked from the desktop chooser): sign in as for
-the desktop chooser (Keycloak with MFA). The page lists the user's devices with
+the desktop chooser (Keycloak with MFA; a sign-in without a second factor gets *Second
+factor required*, [web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)). The
+page lists the user's devices with
 **Remove** and **Send a test notification**.
 
 - **This browser (Web Push):** name the device, click *Turn on notifications in this

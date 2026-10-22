@@ -3,6 +3,7 @@
 """HTTP front of fastrdp-webgate (behind a TLS reverse proxy).
 
   GET  <prefix>/           not logged in -> redirect to the IdP; logged in -> desktop chooser
+                           (?login=fresh: the IdP must ask again, after a sign-in without MFA)
   GET  <prefix>/callback   OIDC redirect target
   POST <prefix>/connect    -> broker web token -> encrypted Guacamole connection -> Guacamole
   POST <prefix>/rdp-desktop  desktop for RDP logins (mstsc, Windows App; broker web_set_desktop)
@@ -13,6 +14,7 @@
   POST <prefix>/approve    Approve or Deny one of them (broker mfa_decide)
   GET  <prefix>/notify     [notify] backends: opt-in page for approval notifications
                            (docs/notifications.md), signed in like the desktop chooser
+                           (?login=fresh as for <prefix>/)
   POST <prefix>/notify     ntfy topic on/new/off, remove a subscription, test message
   POST <prefix>/notify/webpush  store this browser's push subscription (notify.js)
   GET  <prefix>/sw.js, <prefix>/manifest.webmanifest, <prefix>/static/<file>
@@ -38,7 +40,7 @@ from .config import Config
 from .cookies import Signer
 from .notify import Notifier
 from .notifystore import MAX_SUBSCRIPTIONS, StoreError, TooManyError, check_account
-from .oidc import OidcError, Provider, pkce_pair
+from .oidc import MfaError, OidcError, Provider, pkce_pair
 
 log = logging.getLogger("fastrdp.webgate")
 
@@ -282,7 +284,7 @@ def make_handler(app: Webgate):
             if path == "/":
                 sess, raw = self.session()
                 if not sess:
-                    return self.start_login()
+                    return self.start_login(fresh=query.get("login") == "fresh")
                 return self.chooser(sess["user"], app.signer.csrf(raw))
             if path == "/callback":
                 return self.callback(query)
@@ -305,10 +307,11 @@ def make_handler(app: Webgate):
                 return self.rdp_download(sess["user"], m.group(1))
             return self.error_page(404, "Not found.")
 
-        def start_login(self, approve: bool = False, back: str = "/"):
+        def start_login(self, approve: bool = False, back: str = "/", fresh: bool = False):
             """approve: sign-in for the approval page, always a fresh authentication at the
             IdP (an IdP session, e.g. of the desktop chooser, is not enough). back: the
-            page to return to after a chooser sign-in (BACK_PATHS)."""
+            page to return to after a chooser sign-in (BACK_PATHS). fresh: the IdP asks
+            again although it has a session (after a sign-in without MFA, mfa_refused)."""
             state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
             verifier, challenge = pkce_pair()
             data = {"s": state, "n": nonce, "v": verifier}
@@ -317,7 +320,8 @@ def make_handler(app: Webgate):
             elif back != "/":
                 data["r"] = back
             pending = app.signer.dumps("pending", data, 600)
-            self.redirect(app.provider.authorize_url(app.redirect_uri, state, nonce, challenge, fresh=approve),
+            self.redirect(app.provider.authorize_url(app.redirect_uri, state, nonce, challenge,
+                                                    fresh=approve or fresh),
                           [("Set-Cookie", app.cookie(PENDING_COOKIE, pending, 600))])
 
         def callback(self, query: dict):
@@ -331,6 +335,8 @@ def make_handler(app: Webgate):
                 claims = app.provider.id_token_claims(tokens, pending["n"])
                 app.provider.check_mfa(claims)
                 auth_time = app.provider.check_fresh(claims, pending["t"]) if pending.get("a") else None
+            except MfaError as exc:
+                return self.mfa_refused(exc, pending)
             except OidcError as exc:
                 log.warning("OIDC login refused: %s", exc)
                 return self.error_page(403, "Login was not accepted.")
@@ -352,6 +358,40 @@ def make_handler(app: Webgate):
                 ("Set-Cookie", app.cookie(SESSION_COOKIE, sess, app.cfg.webgate.session_lifetime)),
                 ("Set-Cookie", app.cookie(PENDING_COOKIE, "", 0)),
             ])
+
+        def mfa_refused(self, exc: MfaError, pending: dict):
+            """A valid sign-in without proof of MFA: the user is told to sign in with the
+            second factor (or to register one), the log says what Keycloak lacks. The page
+            names only the IdP's host and its account console (Keycloak: <issuer>/account)."""
+            o = app.cfg.oidc
+            raw = exc.claims.get(o.username_claim)
+            user = app.username_from_claims(exc.claims) or repr(raw)
+            acr, amr = exc.claims.get("acr"), exc.claims.get("amr")
+            if exc.claim == "acr":
+                log.warning("OIDC login of %s refused: acr %r does not prove MFA (required: %s; amr: %r). "
+                            "Keycloak issues acr %r only with a level-2 (MFA) step for this client: "
+                            "fastrdp_web_passkeys: true, or a step-up browser flow "
+                            "(docs/web-access.md#keycloak-setup)",
+                            user, acr, ", ".join(o.required_acr), amr, o.required_acr[0])
+            else:
+                log.warning("OIDC login of %s refused: amr %r does not prove MFA (required: one of %s; "
+                            "acr: %r). The IdP must list the second factor in amr "
+                            "(fastrdp_web_required_amr_any, docs/web-access.md#keycloak-setup)",
+                            user, amr, ", ".join(o.required_amr_any), acr)
+            issuer = o.issuer.rstrip("/")
+            host = urllib.parse.urlsplit(issuer).hostname or issuer
+            account = html.escape(issuer + "/account")
+            if pending.get("a"):
+                again = "/approve"                    # always a fresh sign-in
+            else:
+                again = (pending.get("r") if pending.get("r") in BACK_PATHS else "/") + "?login=fresh"
+            body = (f"<p>Your sign-in at <b>{html.escape(host)}</b> did not use a second factor (MFA). "
+                    "Sign in again with your passkey, security key or authenticator app.</p>"
+                    "<p>If you are not asked for one, a second factor may not be set up for your "
+                    f'account yet: add one in your account settings (<a href="{account}">{account}</a>) '
+                    "or contact your administrator.</p>"
+                    f'<p><a href="{app.prefix}{html.escape(again)}">Sign in again</a></p>')
+            self.send(403, page("Second factor required", body))
 
         def chooser(self, user: str, csrf: str):
             # Only desktops the broker allows this user; the browser path also only those
@@ -562,7 +602,7 @@ def make_handler(app: Webgate):
                 return self.send(200, found[0], content_type=found[1], cache="no-cache", csp=NOTIFY_CSP)
             sess, raw = self.session()
             if not sess:
-                return self.start_login(back="/notify")
+                return self.start_login(back="/notify", fresh=query.get("login") == "fresh")
             account = self.notify_account(sess["user"])
             if account is not None:
                 self.notify_page(sess["user"], account, app.signer.csrf(raw), NOTES.get(query.get("m", ""), ""))

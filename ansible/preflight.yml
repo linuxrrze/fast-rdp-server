@@ -57,6 +57,14 @@
     preflight_web_issuer: "{{ fastrdp_web_oidc_issuer | default(preflight_role_defaults.fastrdp_web_oidc_issuer) | regex_replace('/+$', '') }}"
     preflight_web_ca_src: "{{ fastrdp_web_oidc_ca_src | default(preflight_role_defaults.fastrdp_web_oidc_ca_src) }}"
     preflight_web_secret: "{{ fastrdp_web_oidc_client_secret | default(vault_fastrdp_web_oidc_client_secret | default('')) }}"
+    preflight_web_required_acr: "{{ fastrdp_web_required_acr | default(preflight_role_defaults.fastrdp_web_required_acr) }}"
+    # Ansible configures Keycloak's MFA flow for acr=mfa (web_gateway, tasks/keycloak_passkeys.yml)
+    preflight_web_passkeys: "{{ fastrdp_web_passkeys | default(preflight_role_defaults.fastrdp_web_passkeys) | bool }}"
+    preflight_keycloak_admin_secret: >-
+      {{ fastrdp_keycloak_admin_client_secret | default(vault_fastrdp_keycloak_admin_client_secret | default('')) }}
+    preflight_keycloak_admin_user: "{{ fastrdp_keycloak_admin_user | default('') }}"
+    preflight_keycloak_admin_password: >-
+      {{ fastrdp_keycloak_admin_password | default(vault_fastrdp_keycloak_admin_password | default('')) }}
     preflight_kdcproxy: "{{ fastrdp_web_kdcproxy | default(preflight_role_defaults.fastrdp_web_kdcproxy) | bool }}"
     preflight_kdcproxy_kdcs: "{{ fastrdp_web_kdcproxy_kdcs | default(preflight_role_defaults.fastrdp_web_kdcproxy_kdcs) }}"
     preflight_kdcproxy_kpasswd: "{{ fastrdp_web_kdcproxy_kpasswd | default(preflight_role_defaults.fastrdp_web_kdcproxy_kpasswd) | bool }}"
@@ -736,6 +744,50 @@
              'status': 'FAIL' if problems else 'PASS',
              'detail': problems | join('; ') if problems else preflight_web_issuer ~ ' discovery ok',
              'fix': 'fastrdp_web_oidc_issuer must be the realm URL exactly as Keycloak reports it; see docs/web-access.md'}] }}
+      when: preflight_web_enabled
+
+    # The webgate accepts only ID tokens with acr in fastrdp_web_required_acr (mfa). Keycloak
+    # issues acr=mfa only with a level-2 step for it; the client's ACR map alone gives acr 1.
+    # Without admin credentials only the discovery document can be read: its
+    # acr_values_supported lists the realm-level ACR map and the LoA levels of the realm's
+    # browser flow (["0", "1"] without step-up conditions; Keycloak 26, OIDCWellKnownProvider).
+    # The client's ACR map and a client policy forcing a flow (recipe A) do not appear there.
+    - name: Result - Keycloak MFA for acr=mfa
+      vars:
+        advertised: "{{ (preflight_oidc.json | default({})).acr_values_supported | default([]) | map('string') | list }}"
+        step_up: >-
+          {{ advertised | select('in', preflight_web_required_acr | map('string') | list) | list
+             + advertised | select('match', '^[0-9]+$') | map('int') | select('ge', 2) | map('string') | list }}
+        refused: "every web sign-in{{ ' and every RDP login approval' if preflight_mfa_mode in ['web', 'push_or_web'] else '' }}"
+        admin_login: >-
+          {{ preflight_keycloak_admin_secret | length > 0
+             or (preflight_keycloak_admin_user | length > 0 and preflight_keycloak_admin_password | length > 0) }}
+        status: >-
+          {{ 'INFO' if preflight_web_required_acr | length == 0
+             else ('FAIL' if not admin_login else 'PASS') if preflight_web_passkeys
+             else 'PASS' if step_up | length > 0 else 'WARN' }}
+        detail: >-
+          {{ 'fastrdp_web_required_acr is empty: the webgate checks amr (fastrdp_web_required_amr_any) instead'
+             if preflight_web_required_acr | length == 0
+             else ('fastrdp_web_passkeys needs Keycloak admin credentials (vault loaded?)' if not admin_login
+                   else 'fastrdp_web_passkeys: the deployment configures the MFA flow for acr='
+                        ~ preflight_web_required_acr | join(',') ~ ' (users need a passkey or second factor registered)')
+             if preflight_web_passkeys
+             else 'Keycloak advertises step-up (acr_values_supported: ' ~ advertised | join(', ')
+                  ~ "); the client's ACR map (mfa -> 2) is not visible here" if step_up | length > 0
+             else 'cannot read acr_values_supported (discovery failed): make sure Keycloak enforces MFA for acr='
+                  ~ preflight_web_required_acr | join(',') ~ ', otherwise ' ~ refused ~ ' is refused'
+             if preflight_oidc.status | default(-1) != 200
+             else 'fastrdp_web_passkeys is false and Keycloak advertises acr_values_supported ['
+                  ~ advertised | join(', ') ~ "] only (no level-2 step in the realm's browser flow; a client policy "
+                  ~ 'is not visible here): make sure Keycloak enforces MFA for acr=' ~ preflight_web_required_acr | join(',')
+                  ~ ', otherwise ' ~ refused ~ " is refused (log: acr '1' does not prove MFA)" }}
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'Keycloak MFA for acr=mfa', 'status': status, 'detail': detail,
+             'fix': 'fastrdp_web_passkeys: true with Keycloak admin credentials (vault_fastrdp_keycloak_admin_client_secret, '
+                    ~ 'or fastrdp_keycloak_admin_user + vault_fastrdp_keycloak_admin_password), or a level-2 (MFA) step '
+                    ~ 'for acr=mfa in Keycloak (docs/web-access.md#keycloak-setup)'}] }}
       when: preflight_web_enabled
 
     # ------------------------------------------------------------------ KDC proxy

@@ -90,7 +90,9 @@ Residual risks:
      and password (LDAP/AD federation), level 2 = OTP, WebAuthn (FIDO2, YubiKey),
      or the privacyIDEA authenticator.
    - The webgate sends `acr_values=mfa` and requires `acr == "mfa"` in the ID token
-     (`fastrdp_web_required_acr`).
+     (`fastrdp_web_required_acr`). The ACR map alone does not make Keycloak ask for a
+     second factor: without a level-2 step it issues `acr` 1 and every sign-in is refused
+     ([symptom](#symptom-acr-1-does-not-prove-mfa)).
    - Alternatively use `fastrdp_web_required_amr_any` (e.g. `[otp, hwk]`) if your
      IdP sets `amr`. Single-factor values (`pwd`, `pin`, `user`, …) are refused.
    - **Passkeys** (passwordless): a level-2 sub-flow cannot be satisfied by a passkey
@@ -193,6 +195,35 @@ the sample client the ACR map entry is already there and the script leaves it al
 `make test-keycloak` imports the sample into Keycloak 26.8.1 and compares what Keycloak
 stores with the file, then runs the browser logins of the end-to-end test against a
 client made from it.
+
+### Symptom: acr '1' does not prove MFA
+
+Users get the page **Second factor required** ("Your sign-in at <Keycloak host> did not
+use a second factor (MFA) …", with a link to the account console `<issuer>/account` and
+*Sign in again*) on `/web/`, `/web/approve` or `/web/notify`, and the journal of
+`fastrdp-webgate` says:
+
+```
+WARNING fastrdp.webgate: OIDC login of alice refused: acr '1' does not prove MFA (required: mfa; amr: None). Keycloak issues acr 'mfa' only with a level-2 (MFA) step for this client: fastrdp_web_passkeys: true, or a step-up browser flow (docs/web-access.md#keycloak-setup)
+```
+
+Keycloak issued `acr` 1 (password only). Either the realm has no level-2 step for
+`acr=mfa` (the client's ACR map, also the one of the sample client, only names the
+level; it does not create a flow that reaches it), or this user signed in without a
+second factor. Fix one of:
+- `fastrdp_web_passkeys: true` with admin credentials
+  ([above](#passkeys-through-ansible-opt-in); `scripts/fastrdp-setup` asks for them), then
+  `ansible-playbook site.yml --tags keycloak`;
+- a step-up browser flow by hand (step 2), or a client policy forcing an MFA flow for
+  `acr=mfa` ([passkeys.md](passkeys.md#recipe-a-acrmfa-via-a-forced-flow-recommended)).
+
+Then every user needs a second factor (passkey, security key, authenticator app) in
+Keycloak; users without one add it in the account console. `make preflight` warns
+(*Keycloak MFA for acr=mfa*) when `fastrdp_web_passkeys` is off and the discovery
+document shows no step-up; the client's ACR map and client policies are not visible
+there, so it cannot confirm a hand-made setup. Other refusals (state, token, a reused
+Keycloak session on `/web/approve`) keep the page *Login was not accepted*; the journal
+line `OIDC login refused: …` names the reason.
 
 ## RDP apps
 
