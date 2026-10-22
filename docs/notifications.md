@@ -69,9 +69,12 @@ page lists the user's devices with
   nothing any more).
 
 Tell users the rule from [web-access.md](web-access.md#approving-rdp-logins): approve
-only a login you started yourself, just now (with the waiting screen on, the RDP window
-shows the same code as the notification and the page). A notification you did not expect means somebody has your password: tap nothing, or open
-the page and **Deny**, and change the password.
+only a login you started yourself, just now (the waiting screen in the RDP window shows
+the same code as the notification and the page). A notification you did not expect means somebody has your password: tap nothing, or open
+the page and **Deny**, and change the password. The notification links to the plain
+approval page, never to one login: it is sent for whichever login waits, possibly an
+attacker's. Only the QR code in the user's own RDP window names a login
+([login-bound link](auth-matrix.md#login-bound-link-qr-code)).
 
 ## Enabling it (Ansible)
 

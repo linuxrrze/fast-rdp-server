@@ -58,9 +58,10 @@ troubleshooting): [backends/](backends/README.md).
    approves it on the webgate's `/web/approve` page after a fresh MFA sign-in at the IdP
    ([auth-matrix.md](auth-matrix.md#web-approval)).
    While the module waits for the broker, the RDP connection is already active; with
-   `[FastRDP] WaitingScreen` the module draws a panel into the client's window (Bitmap
-   Updates): what the login waits for, a countdown, for web approval the approval URL
-   and a QR code of it. The broker sends these as progress lines before its reply
+   `[FastRDP] WaitingScreen` (default on) the module draws a panel into the client's
+   window (Bitmap Updates): what the login waits for, a countdown, for web approval the
+   approval URL and a QR code of the page for this login (`?login=<id>`). The broker
+   sends these as progress lines before its reply
    ([auth-matrix.md](auth-matrix.md#waiting-screen)).
 4. **Desktop choice**, first match wins:
    1. a client hint `fastrdp:<desktop>` in the RDP *alternate shell* field;
@@ -141,7 +142,9 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
     `mfa_pending`/`mfa_decide`/`mfa_events` only from the webgate's uid (`[web] gateway_user`),
     and `status`/`logout` only from root.
     The webgate names the user it signed in; `mfa_decide` acts only on that account's pending
-    logins and needs the sign-in's `auth_time`. `mfa_events` is the notifier's long poll
+    logins and needs the sign-in's `auth_time`; `"bound": true` (the user came with that
+    login's id from the waiting screen's QR code) lifts `single_pending` for that login only.
+    `mfa_events` is the notifier's long poll
     (up to 25 s) for "pending"/"finished" events of web approvals: queued by the broker
     without waiting (at most 256, then dropped and counted), only while a notifier polls,
     one consumer expected. Logins never wait for it.
@@ -174,7 +177,7 @@ error pages. `mfa_decide` has its own refusal reasons (`approval_unknown`, `appr
 
 A login request with `"progress": 1` (module with `WaitingScreen`) may get progress lines
 before the reply, each an object with a `"progress"` field (`"mfa"` with method, timeout,
-texts, approval URL and QR code rows; `"choose_desktop"` with the picker's rows, only for
+texts, approval URL and the QR code rows of `<approval URL>?login=<id>`; `"choose_desktop"` with the picker's rows, only for
 requests that also carry `"picker": 1`; `"session_start"`); the reply is the first line
 without one. The only line the module sends while a login is pending is the answer to
 `"choose_desktop"`. Requests without these fields, and older brokers, behave as before.

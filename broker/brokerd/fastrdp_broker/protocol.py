@@ -43,8 +43,10 @@ Proxy module -> broker.sock:
       groups, nla_kdc_enforced, kdc_evidence_as_mfa, reconnect grace or an appended OTP.
       "timeout_s": seconds the wait may take (countdown, labelled "countdown");
       "approve_url" and "qr" ([ui] approve_url, qr_code) only for web and push_or_web:
-      "qr" is the QR code of approve_url as rows of "0"/"1" (qrcode.py, dark = "1",
-      without the quiet zone).
+      "approve_url" is the page as configured (the text shows it for typing), "qr" the QR
+      code of the login-bound URL <approve_url>?login=<id> (ui.login_url(), "id" as in
+      mfa_pending below) as rows of "0"/"1" (qrcode.py, dark = "1", without the quiet
+      zone), at most version 10 (57 rows).
     {"progress": "choose_desktop", "options": [{"name": str, "label": str, "running": bool}],
      "default": str, "timeout_s": int, "lines": [str], "countdown": str, "hint": str}
       the desktop picker ([broker] desktop_picker, Broker.pick_desktop): after the second
@@ -98,15 +100,20 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   -> {"ok": true, "user": str, "pending": [{"id": str, "method": "nla"|"tls",
       "client_address": str|null, "age_s": int, "single_pending_conflict": bool,
       "code": str}]}
-  {"op": "mfa_decide", "user": str, "id": str, "approve": bool, "auth_time": int}
+  {"op": "mfa_decide", "user": str, "id": str, "approve": bool, "auth_time": int,
+   "bound": bool (optional, absent: false)}
   -> {"ok": true, "approved": bool}
   -> {"ok": false, "error": "not decided", "reason": "approval_unknown"|"approval_finished"|
       "approval_conflict"|"approval_stale", "outcome": str (approval_finished only)}
   "auth_time": the ID token's auth_time (Unix time) of the sign-in that decides. Approve
   is refused for a sign-in more than [mfa] web_approval_max_auth_age seconds older than
   the login ("approval_stale") and, with web_approval_single_pending, while the user has
-  more than one pending login ("approval_conflict"; every entry says so). Deny is always
-  accepted. "approval_unknown": no such pending login of this user (another user's id
+  more than one pending login ("approval_conflict"; every entry says so) unless "bound":
+  the user opened the approval page with this login's id (<approve_url>?login=<id>, the
+  QR code of its own waiting screen), so it is this login that the user approves; the
+  others stay pending. "bound" relaxes nothing else (auth_time, user, finished). The id
+  (random, 128 bits) is no credential: the webgate still signs the user in with MFA.
+  Deny is always accepted. "approval_unknown": no such pending login of this user (another user's id
   looks the same); "approval_finished": it was already approved, denied, expired or
   abandoned ("outcome": approved|denied|expired|abandoned, kept for 5 minutes). A missing
   or malformed field is a protocol error.

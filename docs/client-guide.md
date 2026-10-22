@@ -117,9 +117,11 @@ connection type:i:7
   ([performance.md](performance.md#bitrate-profile-of-x11-xrdp-sessions)). GNOME and
   Plasma desktops adapt by themselves and ignore it.
 - Approve the push on the phone while mstsc shows "Configuring remote session…".
-  If the administrator turned on the waiting screen, the RDP window says what the
-  server waits for and how much time is left; with web approval it shows the approval
-  page's address and a QR code: scan it with the phone, sign in there and approve
+  The RDP window says what the server waits for and how much time is left (the waiting
+  screen, unless the administrator turned it off); with web approval it shows the
+  approval page's address, the login's code and a QR code: scan it with the phone, sign
+  in there and approve the login shown, the one in your RDP window (same code). Never
+  approve a login you did not start, also not from a link somebody sent you
   ([auth-matrix.md](auth-matrix.md#waiting-screen)).
   After a network drop mstsc logs in again from scratch (your session is kept). That
   asks for a new push, unless the administrator set a reconnect grace period and you

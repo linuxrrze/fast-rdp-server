@@ -3,7 +3,9 @@
 """<prefix>/approve ([mfa] mode web / push_or_web): a fresh MFA sign-in at the IdP
 (prompt=login, max_age=0, acr enforced, auth_time checked), then the signed-in user's
 pending RDP logins from the broker (mfa_pending) with CSRF-protected Approve/Deny
-forms (mfa_decide, with the sign-in's auth_time); broker refusals as clear pages."""
+forms (mfa_decide, with the sign-in's auth_time); broker refusals as clear pages.
+?login=<id> (the waiting screen's QR code) survives the sign-in and shows that login
+first, approvable although others wait (mfa_decide "bound")."""
 
 import http.cookiejar
 import json
@@ -30,6 +32,9 @@ from test_webgate import KEY_HEX, FakeIdP, NoRedirect  # noqa: E402
 
 PENDING = [{"id": "req-1_A", "method": "nla", "client_address": "192.0.2.10", "age_s": 7,
             "single_pending_conflict": False}]
+# ids as the broker makes them (mfa.WebApprovals.new_id()): the waiting screen's QR code
+# opens <prefix>/approve?login=<id>
+MINE, OTHER = "QRcodeOnMyScreen_0123A", "SomebodyElsesLogin-987"
 
 
 class ApprovalBroker:
@@ -320,6 +325,141 @@ class ApproveTests(unittest.TestCase):
         q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
         self.assertEqual(q["prompt"], "login")
 
+    # --------------------------------------------------- login-bound link
+    def two_pending(self, **mine):
+        """The user's login (MINE, from the QR code) and another one with the same
+        password (OTHER); with web_approval_single_pending neither is approvable unbound."""
+        self.broker.replies["mfa_pending"]["pending"] = [
+            dict(PENDING[0], id=OTHER, client_address="198.51.100.7", method="tls", code="13",
+                 single_pending_conflict=True),
+            dict(PENDING[0], **{"id": MINE, "code": "42", "single_pending_conflict": True, **mine})]
+
+    def bound_csrf(self, login=MINE):
+        body = self.fetch(f"/web/approve?login={login}")[2]
+        return body.split('name="csrf" value="')[1].split('"')[0]
+
+    def test_login_id_survives_the_sign_in(self):
+        self.two_pending()
+        status, h, _ = self.fetch(f"/web/approve?login={MINE}")
+        self.assertEqual(status, 303)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
+        self.assertEqual((q["prompt"], q["max_age"]), ("login", "0"))   # still a fresh MFA sign-in
+        self.assertNotIn(MINE, h["Location"])                            # the IdP never sees it
+        pending = self.app.signer.loads("pending", self.cookie("fastrdp_web_login")[0].value)
+        self.assertEqual((pending["a"], pending["l"]), (1, MINE))       # signed, like the return target
+        _, h, _ = self.fetch(h["Location"])                 # IdP "authorize"
+        status, h, _ = self.fetch(h["Location"])            # back to /web/callback
+        self.assertEqual((status, h["Location"]), (303, f"/web/approve?login={MINE}"))
+        self.assertNotIn("l", self.app.signer.loads("approve", self.cookie("fastrdp_web_approve")[0].value))
+        status, _, body = self.fetch(h["Location"])
+        self.assertEqual(status, 200)
+        self.assertIn("<h2>This RDP login</h2>", body)
+        self.assertEqual(self.broker.seen, [{"op": "mfa_pending", "user": "alice"}])
+
+    def test_login_id_kept_when_sign_in_lacks_mfa(self):
+        FakeIdP.acr = "1"
+        with self.assertLogs("fastrdp.webgate", "WARNING"):
+            status, _, body = self.sign_in(f"/web/approve?login={MINE}")
+        self.assertEqual(status, 403)
+        self.assertIn(f'<a href="/web/approve?login={MINE}">Sign in again</a>', body)
+
+    def test_bound_login_approvable_while_another_waits(self):
+        self.two_pending()
+        self.sign_in(f"/web/approve?login={MINE}")
+        body = self.fetch(f"/web/approve?login={MINE}")[2]
+        mine, others = body.split("<h2>This RDP login</h2>")[1].split("Another login with your password")
+        # the login from the QR code first, with Approve and Deny
+        self.assertIn("From <b>192.0.2.10</b>", mine)
+        self.assertIn("RDP client, Kerberos (NLA), code <b>42</b>", mine)
+        self.assertIn(f'name="id" value="{MINE}"', mine)
+        self.assertEqual((mine.count('value="approve"'), mine.count('value="deny"')), (1, 1))
+        self.assertEqual(mine.count(f'name="login" value="{MINE}"'), 2)
+        self.assertIn("somebody sent you this link", mine)
+        # the other one below, with the warning and Deny only
+        self.assertIn("<b>Another login with your password is waiting. Deny it if it is not yours.</b>", body)
+        self.assertIn("From <b>198.51.100.7</b>", others)
+        self.assertIn("RDP client, password, code <b>13</b>", others)
+        self.assertEqual((others.count('value="approve"'), others.count('value="deny"')), (0, 1))
+        self.assertNotIn('name="login"', others)
+        self.assertIn(f'<a href="/web/approve?login={MINE}">Reload</a>', others)
+        self.assertNotIn("More than one RDP login", body)     # the unbound page's refusal
+
+        csrf = self.bound_csrf()
+        status, _, body = self.post(csrf=csrf, id=MINE, login=MINE, decision="approve")
+        self.assertEqual(status, 200)
+        self.assertIn("Login approved", body)
+        self.assertEqual(self.broker.seen[-1], {"op": "mfa_decide", "user": "alice", "id": MINE, "approve": True,
+                                                "auth_time": self.broker.seen[-1]["auth_time"], "bound": True})
+        # bound only for the login the user came with
+        for form in ({"id": OTHER, "login": MINE}, {"id": OTHER}, {"id": MINE}, {"id": "req-1_A", "login": "req-1_A"}):
+            with self.subTest(form):
+                self.post(csrf=csrf, decision="approve", **form)
+                self.assertNotIn("bound", self.broker.seen[-1])
+        self.post(csrf=csrf, id=OTHER, login=OTHER, decision="deny")    # what a crafted form could say
+        self.assertTrue(self.broker.seen[-1]["bound"])                 # Deny is always allowed anyway
+
+    def test_bound_alone(self):
+        self.broker.replies["mfa_pending"]["pending"] = [dict(PENDING[0], id=MINE)]
+        self.sign_in(f"/web/approve?login={MINE}")
+        body = self.fetch(f"/web/approve?login={MINE}")[2]
+        self.assertIn("<h2>This RDP login</h2>", body)
+        self.assertNotIn("Another login", body)
+        self.assertEqual(body.count('value="approve"'), 1)
+
+    def test_unknown_or_foreign_login_id(self):
+        """An id that is not among the signed-in user's pending logins (another user's,
+        finished, made up) reads the same: no longer waiting; the user's own pending
+        logins follow as on the plain page."""
+        self.two_pending()
+        self.sign_in(f"/web/approve?login={MINE}")
+        for rid in ("BobsLoginIdFromHisQR_x", "AAAAAAAAAAAAAAAAAAAAAA"):
+            with self.subTest(rid):
+                status, _, body = self.fetch(f"/web/approve?login={rid}")
+                self.assertEqual(status, 200)
+                self.assertIn("<b>This login is no longer waiting for approval.</b>", body)
+                self.assertNotIn("This RDP login", body)
+                self.assertNotIn(rid, body)
+                self.assertNotIn('value="approve"', body)        # the plain page's single_pending rule
+                self.assertIn("More than one RDP login is waiting", body)
+        self.broker.replies["mfa_pending"]["pending"] = []
+        body = self.fetch(f"/web/approve?login={MINE}")[2]
+        self.assertIn("This login is no longer waiting for approval.", body)
+        self.assertIn("No RDP login is waiting for your approval", body)
+        self.assertNotIn("<form", body)
+
+    def test_malformed_login_id(self):
+        for bad in ("../x", "short", "a" * 65, "QRcodeOnMyScreen_0123A%3Cb%3E", "%00" * 20):
+            with self.subTest(bad):
+                status, h, body = self.fetch(f"/web/approve?login={bad}")
+                self.assertEqual(status, 404)                       # no sign-in for it
+                self.assertIn("This login is no longer waiting for approval.", body)
+                self.assertNotIn("<b>", body.split("<h1>")[1])
+                self.assertNotIn("Location", h)
+        self.assertEqual(self.broker.seen, [])
+        self.assertFalse(self.cookie("fastrdp_web_login"))
+
+    def test_bound_values_escaped(self):
+        self.two_pending(client_address="<script>x</script>", method="<b>", code="<i>")
+        self.sign_in(f"/web/approve?login={MINE}")
+        body = self.fetch(f"/web/approve?login={MINE}")[2]
+        self.assertIn("&lt;script&gt;x&lt;/script&gt;", body)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn("<i>", body)
+        self.assertIn("From <b>&lt;script&gt;x&lt;/script&gt;</b>", body.split("This RDP login")[1])
+
+    def test_bound_stale_sign_in_keeps_the_id(self):
+        self.two_pending()
+        self.sign_in(f"/web/approve?login={MINE}")
+        self.broker.replies["mfa_decide"] = {"ok": False, "error": "not decided", "reason": "approval_stale"}
+        status, _, body = self.post(csrf=self.bound_csrf(), id=MINE, login=MINE, decision="approve")
+        self.assertEqual(status, 403)
+        self.assertIn(f'<a href="/web/approve?login={MINE}">Back to the approval page</a>', body)
+        self.broker.replies["mfa_decide"] = {"ok": False, "error": "not decided", "reason": "approval_unknown"}
+        self.sign_in(f"/web/approve?login={MINE}")
+        status, _, body = self.post(csrf=self.bound_csrf(), id=MINE, login=MINE, decision="approve")
+        self.assertEqual(status, 404)
+        self.assertIn("This login is no longer waiting for approval.", body)
+
     def test_broker_unavailable(self):
         self.sign_in()
         self.broker.replies["mfa_pending"] = {"ok": False, "error": "access denied", "reason": "denied"}
@@ -338,9 +478,12 @@ class BrokerClientTests(unittest.TestCase):
             self.assertEqual(broker_mfa_pending(f"{tmp}/b.sock", "alice"), PENDING)
             self.assertEqual(broker_mfa_decide(f"{tmp}/b.sock", "alice", "req-1_A", False, 1234),
                              {"ok": True, "approved": True})
+            broker_mfa_decide(f"{tmp}/b.sock", "alice", MINE, True, 1234, bound=True)
             self.assertEqual(b.seen, [{"op": "mfa_pending", "user": "alice"},
                                       {"op": "mfa_decide", "user": "alice", "id": "req-1_A",
-                                       "approve": False, "auth_time": 1234}])
+                                       "approve": False, "auth_time": 1234},
+                                      {"op": "mfa_decide", "user": "alice", "id": MINE,
+                                       "approve": True, "auth_time": 1234, "bound": True}])
             b.replies["mfa_decide"] = {"ok": False, "error": "not decided", "reason": "approval_finished",
                                        "outcome": "denied"}
             with self.assertRaises(BrokerError) as cm:

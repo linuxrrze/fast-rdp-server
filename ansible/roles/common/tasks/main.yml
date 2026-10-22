@@ -296,8 +296,9 @@
       - fastrdp_ui_texts is mapping
       - fastrdp_ui_texts.keys() | map('string') | reject('match', '^[a-z]{2,3}\Z') | list | length == 0
       - fastrdp_ui_language in ['en', 'de'] + (fastrdp_ui_texts.keys() | list)
-      # \Z, not $: same as the broker (config.py APPROVE_URL)
-      - fastrdp_ui_approve_url | length == 0 or fastrdp_ui_approve_url is match('^https://[!-~]{1,192}\Z')
+      # \Z, not $: same as the broker (config.py APPROVE_URL, MAX_APPROVE_URL: the QR code
+      # adds ?login=<id>)
+      - fastrdp_ui_approve_url | length == 0 or fastrdp_ui_approve_url is match('^https://[!-~]{1,176}\Z')
       - fastrdp_desktop_picker in ['never', 'if_multiple', 'always']
       # the picker draws on the waiting screen; without it the proxy never offers one
       - fastrdp_desktop_picker == 'never' or fastrdp_proxy_waiting_screen | bool
@@ -335,7 +336,7 @@
       fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_ui_language_from_keyboard
       and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language
       (two or three lower-case letters) of fastrdp_ui_texts; fastrdp_ui_approve_url is ""
-      or an https:// URL of at most 200 characters (docs/auth-matrix.md#waiting-screen);
+      or an https:// URL of at most 184 characters (docs/auth-matrix.md#waiting-screen);
       fastrdp_desktop_picker is never, if_multiple or always (not never only with
       fastrdp_proxy_waiting_screen), fastrdp_desktop_picker_timeout whole seconds 3..60 and
       fastrdp_desktop_picker_when_running preselect or skip

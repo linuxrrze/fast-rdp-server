@@ -71,17 +71,21 @@ AllowTlsFrom=${4:-}
 ${6:-}
 EOT
 }
-mkproxy a 23389 a.sock '127.0.0.0/8, ::1'
-mkproxy b 23390 b.sock
+# A to D without the waiting screen (the module's default is WaitingScreen=true)
+mkproxy a 23389 a.sock '127.0.0.0/8, ::1' deny WaitingScreen=false
+mkproxy b 23390 b.sock '' deny WaitingScreen=false
 # TLS logins only from addresses the e2e client does not have (web-only TLS, R3)
-mkproxy c 23392 a.sock '192.0.2.0/24, 2001:db8::/32'
+mkproxy c 23392 a.sock '192.0.2.0/24, 2001:db8::/32' deny WaitingScreen=false
 # the module pins the back-end certificate itself and needs CertificatePolicy=deny
-mkproxy d 23393 a.sock '127.0.0.0/8' allow
-# like A, with the waiting screen (and Status Info PDUs for clients that ask)
-mkproxy e 23394 a.sock '127.0.0.0/8' deny $'WaitingScreen=true\nStatusInfo=true'
+mkproxy d 23393 a.sock '127.0.0.0/8' allow WaitingScreen=false
+# like A, with the waiting screen by default (no WaitingScreen key) and Status Info PDUs
+# for clients that ask
+mkproxy e 23394 a.sock '127.0.0.0/8' deny StatusInfo=true
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
+# the pending login's id the fake broker puts into the QR code (<approval URL>?login=<id>)
+export E2E_LOGIN_ID=k3Jq9vX2-PzR7wLm0aTb_Q
 python3 "$HERE/fake_broker.py" a.sock a.log 23390 > a.out 2>&1 &
 python3 "$HERE/fake_broker.py" b.sock b.log 23391 > b.out 2>&1 &
 # connection state transitions (core.rdp DEBUG) show whether multitransport was offered
@@ -134,7 +138,7 @@ E2E_KEEP_S=10 E2E_STATUS_INFO=1 E2E_DUMP="$W/panel32.ppm" timeout 30 ./client 12
 E2E_KEEP_S=10 E2E_BPP=16 E2E_DUMP="$W/panel16.ppm" timeout 30 ./client 127.0.0.1 23394 progress good "" > ws16.out 2>&1 || true
 E2E_KEEP_S=10 E2E_BPP=24 timeout 30 ./client 127.0.0.1 23394 progress good "" > ws24.out 2>&1 || true
 E2E_KEEP_S=10 E2E_BPP=15 timeout 30 ./client 127.0.0.1 23394 progress good "" > ws15.out 2>&1 || true
-# the same login through proxy A (no WaitingScreen): no progress asked, no graphics
+# the same login through proxy A (WaitingScreen=false): no progress asked, no graphics
 E2E_KEEP_S=10 E2E_STATUS_INFO=1 timeout 30 ./client 127.0.0.1 23389 progress good "" > ws-off.out 2>&1 || true
 # a broker without progress messages, malformed and too many progress messages
 E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 oldbroker good "" > ws-old.out 2>&1 || true
@@ -160,7 +164,7 @@ picker pickerclick E2E_CLICK=+1 & pids+=($!)
 picker pickerearly E2E_EARLY_KEYS=3,enter,d4 E2E_KEYS=r4,u2 & pids+=($!)
 picker pickerkeypad E2E_NUMLOCK=1 E2E_KEYS=kp3 & pids+=($!)
 picker pickergone E2E_GIVE_UP_S=3 & pids+=($!)
-# proxy A has no waiting screen: no picker offered, the login goes on as before
+# proxy A has the waiting screen switched off: no picker offered, the login goes on as before
 E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 pickeroff good "" > pickeroff.out 2>&1 & pids+=($!)
 wait "${pids[@]}"
 sleep 1
@@ -204,9 +208,9 @@ expect "Remote Credential Guard required: login never reached the broker" 'not a
 expect "client gone during the MFA wait: broker connection closed early" \
     'len(pw) == 2 and pw[0]["closed"] and pw[0]["waited"] < 4 and not pw[0]["asked"]'
 expect "... also while the waiting screen shows the push"  'pw[1]["asked"] and pw[1]["closed"] and pw[1]["waited"] < 4'
-expect "WaitingScreen: login asks for progress and sends the keyboard layout" \
+expect "WaitingScreen (default): login asks for progress and sends the keyboard layout" \
     'all(r.get("progress") == 1 and isinstance(r.get("keyboard_layout"), int) for r in la if r["user"] in ("oldbroker", "badprogress", "floodprogress"))'
-expect "no WaitingScreen: no progress asked"            '[r["asked"] for r in pr("progress")] == [True] * 4 + [False] and ["progress" in r for r in la if r["user"] == "progress"] == [True] * 4 + [False] and "progress" not in la[0]'
+expect "WaitingScreen=false: no progress asked"          '[r["asked"] for r in pr("progress")] == [True] * 4 + [False] and ["progress" in r for r in la if r["user"] == "progress"] == [True] * 4 + [False] and "progress" not in la[0]'
 expect "waiting screen logins reached the back-end (old broker, malformed progress too)" \
     '[r["user"] for r in lb].count("progress") == 5 and any(r["user"] == "oldbroker" for r in lb) and any(r["user"] == "badprogress" for r in lb)'
 expect "too many progress messages: login refused, back-end never reached" 'not any(r["user"] == "floodprogress" for r in lb)'
@@ -257,7 +261,7 @@ for bpp in 32 24 16 15; do
     bitmaps "waiting screen at $bpp bpp: panel within 1 s, countdown redrawn, cleared" ws$bpp.out \
         'n >= 6 and 0 < first_ms <= 1000'
 done
-bitmaps "no WaitingScreen: no Bitmap Updates before the back-end"           ws-off.out 'n == 0'
+bitmaps "WaitingScreen=false: no Bitmap Updates before the back-end"         ws-off.out 'n == 0'
 bitmaps "broker without progress messages: generic panel, then cleared"      ws-old.out 'n >= 2 and 0 < first_ms <= 1000'
 if grep -q "status_info=0x0401" ws32.out && grep -q "status_info=0x0403" ws32.out && ! grep -q status_info ws-off.out; then
     echo "ok   StatusInfo: finding destination, bringing session online (only with StatusInfo=true)"
@@ -265,18 +269,19 @@ else
     echo "FAIL StatusInfo PDUs ($(grep status_info ws32.out ws-off.out | tr '\n' ' '))"; fail=1
 fi
 # the QR code on the decoded screen (32 bpp: planar, 16 bpp: interleaved) reads as the
-# approval URL; needs python3 with zxing-cpp and Pillow (E2E_QR_PYTHON), else skipped
+# login-bound approval URL with the id the broker sent; needs python3 with zxing-cpp and
+# Pillow (E2E_QR_PYTHON), else skipped
 QRPY=${E2E_QR_PYTHON:-python3}
 if "$QRPY" -I -c 'import zxingcpp, PIL' 2>/dev/null; then
     for bpp in 32 16; do
-        if [ -s "panel$bpp.ppm" ] && "$QRPY" -I - "panel$bpp.ppm" <<'PY'
+        if [ -s "panel$bpp.ppm" ] && "$QRPY" -I - "panel$bpp.ppm" "$E2E_LOGIN_ID" <<'PY'
 import sys, zxingcpp
 from PIL import Image
 found = [r.text for r in zxingcpp.read_barcodes(Image.open(sys.argv[1]))]
 print(found)
-sys.exit(0 if found == ["https://rdp1.lab.example.com/web/approve"] else 1)
+sys.exit(0 if found == ["https://rdp1.lab.example.com/web/approve?login=" + sys.argv[2]] else 1)
 PY
-        then echo "ok   QR code on the $bpp bpp screen decodes to the approval URL"
+        then echo "ok   QR code on the $bpp bpp screen decodes to the approval URL with the login's id"
         else echo "FAIL QR code on the $bpp bpp screen"; fail=1; fi
     done
 else

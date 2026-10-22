@@ -44,7 +44,7 @@
  *   AcceptRemoteGuard = false ; offer Remote Credential Guard, identity only: the
  *                             ; forwarded Kerberos tickets are discarded
  *                             ; (fastrdp_remote_credentials())
- *   WaitingScreen = false     ; show the broker's progress (MFA push, web approval with
+ *   WaitingScreen = true      ; show the broker's progress (MFA push, web approval with
  *                             ; QR code, session start) while the login waits
  *                             ; (waitingScreen)
  *   StatusInfo    = false     ; also Server Status Info PDUs, to clients that ask for them
@@ -659,7 +659,7 @@ static void ws_status_info(waitingScreen* ws, UINT32 status)
 static waitingScreen* waiting_screen_new(proxyData* pdata)
 {
 	const rdpSettings* front = pdata->ps->settings;
-	BOOL draw = config_bool(pdata, "WaitingScreen", FALSE);
+	BOOL draw = config_bool(pdata, "WaitingScreen", TRUE);
 	const BOOL status_info = config_bool(pdata, "StatusInfo", FALSE) &&
 	                         freerdp_settings_get_bool(front, FreeRDP_SupportStatusInfoPdu);
 	const UINT32 bpp = freerdp_settings_get_uint32(front, FreeRDP_ColorDepth);

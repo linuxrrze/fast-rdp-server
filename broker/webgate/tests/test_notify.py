@@ -415,7 +415,9 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(pushed["tag"], notify.tag_of(PENDING["id"]))
         self.assertEqual(self.push.requests[-1][1]["Topic"], pushed["tag"])
         self.assertEqual(self.push.requests[-1][1]["TTL"], "90")
-        # no secrets, no login id, no other link in what leaves the host
+        # no secrets, no login id, no other link in what leaves the host: the fixed approval
+        # page, never the login-bound one (?login=, the waiting screen's QR code), as the
+        # login behind a notification may be somebody else's with the user's password
         for data in (body, json.dumps(pushed).encode(), json.dumps(dict(self.push.requests[-1][1])).encode()):
             for secret in (PENDING["id"].encode(), b"tk_secret", self.auth, self.web["auth"].encode()):
                 self.assertNotIn(secret, data)

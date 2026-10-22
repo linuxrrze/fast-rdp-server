@@ -105,10 +105,12 @@ class _ApprovalHarness(_BrokerHarness):
     def pending_op(self, user="alice"):
         return request(self.cfg.broker.socket, {"op": "mfa_pending", "user": user})
 
-    def decide(self, rid, approve=True, user="alice", auth_time=None):
-        return request(self.cfg.broker.socket, {
-            "op": "mfa_decide", "user": user, "id": rid, "approve": approve,
-            "auth_time": int(time.time()) if auth_time is None else auth_time})
+    def decide(self, rid, approve=True, user="alice", auth_time=None, bound=None):
+        msg = {"op": "mfa_decide", "user": user, "id": rid, "approve": approve,
+               "auth_time": int(time.time()) if auth_time is None else auth_time}
+        if bound is not None:
+            msg["bound"] = bound
+        return request(self.cfg.broker.socket, msg)
 
     async def wait_pending(self, n=1, user="alice"):
         """The ids of `user`'s pending logins once there are n of them (oldest first)."""
@@ -243,6 +245,44 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         await self.decide(ids[0])
         self.assertTrue((await first)["ok"])
 
+    async def test_bound_approves_despite_another_pending(self):
+        """The user came with the id from its own waiting screen's QR code (webgate
+        ?login=<id>): that login is approved, the other one (somebody else's with the
+        same password?) stays pending and can still be denied."""
+        first = self.start()
+        second = self.start(client_address=OTHER_ADDR)
+        ids = await self.wait_pending(2)
+        self.assertEqual(await self.decide(ids[1], bound=False), self.refused_decision("approval_conflict"))
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            self.assertEqual(await self.decide(ids[1], bound=True), {"ok": True, "approved": True})
+        self.assertIn(f"INFO:fastrdp.broker:web approval for alice from {OTHER_ADDR} (tls login): approved via "
+                      "the login-bound link on the approval page", logs.output)
+        self.assertTrue((await second)["ok"])
+        self.assertEqual(await self.wait_pending(), [ids[0]])
+        self.assertFalse(first.done())
+        await self.decide(ids[0], approve=False)
+        self.assertEqual(await first, self.refused("mfa_failed"))
+
+    async def test_bound_relaxes_nothing_else(self):
+        first = self.start()
+        second = self.start(client_address=OTHER_ADDR)
+        ids = await self.wait_pending(2)
+        created = self.broker.mfa.approvals.pending[ids[0]].created_wall
+        # another user's id looks unknown, bound or not
+        self.assertEqual(await self.decide(ids[0], user="eve", bound=True),
+                         self.refused_decision("approval_unknown"))
+        self.assertEqual(await self.decide("no-such-id", bound=True), self.refused_decision("approval_unknown"))
+        # the sign-in must still be fresh
+        self.assertEqual(await self.decide(ids[0], auth_time=int(created) - 40, bound=True),
+                         self.refused_decision("approval_stale"))
+        self.assertFalse(first.done() or second.done())
+        await self.decide(ids[0], approve=False, bound=True)
+        self.assertEqual(await first, self.refused("mfa_failed"))
+        # a finished login stays finished
+        self.assertEqual(await self.decide(ids[0], bound=True), self.refused_decision("approval_finished", "denied"))
+        await self.decide(ids[1], bound=True)
+        self.assertTrue((await second)["ok"])
+
     async def test_two_pending_allowed_without_single_pending(self):
         self.mfa_cfg.web_approval_single_pending = False
         first, second = self.start(), self.start(client_address=OTHER_ADDR)
@@ -290,7 +330,7 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         login = self.start()
         (rid,) = await self.wait_pending()
         for bad in ({"approve": "yes"}, {"approve": 1}, {"auth_time": "now"}, {"auth_time": None},
-                    {"auth_time": True}, {"id": None}):
+                    {"auth_time": True}, {"id": None}, {"bound": "yes"}, {"bound": 1}):
             with self.subTest(bad):
                 msg = {"op": "mfa_decide", "user": "alice", "id": rid, "approve": True,
                        "auth_time": int(time.time()), **bad}

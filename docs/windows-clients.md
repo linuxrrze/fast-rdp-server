@@ -350,7 +350,7 @@ front** of the proxy.
 | Option | mstsc → fastrdp | Status | User experience | Phishing resistance | Requirements |
 |---|---|---|---|---|---|
 | privacyIDEA **push** after Kerberos NLA | yes | **supported** (lab L15) | password or SSO, mstsc waits until the push is approved | low–medium: push fatigue, an attacker's push can be approved | privacyIDEA + app; `fastrdp_privacyidea_service_user` for SSO logins; proxy `Timeout` (180 s) ≥ push timeout (60 s) + session start (90 s) |
-| **Web approval** (Keycloak passkey sign-in on the web gateway, approve the pending login) | yes, same waiting point as push | **supported** (`[mfa] mode = web` / `push_or_web`; real Keycloak + mstsc untested) | like push, approved in a browser | the factor is a passkey (origin-bound); the approval itself can still be talked into, like a push | Keycloak passkeys ([passkeys.md](passkeys.md) stage 1), reachable web gateway |
+| **Web approval** (Keycloak passkey sign-in on the web gateway, approve the pending login) | yes, same waiting point as push | **supported** (`[mfa] mode = web` / `push_or_web`; real Keycloak + mstsc untested) | like push, approved in a browser | the factor is a passkey (origin-bound); the approval itself can still be talked into, like a push; the QR code on the waiting screen binds it to the login on the user's own screen ([auth-matrix.md](auth-matrix.md#login-bound-link-qr-code)) | Keycloak passkeys ([passkeys.md](passkeys.md) stage 1), reachable web gateway |
 | **Smart card / PIV / YubiKey PIV** (PKINIT on the client, TSSmartCardCreds) | yes | **supported** (soft token e2e; real card + AD: lab L7) | insert card, PIN in mstsc | high (key on the card, KDC-bound) | AD PKI (KDC certificates, NTAuth, UPN SAN) and an AD rule that makes it MFA (§3.9) |
 | **Windows Hello for Business certificate** (used as a virtual smart card) | yes, as a smart card [inference] | **possible**, untested (lab L19) | face/fingerprint/PIN in mstsc | high (TPM-bound key) | WHfB certificate trust, or a certificate in the WHfB container (AD CS / Intune, Passport KSP); same AD rule as smart cards |
 | **MFA gateway in front**: rdpgw (open source, MS-TSGU) with Keycloak OIDC; Windows RD Gateway + NPS extension (Entra MFA) | yes [inference] | **possible**, untested (lab L20, L21) | rdpgw: Keycloak sign-in in the browser, then the downloaded `.rdp` in mstsc; RDG: Authenticator push while mstsc shows "Initiating remote connection" | rdpgw: passkey; RDG: push | §3.10 |
@@ -392,14 +392,17 @@ Notes on the options above:
   mstsc timeout for an activated connection without graphics was found; FreeRDP waited 60 s
   in a test ([freerdp-client.md](freerdp-client.md)). What mstsc shows meanwhile ("Configuring
   remote session…" per [client-guide.md](client-guide.md), or an empty window) is lab S3/L15.
-  With `fastrdp_proxy_waiting_screen: true` the proxy draws its own panel into that
-  window instead (Bitmap Updates, the one graphics output every client must accept):
-  "Approve the sign-in" with a countdown, for web approval the approval URL and a QR
-  code for the phone, then "Connecting to your desktop…"; the panel is painted black
-  before the desktop arrives ([auth-matrix.md](auth-matrix.md#waiting-screen)). Off by
-  default until mstsc and the Windows App have shown it (lab S3/L15: panel visible,
-  countdown updating, QR code scannable from the screen, no leftover after the desktop
-  appears, also after a resize to another resolution). With `fastrdp_desktop_picker` the
+  With `fastrdp_proxy_waiting_screen` (default `true`) the proxy draws its own panel into
+  that window instead (Bitmap Updates, the one graphics output every client must accept):
+  "Approve the sign-in" with a countdown, for web approval the approval URL, the login's
+  code and a QR code for the phone (the page for this login), then "Connecting to your
+  desktop…"; the panel is painted black before the desktop arrives
+  ([auth-matrix.md](auth-matrix.md#waiting-screen)). On by default since the first test
+  with a real client showed only a black window during MFA without it; still to be
+  confirmed with mstsc and the Windows App (lab S3/L15: panel visible, countdown
+  updating, QR code scannable from the screen, no leftover after the desktop appears,
+  also after a resize to another resolution). `fastrdp_proxy_waiting_screen: false`
+  turns it off. With `fastrdp_desktop_picker` the
   same panel then lists the user's desktops, and mstsc's keys and clicks choose one
   before the session starts ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window));
   lab S3 as well.

@@ -14,7 +14,8 @@ User 'pushwait' stands for a pending MFA push: the reply comes after PUSH_WAIT s
 unless the proxy closes the connection first; either way a "pushwait" record with the
 seconds waited and whether the peer closed goes to the log.
 Progress lines (protocol.py; only when the login asks with "progress": 1):
-  'progress'      an "mfa" message (push_or_web, approval URL, QR code from the broker's
+  'progress'      an "mfa" message (push_or_web, approval URL, QR code of the login-bound
+                  URL <approval URL>?login=$E2E_LOGIN_ID from the broker's ui.py and
                   qrcode.py, PROGRESS_TIMEOUT s countdown) at once, a "session_start"
                   message after PROGRESS_WAIT s, then the reply
   'pushwait'      the "mfa" message, then waits as above
@@ -38,7 +39,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "broker", "brokerd"))
-from fastrdp_broker import qrcode  # noqa: E402
+from fastrdp_broker import qrcode, ui  # noqa: E402
 
 DENIED = "access denied"
 REFUSALS = {
@@ -56,6 +57,7 @@ PUSH_WAIT = 8.0
 PROGRESS_WAIT = 3.5
 PROGRESS_TIMEOUT = 5
 APPROVE_URL = "https://rdp1.lab.example.com/web/approve"
+LOGIN_ID = os.environ.get("E2E_LOGIN_ID", "A" * 22)   # the pending login's id (mfa.WebApprovals)
 PICKER_DELAY = 1.5
 PICKER_TIMEOUT = 6
 PICKER_OPTIONS = [{"name": "xfce", "label": "Xfce", "running": False},
@@ -65,7 +67,7 @@ MFA_PROGRESS = {"progress": "mfa", "method": "push_or_web", "timeout_s": PROGRES
                 "approve_url": APPROVE_URL, "countdown": "Time left:",
                 "lines": ["Approve your sign-in", "Confirm the push on your phone, or sign in at",
                           APPROVE_URL, "Gr\u00fc\u00dfe \u2013 \u65e5\u672c"],
-                "qr": qrcode.encode(APPROVE_URL.encode())}
+                "qr": qrcode.encode(ui.login_url(APPROVE_URL, LOGIN_ID).encode())}
 
 path, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 log_lock = threading.Lock()

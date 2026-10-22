@@ -334,7 +334,7 @@ class Audio(unittest.TestCase):
 
 
 class ProxyIni(unittest.TestCase):
-    def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="false"):
+    def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -355,8 +355,9 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual(p["Channels"]["PassthroughIsBlacklist"], "true")
         # Remote Credential Guard: off unless fastrdp_accept_remote_guard (fastrdp_plugin.c)
         self.assertEqual(p["FastRDP"]["AcceptRemoteGuard"], remote_guard)
-        # waiting screen: off unless fastrdp_proxy_waiting_screen (fastrdp_plugin.c waitingScreen)
-        self.assertEqual((p["FastRDP"]["WaitingScreen"], p["FastRDP"]["StatusInfo"]), (waiting, waiting))
+        # waiting screen: on unless fastrdp_proxy_waiting_screen is false (fastrdp_plugin.c
+        # waitingScreen); Status Info PDUs only with fastrdp_proxy_status_info
+        self.assertEqual((p["FastRDP"]["WaitingScreen"], p["FastRDP"]["StatusInfo"]), (waiting, status_info))
 
     def test_tls_logins(self):
         self.check("proxy-lab.ini", "true")
@@ -374,7 +375,8 @@ class ProxyIni(unittest.TestCase):
         self.check("proxy-rcg.ini", "true", remote_guard="true")
 
     def test_waiting_screen(self):
-        self.check("proxy-waiting.ini", "true", waiting="true")
+        self.check("proxy-waiting.ini", "true", status_info="true")
+        self.check("proxy-no-waiting.ini", "true", waiting="false")
 
 
 class GpuPackages(unittest.TestCase):
@@ -637,7 +639,12 @@ class CommonChecks(unittest.TestCase):
             "proxy timeout over the module's limit": dict(ok, fastrdp_proxy_broker_timeout=601),
             "proxy timeout zero": dict(ok, fastrdp_proxy_broker_timeout=0),
             "unknown desktop picker mode": dict(ok, fastrdp_proxy_waiting_screen=True, fastrdp_desktop_picker="on"),
-            "desktop picker without the waiting screen": dict(ok, fastrdp_desktop_picker="always"),
+            "desktop picker without the waiting screen": dict(ok, fastrdp_proxy_waiting_screen=False,
+                                                              fastrdp_desktop_picker="always"),
+            "waiting screen not a bool": dict(ok, fastrdp_proxy_waiting_screen="maybe"),
+            # the QR code adds ?login=<id> (22 characters) within 213 bytes
+            "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),
+            "approval URL not https": dict(ok, fastrdp_ui_approve_url="http://rdp1.example.com/web/approve"),
             "desktop picker timeout too short": dict(ok, fastrdp_proxy_waiting_screen=True,
                                                      fastrdp_desktop_picker="always", fastrdp_desktop_picker_timeout=2),
             "desktop picker timeout over the module's limit": dict(ok, fastrdp_desktop_picker_timeout=61),
@@ -786,6 +793,10 @@ class CommonChecks(unittest.TestCase):
     def test_desktop_picker_passes(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
         self.assertEqual(self.run_checks(**ok, fastrdp_desktop_picker="never"), 0)
+        # the waiting screen is on by default
+        self.assertEqual(self.run_checks(**ok, fastrdp_desktop_picker="always"), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_proxy_waiting_screen=False), 0)
+        self.assertEqual(self.run_checks(**ok, fastrdp_ui_approve_url="https://" + "a" * 176), 0)
         for mode in ("if_multiple", "always"):
             with self.subTest(mode):
                 self.assertEqual(self.run_checks(**ok, fastrdp_proxy_waiting_screen=True, fastrdp_desktop_picker=mode,

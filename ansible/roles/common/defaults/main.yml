@@ -152,10 +152,11 @@ fastrdp_web_public_url: "https://{{ fastrdp_fqdn }}"
 # ---------------------------------------------------------------- waiting screen
 # What the RDP client shows while a login waits for its push or web approval and while
 # the session starts (proxy.ini [FastRDP] WaitingScreen; docs/auth-matrix.md#waiting-screen):
-# a panel with what to do, a countdown and, with web approval, the approval page's URL
-# and a QR code of it for a phone. false (default until tested with mstsc/Windows App/
-# Remmina in the lab): the client shows its own "connecting" state as before.
-fastrdp_proxy_waiting_screen: false
+# a panel with what to do, a countdown and, with web approval, the approval page's URL,
+# the login's code and a QR code for a phone that opens the page for this very login.
+# false: the client shows only its own "connecting" state or a black window (no hint
+# where to approve), and no desktop picker.
+fastrdp_proxy_waiting_screen: true
 # Server Status Info PDUs as well (proxy.ini [FastRDP] StatusInfo), for clients that ask
 # for them (FreeRDP clients never do; what mstsc shows is untested).
 fastrdp_proxy_status_info: false
@@ -169,7 +170,8 @@ fastrdp_ui_language_from_keyboard: true
 # {timeout} {method} {desktop} {code} (the web approval's two-digit code) {running}
 # {count} (broker/brokerd/fastrdp_broker/ui.py).
 fastrdp_ui_texts: {}
-# The approval page on the panel ("" = not named, no QR code) and its QR code.
+# The approval page on the panel ("" = not named, no QR code; https://, at most 184
+# characters) and its QR code (<url>?login=<id>: the login on the screen).
 fastrdp_ui_approve_url: "{{ (fastrdp_web_public_url ~ '/web/approve') if fastrdp_web_enabled | bool else '' }}"
 fastrdp_ui_qr_code: true
 # Desktop picker on that panel (broker [broker] desktop_picker; needs

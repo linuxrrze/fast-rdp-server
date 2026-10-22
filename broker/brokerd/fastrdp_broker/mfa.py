@@ -23,17 +23,19 @@ YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}$")
 
 
 # Called once a login waits for the user: (method "push" | "web" | "push_or_web", seconds
-# the wait may take, the web approval's correlation code or None). The broker turns it
-# into a progress message for the proxy's waiting screen (ui.py); it must not block.
-Notify = Callable[[str, int, "str | None"], None]
+# the wait may take, the web approval's correlation code or None, the web approval's id
+# or None). The broker turns it into a progress message for the proxy's waiting screen
+# (ui.py: the QR code names the id); it must not block.
+Notify = Callable[[str, int, "str | None", "str | None"], None]
 
 
-def notify_safely(notify: Notify | None, method: str, timeout: float, code: str | None = None) -> None:
+def notify_safely(notify: Notify | None, method: str, timeout: float, code: str | None = None,
+                  request_id: str | None = None) -> None:
     """The waiting screen is a courtesy: its errors never touch the login."""
     if notify is None:
         return
     try:
-        notify(method, max(0, int(timeout)), code)
+        notify(method, max(0, int(timeout)), code, request_id)
     except Exception as exc:
         log.debug("progress message not sent: %s", exc)
 
@@ -73,7 +75,8 @@ class ApprovalError(Exception):
 
 @dataclass
 class PendingApproval:
-    id: str                     # random, names the login in the webgate's forms
+    id: str                     # random (new_id()), names the login in the webgate's forms
+                                # and in the waiting screen's QR code
     user: str                   # local account
     method: str                 # "nla" | "tls"
     client_address: str | None  # socket peer the proxy saw
@@ -167,6 +170,7 @@ class WebApprovals:
     notifications). Memory only; the broker's event loop only, so no locking."""
 
     FINISHED_KEEP = 300
+    ID_BYTES = 16   # new_id(): 22 characters (config.LOGIN_ID_CHARS)
 
     def __init__(self, cfg: MfaSection, clock: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time):
@@ -176,6 +180,15 @@ class WebApprovals:
         self.pending: dict[str, PendingApproval] = {}
         self.finished: dict[str, tuple[str, str, float]] = {}  # id -> (user, outcome, when)
         self.events = ApprovalEvents(clock, wall)
+
+    @classmethod
+    def new_id(cls) -> str:
+        """128 random bits, URL-safe: the waiting screen's QR code carries the id
+        (<approve_url>?login=<id>) so that approving binds to this login. Not a
+        credential (the approval page still wants the user's fresh MFA sign-in), but
+        unguessable, so nobody can point another user's approval page at a login of
+        theirs without having seen the id."""
+        return secrets.token_urlsafe(cls.ID_BYTES)
 
     def new_code(self, user: str) -> str:
         """Two random digits, unlike the codes of the user's other pending logins (as far
@@ -205,13 +218,15 @@ class WebApprovals:
         return sum(1 for e in self.pending.values() if e.user == user)
 
     async def wait(self, user: str, method: str, client_address: str | None,
-                   notify: Notify | None = None, code: str | None = None) -> str:
+                   notify: Notify | None = None, code: str | None = None,
+                   request_id: str | None = None) -> str:
         """Register the login and wait for its decision. Returns "web"; raises MfaDenied
         (denied: mfa_failed, no decision in time: mfa_timeout). Cancelling (the proxy
-        dropped the login) removes the entry. `notify`: told ("web", timeout, code) once
-        the login is pending. `code`: the correlation code (default: a new one)."""
+        dropped the login) removes the entry. `notify`: told ("web", timeout, code, id)
+        once the login is pending. `code`, `request_id`: the correlation code and the id
+        (default: new ones)."""
         self.prune()
-        entry = PendingApproval(secrets.token_urlsafe(16), user, method, client_address,
+        entry = PendingApproval(request_id or self.new_id(), user, method, client_address,
                                 self.clock(), self.wall(), asyncio.get_running_loop().create_future(),
                                 code or self.new_code(user))
         self.pending[entry.id] = entry
@@ -221,7 +236,7 @@ class WebApprovals:
         self.events.put({"event": "pending", "id": entry.id, "user": user, "method": method,
                          "client_address": client_address, "created": int(entry.created_wall),
                          "timeout_s": int(timeout), "code": entry.code})
-        notify_safely(notify, "web", timeout, entry.code)
+        notify_safely(notify, "web", timeout, entry.code, entry.id)
         try:
             approved = await asyncio.wait_for(entry.future, timeout)
         except TimeoutError:
@@ -245,11 +260,15 @@ class WebApprovals:
             for e in sorted(self.pending.values(), key=lambda e: e.created) if e.user == user
         ]
 
-    def decide(self, user: str, request_id: str, approve: bool, auth_time: int) -> PendingApproval:
+    def decide(self, user: str, request_id: str, approve: bool, auth_time: int,
+               bound: bool = False) -> PendingApproval:
         """Resolve a pending login of `user`. `auth_time`: when the IdP last authenticated
         the user who decides (ID token). Approving needs a sign-in no older than
         web_approval_max_auth_age before the login, and (web_approval_single_pending) no
-        other pending login of the user; denying is always allowed. Raises ApprovalError."""
+        other pending login of the user, unless `bound`: the user came to the approval
+        page with this login's id (the QR code of its own waiting screen), so another
+        pending login (perhaps somebody else's with the same password) cannot be the one
+        approved by mistake. Denying is always allowed. Raises ApprovalError."""
         self.prune()
         entry = self.pending.get(request_id)
         if entry is None or entry.user != user:
@@ -259,7 +278,7 @@ class WebApprovals:
                 raise ApprovalError(f"login {request_id} already {done[1]}", "approval_finished", done[1])
             raise ApprovalError(f"no pending login {request_id}", "approval_unknown")
         if approve:
-            if self.cfg.web_approval_single_pending and self.count(user) > 1:
+            if self.cfg.web_approval_single_pending and self.count(user) > 1 and not bound:
                 raise ApprovalError(f"{self.count(user)} logins pending; approving none of them "
                                     "([mfa] web_approval_single_pending)", "approval_conflict")
             age = entry.created_wall - auth_time
@@ -343,13 +362,14 @@ class SecondFactor:
         A Deny or a refused push fails the login. A push that cannot start (no push-capable
         token, privacyIDEA unreachable) or runs out of push_timeout leaves the web approval
         waiting, whose web_approval_timeout bounds the whole wait. `notify` hears
-        ("push_or_web", web_approval_timeout, code) at the start, and ("web", the time left,
-        code) when only the web approval is left."""
+        ("push_or_web", web_approval_timeout, code, id) at the start, and ("web", the time
+        left, code, id) when only the web approval is left."""
         started = time.monotonic()
-        code = self.approvals.new_code(account)
-        notify_safely(notify, "push_or_web", self.cfg.web_approval_timeout, code)
+        code, request_id = self.approvals.new_code(account), self.approvals.new_id()
+        notify_safely(notify, "push_or_web", self.cfg.web_approval_timeout, code, request_id)
         push = asyncio.ensure_future(self.push(user, password))
-        web = asyncio.ensure_future(self.approvals.wait(account, method, client_address, code=code))
+        web = asyncio.ensure_future(self.approvals.wait(account, method, client_address, code=code,
+                                                        request_id=request_id))
         try:
             await asyncio.wait({push, web}, return_when=asyncio.FIRST_COMPLETED)
             if not web.done():
@@ -363,7 +383,8 @@ class SecondFactor:
                     raise exc
                 log.log(logging.WARNING if exc else logging.INFO, "push for %s: %s; waiting for web approval only",
                         user, exc or "not confirmed in time")
-                notify_safely(notify, "web", self.cfg.web_approval_timeout - (time.monotonic() - started), code)
+                notify_safely(notify, "web", self.cfg.web_approval_timeout - (time.monotonic() - started), code,
+                              request_id)
             return await web
         finally:
             for task in (push, web):

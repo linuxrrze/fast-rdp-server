@@ -268,14 +268,15 @@ an RDP login becomes "sign in with MFA in a browser and click Approve". Modes, s
 and the broker's checks: [auth-matrix.md](auth-matrix.md#web-approval).
 
 How users reach it:
-- Start the RDP login as usual. The client shows "connecting…" and waits (90 s by
-  default, `fastrdp_mfa_web_approval_timeout`). With the [waiting
-  screen](auth-matrix.md#waiting-screen) (`fastrdp_proxy_waiting_screen: true`) the RDP
-  window shows instead what to do, the time left, the approval URL and a **QR code** of
-  it.
-- Open `https://<rdp-fqdn>/web/approve` (a bookmark, or a phone: scan the QR code in
-  the RDP window with the phone's camera, then sign in there with the passkey or
-  authenticator app on the phone). The webgate always
+- Start the RDP login as usual. The client waits (90 s by default,
+  `fastrdp_mfa_web_approval_timeout`); the [waiting screen](auth-matrix.md#waiting-screen)
+  (`fastrdp_proxy_waiting_screen`, on by default) shows in the RDP window what to do,
+  the time left, the approval URL, the login's code and a **QR code** that opens the
+  page for this very login. Without it the window stays black or shows "connecting…".
+- Open `https://<rdp-fqdn>/web/approve` (typed, or a bookmark), or scan the QR code in
+  the RDP window with the phone's camera, which opens
+  `https://<rdp-fqdn>/web/approve?login=<id>`, then sign in there with the passkey or
+  authenticator app on the phone. The webgate always
   sends the browser to Keycloak for a **new** sign-in (`prompt=login`, `max_age=0`,
   plus `acr_values=mfa` as for desktops), even if the user is signed in there already,
   and refuses ID tokens whose `auth_time` shows a reused Keycloak session.
@@ -283,6 +284,9 @@ How users reach it:
   NLA or password login, its two-digit **code** (the waiting screen shows the same) and
   the buttons **Approve** and **Deny**. "No RDP login is
   waiting" otherwise (reload after starting the login).
+- Opened from the QR code, the page shows **that login** first under *This RDP login*,
+  with Approve and Deny. Other waiting logins of the user follow with "Another login
+  with your password is waiting. Deny it if it is not yours." and only Deny.
 - Approve: the RDP client continues at once. Deny: the client gets "access denied"
   (Set Error Info 0x7). Nothing: it gives up after the timeout (0x409).
 
@@ -297,7 +301,26 @@ What the page protects against:
   the login it approves; otherwise the page asks to sign in again.
 - **Two or more waiting logins** (`fastrdp_mfa_web_approval_single_pending`): the page
   warns that somebody else may be using the password and offers only Deny. Deny them
-  all and start one new login.
+  all and start one new login. Opened from the QR code of your own RDP window, the
+  login named there can still be approved (below).
+
+**Why the QR code binds the approval.** The QR code encodes the login's id, a random
+value (128 bits) the broker made for exactly the login in that RDP window. Somebody who
+has the password and starts a login of their own at the same time gets a different id,
+shown only on their screen, so scanning your own screen approves your own login and
+never theirs; theirs stays waiting and can be denied. The id is **not a credential**:
+the page still wants your fresh sign-in with MFA, only logins of the signed-in user are
+found, and an unknown, finished or foreign id gets the same "This login is no longer
+waiting for approval." (a malformed one at once, without a sign-in). The `login`
+parameter travels through the Keycloak sign-in in the signed sign-in cookie, like the
+page to return to. Typed URLs, bookmarks and notifications carry no id and get the plain
+page. Details: [auth-matrix.md](auth-matrix.md#login-bound-link-qr-code).
+
+**A link from somebody else is not yours.** An attacker with the password could send
+you the link of *their* login ("please approve, it's urgent"). The page then shows a
+login whose address, start time and code match nothing in your RDP window: deny it.
+Scan only the QR code in your own RDP window and never approve a login you did not
+start.
 
 **Notifications on the phone** (opt-in, `fastrdp_web_notify_backends`;
 [notifications.md](notifications.md)): users turn them on once at
@@ -313,8 +336,9 @@ What the page protects against:
 
 Then every RDP login waiting for their approval brings "approve your RDP login from
 192.0.2.10 (code 42)"; tapping it opens the approval page, where the sign-in and the
-buttons work as above. The link **always points to `https://<rdp-fqdn>/web/approve`**:
-a notification or message with any other link is not from fastrdp. Approve only a login
+buttons work as above. The link **always points to `https://<rdp-fqdn>/web/approve`**,
+never to one login (whichever login waits triggers the notification, possibly an
+attacker's): a notification or message with any other link is not from fastrdp. Approve only a login
 you started yourself (with the [waiting screen](auth-matrix.md#waiting-screen) the RDP
 window shows the same code).
 

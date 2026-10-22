@@ -984,7 +984,7 @@ Values to change:
 | `[broker] desktop_picker`, `desktop_picker_timeout`, `desktop_picker_when_running` | `fastrdp_desktop_picker`, `fastrdp_desktop_picker_timeout`, `fastrdp_desktop_picker_when_running` | `never` (default), `if_multiple` or `always`; 3..60 s (default 10); `preselect` (default) or `skip`. Needs proxy.ini `WaitingScreen=true` and `fastrdp-freerdp3` ≥ 3.32.2-6 ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | `[mfa]`, `[mfa.privacyidea]` | `fastrdp_mfa_*`, `fastrdp_privacyidea_*` | section 15.1 |
 | `[web] enabled` | `fastrdp_web_enabled` | section 15.2 |
-| `[ui] language`, `language_from_keyboard`, `approve_url`, `qr_code`; `[ui.<language>]` | `fastrdp_ui_language`, `fastrdp_ui_language_from_keyboard`, `fastrdp_ui_approve_url`, `fastrdp_ui_qr_code`, `fastrdp_ui_texts` | texts of the proxy's waiting screen; `approve_url` is `https://<fqdn>/web/approve` with the web gateway, else `""` ([auth-matrix.md](auth-matrix.md#waiting-screen)) |
+| `[ui] language`, `language_from_keyboard`, `approve_url`, `qr_code`; `[ui.<language>]` | `fastrdp_ui_language`, `fastrdp_ui_language_from_keyboard`, `fastrdp_ui_approve_url`, `fastrdp_ui_qr_code`, `fastrdp_ui_texts` | texts of the proxy's waiting screen; `approve_url` is `https://<fqdn>/web/approve` with the web gateway, else `""` (at most 184 characters: the QR code adds `?login=<id>`) ([auth-matrix.md](auth-matrix.md#waiting-screen)) |
 | `port_range`, `[backends.xrdp] port` | `fastrdp_backend_port_range`, `fastrdp_xrdp_port` | must match nftables, sysctl and `xrdp.ini` |
 
 Other keys and their defaults: `broker/brokerd/fastrdp_broker/config.py` and the
@@ -1427,7 +1427,7 @@ AcceptRemoteGuard=false
 ; While the broker works on a login (push, web approval, session start), show what it
 ; waits for: a panel drawn with Bitmap Updates, texts from the broker's [ui]. StatusInfo:
 ; also Server Status Info PDUs, to clients that ask for them.
-WaitingScreen=false
+WaitingScreen=true
 StatusInfo=false
 ```
 
@@ -1451,11 +1451,12 @@ the connection). With `true` the proxy offers the mode, takes the user from the 
 as usual, and zeroes and discards the forwarded tickets: the broker receives
 `"remote_guard": true` and no password, so the session has no TGT and
 `session_tgt = required` refuses the login ([windows-clients.md](windows-clients.md) §3.12).
-`WaitingScreen` (`fastrdp_proxy_waiting_screen`, default `false`; also the module's default
-when the key is missing): `true` shows a panel in the client's window while the broker
-works on the login (push or web approval with countdown, approval URL and QR code, session
-start), drawn with Bitmap Updates and painted black before the desktop arrives; texts from
-the broker's `[ui]`. With the broker's `[broker] desktop_picker` the same panel also lists
+`WaitingScreen` (`fastrdp_proxy_waiting_screen`, default `true`; also the module's default
+when the key is missing): shows a panel in the client's window while the broker works on
+the login (push or web approval with countdown, approval URL, login code and a QR code of
+the page for this login, session start), drawn with Bitmap Updates and painted black before
+the desktop arrives; texts from the broker's `[ui]`. `false`: the client shows only its own
+"connecting" state or a black window, and no desktop picker. With the broker's `[broker] desktop_picker` the same panel also lists
 the user's desktops and takes keys and clicks before the session starts (needs
 `fastrdp-freerdp3` ≥ 3.32.2-6; the module offers the picker only then and adds its
 countdown to `Timeout`). `StatusInfo` (`fastrdp_proxy_status_info`, default `false`) also sends

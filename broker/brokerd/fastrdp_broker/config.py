@@ -170,9 +170,10 @@ class UiSection:
     # there are texts in that language; else `language`.
     language_from_keyboard: bool = True
     # The webgate's approval page as users reach it, e.g. https://rdp.example.com/web/approve:
-    # shown with web approval (and as QR code). "" = not shown.
+    # shown with web approval, and as QR code with the login's id (<url>?login=<id>, so
+    # that approving binds to the login on the screen). "" = not shown.
     approve_url: str = ""
-    # QR code of approve_url next to the text, for signing in on a phone.
+    # QR code of approve_url (with the login's id) next to the text, for signing in on a phone.
     qr_code: bool = True
     # [ui.<language>] tables: {language: {text key: template}} (set by parse())
     texts: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -233,8 +234,11 @@ WEB_APPROVAL_TIMEOUT = (10, 510)
 MAX_WEB_APPROVAL_AUTH_AGE = 300
 # [ui.<language>] tables
 LANGUAGE = re.compile(r"[a-z]{2,3}")
-# [ui] approve_url: printable ASCII, short enough for a version 10 QR code (213 bytes at level M)
-MAX_APPROVE_URL = 200
+# [ui] approve_url: printable ASCII. The waiting screen's QR code names the login,
+# <approve_url>?login=<id> (ui.login_url(); the id from mfa.WebApprovals.new_id()), and
+# must fit into a version 10 QR code (ui.QR_MAX_VERSION: 213 bytes at level M).
+LOGIN_ID_CHARS = 22  # token_urlsafe(16)
+MAX_APPROVE_URL = 213 - len("?login=") - LOGIN_ID_CHARS  # 184
 APPROVE_URL = re.compile(r"https://[\x21-\x7e]{1,%d}" % (MAX_APPROVE_URL - len("https://")))
 # [mfa] kdc_evidence_as_mfa items (what fastrdp_plugin.c kdc_evidence() reports)
 KDC_EVIDENCE_ITEM = re.compile(r"ind:[\x21-\x7e]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9]{1,10}){1,15}")

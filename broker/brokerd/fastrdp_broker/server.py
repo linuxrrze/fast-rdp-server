@@ -413,9 +413,9 @@ class Broker:
         user, password, otp, mfa_done = await self.first_factor(msg)
         lang = self.waiting.language(int_field(msg, "keyboard_layout", 0, 0xFFFFFFFF)) if progress else ""
 
-        def notify(method: str, timeout: int, code: str | None = None) -> None:
+        def notify(method: str, timeout: int, code: str | None = None, request_id: str | None = None) -> None:
             assert progress is not None
-            progress(self.waiting.mfa(lang, method, timeout, user.name, code))
+            progress(self.waiting.mfa(lang, method, timeout, user.name, code, request_id))
 
         if not identity.user_allowed(user, self.cfg.auth):
             proven = msg.get("method") == "nla" or mfa_done is not None
@@ -664,15 +664,17 @@ class Broker:
 
     def mfa_decide(self, msg: dict) -> dict:
         """fastrdp-webgate approves or denies one of them for the user it signed in;
-        `auth_time` is that sign-in (ID token). Refusals carry an approval_* reason."""
+        `auth_time` is that sign-in (ID token), `bound` says the user came with this
+        login's id (the waiting screen's QR code). Refusals carry an approval_* reason."""
         user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
         request_id = str_field(msg, "id", required=True, max_len=64)
         approve = msg.get("approve")
         auth_time = int_field(msg, "auth_time", 0, 2**40)
-        if not isinstance(approve, bool) or auth_time is None:
-            raise ProtocolError("mfa_decide needs 'approve' (bool) and 'auth_time' (int)")
+        bound = msg.get("bound", False)
+        if not isinstance(approve, bool) or auth_time is None or not isinstance(bound, bool):
+            raise ProtocolError("mfa_decide needs 'approve' (bool) and 'auth_time' (int); 'bound' is a bool")
         try:
-            entry = self.mfa.approvals.decide(user.name, request_id, approve, auth_time)
+            entry = self.mfa.approvals.decide(user.name, request_id, approve, auth_time, bound)
         except ApprovalError as exc:
             log.warning("web approval decision by %s refused (%s): %s", user.name, exc.reason, exc)
             reply = {"ok": False, "error": "not decided", "reason": exc.reason}
@@ -680,7 +682,8 @@ class Broker:
                 reply["outcome"] = exc.outcome
             return reply
         log.info("web approval for %s from %s (%s login): %s on the approval page", user.name,
-                 entry.client_address, entry.method, "approved" if approve else "DENIED")
+                 entry.client_address, entry.method,
+                 ("approved via the login-bound link" if bound else "approved") if approve else "DENIED")
         return {"ok": True, "approved": approve}
 
     async def mfa_events(self, msg: dict) -> dict:

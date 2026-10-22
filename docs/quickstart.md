@@ -244,7 +244,7 @@ Which mode to choose for the second factor of RDP logins:
 | You want the second factor from | Mode | Users confirm by |
 |---|---|---|
 | nobody (password / Kerberos only) | `none` | – |
-| **Keycloak** (passkey, Windows Hello, TOTP, WebAuthn) | `web` | signing in at `https://<fqdn>/web/approve` and clicking Approve |
+| **Keycloak** (passkey, Windows Hello, TOTP, WebAuthn) | `web` | signing in at `https://<fqdn>/web/approve` (or scanning the QR code in the RDP window) and clicking Approve |
 | **privacyIDEA** | `push` | the push in the privacyIDEA app |
 | privacyIDEA, code typed with the password | `otp` (TLS logins only), `otp_or_push` | appending the code to the password |
 | both, whichever answers first | `push_or_web` | the push, or the approval page |
@@ -261,7 +261,9 @@ Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice
       Setup asks for the wait (`fastrdp_mfa_web_approval_timeout`, 90 s), the maximum age
       of the approving sign-in (30 s) and whether two pending logins block approval (yes),
       and raises `fastrdp_proxy_broker_timeout` to the wait plus 90 s for the session start
-      ([auth-matrix.md](auth-matrix.md#web-approval)).
+      ([auth-matrix.md](auth-matrix.md#web-approval)). The RDP window shows the URL, the
+      login's code and a QR code for the phone (the waiting screen, on by default:
+      `fastrdp_proxy_waiting_screen`).
 - [ ] KDC evidence (`fastrdp_mfa_kdc_evidence_as_mfa`, default none): Kerberos NLA logins
       whose ticket shows smart card/passkey pre-authentication skip the second factor.
       FreeIPA: `ind:pkinit`, `ind:passkey`; Microsoft AD: `sid:S-1-18-4` (Windows Hello for
@@ -314,7 +316,8 @@ Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice
       `fastrdp_user_cpu_quota` per user ([performance.md](performance.md)).
 
 Then: `make preflight`, `make deploy`, the smoke test and a first connection as in
-Path A, with MFA (approve the push while the client shows "connecting").
+Path A, with MFA (approve the push, or the login on the approval page, while the RDP
+window shows the waiting screen).
 
 ### Scripted setup (CI, many sites)
 

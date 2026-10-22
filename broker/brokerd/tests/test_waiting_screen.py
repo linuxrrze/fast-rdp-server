@@ -10,11 +10,13 @@ from unittest import mock
 
 from fastrdp_broker import config, qrcode, ui
 from fastrdp_broker.config import UiSection
+from fastrdp_broker.mfa import WebApprovals
 from test_gaps import _BrokerHarness, raw_example
 from test_web_approval import _ApprovalHarness
 
 MINIMAL = {"desktops": {"xfce": {"backend": "xrdp", "xsession": "xfce", "label": "XFCE"}}}
 URL = "https://rdp1.lab.example.com/web/approve"
+ID = "Zm9vYmFyYmF6cXV4cXV1eA"      # like mfa.WebApprovals.new_id()
 ADDR = "192.0.2.10"
 
 # The QR code of URL from Nayuki's qrcodegen 1.8.0 (level M, boostecl=False; version 3,
@@ -96,7 +98,8 @@ class QrCodeTests(unittest.TestCase):
             from PIL import Image
         except ImportError:
             self.skipTest("zxing-cpp and Pillow not installed (test-only)")
-        for text in (URL, "https://" + "a" * 180 + ".example/web/approve", "x"):
+        longest = "https://" + "a" * 156 + ".example/web/approve"
+        for text in (URL, ui.login_url(longest, ID), "x"):
             rows = qrcode.encode(text.encode())
             n = len(rows) + 8
             img = Image.new("L", (n * 4, n * 4), 255)
@@ -137,7 +140,7 @@ class UiConfigTests(unittest.TestCase):
             "must be a string": {"de": {"mfa_push": 5}},
             "longer than": {"de": {"mfa_push": "x" * 2001}},
             "approve_url must": {"approve_url": "http://rdp1.example.com/web/approve"},
-            "approve_url must ": {"approve_url": "https://" + "a" * 193},
+            "approve_url must ": {"approve_url": "https://" + "a" * 177},       # 185 characters
             "approve_url must  ": {"approve_url": "https://rdp1 .example.com/"},
             "qr_code must": {"qr_code": "yes"},
             "language_from_keyboard must": {"language_from_keyboard": 1},
@@ -146,7 +149,9 @@ class UiConfigTests(unittest.TestCase):
         for msg, raw in bad.items():
             with self.subTest(msg), self.assertRaisesRegex(config.ConfigError, msg.strip()):
                 self.parse(raw)
-        self.assertEqual(self.parse({"approve_url": "https://" + "a" * 192}).approve_url, "https://" + "a" * 192)
+        longest = "https://" + "a" * 176
+        self.assertEqual((self.parse({"approve_url": longest}).approve_url, len(longest)),
+                         (longest, config.MAX_APPROVE_URL))
 
 
 # ------------------------------------------------------------------ texts
@@ -171,10 +176,34 @@ class WaitingTextsTests(unittest.TestCase):
         self.assertNotIn("approve_url", push)
         self.assertIn("alice", " ".join(push["lines"]))
         for method in ("web", "push_or_web"):
-            msg = t.mfa("de", method, 90, "alice")
-            self.assertEqual((msg["approve_url"], msg["qr"], msg["countdown"]), (URL, QR_REFERENCE, "Verbleibend:"))
+            msg = t.mfa("de", method, 90, "alice", "07", ID)
+            # the QR code names the login, the text the page as configured (to type it)
+            self.assertEqual((msg["approve_url"], msg["qr"], msg["countdown"]),
+                             (URL, qrcode.encode(f"{URL}?login={ID}".encode()), "Verbleibend:"))
             self.assertIn(URL, msg["lines"])
+            self.assertFalse(any(ID in line for line in msg["lines"]), msg["lines"])
             self.assertTrue(msg["lines"][0].startswith("Anmeldung"), msg["lines"])
+        # without an id (none of the broker's own calls): the page itself
+        self.assertEqual(t.mfa("en", "web", 90, "alice")["qr"], QR_REFERENCE)
+
+    def test_login_url(self):
+        self.assertEqual(ui.login_url(URL, ID), f"{URL}?login={ID}")
+        self.assertEqual(ui.login_url("https://h/approve?x=1", ID), f"https://h/approve?x=1&login={ID}")
+        self.assertEqual(ui.login_url("https://h/approve#top", ID), f"https://h/approve?login={ID}#top")
+
+    def test_longest_url_fits(self):
+        """[ui] approve_url of config.MAX_APPROVE_URL characters with the login's id (as
+        long as mfa.WebApprovals.new_id() makes it): still a version 10 QR code (57 rows,
+        what the module draws), also with a query of its own."""
+        rid = WebApprovals.new_id()
+        self.assertRegex(rid, r"^[A-Za-z0-9_-]{%d}$" % config.LOGIN_ID_CHARS)
+        for longest in ("https://" + "a" * (config.MAX_APPROVE_URL - 8),
+                        "https://h/?" + "a" * (config.MAX_APPROVE_URL - 11)):
+            with self.subTest(longest[:12]):
+                cfg = config.parse({**MINIMAL, "ui": {"approve_url": longest}}).ui
+                msg = ui.WaitingTexts(cfg).mfa("en", "web", 90, "alice", "07", rid)
+                self.assertEqual(len(msg["qr"]), 17 + 4 * ui.QR_MAX_VERSION)
+                self.assertEqual(len(ui.login_url(longest, rid)), 213)
 
     def test_without_url_or_qr(self):
         msg = self.texts().mfa("en", "web", 90, "alice")
@@ -331,7 +360,8 @@ class WebProgressTests(_ProgressMixin, _ApprovalHarness, unittest.IsolatedAsynci
         self.assertTrue(reply["ok"], reply)
         self.assertEqual(self.kinds(progress), [("mfa", "web"), ("session_start", None)])
         mfa = progress[0]
-        self.assertEqual((mfa["timeout_s"], mfa["approve_url"], mfa["qr"]), (10, URL, QR_REFERENCE))
+        self.assertEqual((mfa["timeout_s"], mfa["approve_url"], mfa["qr"]),
+                         (10, URL, qrcode.encode(f"{URL}?login={rid}".encode())))
         self.assertIn(URL, mfa["lines"])
         self.assertEqual(mfa["lines"][-1], "Scan the code to open the approval page on your phone.")
 
@@ -353,7 +383,9 @@ class PushOrWebProgressTests(_ProgressMixin, _ApprovalHarness, unittest.Isolated
         self.assertEqual(self.kinds(progress), [("mfa", "push_or_web"), ("mfa", "web"), ("session_start", None)])
         self.assertEqual(progress[0]["timeout_s"], 10)
         self.assertLessEqual(progress[1]["timeout_s"], 10)
-        self.assertEqual(progress[1]["qr"], QR_REFERENCE)
+        # both panels name the one pending login
+        for p in progress[:2]:
+            self.assertEqual(p["qr"], qrcode.encode(f"{URL}?login={rid}".encode()))
 
     async def test_push_wins(self):
         self.pi.trigger_challenge.return_value = "tx"

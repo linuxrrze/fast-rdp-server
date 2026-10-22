@@ -10,7 +10,9 @@
   GET  <prefix>/rdp/<desktop>.rdp  .rdp file for mstsc that names the desktop (alternate shell)
   GET  <prefix>/logout     drop the session, IdP logout if supported
   GET  <prefix>/approve    [mfa] mode web / push_or_web: fresh MFA sign-in at the IdP, then
-                           the user's RDP logins waiting for approval (broker mfa_pending)
+                           the user's RDP logins waiting for approval (broker mfa_pending);
+                           ?login=<id> (the waiting screen's QR code): that login first,
+                           approvable although others wait (login_page())
   POST <prefix>/approve    Approve or Deny one of them (broker mfa_decide)
   GET  <prefix>/notify     [notify] backends: opt-in page for approval notifications
                            (docs/notifications.md), signed in like the desktop chooser
@@ -52,6 +54,9 @@ APPROVE_TTL = 300
 SAFE_USER = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SAFE_DESKTOP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# <prefix>/approve?login=<id>: a pending login's id as the broker makes them
+# (fastrdp_broker mfa.WebApprovals.new_id(), 22 characters)
+SAFE_LOGIN_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")
 RDP_FILE = re.compile(r"/rdp/([A-Za-z0-9_-]{1,64})\.rdp")
 SAFE_SUB_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 SAFE_CODE = re.compile(r"^[0-9]{2}$")
@@ -59,6 +64,9 @@ METHOD_LABELS = {"nla": "RDP client, Kerberos (NLA)", "tls": "RDP client, passwo
 # Notes on the opt-in page after a change (?m=...)
 NOTES = {"ntfy": "ntfy is set up: subscribe to the topic below.", "removed": "Removed.",
          "test": "Test notification sent to your devices."}
+# A login id the approval page does not find among the user's pending logins (unknown,
+# finished, malformed or another user's: told apart nowhere)
+NOT_WAITING = "This login is no longer waiting for approval."
 # Where a sign-in may return to (pending cookie "r"); anything else goes to the chooser.
 BACK_PATHS = ("/", "/notify")
 CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
@@ -119,10 +127,17 @@ def broker_mfa_pending(path: str, user: str, timeout: float = 15) -> list[dict]:
 
 
 def broker_mfa_decide(path: str, user: str, request_id: str, approve: bool, auth_time: int,
-                      timeout: float = 15) -> dict:
-    """Approve or deny one of them; `auth_time`: the IdP sign-in of the user deciding."""
+                      timeout: float = 15, bound: bool = False) -> dict:
+    """Approve or deny one of them; `auth_time`: the IdP sign-in of the user deciding;
+    `bound`: the user opened the page with this login's id (<prefix>/approve?login=<id>)."""
+    extra = {"bound": True} if bound else {}
     return broker_request(path, "mfa_decide", user, timeout, id=request_id, approve=approve,
-                          auth_time=auth_time)
+                          auth_time=auth_time, **extra)
+
+
+def approve_path(login: str | None) -> str:
+    """/approve, or /approve?login=<id> for an id that SAFE_LOGIN_ID accepts."""
+    return f"/approve?login={login}" if login and SAFE_LOGIN_ID.fullmatch(login) else "/approve"
 
 
 class Webgate:
@@ -289,10 +304,13 @@ def make_handler(app: Webgate):
             if path == "/callback":
                 return self.callback(query)
             if path == "/approve":
+                login = query.get("login")
+                if login is not None and not SAFE_LOGIN_ID.fullmatch(login):
+                    return self.approval_message(404, NOT_WAITING)   # like an unknown id
                 appr, raw = self.approval_session()
                 if not appr:
-                    return self.start_login(approve=True)
-                return self.approve_page(appr, app.signer.csrf(raw))
+                    return self.start_login(approve=True, login=login)
+                return self.approve_page(appr, app.signer.csrf(raw), login)
             if path == "/logout":  # logout is a POST with CSRF token (see chooser form)
                 return self.redirect(app.prefix + "/")
             if path == "/healthz":
@@ -307,9 +325,11 @@ def make_handler(app: Webgate):
                 return self.rdp_download(sess["user"], m.group(1))
             return self.error_page(404, "Not found.")
 
-        def start_login(self, approve: bool = False, back: str = "/", fresh: bool = False):
+        def start_login(self, approve: bool = False, back: str = "/", fresh: bool = False,
+                        login: str | None = None):
             """approve: sign-in for the approval page, always a fresh authentication at the
-            IdP (an IdP session, e.g. of the desktop chooser, is not enough). back: the
+            IdP (an IdP session, e.g. of the desktop chooser, is not enough); login: the
+            pending login it was opened for (?login=<id>, SAFE_LOGIN_ID). back: the
             page to return to after a chooser sign-in (BACK_PATHS). fresh: the IdP asks
             again although it has a session (after a sign-in without MFA, mfa_refused)."""
             state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
@@ -317,6 +337,8 @@ def make_handler(app: Webgate):
             data = {"s": state, "n": nonce, "v": verifier}
             if approve:
                 data.update(a=1, t=int(time.time()))
+                if login:
+                    data["l"] = login
             elif back != "/":
                 data["r"] = back
             pending = app.signer.dumps("pending", data, 600)
@@ -347,7 +369,7 @@ def make_handler(app: Webgate):
             if auth_time is not None:
                 appr = app.signer.dumps("approve", {"user": user, "auth_time": auth_time}, APPROVE_TTL)
                 log.info("web sign-in %s for login approval", user)
-                return self.redirect(app.prefix + "/approve", [
+                return self.redirect(app.prefix + approve_path(pending.get("l")), [
                     ("Set-Cookie", app.cookie(APPROVE_COOKIE, appr, APPROVE_TTL)),
                     ("Set-Cookie", app.cookie(PENDING_COOKIE, "", 0)),
                 ])
@@ -382,7 +404,7 @@ def make_handler(app: Webgate):
             host = urllib.parse.urlsplit(issuer).hostname or issuer
             account = html.escape(issuer + "/account")
             if pending.get("a"):
-                again = "/approve"                    # always a fresh sign-in
+                again = approve_path(pending.get("l"))    # always a fresh sign-in
             else:
                 again = (pending.get("r") if pending.get("r") in BACK_PATHS else "/") + "?login=fresh"
             body = (f"<p>Your sign-in at <b>{html.escape(host)}</b> did not use a second factor (MFA). "
@@ -495,57 +517,89 @@ def make_handler(app: Webgate):
             raw = self.cookie_value(APPROVE_COOKIE)
             return app.signer.loads("approve", raw), raw
 
-        def approval_message(self, status: int, message: str, cookies: list[tuple[str, str]] = ()):
+        def approval_message(self, status: int, message: str, cookies: list[tuple[str, str]] = (),
+                             login: str | None = None):
+            back = html.escape(app.prefix + approve_path(login))
             self.send(status, page("Approve RDP login", f"<p>{html.escape(message)}</p>"
-                                   f'<p><a href="{app.prefix}/approve">Back to the approval page</a></p>'),
+                                   f'<p><a href="{back}">Back to the approval page</a></p>'),
                       cookies)
 
-        def approve_page(self, appr: dict, csrf: str):
+        def login_item(self, p: dict, csrf: str, approve: bool, bound: bool = False) -> str:
+            """One pending login: address, start, method, code, and its buttons (Approve only
+            if `approve`; `bound`: the forms say the user came with this login's id)."""
+            rid = str(p["id"])
+            now = time.time()
+            age = max(0, int(p.get("age_s") or 0))
+            started = time.strftime("%H:%M:%S UTC", time.gmtime(now - age))
+            form = (f'<form method="post" action="{app.prefix}/approve" style="display:inline">'
+                    f'<input type="hidden" name="csrf" value="{csrf}">'
+                    f'<input type="hidden" name="id" value="{rid}">'
+                    + (f'<input type="hidden" name="login" value="{rid}">' if bound else ""))
+            buttons = (f'{form}<input type="hidden" name="decision" value="approve">'
+                       f'<button type="submit">Approve</button></form> ' if approve else "")
+            buttons += (f'{form}<input type="hidden" name="decision" value="deny">'
+                        f'<button type="submit">Deny</button></form>')
+            address = html.escape(str(p.get("client_address") or "unknown address"))
+            method = html.escape(METHOD_LABELS.get(p.get("method"), "RDP client"))
+            code = str(p.get("code") or "")
+            code = f", code <b>{code}</b>" if SAFE_CODE.match(code) else ""
+            return (f"From <b>{address}</b> at <b>{started}</b> ({age} s ago)<br>"
+                    f"{method}{code}<br>{buttons}")
+
+        def approve_page(self, appr: dict, csrf: str, login: str | None = None):
+            """The signed-in user's pending logins; with `login` (?login=<id>) that one
+            first (login_page())."""
             user = appr["user"]
             try:
                 pending = broker_mfa_pending(app.cfg.webgate.broker_socket, user)
             except (OSError, BrokerError) as exc:
                 return self.broker_refused("pending logins", user, exc)
-            now = time.time()
-            rows = []
-            for p in pending:
-                rid = str(p.get("id", ""))
-                if not SAFE_REQUEST_ID.match(rid):
-                    continue
-                age = max(0, int(p.get("age_s") or 0))
-                started = time.strftime("%H:%M:%S UTC", time.gmtime(now - age))
-                conflict = bool(p.get("single_pending_conflict"))
-                form = (f'<form method="post" action="{app.prefix}/approve" style="display:inline">'
-                        f'<input type="hidden" name="csrf" value="{csrf}">'
-                        f'<input type="hidden" name="id" value="{rid}">')
-                buttons = ("" if conflict else
-                           f'{form}<input type="hidden" name="decision" value="approve">'
-                           f'<button type="submit">Approve</button></form> ')
-                buttons += (f'{form}<input type="hidden" name="decision" value="deny">'
-                            f'<button type="submit">Deny</button></form>')
-                address = html.escape(str(p.get("client_address") or "unknown address"))
-                method = html.escape(METHOD_LABELS.get(p.get("method"), "RDP client"))
-                code = str(p.get("code") or "")
-                code = f", code <b>{code}</b>" if SAFE_CODE.match(code) else ""
-                rows.append(f'<li style="margin:1rem 0">From <b>{address}</b> at <b>{started}</b> '
-                            f'({age} s ago)<br>{method}{code}<br>{buttons}</li>')
-            if not rows:
-                body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
-                        "<p>No RDP login is waiting for your approval.</p>"
+            pending = [p for p in pending if SAFE_REQUEST_ID.match(str(p.get("id", "")))]
+            signed_in = f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
+            if login:
+                bound = [p for p in pending if p["id"] == login]
+                if bound:
+                    return self.login_page(user, bound[0], [p for p in pending if p["id"] != login], csrf)
+                # not (or no longer) pending, or not the user's: told apart nowhere
+                log.info("%s opened the approval page for a login that is not waiting", user)
+                signed_in += f"<p><b>{html.escape(NOT_WAITING)}</b></p>"
+            if not pending:
+                body = (f"{signed_in}<p>No RDP login is waiting for your approval.</p>"
                         f'<p>Start the login in your RDP client, then <a href="{app.prefix}/approve">reload '
                         "this page</a>.</p>")
                 return self.send(200, page("Approve RDP login", body))
+            rows = [f'<li style="margin:1rem 0">'
+                    f'{self.login_item(p, csrf, not p.get("single_pending_conflict"))}</li>' for p in pending]
             warning = ""
             if any(p.get("single_pending_conflict") for p in pending):
                 warning = ("<p><b>More than one RDP login is waiting for your approval.</b> None of them "
                            "can be approved: somebody else may be using your password. Deny them, "
                            "start one new login and approve that one only.</p>")
-            body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
+            body = (f"{signed_in}"
                     "<p>Approve only a login you started yourself just now, from the address "
                     "shown (and the code, if your RDP client shows one). If you did not start it, "
                     "or somebody asked you to approve it, click <b>Deny</b>.</p>"
                     f"{warning}<ul style=\"padding-left:1.2rem\">{''.join(rows)}</ul>"
                     f'<p><a href="{app.prefix}/approve">Reload</a></p>')
+            self.send(200, page("Approve RDP login", body))
+
+        def login_page(self, user: str, p: dict, others: list[dict], csrf: str):
+            """?login=<id> of a pending login of the user (the QR code on its waiting
+            screen): that login with Approve (the broker allows it although others wait,
+            "bound"), the user's other pending logins below with Deny only."""
+            body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
+                    '<h2>This RDP login</h2>'
+                    f'<p style="border:2px solid;border-radius:.4rem;padding:.6rem 1rem">'
+                    f"{self.login_item(p, csrf, True, bound=True)}</p>"
+                    "<p>Approve it only if you started it yourself just now and its code is the one "
+                    "your RDP window shows. If you did not start it, or somebody sent you this link "
+                    "or asked you to approve it, click <b>Deny</b>.</p>")
+            if others:
+                rows = "".join(f'<li style="margin:1rem 0">{self.login_item(o, csrf, False)}</li>'
+                               for o in others)
+                body += ("<p><b>Another login with your password is waiting. Deny it if it is not "
+                         f'yours.</b></p><ul style="padding-left:1.2rem">{rows}</ul>')
+            body += f'<p><a href="{html.escape(app.prefix + approve_path(p["id"]))}">Reload</a></p>'
             self.send(200, page("Approve RDP login", body))
 
         def decide(self, form: dict):
@@ -558,15 +612,19 @@ def make_handler(app: Webgate):
             if not SAFE_REQUEST_ID.match(rid) or decision not in ("approve", "deny"):
                 return self.error_page(400, "Bad request.")
             user, approve = appr["user"], decision == "approve"
+            # the user came with this login's id (?login=, login_page()): the broker approves
+            # it although other logins of the user wait
+            login = rid if form.get("login") == rid and SAFE_LOGIN_ID.fullmatch(rid) else None
             try:
-                broker_mfa_decide(app.cfg.webgate.broker_socket, user, rid, approve, appr["auth_time"])
+                broker_mfa_decide(app.cfg.webgate.broker_socket, user, rid, approve, appr["auth_time"],
+                                  bound=login is not None)
             except BrokerError as exc:
                 if exc.reason == "approval_stale":
                     # sign in again: the next GET starts a fresh login at the IdP
                     log.info("approval by %s refused: sign-in too old for that login", user)
                     return self.approval_message(
                         403, "Your sign-in is older than this login. Sign in again to approve it.",
-                        [("Set-Cookie", app.cookie(APPROVE_COOKIE, "", 0))])
+                        [("Set-Cookie", app.cookie(APPROVE_COOKIE, "", 0))], login)
                 if exc.reason == "approval_conflict":
                     return self.approval_message(
                         409, "More than one RDP login is waiting for your approval, so none of them can "
@@ -577,11 +635,12 @@ def make_handler(app: Webgate):
                     return self.approval_message(
                         409, f"This login {outcome.get(exc.outcome or '', 'is no longer waiting')}.")
                 if exc.reason == "approval_unknown":
-                    return self.approval_message(404, "This login is no longer waiting for approval.")
+                    return self.approval_message(404, NOT_WAITING)
                 return self.broker_refused("login approval", user, exc)
             except OSError as exc:
                 return self.broker_refused("login approval", user, exc)
-            log.info("web approval: %s %s an RDP login", user, "approved" if approve else "denied")
+            log.info("web approval: %s %s an RDP login%s", user, "approved" if approve else "denied",
+                     " (login-bound link)" if login else "")
             if approve:
                 return self.approval_message(200, "Login approved. Your RDP client continues now.")
             self.approval_message(200, "Login denied. If you did not start it, change your password.")

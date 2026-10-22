@@ -345,14 +345,21 @@
         fastrdp_desktop_picker_timeout: 20
         fastrdp_desktop_picker_when_running: skip
 
-    - name: Proxy.ini, waiting screen and Status Info PDUs
+    - name: Proxy.ini, waiting screen (default) and Status Info PDUs
       ansible.builtin.template:
         src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
         dest: "{{ render_out }}/proxy-waiting.ini"
         mode: "0644"
       vars:
-        fastrdp_proxy_waiting_screen: true
         fastrdp_proxy_status_info: true
+
+    - name: Proxy.ini, waiting screen switched off
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-no-waiting.ini"
+        mode: "0644"
+      vars:
+        fastrdp_proxy_waiting_screen: false
 
     - name: Broker.toml, MFA from KDC evidence per login (PKINIT indicator, AD key trust)
       ansible.builtin.template:

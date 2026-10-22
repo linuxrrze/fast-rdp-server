@@ -192,8 +192,9 @@ Security review:
 - **Not covered:** a broker restart forgets grace (safe direction); several proxy hosts
   each have their own broker and grace; the web path is unchanged.
 
-During a push the client waits: by default it shows its own "connecting…" state, with
-the [waiting screen](#waiting-screen) a panel that says what to do. `fastrdp_proxy_broker_timeout`
+During a push the client waits: the [waiting screen](#waiting-screen) (on by default)
+shows a panel that says what to do; without it the client shows only its own
+"connecting…" state or a black window. `fastrdp_proxy_broker_timeout`
 (default 180 s, proxy.ini `[FastRDP] Timeout`, at most 600) is one wait for the whole
 broker call: the push (privacyIDEA `push_timeout`, default 60 s) or web approval
 (`fastrdp_mfa_web_approval_timeout`, default 90 s) **plus** the session start that
@@ -211,10 +212,13 @@ first wins and the other is cancelled. Both need the web gateway
 (`fastrdp_web_enabled: true`, [web-access.md](web-access.md#approving-rdp-logins)).
 
 1. The user starts the login in mstsc/xfreerdp3 (NLA or TLS). The first factor, groups
-   and account are checked as always; the client shows "connecting…".
+   and account are checked as always; the client shows the [waiting screen](#waiting-screen)
+   with the approval URL, the login's code and a QR code ("connecting…" without it).
 2. The broker logs `web approval pending for alice from 192.0.2.10` and keeps the login
    pending (memory only).
-3. The user opens `https://<host>/web/approve`. The webgate sends them to Keycloak for a
+3. The user opens `https://<host>/web/approve`, or scans the QR code, which opens
+   `https://<host>/web/approve?login=<id>` for this very login (the
+   [login-bound link](#login-bound-link-qr-code)). The webgate sends them to Keycloak for a
    **fresh** sign-in (`prompt=login`, `max_age=0`) with the usual MFA proof
    (`acr`/`amr`: passkey, TOTP, WebAuthn, privacyIDEA), and checks the ID token's
    `auth_time`, so an existing Keycloak session does not count. A sign-in without that
@@ -222,22 +226,24 @@ first wins and the other is cancelled. Both need the web gateway
    ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)).
 4. The page lists the user's pending logins with client address, start time, login
    method and a two-digit **code**, the same one the [waiting screen](#waiting-screen) and
-   the notification show, so the user can tell which login is theirs. **Approve** lets the broker continue (session start or reuse, as after a
+   the notification show, so the user can tell which login is theirs; opened from the
+   QR code, that login first. **Approve** lets the broker continue (session start or reuse, as after a
    push); **Deny** fails the login with `mfa_failed` (Set Error Info 0x7). Without a
    decision within `fastrdp_mfa_web_approval_timeout` the login fails with
    `mfa_timeout` (0x409). Closing the RDP client removes the pending login.
 
 **Notifications (opt-in):** users who turned them on at `https://<host>/web/notify` get
 a phone or browser notification at step 2, "approve your RDP login from 192.0.2.10
-(code 42)", linking to the fixed `https://<host>/web/approve`; steps 3 and 4 stay the
-same, the notification approves nothing. ntfy and Web Push, rate limit, privacy:
+(code 42)", linking to the fixed `https://<host>/web/approve` (never to a login-bound
+link: whichever login waits triggers the notification, possibly an attacker's); steps 3
+and 4 stay the same, the notification approves nothing. ntfy and Web Push, rate limit, privacy:
 [notifications.md](notifications.md) (`fastrdp_web_notify_backends`, default off).
 
 | Variable (broker key) | Default | Meaning |
 |---|---|---|
 | `fastrdp_mfa_web_approval_timeout` (`web_approval_timeout`) | `90` | seconds a login waits for the decision, 10..510. In `push_or_web` it bounds the whole wait (keep `push_timeout` below it). `fastrdp_proxy_broker_timeout` (default 180) must be at least this plus 90 s for the session start after the approval (`session_start_timeout`; checked): raise the proxy's timeout along with this one. 510 = the module's 600 s limit minus the session start |
 | `fastrdp_mfa_web_approval_max_auth_age` (`web_approval_max_auth_age`) | `30` | the approving sign-in may be at most this many seconds older than the pending login (0..300). Signing in first and starting the login afterwards works only within this window; otherwise the page asks to sign in again |
-| `fastrdp_mfa_web_approval_single_pending` (`web_approval_single_pending`) | `true` | with two or more pending logins of one user, none can be approved (each can still be denied); the user denies them and starts one new login |
+| `fastrdp_mfa_web_approval_single_pending` (`web_approval_single_pending`) | `true` | with two or more pending logins of one user, none can be approved (each can still be denied); the user denies them and starts one new login. Not for the login named by the [login-bound link](#login-bound-link-qr-code) |
 
 **Why `single_pending`:** whoever has the user's password (or Kerberos ticket) can start
 an RDP login of their own at the moment the user starts theirs. The page shows both,
@@ -249,7 +255,9 @@ warning instead of a coin toss.
 only from the webgate's uid, `[web] gateway_user`): the request belongs to the account
 the webgate signed in (another user's request looks unknown); it is still pending
 (already approved, denied, timed out or abandoned requests get a clear refusal);
-`auth_time` and `single_pending` as above, for Approve. Deny is always accepted.
+`auth_time` and `single_pending` as above, for Approve. `single_pending` is skipped only
+for a decision the webgate marks `bound` (the user came with that login's id); nothing
+else is relaxed. Deny is always accepted.
 
 **Reconnect grace:** a login passed by web approval records the factor `web`; reconnects
 within `fastrdp_mfa_reconnect_grace` skip the approval like they skip a push.
@@ -270,21 +278,57 @@ Security notes:
   (`mfa_pending_approvals`) and, with notifications, the events sent and dropped.
   Pending logins are memory only: a broker restart fails them.
 - The code is a convenience for telling logins apart, not a secret (two digits); the
-  safeguards are the fresh sign-in, `single_pending` and the user's judgement.
+  safeguards are the fresh sign-in, `single_pending` or the
+  [login-bound link](#login-bound-link-qr-code), and the user's judgement.
+
+#### Login-bound link (QR code)
+
+The QR code on the [waiting screen](#waiting-screen) opens
+`<fastrdp_ui_approve_url>?login=<id>`, where `<id>` is the broker's id of exactly that
+pending login (128 random bits). The waiting screen's text keeps the short URL and the
+code for typing on another device; that way gets the plain page as before.
+
+- The `login` parameter survives the Keycloak round trip (kept in the signed pending
+  sign-in cookie, like the return target; strictly checked, at most 64 characters). The
+  page still wants the **fresh MFA sign-in**: the id is no credential and approves
+  nothing on its own.
+- Opened with an id of one of the signed-in user's pending logins, the page shows that
+  login prominently (address, start time, login method, code) with **Approve** and
+  **Deny**. Approving it is allowed even while other logins of the user wait
+  (`single_pending` does not apply to it; the broker logs `approved via the login-bound
+  link`); the others are listed below with "Another login with your password is waiting.
+  Deny it if it is not yours." and only **Deny**.
+- An id that is unknown, finished or another user's reads the same after the sign-in:
+  "This login is no longer waiting for approval.", followed by the user's own pending
+  logins under the usual rules; a malformed one gets that message at once. The page
+  tells nobody whether an id exists.
+- **Why this is safe with a parallel login:** an attacker who has the password can start
+  a login of their own at the same moment, but it gets a different id, which only the
+  attacker's screen shows. The QR code on the user's own screen can only name the user's
+  own login, so the race that `single_pending` guards against cannot make the user approve
+  the wrong one; the attacker's login stays pending and can be denied.
+- **Phishing:** someone with the password could send the user *their* login-bound link
+  ("please approve quickly"). The page then shows the attacker's login: an address and
+  start time the user does not recognise and a code that is not the one in the user's
+  RDP window, and the page says to approve only a login started just now whose code the
+  RDP window shows. Never approve a login
+  you did not start, and scan only the QR code in your own RDP window.
+- Notifications never carry the id; typed URLs and bookmarks have none (plain page).
 
 ### Waiting screen
 
-**`fastrdp_proxy_waiting_screen: true`** (proxy.ini `[FastRDP] WaitingScreen`, default
-`false`): while the broker works on a login, the RDP client shows a panel instead of a
-black or "connecting…" window. The RDP connection is already active at that point
-(the proxy asks the broker from its PostConnect callback), so the module can draw with
-Bitmap Updates, which every client must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
+**`fastrdp_proxy_waiting_screen`** (proxy.ini `[FastRDP] WaitingScreen`, default
+`true`, also the module's default when proxy.ini lacks the key): while the broker works
+on a login, the RDP client shows a panel instead of a black or "connecting…" window.
+The RDP connection is already active at that point (the proxy asks the broker from its
+PostConnect callback), so the module can draw with Bitmap Updates, which every client
+must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
 
 | Login state | What the user sees |
 |---|---|
 | broker called | "Signing you in…" (the module's own text; also all an older broker ever gives) |
 | push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
-| web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the URL ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
+| web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the [login-bound link](#login-bound-link-qr-code) `<URL>?login=<id>` ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
 | `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
 | desktop picker (`fastrdp_desktop_picker`, after the second factor) | "Choose your desktop", one row per desktop ("[1] Xfce", "[2] GNOME (running)"), the preselected row filled, a hint line and a countdown of `fastrdp_desktop_picker_timeout`; keys 1-9, arrow keys and Enter, a click, Esc ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
@@ -295,8 +339,9 @@ No push or approval panel appears when no second factor is due (exempt groups,
 `nla_kdc_enforced`, KDC evidence, reconnect grace, OTP appended to the password); the
 user then only sees "Signing you in…" and the session start. The QR code lets a user
 whose passkey or authenticator is on the phone sign in there: the phone opens
-`https://<host>/web/approve`, signs in at Keycloak with the usual MFA proof and
-approves the login waiting on the PC ([web-access.md](web-access.md#approving-rdp-logins)).
+`https://<host>/web/approve?login=<id>`, signs in at Keycloak with the usual MFA proof and
+approves the login waiting on the PC, also if another login with the same password waits
+([web-access.md](web-access.md#approving-rdp-logins)).
 
 Texts come from the broker (`[ui]`, Ansible `fastrdp_ui_*`): English and German are
 built in; the language is `fastrdp_ui_language` (default `en`) unless
@@ -323,17 +368,22 @@ web approval's two-digit code; a line naming it is left out without one) `{runni
 `{count}` (the picker's rows); `\n` starts a new line; a language without some keys
 takes the English ones. The URL
 is `fastrdp_ui_approve_url` (default `<fastrdp_web_public_url>/web/approve` with the web
-gateway, else none: no URL, no QR code); `fastrdp_ui_qr_code: false` leaves the code out.
+gateway, else none: no URL, no QR code; `https://`, at most 184 characters, so that the
+QR code with `?login=<id>` stays within 57 × 57 modules); `fastrdp_ui_qr_code: false`
+leaves the code out.
 The font covers Latin-1 (and `…`, `€`, typographic quotes); other characters are drawn
 as `?`.
 
-**Why off by default:** the panel is plain RDP, checked end to end with FreeRDP clients
-at 15/16/24/32 bpp (`tests/proxy-e2e/run.sh`, including decoding the QR code from the
-received screen and the desktop picker's keys and clicks), but not yet with mstsc, the
-Windows App and Remmina (lab S3/L15). Turn it on per host after a test with the clients
-you use. The picker also reads the client's keyboard and mouse before the back-end
-starts, which needs `fastrdp-freerdp3` 3.32.2-6 or later
-([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
+**Why on by default:** without the panel a user waiting for MFA sees a black window and
+no hint where to approve the login (the first test with a real client showed exactly
+that). The panel is plain RDP (Bitmap Updates, which every client must accept), checked
+end to end with FreeRDP clients at 15/16/24/32 bpp (`tests/proxy-e2e/run.sh`, including
+decoding the QR code from the received screen and the desktop picker's keys and
+clicks); mstsc, the Windows App and Remmina are still to be confirmed in the lab
+(S3/L15). `fastrdp_proxy_waiting_screen: false` turns it off (also the desktop picker,
+which draws into it); at 8 bpp the module never draws it. The picker also reads the
+client's keyboard and mouse before the back-end starts, which needs `fastrdp-freerdp3`
+3.32.2-6 or later ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
 `fastrdp_proxy_status_info: true` (`[FastRDP] StatusInfo`) also sends Server Status
 Info PDUs ("finding destination", "bringing session online") to clients that announce
 support for them; FreeRDP clients never do, and whether mstsc shows anything is

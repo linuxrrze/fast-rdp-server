@@ -126,8 +126,8 @@ In every mode the picker is left out
   gateway and its downloaded `.rdp` files always name one, so browser logins never see
   the picker;
 - when the user may use only one desktop;
-- without the waiting screen (`fastrdp_proxy_waiting_screen`, the picker draws into it;
-  the role checks refuse the combination) and with an older `fastrdp-freerdp3` (before
+- without the waiting screen (`fastrdp_proxy_waiting_screen: false`, the picker draws
+  into it; the role checks refuse the combination) and with an older `fastrdp-freerdp3` (before
   3.32.2-6, `patches/freerdp/0007`): the proxy then does not offer the picker and the
   order above decides.
 

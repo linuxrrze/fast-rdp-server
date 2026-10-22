@@ -113,9 +113,9 @@ xrdp_autodetect_profile = "wan"   # everyone else: modem broadband_low satellite
 language = "en"                  # built in: en, de; others need an [ui.<language>] table
 language_from_keyboard = true    # the client's keyboard layout picks a language that has texts
 # The webgate's approval page as users reach it ("" = not named; no QR code), e.g.
-# "https://rdp1.example.com/web/approve"
+# "https://rdp1.example.com/web/approve"; at most 184 characters (the QR code adds ?login=<id>)
 approve_url = ""
-qr_code = true                   # QR code of approve_url, to approve on a phone
+qr_code = true                   # QR code of approve_url?login=<id>, to approve this login on a phone
 # Own texts per language, each optional; placeholders {user} {approve_url} {timeout}
 # {method} {desktop} {code} (the web approval's two-digit code); a line naming
 # {approve_url} is left out while approve_url is "", one naming {code} without a code.
