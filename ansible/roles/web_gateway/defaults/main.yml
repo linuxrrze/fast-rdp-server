@@ -31,6 +31,28 @@ fastrdp_web_rdp_parameters:
   enable-font-smoothing: "true"
   color-depth: "32"
 
+# ---------------------------------------------------------------- approval notifications
+# Opt-in (docs/notifications.md): with fastrdp_mfa_mode web or push_or_web, users who
+# turned them on at https://<fqdn>/web/notify get a notification when an RDP login of
+# theirs waits for approval, linking to https://<fqdn>/web/approve (approving still
+# takes the fresh MFA sign-in there). [] = off; ntfy and/or webpush.
+fastrdp_web_notify_backends: []
+# ntfy: the server's https:// URL; a token with write access to the topics fastrdp-*
+# (vault.yml; "" = publish without a token, only for a server that allows it).
+fastrdp_web_notify_ntfy_url: ""
+fastrdp_web_notify_ntfy_token: "{{ vault_fastrdp_web_notify_ntfy_token | default('') }}"
+# webpush: contact for the push services (RFC 8292). The VAPID key
+# (/etc/fastrdp/webgate-vapid.pem) is generated once; replacing it invalidates every
+# browser subscription.
+fastrdp_web_notify_vapid_subject: "mailto:root@{{ fastrdp_fqdn }}"
+# At most N notifications per user within SECONDS ("N/SECONDS"); above that one alert
+# without a link per window.
+fastrdp_web_notify_rate_limit: "3/600"
+# Tell the user when a notified login is denied or not approved in time.
+fastrdp_web_notify_alert_on_deny: true
+# The login's two-digit code (also on the waiting screen and the approval page).
+fastrdp_web_notify_show_code: true
+
 # ---------------------------------------------------------------- passkeys (Keycloak)
 # Opt-in: configure Keycloak for passkeys on the web path (docs/passkeys.md, recipe A)
 # through its admin REST API, from the controller (tasks/keycloak_passkeys.yml). false =

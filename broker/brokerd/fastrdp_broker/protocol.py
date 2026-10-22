@@ -78,7 +78,8 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   (resolved like a TLS login); only that account's logins are listed or decided.
   {"op": "mfa_pending", "user": str}
   -> {"ok": true, "user": str, "pending": [{"id": str, "method": "nla"|"tls",
-      "client_address": str|null, "age_s": int, "single_pending_conflict": bool}]}
+      "client_address": str|null, "age_s": int, "single_pending_conflict": bool,
+      "code": str}]}
   {"op": "mfa_decide", "user": str, "id": str, "approve": bool, "auth_time": int}
   -> {"ok": true, "approved": bool}
   -> {"ok": false, "error": "not decided", "reason": "approval_unknown"|"approval_finished"|
@@ -91,6 +92,24 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   looks the same); "approval_finished": it was already approved, denied, expired or
   abandoned ("outcome": approved|denied|expired|abandoned, kept for 5 minutes). A missing
   or malformed field is a protocol error.
+  "code": two random digits per pending login, shown on the waiting screen ([ui] {code}),
+  on the approval page and in notifications, so the user can tell which login is which.
+
+  {"op": "mfa_events", "wait_s": int (0..25, absent: 0)}
+  -> {"ok": true, "events": [
+       {"event": "pending", "id": str, "user": str, "method": "nla"|"tls",
+        "client_address": str|null, "created": int, "timeout_s": int, "code": str} |
+       {"event": "finished", "id": str, "user": str,
+        "outcome": "approved"|"denied"|"expired"|"abandoned"}]}
+  Long poll of fastrdp-webgate's notifier (approval notifications, docs/notifications.md):
+  the events since the last poll, oldest first, at most 100; with none queued it waits up
+  to "wait_s" seconds for the first and may return []. "user" is the local account,
+  "created" Unix time. A "pending" event whose login has ended by the time it is
+  collected is left out (its "finished" event still comes). Events are queued only while
+  a notifier polls (from its first poll until 5 minutes after its last), at most 256;
+  more are dropped and counted ("status" "mfa_events"). Logins never wait for this. One
+  consumer is expected: two would split the events between them. "user" in the request
+  is ignored.
 
 Refusals: "error" stays generic ("access denied", "session could not be started",
 "not permitted"); details go to the broker log only. "reason" is machine-readable; the
@@ -112,8 +131,11 @@ PAM module -> token.sock (root only):
 
 Admin (root) -> broker.sock:
   {"op": "status"} -> {"ok": true, "sessions": [...], "mfa_grace_entries": int,
-                       "mfa_pending_approvals": int, ...,
-                       "tickets": {account: {...}}}
+                       "mfa_pending_approvals": int, "mfa_events": {"consumer": bool,
+                       "queued": int, "sent": int, "dropped": int, "last_poll": int|null},
+                       ..., "tickets": {account: {...}}}
+      "mfa_events": the approval notification queue (mfa_events above); "last_poll"
+      Unix time of the notifier's last poll (null: none since the broker started).
   {"op": "tickets", "user": str|absent} -> {"ok": true, "tickets": {account: {...}}}
       TGT metadata of each session user's (or one account's) default credential cache:
       state ok|expiring|not_renewable_soon|expired|none|unknown, principal, cache,

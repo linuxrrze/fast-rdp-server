@@ -43,3 +43,19 @@ cert_fingerprint_file = "/etc/fastrdp/front.fingerprint"
 [guacamole.rdp_parameters]
 enable-font-smoothing = "true"
 color-depth = "32"
+
+# Approval notifications (docs/notifications.md): a phone/browser notification when an
+# RDP login waits for web approval ([mfa] mode web / push_or_web), linking to
+# <public_url><path_prefix>/approve. backends = [] switches them off.
+[notify]
+backends = []                       # "ntfy", "webpush"
+state_dir = "/var/lib/fastrdp-webgate"   # subscriptions (systemd StateDirectory)
+ntfy_url = "https://ntfy.lab.example.com"
+ntfy_token_file = "/etc/fastrdp/webgate-ntfy.token"   # write access to fastrdp-*; "" = none
+# openssl ecparam -name prime256v1 -genkey -noout -out /etc/fastrdp/webgate-vapid.pem
+vapid_private_key_file = "/etc/fastrdp/webgate-vapid.pem"
+vapid_subject = "mailto:root@rdp1.lab.example.com"
+#webpush_allowed_hosts = ["fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com", "notify.windows.com"]
+rate_limit = "3/600"                # per user; above it one alert without a link
+alert_on_deny = true                # ntfy: tell the user about a denied or timed-out login
+show_code = true                    # the login's two-digit code in the notification

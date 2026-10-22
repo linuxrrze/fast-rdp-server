@@ -63,6 +63,44 @@
     mode: "0640"
   loop: [/etc/fastrdp/webgate-cookie.secret, /etc/fastrdp/guacamole-json.key]
 
+- name: Approval notifications - ntfy access token
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/webgate-ntfy.token
+    content: "{{ fastrdp_web_notify_ntfy_token }}\n"
+    mode: "0640"
+    owner: root
+    group: _fastrdp-web
+  no_log: true
+  when: "'ntfy' in fastrdp_web_notify_backends and fastrdp_web_notify_ntfy_token | length > 0"
+  notify: Restart fastrdp-webgate
+
+- name: Approval notifications - no ntfy token left
+  ansible.builtin.file:
+    path: /etc/fastrdp/webgate-ntfy.token
+    state: absent
+  when: "'ntfy' not in fastrdp_web_notify_backends or fastrdp_web_notify_ntfy_token | length == 0"
+  notify: Restart fastrdp-webgate
+
+# Kept when web push is switched off: a new key would invalidate every browser subscription.
+- name: Approval notifications - VAPID key for web push, generated once
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      umask 077
+      openssl ecparam -name prime256v1 -genkey -noout -out /etc/fastrdp/webgate-vapid.pem.tmp
+      mv /etc/fastrdp/webgate-vapid.pem.tmp /etc/fastrdp/webgate-vapid.pem
+    creates: /etc/fastrdp/webgate-vapid.pem
+  when: "'webpush' in fastrdp_web_notify_backends"
+  notify: Restart fastrdp-webgate
+
+- name: Approval notifications - VAPID key readable by the webgate
+  ansible.builtin.file:
+    path: /etc/fastrdp/webgate-vapid.pem
+    owner: root
+    group: _fastrdp-web
+    mode: "0640"
+  when: "'webpush' in fastrdp_web_notify_backends"
+
 - name: CA of the IdP
   ansible.builtin.copy:
     src: "{{ fastrdp_web_oidc_ca_src }}"

@@ -194,7 +194,8 @@ How users reach it:
   plus `acr_values=mfa` as for desktops), even if the user is signed in there already,
   and refuses ID tokens whose `auth_time` shows a reused Keycloak session.
 - The page shows each waiting login of that user: client address, start time and age,
-  NLA or password login, and the buttons **Approve** and **Deny**. "No RDP login is
+  NLA or password login, its two-digit **code** (the waiting screen shows the same) and
+  the buttons **Approve** and **Deny**. "No RDP login is
   waiting" otherwise (reload after starting the login).
 - Approve: the RDP client continues at once. Deny: the client gets "access denied"
   (Set Error Info 0x7). Nothing: it gives up after the timeout (0x409).
@@ -211,6 +212,22 @@ What the page protects against:
 - **Two or more waiting logins** (`fastrdp_mfa_web_approval_single_pending`): the page
   warns that somebody else may be using the password and offers only Deny. Deny them
   all and start one new login.
+
+**Notifications on the phone** (opt-in, `fastrdp_web_notify_backends`;
+[notifications.md](notifications.md)): users turn them on once at
+`https://<rdp-fqdn>/web/notify` (signed in like the desktop chooser):
+- *this browser* (Web Push): name the device, *Turn on notifications*, allow them. On
+  iPhone/iPad first open the page in Safari, *Share → Add to Home Screen*, start fastrdp
+  from the home screen and turn notifications on there (iOS 16.4+);
+- *ntfy app*: *Set up ntfy*, then subscribe to the topic shown (QR code) on the
+  organisation's ntfy server.
+
+Then every RDP login waiting for their approval brings "approve your RDP login from
+192.0.2.10 (code 42)"; tapping it opens the approval page, where the sign-in and the
+buttons work as above. The link **always points to `https://<rdp-fqdn>/web/approve`**:
+a notification or message with any other link is not from fastrdp. Approve only a login
+you started yourself (with the [waiting screen](auth-matrix.md#waiting-screen) the RDP
+window shows the same code).
 
 **Social engineering.** The danger of every approve button is an attacker who already
 has the password and asks the user, by phone or chat, to "approve the login quickly".
@@ -360,6 +377,8 @@ GPO path with mstsc, AD as the KDC, kpasswd through the proxy.
 | `/etc/fastrdp/guacamole-json.key` | 128-bit key shared by webgate and Guacamole (generated once) |
 | `/etc/fastrdp/webgate-cookie.secret` | signs the webgate's session cookies (generated once) |
 | `/var/lib/fastrdp/desktop-prefs/` | broker (root, 0700): desktop chosen for RDP logins per user ([RDP apps](#rdp-apps)) |
+| `/var/lib/fastrdp-webgate/notify/` | webgate (`_fastrdp-web`, 0700): users' notification subscriptions ([notifications.md](notifications.md)) |
+| `/etc/fastrdp/webgate-vapid.pem`, `/etc/fastrdp/webgate-ntfy.token` | Web Push (VAPID) key, ntfy token (`root:_fastrdp-web 0640`; notifications only) |
 | `/etc/nginx/sites-enabled/fastrdp-web.conf` | TLS front (same certificate as the RDP front-end) |
 | `fastrdp-kdcproxy.socket`, `fastrdp-kdcproxy.service` | KDC proxy (opt-in): socket `/run/fastrdp-kdcproxy.sock` (`root:www-data 0660`), gunicorn as a dynamic user |
 | `/etc/fastrdp/kdcproxy.conf`, `/etc/fastrdp/kdcproxy-gunicorn.conf.py` | KDC proxy: realm and KDCs, gunicorn settings (removed again with `fastrdp_web_kdcproxy: false`) |

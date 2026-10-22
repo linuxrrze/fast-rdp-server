@@ -442,6 +442,19 @@
           color-depth: 32
           resize-method: display-update
 
+    - name: Webgate.toml with approval notifications (ntfy with a token, web push)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/web_gateway/templates/webgate.toml.j2"
+        dest: "{{ render_out }}/webgate-notify.toml"
+        mode: "0644"
+      vars:
+        fastrdp_web_enabled: true
+        fastrdp_web_notify_backends: [ntfy, webpush]
+        fastrdp_web_notify_ntfy_url: https://ntfy.lab.example.com
+        fastrdp_web_notify_ntfy_token: tk_example
+        fastrdp_web_notify_rate_limit: 5/3600
+        fastrdp_web_notify_alert_on_deny: false
+
     - name: Nginx site without and with the KDC proxy (web_gateway)
       ansible.builtin.template:
         src: "{{ roles_dir }}/web_gateway/templates/nginx-fastrdp-web.conf.j2"

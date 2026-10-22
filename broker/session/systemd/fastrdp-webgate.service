@@ -11,6 +11,11 @@ Group=_fastrdp-web
 # Never _fastrdp-proxy: that group can read the TERMSRV keytab and the RDP TLS key.
 SupplementaryGroups=_fastrdp-broker
 Environment=PYTHONPATH=/usr/lib/fastrdp/python
+# /var/lib/fastrdp-webgate (owned by _fastrdp-web, 0700): users' subscriptions for
+# approval notifications (webgate.toml [notify], docs/notifications.md). The only place
+# the webgate writes (ProtectSystem=strict).
+StateDirectory=fastrdp-webgate
+StateDirectoryMode=0700
 ExecStartPre=/usr/bin/python3 -m fastrdp_webgate --check
 ExecStart=/usr/bin/python3 -m fastrdp_webgate
 Restart=on-failure

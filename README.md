@@ -25,7 +25,7 @@ Back-ends: [docs/backends/](docs/backends/README.md) · Tests: [tests/README.md]
 Plan: [docs/plan.md](docs/plan.md), backlog: [docs/backlog.md](docs/backlog.md) · Design: [docs/architecture.md](docs/architecture.md) ·
 Auth/MFA: [docs/auth-matrix.md](docs/auth-matrix.md) · Desktops/GPU:
 [docs/desktop-matrix.md](docs/desktop-matrix.md) · Performance: [docs/performance.md](docs/performance.md) ·
-Clients: [docs/client-guide.md](docs/client-guide.md), Windows/Kerberos: [docs/windows-clients.md](docs/windows-clients.md) · Web: [docs/web-access.md](docs/web-access.md) ·
+Clients: [docs/client-guide.md](docs/client-guide.md), Windows/Kerberos: [docs/windows-clients.md](docs/windows-clients.md) · Web: [docs/web-access.md](docs/web-access.md), approval notifications: [docs/notifications.md](docs/notifications.md) ·
 Smartcard/NLA: [docs/smartcard-nla.md](docs/smartcard-nla.md) · Passkeys/FIDO2: [docs/passkeys.md](docs/passkeys.md), WebAuthn redirection (research): [docs/webauthn-redirection.md](docs/webauthn-redirection.md) · Kerberized NFS homes: [docs/nfs-kerberos-homes.md](docs/nfs-kerberos-homes.md) · Kerberized SMB homes: [docs/smb-kerberos-homes.md](docs/smb-kerberos-homes.md) · Upstream reports: [docs/upstream.md](docs/upstream.md) · Packages/APT repository: [docs/packaging.md](docs/packaging.md) · Vendored dependencies: [docs/vendoring.md](docs/vendoring.md)
 
 ## Layout

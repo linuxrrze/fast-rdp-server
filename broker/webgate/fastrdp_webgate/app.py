@@ -11,10 +11,17 @@
   GET  <prefix>/approve    [mfa] mode web / push_or_web: fresh MFA sign-in at the IdP, then
                            the user's RDP logins waiting for approval (broker mfa_pending)
   POST <prefix>/approve    Approve or Deny one of them (broker mfa_decide)
+  GET  <prefix>/notify     [notify] backends: opt-in page for approval notifications
+                           (docs/notifications.md), signed in like the desktop chooser
+  POST <prefix>/notify     ntfy topic on/new/off, remove a subscription, test message
+  POST <prefix>/notify/webpush  store this browser's push subscription (notify.js)
+  GET  <prefix>/sw.js, <prefix>/manifest.webmanifest, <prefix>/static/<file>
+                           service worker, web app manifest, script and icons
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -26,9 +33,11 @@ import urllib.parse
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import guacjson
+from . import guacjson, pwa, webpush
 from .config import Config
 from .cookies import Signer
+from .notify import Notifier
+from .notifystore import MAX_SUBSCRIPTIONS, StoreError, TooManyError, check_account
 from .oidc import OidcError, Provider, pkce_pair
 
 log = logging.getLogger("fastrdp.webgate")
@@ -42,7 +51,20 @@ SAFE_USER = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SAFE_DESKTOP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 RDP_FILE = re.compile(r"/rdp/([A-Za-z0-9_-]{1,64})\.rdp")
+SAFE_SUB_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+SAFE_CODE = re.compile(r"^[0-9]{2}$")
 METHOD_LABELS = {"nla": "RDP client, Kerberos (NLA)", "tls": "RDP client, password"}
+# Notes on the opt-in page after a change (?m=...)
+NOTES = {"ntfy": "ntfy is set up: subscribe to the topic below.", "removed": "Removed.",
+         "test": "Test notification sent to your devices."}
+# Where a sign-in may return to (pending cookie "r"); anything else goes to the chooser.
+BACK_PATHS = ("/", "/notify")
+CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+# The opt-in page also runs its own script (no inline scripts), registers the service
+# worker, POSTs the subscription and links the manifest and icons.
+NOTIFY_CSP = ("default-src 'none'; script-src 'self'; connect-src 'self'; worker-src 'self'; "
+              "manifest-src 'self'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; "
+              "base-uri 'none'; frame-ancestors 'none'")
 
 
 class BrokerError(Exception):
@@ -103,8 +125,10 @@ def broker_mfa_decide(path: str, user: str, request_id: str, approve: bool, auth
 
 class Webgate:
     def __init__(self, cfg: Config, provider: Provider, signer: Signer, guac_key: bytes,
-                 cert_fingerprint: str | None = None):
+                 cert_fingerprint: str | None = None, notifier: Notifier | None = None):
         self.cfg = cfg
+        # [notify] backends set: approval notifications (notify.py), opt-in page /notify
+        self.notifier = notifier
         self.provider = provider
         self.signer = signer
         self.guac_key = guac_key
@@ -201,16 +225,15 @@ def make_handler(app: Webgate):
             log.info("%s %s", self.command, self.path.split("?", 1)[0])
 
         # -------------------------------------------------------- plumbing
-        def send(self, status: int, body: str = "", headers: list[tuple[str, str]] = (),
-                 content_type: str = "text/html; charset=utf-8"):
-            data = body.encode()
+        def send(self, status: int, body: str | bytes = "", headers: list[tuple[str, str]] = (),
+                 content_type: str = "text/html; charset=utf-8", csp: str = CSP, cache: str = "no-store"):
+            data = body.encode() if isinstance(body, str) else body
             self.send_response(status)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy",
-                             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+            self.send_header("Content-Security-Policy", csp)
             for k, v in headers:
                 self.send_header(k, v)
             if data:
@@ -272,6 +295,9 @@ def make_handler(app: Webgate):
                 return self.redirect(app.prefix + "/")
             if path == "/healthz":
                 return self.send(200, "ok")
+            if app.notifier and (path in ("/notify", "/sw.js", "/manifest.webmanifest")
+                                 or path.startswith("/static/")):
+                return self.notify_get(path, query)
             if m := RDP_FILE.fullmatch(path):
                 sess, _ = self.session()
                 if not sess:
@@ -279,14 +305,17 @@ def make_handler(app: Webgate):
                 return self.rdp_download(sess["user"], m.group(1))
             return self.error_page(404, "Not found.")
 
-        def start_login(self, approve: bool = False):
+        def start_login(self, approve: bool = False, back: str = "/"):
             """approve: sign-in for the approval page, always a fresh authentication at the
-            IdP (an IdP session, e.g. of the desktop chooser, is not enough)."""
+            IdP (an IdP session, e.g. of the desktop chooser, is not enough). back: the
+            page to return to after a chooser sign-in (BACK_PATHS)."""
             state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
             verifier, challenge = pkce_pair()
             data = {"s": state, "n": nonce, "v": verifier}
             if approve:
                 data.update(a=1, t=int(time.time()))
+            elif back != "/":
+                data["r"] = back
             pending = app.signer.dumps("pending", data, 600)
             self.redirect(app.provider.authorize_url(app.redirect_uri, state, nonce, challenge, fresh=approve),
                           [("Set-Cookie", app.cookie(PENDING_COOKIE, pending, 600))])
@@ -318,7 +347,8 @@ def make_handler(app: Webgate):
                 ])
             sess = app.signer.dumps("session", {"user": user}, app.cfg.webgate.session_lifetime)
             log.info("web login %s", user)
-            self.redirect(app.prefix + "/", [
+            back = pending.get("r") if pending.get("r") in BACK_PATHS else "/"
+            self.redirect(app.prefix + back, [
                 ("Set-Cookie", app.cookie(SESSION_COOKIE, sess, app.cfg.webgate.session_lifetime)),
                 ("Set-Cookie", app.cookie(PENDING_COOKIE, "", 0)),
             ])
@@ -348,6 +378,9 @@ def make_handler(app: Webgate):
                     f'</select></label> <button type="submit">Connect</button></form>'
                 )
             body += self.rdp_section(allowed, reply.get("rdp_desktop"), default, csrf)
+            if app.notifier:
+                body += (f'<p><a href="{app.prefix}/notify">Notifications for RDP login approvals</a> '
+                         "on your phone or in this browser</p>")
             body += (
                 f'<form method="post" action="{app.prefix}/logout">'
                 f'<input type="hidden" name="csrf" value="{csrf}">'
@@ -452,8 +485,10 @@ def make_handler(app: Webgate):
                             f'<button type="submit">Deny</button></form>')
                 address = html.escape(str(p.get("client_address") or "unknown address"))
                 method = html.escape(METHOD_LABELS.get(p.get("method"), "RDP client"))
+                code = str(p.get("code") or "")
+                code = f", code <b>{code}</b>" if SAFE_CODE.match(code) else ""
                 rows.append(f'<li style="margin:1rem 0">From <b>{address}</b> at <b>{started}</b> '
-                            f'({age} s ago)<br>{method}<br>{buttons}</li>')
+                            f'({age} s ago)<br>{method}{code}<br>{buttons}</li>')
             if not rows:
                 body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
                         "<p>No RDP login is waiting for your approval.</p>"
@@ -467,8 +502,8 @@ def make_handler(app: Webgate):
                            "start one new login and approve that one only.</p>")
             body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
                     "<p>Approve only a login you started yourself just now, from the address "
-                    "shown. If you did not start it, or somebody asked you to approve it, "
-                    "click <b>Deny</b>.</p>"
+                    "shown (and the code, if your RDP client shows one). If you did not start it, "
+                    "or somebody asked you to approve it, click <b>Deny</b>.</p>"
                     f"{warning}<ul style=\"padding-left:1.2rem\">{''.join(rows)}</ul>"
                     f'<p><a href="{app.prefix}/approve">Reload</a></p>')
             self.send(200, page("Approve RDP login", body))
@@ -511,10 +546,182 @@ def make_handler(app: Webgate):
                 return self.approval_message(200, "Login approved. Your RDP client continues now.")
             self.approval_message(200, "Login denied. If you did not start it, change your password.")
 
+        # --------------------------------------------------- notifications
+        def notify_get(self, path: str, query: dict):
+            if path == "/sw.js":
+                # scope <prefix>/ (the script's own directory); revalidated on every check
+                return self.send(200, pwa.service_worker(), content_type="text/javascript; charset=utf-8",
+                                 cache="no-cache")
+            if path == "/manifest.webmanifest":
+                return self.send(200, pwa.manifest(app.prefix), content_type="application/manifest+json",
+                                 cache="no-cache")
+            if path.startswith("/static/"):
+                found = pwa.static_file(path[len("/static/"):])
+                if found is None:
+                    return self.error_page(404, "Not found.")
+                return self.send(200, found[0], content_type=found[1], cache="no-cache", csp=NOTIFY_CSP)
+            sess, raw = self.session()
+            if not sess:
+                return self.start_login(back="/notify")
+            account = self.notify_account(sess["user"])
+            if account is not None:
+                self.notify_page(sess["user"], account, app.signer.csrf(raw), NOTES.get(query.get("m", ""), ""))
+
+        def notify_account(self, user: str) -> str | None:
+            """The local account the broker resolves the signed-in user to (it names that
+            account in its events), if the user may use RDP; else an error page and None."""
+            try:
+                account = broker_web_desktops(app.cfg.webgate.broker_socket, user).get("user")
+                return check_account(account)
+            except (OSError, BrokerError) as exc:
+                self.broker_refused("notification settings", user, exc)
+            except StoreError as exc:
+                log.warning("notifications for %s: %s", user, exc)
+                self.error_page(403, "Notifications are not available for your account.")
+            return None
+
+        def notify_page(self, user: str, account: str, csrf: str, note: str = ""):
+            n = app.cfg.notify
+            try:
+                subs = app.notifier.store.list(account)
+            except (StoreError, OSError) as exc:
+                log.error("subscriptions of %s not read: %s", account, exc)
+                return self.error_page(503, "Notification settings are not available right now.")
+            form = (f'<form method="post" action="{app.prefix}/notify" style="display:inline">'
+                    f'<input type="hidden" name="csrf" value="{csrf}">')
+            approve = app.cfg.webgate.public_url.rstrip("/") + app.prefix + "/approve"
+            body = (f"<p>Signed in as <b>{html.escape(user)}</b>.</p>"
+                    + (f"<p><b>{html.escape(note)}</b></p>" if note else "")
+                    + "<p>When an RDP login with your account waits for your approval, you get a "
+                    "notification that links to the approval page "
+                    f"<b>{html.escape(approve)}</b>. Approving still needs a new sign-in there. "
+                    "Approve only a login you started yourself (with the code, if your RDP client "
+                    "shows one); a notification you did not expect means somebody has your password.</p>"
+                    "<h2>Your devices</h2>")
+            kinds = {"webpush": "browser", "ntfy": "ntfy app"}
+            rows = []
+            for sub in subs:
+                if not SAFE_SUB_ID.match(sub["id"]):
+                    continue
+                created = time.strftime("%Y-%m-%d", time.gmtime(sub.get("created") or 0))
+                off = "" if sub["type"] in n.backends else " (not used: switched off on this server)"
+                rows.append(f'<li style="margin:.6rem 0">{html.escape(str(sub.get("label") or "unnamed"))} '
+                            f'({kinds[sub["type"]]}, since {created}){off} '
+                            f'{form}<input type="hidden" name="id" value="{sub["id"]}">'
+                            '<button name="action" value="remove">Remove</button></form></li>')
+            if rows:
+                body += (f'<ul style="padding-left:1.2rem">{"".join(rows)}</ul>'
+                         f'{form}<button name="action" value="test">Send a test notification</button></form>')
+            else:
+                body += "<p>None yet.</p>"
+            if "webpush" in n.backends and app.notifier.vapid_key is not None:
+                hashes = " ".join(hashlib.sha256(str(s.get("endpoint", "")).encode()).hexdigest()[:16]
+                                  for s in subs if s["type"] == "webpush")
+                body += (
+                    "<h2>This browser</h2>"
+                    f'<div id="webpush" data-key="{app.notifier.vapid_public_key}" data-csrf="{csrf}" '
+                    f'data-post="{app.prefix}/notify/webpush" data-sw="{app.prefix}/sw.js" '
+                    f'data-scope="{app.prefix}/" data-endpoints="{hashes}">'
+                    '<p id="wp-status">Checking this browser…</p>'
+                    '<p><label>Name of this device <input id="wp-label" maxlength="40" value="Browser"></label></p>'
+                    '<p><button id="wp-on" type="button" hidden>Turn on notifications in this browser</button></p>'
+                    "</div><noscript><p>Needs JavaScript.</p></noscript>"
+                    "<p>iPhone and iPad (iOS 16.4 or later): open this page in Safari, tap Share, "
+                    "then “Add to Home Screen”; open fastrdp from the home screen and turn "
+                    "notifications on there.</p>")
+            if "ntfy" in n.backends:
+                body += self.ntfy_section([s for s in subs if s["type"] == "ntfy"], form)
+            body += f'<p><a href="{app.prefix}/">Back to the desktops</a></p>'
+            head = (f'<link rel="manifest" href="{app.prefix}/manifest.webmanifest">'
+                    f'<link rel="apple-touch-icon" href="{app.prefix}/static/icon-192.png">'
+                    f'<script src="{app.prefix}/static/notify.js" defer></script>')
+            self.send(200, page("Login notifications", body, head), csp=NOTIFY_CSP)
+
+        def ntfy_section(self, subs: list[dict], form: str) -> str:
+            server = app.cfg.notify.ntfy_url
+            out = "<h2>ntfy app</h2>"
+            if not subs:
+                return out + ("<p>Get the notifications in the ntfy app (Android, iOS) or ntfy's web app.</p>"
+                              f'{form}<button name="action" value="ntfy-on">Set up ntfy</button></form>')
+            topic = str(subs[0].get("topic", ""))
+            url = f"{server}/{topic}"
+            host = urllib.parse.urlsplit(server).netloc
+            qr = pwa.qr_svg(url) or ""
+            return out + (
+                "<p>In the ntfy app: “Subscribe to topic”, topic "
+                f"<code>{html.escape(topic)}</code>, “Use another server”: <code>{html.escape(server)}</code> "
+                "(with the user name and password your administrator gave you for ntfy). Or scan or open:</p>"
+                f'<p><a href="{html.escape(url)}">{html.escape(url)}</a> '
+                f'(app link: <a href="ntfy://{html.escape(host)}/{html.escape(topic)}">ntfy://…</a>)</p>'
+                f"<p>{qr}</p>"
+                "<p>Keep the topic to yourself: whoever knows it and may read on that server sees "
+                "your notifications. A new topic stops the old one.</p>"
+                f'{form}<button name="action" value="ntfy-on">New topic</button></form> '
+                f'{form}<input type="hidden" name="id" value="{subs[0]["id"]}">'
+                '<button name="action" value="remove">Stop ntfy notifications</button></form>')
+
+        def notify_post(self, user: str, form: dict):
+            account = self.notify_account(user)
+            if account is None:
+                return
+            action, store = form.get("action"), app.notifier.store
+            try:
+                if action == "ntfy-on" and "ntfy" in app.cfg.notify.backends:
+                    # 128 random bits: the topic name is what keeps other readers out
+                    store.add(account, {"type": "ntfy", "label": "ntfy",
+                                        "topic": "fastrdp-" + secrets.token_urlsafe(16)})
+                    log.info("%s: ntfy topic for approval notifications created", account)
+                    note = "ntfy"
+                elif action == "remove" and SAFE_SUB_ID.match(form.get("id", "")):
+                    removed = store.remove(account, form["id"])
+                    log.info("%s: notification subscription %s", account, "removed" if removed else "not found")
+                    note = "removed"
+                elif action == "test":
+                    count = app.notifier.test(account)
+                    log.info("%s: test notification to %d subscription(s)", account, count)
+                    note = "test"
+                else:
+                    return self.error_page(400, "Bad request.")
+            except TooManyError as exc:
+                log.warning("notification settings of %s not stored: %s", account, exc)
+                return self.error_page(409, "Not stored: remove a device first (at most "
+                                            f"{MAX_SUBSCRIPTIONS}).")
+            except (StoreError, OSError) as exc:
+                log.error("notification settings of %s not stored: %s", account, exc)
+                return self.error_page(503, "Notification settings are not available right now.")
+            self.redirect(f"{app.prefix}/notify?m={note}")
+
+        def webpush_post(self, user: str, form: dict):
+            """notify.js: the browser's push subscription. Plain-text answers for the script."""
+            plain = "text/plain; charset=utf-8"
+            if "webpush" not in app.cfg.notify.backends or app.notifier.vapid_key is None:
+                return self.send(404, "Web Push is not enabled here.", content_type=plain)
+            endpoint, p256dh, auth = form.get("endpoint", ""), form.get("p256dh", ""), form.get("auth", "")
+            label = re.sub(r"[^\w .,()@+-]", "", form.get("label", ""))[:40].strip() or "Browser"
+            if len(endpoint) > 1024 or not webpush.endpoint_allowed(endpoint, app.cfg.notify.webpush_allowed_hosts):
+                log.warning("%s: web push endpoint refused (not a known push service): %.80s", user, endpoint)
+                return self.send(400, "This browser's push service is not allowed here.", content_type=plain)
+            try:
+                webpush.check_subscription_keys(p256dh, auth)
+            except webpush.WebPushError:
+                return self.send(400, "Bad subscription.", content_type=plain)
+            try:
+                account = check_account(broker_web_desktops(app.cfg.webgate.broker_socket, user).get("user"))
+                app.notifier.store.add(account, {"type": "webpush", "label": label, "endpoint": endpoint,
+                                                 "p256dh": p256dh, "auth": auth})
+            except (OSError, BrokerError, StoreError) as exc:
+                log.warning("%s: web push subscription not stored: %s", user, exc)
+                return self.send(403 if isinstance(exc, (BrokerError, StoreError)) else 503,
+                                 "Not stored.", content_type=plain)
+            log.info("%s: web push subscription %r stored (%s)", account, label,
+                     urllib.parse.urlsplit(endpoint).hostname)
+            self.send(200, "ok", content_type=plain)
+
         # ---------------------------------------------------------- POST
         def do_POST(self):
             path, _ = self.route()
-            if path not in ("/connect", "/logout", "/approve", "/rdp-desktop"):
+            notify_paths = ("/notify", "/notify/webpush") if app.notifier else ()
+            if path not in ("/connect", "/logout", "/approve", "/rdp-desktop", *notify_paths):
                 return self.error_page(404, "Not found.")
             try:
                 length = int(self.headers.get("Content-Length", "0") or 0)
@@ -532,6 +739,10 @@ def make_handler(app: Webgate):
                 return self.error_page(403, "Form expired, please try again.")
             if path == "/rdp-desktop":
                 return self.set_rdp_desktop(sess["user"], form)
+            if path == "/notify":
+                return self.notify_post(sess["user"], form)
+            if path == "/notify/webpush":
+                return self.webpush_post(sess["user"], form)
             if path == "/logout":
                 target = app.provider.logout_url(app.cfg.webgate.public_url.rstrip("/") + app.prefix + "/")
                 return self.redirect(target or app.prefix + "/",
@@ -554,11 +765,11 @@ def make_handler(app: Webgate):
     return Handler
 
 
-def page(title: str, body: str) -> str:
+def page(title: str, body: str, head: str = "") -> str:
     return (
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
         '<meta name=viewport content="width=device-width,initial-scale=1">'
-        f"<title>{html.escape(title)}</title><style>"
+        f"<title>{html.escape(title)}</title>{head}<style>"
         "body{font:16px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;"
         "color:#1d1d1f;background:#fff}button,select{font:inherit;padding:.3rem .6rem}"
         "@media(prefers-color-scheme:dark){body{color:#eee;background:#1d1d1f}a{color:#8ab4ff}}"
@@ -569,5 +780,7 @@ def page(title: str, body: str) -> str:
 def serve(app: Webgate) -> None:
     host, port = app.cfg.webgate.listen.rsplit(":", 1)
     httpd = ThreadingHTTPServer((host.strip("[]"), int(port)), make_handler(app))
+    if app.notifier:
+        app.notifier.start()
     log.info("listening on %s", app.cfg.webgate.listen)
     httpd.serve_forever()

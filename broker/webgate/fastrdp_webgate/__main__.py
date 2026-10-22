@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,29 @@ from . import guacjson
 from .app import Webgate, serve
 from .cookies import Signer
 from .oidc import OidcError, Provider
+
+
+def make_notifier(cfg: config_mod.Config):
+    """Approval notifications ([notify] backends; docs/notifications.md), or None."""
+    n = cfg.notify
+    if not n.backends:
+        return None
+    from . import webpush
+    from .notify import Notifier
+    from .notifystore import SubscriptionStore
+
+    key = None
+    if "webpush" in n.backends:
+        with open(n.vapid_private_key_file, "rb") as fh:
+            try:
+                key = webpush.load_vapid_key(fh.read())
+            except webpush.WebPushError as exc:
+                raise config_mod.ConfigError(f"{n.vapid_private_key_file}: {exc}") from None
+    token = config_mod.read_secret(n.ntfy_token_file) if "ntfy" in n.backends and n.ntfy_token_file else None
+    if not os.path.isdir(n.state_dir) or not os.access(n.state_dir, os.W_OK):
+        raise config_mod.ConfigError(f"notify.state_dir {n.state_dir} must be a directory the webgate "
+                                     "may write (systemd StateDirectory=fastrdp-webgate)")
+    return Notifier(cfg, SubscriptionStore(n.state_dir), vapid_key=key, ntfy_token=token)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
             fingerprint = config_mod.read_secret(cfg.guacamole.cert_fingerprint_file)
             if not fingerprint.startswith("sha256:"):
                 raise config_mod.ConfigError("cert fingerprint must look like sha256:aa:bb:...")
+        notifier = make_notifier(cfg)
         provider.discover()
     except (OSError, ValueError, config_mod.ConfigError, OidcError) as exc:
         logging.error("startup: %s", exc)
@@ -39,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         print("config ok")
         return 0
-    serve(Webgate(cfg, provider, signer, key, fingerprint))
+    serve(Webgate(cfg, provider, signer, key, fingerprint, notifier))
     return 0
 
 

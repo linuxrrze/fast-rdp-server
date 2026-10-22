@@ -8,8 +8,10 @@ proxy module what the user should see: lines of text, a countdown and, with web 
 a QR code of the approval page. Texts are templates in the configured language, or in the
 language of the client's keyboard layout ([ui] language_from_keyboard), with these
 placeholders: {user} (local account), {approve_url} ([ui] approve_url), {timeout}
-(seconds), {method} (push, web, push_or_web), {desktop} (the desktop's label). A line that
-names {approve_url} is left out while approve_url is "". """
+(seconds), {method} (push, web, push_or_web), {desktop} (the desktop's label), {code}
+(the web approval's two-digit correlation code, also on the approval page and in
+notifications; "" for a push). A line that names {approve_url} is left out while
+approve_url is "", one that names {code} while there is no code. """
 
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from . import qrcode
 from .config import UiSection
 
 TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "qr_hint", "session_start", "countdown")
-PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop")
+PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code")
 MAX_TEMPLATE = 2000
 MAX_LINES = 12      # the module shows at most 16 after wrapping
 MAX_LINE = 200      # characters per line
@@ -31,11 +33,13 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
                     "Confirm the push notification for {user} on your phone.",
         "mfa_web": "Approve the sign-in\n"
                    "Sign in on the approval page and approve this login:\n"
-                   "{approve_url}",
+                   "{approve_url}\n"
+                   "Login code: {code}",
         "mfa_push_or_web": "Approve the sign-in\n"
                            "Confirm the push notification on your phone, or sign in on the "
                            "approval page and approve this login:\n"
-                           "{approve_url}",
+                           "{approve_url}\n"
+                           "Login code: {code}",
         "qr_hint": "Scan the code to open the approval page on your phone.",
         "session_start": "Connecting to your desktop ({desktop})…",
         "countdown": "Time left:",
@@ -47,12 +51,14 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "mfa_web": "Anmeldung bestätigen\n"
                    "Melden Sie sich auf der Freigabeseite an und bestätigen Sie diese "
                    "Anmeldung:\n"
-                   "{approve_url}",
+                   "{approve_url}\n"
+                   "Anmeldecode: {code}",
         "mfa_push_or_web": "Anmeldung bestätigen\n"
                            "Bestätigen Sie die Push-Benachrichtigung auf Ihrem Telefon oder "
                            "melden Sie sich auf der Freigabeseite an und bestätigen Sie "
                            "diese Anmeldung:\n"
-                           "{approve_url}",
+                           "{approve_url}\n"
+                           "Anmeldecode: {code}",
         "qr_hint": "Code scannen, um die Freigabeseite auf dem Telefon zu öffnen.",
         "session_start": "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…",
         "countdown": "Verbleibend:",
@@ -115,13 +121,17 @@ class WaitingTexts:
         for line in self.texts[lang][key].split("\n"):
             if "{approve_url}" in line and not self.cfg.approve_url:
                 continue
+            if "{code}" in line and not values["code"]:
+                continue
             out.append(line.format(**values)[:MAX_LINE])
         return out[:MAX_LINES]
 
-    def mfa(self, lang: str, method: str, timeout: int, user: str) -> dict:
-        """{"progress": "mfa", ...} for a push, web approval or both (method)."""
+    def mfa(self, lang: str, method: str, timeout: int, user: str, code: str | None = None) -> dict:
+        """{"progress": "mfa", ...} for a push, web approval or both (method); `code`: the
+        web approval's correlation code."""
         msg = {"progress": "mfa", "method": method, "timeout_s": int(timeout),
-               "lines": self.lines(lang, f"mfa_{method}", user=user, timeout=int(timeout), method=method),
+               "lines": self.lines(lang, f"mfa_{method}", user=user, timeout=int(timeout), method=method,
+                                   code=code or ""),
                "countdown": self.texts[lang]["countdown"]}
         if method in ("web", "push_or_web") and self.cfg.approve_url:
             msg["approve_url"] = self.cfg.approve_url

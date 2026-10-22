@@ -23,17 +23,17 @@ YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}$")
 
 
 # Called once a login waits for the user: (method "push" | "web" | "push_or_web", seconds
-# the wait may take). The broker turns it into a progress message for the proxy's waiting
-# screen (ui.py); it must not block.
-Notify = Callable[[str, int], None]
+# the wait may take, the web approval's correlation code or None). The broker turns it
+# into a progress message for the proxy's waiting screen (ui.py); it must not block.
+Notify = Callable[[str, int, "str | None"], None]
 
 
-def notify_safely(notify: Notify | None, method: str, timeout: float) -> None:
+def notify_safely(notify: Notify | None, method: str, timeout: float, code: str | None = None) -> None:
     """The waiting screen is a courtesy: its errors never touch the login."""
     if notify is None:
         return
     try:
-        notify(method, max(0, int(timeout)))
+        notify(method, max(0, int(timeout)), code)
     except Exception as exc:
         log.debug("progress message not sent: %s", exc)
 
@@ -80,6 +80,80 @@ class PendingApproval:
     created: float              # monotonic (age, expiry)
     created_wall: float         # time.time() (compared with the IdP's auth_time)
     future: asyncio.Future      # True = approved, False = denied
+    code: str = ""              # two digits: waiting screen, approval page, notification
+
+
+class ApprovalEvents:
+    """Events about web approvals for fastrdp-webgate's notifier (op mfa_events, protocol.py):
+    {"event": "pending", ...} when a login starts waiting, {"event": "finished", ...} when
+    it ends. A hint for the user's phone only: queued without waiting (put_nowait), dropped
+    and counted when the queue is full, never awaited by a login.
+
+    Events are kept only while a consumer polls: from its first mfa_events until
+    CONSUMER_GONE seconds after its last one ended (a webgate without notification
+    backends never polls, so nothing piles up). One consumer is expected; two would
+    share the events between them. Memory only; the broker's event loop only."""
+
+    MAX_QUEUED = 256
+    MAX_BATCH = 100      # events per reply (well below the 256 KiB line the webgate reads)
+    MAX_WAIT = 25        # seconds a poll may wait for the first event
+    CONSUMER_GONE = 300
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
+                 maxsize: int = MAX_QUEUED):
+        self.clock = clock
+        self.wall = wall
+        self.queue: asyncio.Queue = asyncio.Queue(maxsize)
+        self.polling = 0
+        self.last_poll: float | None = None       # monotonic, end of the last poll
+        self.last_poll_wall: float | None = None  # time.time(), for status
+        self.sent = 0
+        self.dropped = 0
+
+    def consumer(self) -> bool:
+        return self.polling > 0 or (self.last_poll is not None
+                                    and self.clock() - self.last_poll < self.CONSUMER_GONE)
+
+    def put(self, event: dict) -> None:
+        if not self.consumer():
+            while not self.queue.empty():   # left over from a consumer that went away
+                self.queue.get_nowait()
+            return
+        try:
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            self.dropped += 1
+            if self.dropped == 1 or self.dropped % 100 == 0:
+                log.warning("web approval notifications: queue full, %d event(s) dropped so far "
+                            "(is fastrdp-webgate's notifier stuck?)", self.dropped)
+
+    async def get(self, wait_s: float, keep: Callable[[dict], bool] = lambda e: True) -> list[dict]:
+        """Queued events (oldest first, at most MAX_BATCH), waiting up to `wait_s` seconds
+        for the first one; [] if none came. `keep` leaves out events no longer worth
+        sending (a login that ended before anybody heard of it)."""
+        self.polling += 1
+        self.last_poll_wall = self.wall()
+        try:
+            events: list[dict] = []
+            if self.queue.empty() and wait_s > 0:
+                try:
+                    events.append(await asyncio.wait_for(self.queue.get(), wait_s))
+                except TimeoutError:
+                    pass
+            while len(events) < self.MAX_BATCH and not self.queue.empty():
+                events.append(self.queue.get_nowait())
+        finally:
+            self.polling -= 1
+            self.last_poll = self.clock()
+            self.last_poll_wall = self.wall()
+        events = [e for e in events if keep(e)]
+        self.sent += len(events)
+        return events
+
+    def status(self) -> dict:
+        return {"consumer": self.consumer(), "queued": self.queue.qsize(), "sent": self.sent,
+                "dropped": self.dropped,
+                "last_poll": int(self.last_poll_wall) if self.last_poll_wall is not None else None}
 
 
 class WebApprovals:
@@ -87,8 +161,10 @@ class WebApprovals:
     page ([mfa] mode web / push_or_web). An entry exists while its login waits: removed
     on the decision, on the timeout and when the proxy abandons the login (cancelled).
     Decided, expired and abandoned ids are remembered for FINISHED_KEEP seconds so that
-    a late click gets a clear answer. Memory only; the broker's event loop only, so no
-    locking."""
+    a late click gets a clear answer. Every entry gets a two-digit correlation code that
+    the waiting screen, the approval page and the notification show, so the user can
+    match them. Registration and end are reported to `events` (the webgate's
+    notifications). Memory only; the broker's event loop only, so no locking."""
 
     FINISHED_KEEP = 300
 
@@ -99,6 +175,21 @@ class WebApprovals:
         self.wall = wall
         self.pending: dict[str, PendingApproval] = {}
         self.finished: dict[str, tuple[str, str, float]] = {}  # id -> (user, outcome, when)
+        self.events = ApprovalEvents(clock, wall)
+
+    def new_code(self, user: str) -> str:
+        """Two random digits, unlike the codes of the user's other pending logins (as far
+        as 100 codes go)."""
+        taken = {e.code for e in self.pending.values() if e.user == user}
+        for _ in range(20):
+            code = f"{secrets.randbelow(100):02d}"
+            if code not in taken:
+                break
+        return code
+
+    def still_news(self, event: dict) -> bool:
+        """A "pending" event is sent only while its login still waits."""
+        return event.get("event") != "pending" or event.get("id") in self.pending
 
     def prune(self) -> None:
         now = self.clock()
@@ -108,23 +199,29 @@ class WebApprovals:
     def _finish(self, entry: PendingApproval, outcome: str) -> None:
         if self.pending.pop(entry.id, None) is not None:
             self.finished[entry.id] = (entry.user, outcome, self.clock())
+            self.events.put({"event": "finished", "id": entry.id, "user": entry.user, "outcome": outcome})
 
     def count(self, user: str) -> int:
         return sum(1 for e in self.pending.values() if e.user == user)
 
     async def wait(self, user: str, method: str, client_address: str | None,
-                   notify: Notify | None = None) -> str:
+                   notify: Notify | None = None, code: str | None = None) -> str:
         """Register the login and wait for its decision. Returns "web"; raises MfaDenied
         (denied: mfa_failed, no decision in time: mfa_timeout). Cancelling (the proxy
-        dropped the login) removes the entry. `notify`: told ("web", timeout) once the
-        login is pending."""
+        dropped the login) removes the entry. `notify`: told ("web", timeout, code) once
+        the login is pending. `code`: the correlation code (default: a new one)."""
         self.prune()
         entry = PendingApproval(secrets.token_urlsafe(16), user, method, client_address,
-                                self.clock(), self.wall(), asyncio.get_running_loop().create_future())
+                                self.clock(), self.wall(), asyncio.get_running_loop().create_future(),
+                                code or self.new_code(user))
         self.pending[entry.id] = entry
         timeout = self.cfg.web_approval_timeout
-        log.info("web approval pending for %s from %s (%s login, %ds)", user, client_address, method, timeout)
-        notify_safely(notify, "web", timeout)
+        log.info("web approval pending for %s from %s (%s login, %ds, code %s)", user, client_address,
+                 method, timeout, entry.code)
+        self.events.put({"event": "pending", "id": entry.id, "user": user, "method": method,
+                         "client_address": client_address, "created": int(entry.created_wall),
+                         "timeout_s": int(timeout), "code": entry.code})
+        notify_safely(notify, "web", timeout, entry.code)
         try:
             approved = await asyncio.wait_for(entry.future, timeout)
         except TimeoutError:
@@ -144,7 +241,7 @@ class WebApprovals:
         now = self.clock()
         return [
             {"id": e.id, "method": e.method, "client_address": e.client_address,
-             "age_s": int(now - e.created), "single_pending_conflict": conflict}
+             "age_s": int(now - e.created), "single_pending_conflict": conflict, "code": e.code}
             for e in sorted(self.pending.values(), key=lambda e: e.created) if e.user == user
         ]
 
@@ -246,12 +343,13 @@ class SecondFactor:
         A Deny or a refused push fails the login. A push that cannot start (no push-capable
         token, privacyIDEA unreachable) or runs out of push_timeout leaves the web approval
         waiting, whose web_approval_timeout bounds the whole wait. `notify` hears
-        ("push_or_web", web_approval_timeout) at the start, and ("web", the time left) when
-        only the web approval is left."""
+        ("push_or_web", web_approval_timeout, code) at the start, and ("web", the time left,
+        code) when only the web approval is left."""
         started = time.monotonic()
-        notify_safely(notify, "push_or_web", self.cfg.web_approval_timeout)
+        code = self.approvals.new_code(account)
+        notify_safely(notify, "push_or_web", self.cfg.web_approval_timeout, code)
         push = asyncio.ensure_future(self.push(user, password))
-        web = asyncio.ensure_future(self.approvals.wait(account, method, client_address))
+        web = asyncio.ensure_future(self.approvals.wait(account, method, client_address, code=code))
         try:
             await asyncio.wait({push, web}, return_when=asyncio.FIRST_COMPLETED)
             if not web.done():
@@ -265,7 +363,7 @@ class SecondFactor:
                     raise exc
                 log.log(logging.WARNING if exc else logging.INFO, "push for %s: %s; waiting for web approval only",
                         user, exc or "not confirmed in time")
-                notify_safely(notify, "web", self.cfg.web_approval_timeout - (time.monotonic() - started))
+                notify_safely(notify, "web", self.cfg.web_approval_timeout - (time.monotonic() - started), code)
             return await web
         finally:
             for task in (push, web):

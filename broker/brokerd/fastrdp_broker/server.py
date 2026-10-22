@@ -20,7 +20,7 @@ from .config import WEB_APPROVAL_MODES, Config
 from .desktopprefs import DesktopPrefs, PrefsError
 from .grace import GraceKey, ReconnectGrace
 from .identity import IdentityError, LocalUser
-from .mfa import ApprovalError, MfaDenied, SecondFactor, split_otp
+from .mfa import ApprovalError, ApprovalEvents, MfaDenied, SecondFactor, split_otp
 from .protocol import ProtocolError, int_field, peer_uid, read_message, str_field, write_message
 from .state import StateStore
 from .tokens import WEB_TOKEN_PREFIX, TokenStore
@@ -323,9 +323,9 @@ class Broker:
         user, password, otp, mfa_done = await self.first_factor(msg)
         lang = self.waiting.language(int_field(msg, "keyboard_layout", 0, 0xFFFFFFFF)) if progress else ""
 
-        def notify(method: str, timeout: int) -> None:
+        def notify(method: str, timeout: int, code: str | None = None) -> None:
             assert progress is not None
-            progress(self.waiting.mfa(lang, method, timeout, user.name))
+            progress(self.waiting.mfa(lang, method, timeout, user.name, code))
 
         if not identity.user_allowed(user, self.cfg.auth):
             proven = msg.get("method") == "nla" or mfa_done is not None
@@ -547,6 +547,14 @@ class Broker:
                  entry.client_address, entry.method, "approved" if approve else "DENIED")
         return {"ok": True, "approved": approve}
 
+    async def mfa_events(self, msg: dict) -> dict:
+        """fastrdp-webgate's notifier: events of web approvals (mfa.ApprovalEvents), waiting
+        up to `wait_s` seconds for the first. One consumer expected."""
+        wait_s = int_field(msg, "wait_s", 0, ApprovalEvents.MAX_WAIT)
+        approvals = self.mfa.approvals
+        events = await approvals.events.get(wait_s or 0, approvals.still_news)
+        return {"ok": True, "events": events}
+
     # ---------------------------------------------------------------- admin
     async def reap(self) -> None:
         """Drop records of sessions that no longer exist (e.g. xrdp sessions ended in-session)."""
@@ -566,6 +574,7 @@ class Broker:
             "pending_web_tokens": len(self.web_tokens),
             "mfa_grace_entries": len(self.grace),
             "mfa_pending_approvals": len(self.mfa.approvals),
+            "mfa_events": self.mfa.approvals.events.status(),
             "tickets": await self.session_tickets(),
         }
 
@@ -681,6 +690,8 @@ class Broker:
                         reply = self.mfa_pending(msg)
                     elif op == "mfa_decide" and self.web_uid is not None and uid == self.web_uid:
                         reply = self.mfa_decide(msg)
+                    elif op == "mfa_events" and self.web_uid is not None and uid == self.web_uid:
+                        reply = await self.mfa_events(msg)
                     elif op == "status" and uid == 0:
                         reply = await self.status()
                     elif op == "tickets" and uid == 0:

@@ -257,4 +257,10 @@ def format_status(reply: dict) -> list[str]:
                  f"  pending web tokens: {reply.get('pending_web_tokens', 0)}"
                  f"  MFA grace entries: {reply.get('mfa_grace_entries', 0)}"
                  f"  MFA web approvals pending: {reply.get('mfa_pending_approvals', 0)}")
+    ev = reply.get("mfa_events")
+    if isinstance(ev, dict) and ev.get("last_poll") is not None:
+        # fastrdp-webgate's notifier (mfa_events); nothing while no notifier ever polled
+        lines.append(f"approval notifications: events sent {ev.get('sent', 0)}, dropped {ev.get('dropped', 0)},"
+                     f" queued {ev.get('queued', 0)}, last poll {_when(ev.get('last_poll'))} UTC"
+                     f"{'' if ev.get('consumer') else ' (notifier gone)'}")
     return lines

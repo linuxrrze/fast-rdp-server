@@ -601,6 +601,7 @@ class CommonChecks(unittest.TestCase):
 
     def test_failures(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        web = dict(ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True)
         cases = {
             "no realm": {"fastrdp_domain": "example.com"},
             "default desktop not offered": dict(ok, fastrdp_default_desktop="gnome"),
@@ -678,6 +679,25 @@ class CommonChecks(unittest.TestCase):
             ".rdp file host with a port": dict(ok, fastrdp_web_rdp_host="rdp1.example.com:3389"),
             ".rdp file port out of range": dict(ok, fastrdp_web_rdp_port=65536),
             ".rdp file port not a number": dict(ok, fastrdp_web_rdp_port="rdp"),
+            "notifications without web approval": dict(ok, fastrdp_web_enabled=True,
+                                                       fastrdp_web_notify_backends=["ntfy"],
+                                                       fastrdp_web_notify_ntfy_url="https://ntfy.example.com"),
+            "notifications without web access": dict(ok, fastrdp_mfa_mode="push", fastrdp_privacyidea_url="https://pi",
+                                                     fastrdp_web_notify_backends=["webpush"]),
+            "unknown notification backend": dict(web, fastrdp_web_notify_backends=["sms"]),
+            "notification backends as a string": dict(web, fastrdp_web_notify_backends="webpush"),
+            "notification backend twice": dict(web, fastrdp_web_notify_backends=["webpush", "webpush"]),
+            "ntfy without a URL": dict(web, fastrdp_web_notify_backends=["ntfy"]),
+            "ntfy over http": dict(web, fastrdp_web_notify_backends=["ntfy"],
+                                   fastrdp_web_notify_ntfy_url="http://ntfy.example.com"),
+            "web push without https": dict(web, fastrdp_web_notify_backends=["webpush"],
+                                           fastrdp_web_public_url="http://rdp1.example.com"),
+            "web push subject not mailto": dict(web, fastrdp_web_notify_backends=["webpush"],
+                                                fastrdp_web_notify_vapid_subject="root"),
+            "notification rate limit malformed": dict(web, fastrdp_web_notify_rate_limit="3"),
+            "notification rate limit window too short": dict(web, fastrdp_web_notify_rate_limit="3/10"),
+            "notification rate limit zero": dict(web, fastrdp_web_notify_rate_limit="0/600"),
+            "notification alert not a bool": dict(web, fastrdp_web_notify_alert_on_deny="maybe"),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -717,6 +737,14 @@ class CommonChecks(unittest.TestCase):
             with self.subTest(grace):
                 self.assertEqual(self.run_checks(**ok, fastrdp_mfa_reconnect_grace=grace,
                                                  fastrdp_mfa_reconnect_grace_same_address=False), 0)
+
+    def test_notifications_pass(self):
+        web = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_web_enabled": True}
+        self.assertEqual(self.run_checks(**web, fastrdp_mfa_mode="web", fastrdp_web_notify_backends=["ntfy", "webpush"],
+                                         fastrdp_web_notify_ntfy_url="https://ntfy.example.com:8443/",
+                                         fastrdp_web_notify_rate_limit="10/3600"), 0)
+        self.assertEqual(self.run_checks(**web, fastrdp_mfa_mode="push_or_web", fastrdp_privacyidea_url="https://pi",
+                                         fastrdp_web_notify_backends=["webpush"]), 0)
 
     def test_web_approval_passes(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com", "fastrdp_web_enabled": True}
@@ -804,6 +832,21 @@ class WebgateToml(unittest.TestCase):
         self.assertEqual(cfg.guacamole.rdp_parameters,
                          {"enable-audio-input": "true", "enable-font-smoothing": "true", "color-depth": "32",
                           "resize-method": "display-update"})
+
+    def test_notifications_off_by_default(self):
+        n = webgate_config.parse(toml("webgate.toml")).notify
+        self.assertEqual((n.backends, n.ntfy_token_file), ([], ""))
+
+    def test_notifications(self):
+        n = webgate_config.parse(toml("webgate-notify.toml")).notify
+        self.assertEqual(n.backends, ["ntfy", "webpush"])
+        self.assertEqual((n.ntfy_url, n.ntfy_token_file), ("https://ntfy.lab.example.com",
+                                                           "/etc/fastrdp/webgate-ntfy.token"))
+        self.assertEqual((n.vapid_private_key_file, n.vapid_subject),
+                         ("/etc/fastrdp/webgate-vapid.pem", "mailto:root@rdp1.lab.example.com"))
+        self.assertEqual((n.rate(), n.alert_on_deny, n.show_code, n.state_dir),
+                         ((5, 3600), False, True, "/var/lib/fastrdp-webgate"))
+        self.assertNotIn("tk_example", (OUT / "webgate-notify.toml").read_text())   # the token stays in its file
 
     def test_rdp_port_follows_the_proxy_port(self):
         cfg = webgate_config.parse(toml("webgate-ports.toml"))

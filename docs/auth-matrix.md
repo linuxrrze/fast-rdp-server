@@ -218,11 +218,18 @@ first wins and the other is cancelled. Both need the web gateway
    **fresh** sign-in (`prompt=login`, `max_age=0`) with the usual MFA proof
    (`acr`/`amr`: passkey, TOTP, WebAuthn, privacyIDEA), and checks the ID token's
    `auth_time`, so an existing Keycloak session does not count.
-4. The page lists the user's pending logins with client address, start time and login
-   method. **Approve** lets the broker continue (session start or reuse, as after a
+4. The page lists the user's pending logins with client address, start time, login
+   method and a two-digit **code**, the same one the [waiting screen](#waiting-screen) and
+   the notification show, so the user can tell which login is theirs. **Approve** lets the broker continue (session start or reuse, as after a
    push); **Deny** fails the login with `mfa_failed` (Set Error Info 0x7). Without a
    decision within `fastrdp_mfa_web_approval_timeout` the login fails with
    `mfa_timeout` (0x409). Closing the RDP client removes the pending login.
+
+**Notifications (opt-in):** users who turned them on at `https://<host>/web/notify` get
+a phone or browser notification at step 2, "approve your RDP login from 192.0.2.10
+(code 42)", linking to the fixed `https://<host>/web/approve`; steps 3 and 4 stay the
+same, the notification approves nothing. ntfy and Web Push, rate limit, privacy:
+[notifications.md](notifications.md) (`fastrdp_web_notify_backends`, default off).
 
 | Variable (broker key) | Default | Meaning |
 |---|---|---|
@@ -258,7 +265,10 @@ Security notes:
 - The approval cookie (`fastrdp_web_approve`, 5 minutes) only allows decisions, no
   desktop access, and is separate from the desktop chooser's sign-in.
 - `fastrdpctl status` shows the number of pending approvals
-  (`mfa_pending_approvals`). Pending logins are memory only: a broker restart fails them.
+  (`mfa_pending_approvals`) and, with notifications, the events sent and dropped.
+  Pending logins are memory only: a broker restart fails them.
+- The code is a convenience for telling logins apart, not a secret (two digits); the
+  safeguards are the fresh sign-in, `single_pending` and the user's judgement.
 
 ### Waiting screen
 
@@ -272,7 +282,7 @@ Bitmap Updates, which every client must accept ([rdp-spec-conformance.md](rdp-sp
 |---|---|
 | broker called | "Signing you in…" (the module's own text; also all an older broker ever gives) |
 | push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
-| web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, a **QR code** of it ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
+| web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the URL ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
 | `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
 | login granted | the panel is painted over in black just before the back-end's desktop arrives |
@@ -301,7 +311,8 @@ fastrdp_ui_texts:
 ```
 
 Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `qr_hint`, `session_start`,
-`countdown`; placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}`;
+`countdown`; placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}`
+`{code}` (the web approval's two-digit code; a line naming it is left out without one);
 `\n` starts a new line; a language without some keys takes the English ones. The URL
 is `fastrdp_ui_approve_url` (default `<fastrdp_web_public_url>/web/approve` with the web
 gateway, else none: no URL, no QR code); `fastrdp_ui_qr_code: false` leaves the code out.

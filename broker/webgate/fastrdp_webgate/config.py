@@ -81,11 +81,46 @@ class GuacamoleSection:
     rdp_parameters: dict[str, str] = field(default_factory=dict)
 
 
+NOTIFY_BACKENDS = ("ntfy", "webpush")
+# Push services of the browsers (subscription endpoints): Chrome/Edge on Android, Chrome,
+# Opera, Samsung (FCM), Firefox (Mozilla autopush), Safari/iOS (Apple), Edge on Windows (WNS).
+# The webgate POSTs to an endpoint the browser chose, so only these hosts and their
+# subdomains are accepted; never internal addresses.
+DEFAULT_PUSH_HOSTS = ["fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com",
+                      "notify.windows.com"]
+RATE_LIMIT = re.compile(r"([0-9]{1,3})/([0-9]{1,5})")
+
+
+@dataclass
+class NotifySection:
+    """Approval notifications (docs/notifications.md): a hint on the user's phone when an
+    RDP login waits for web approval, linking to <public_url><path_prefix>/approve."""
+    backends: list[str] = field(default_factory=list)   # [] (off), "ntfy", "webpush"
+    # Subscriptions: <state_dir>/notify/<account>.json (systemd StateDirectory)
+    state_dir: str = "/var/lib/fastrdp-webgate"
+    ntfy_url: str = ""               # https://ntfy.example.com (the server; topics per user)
+    ntfy_token_file: str = ""        # access token with write access to the topics ("" = none)
+    vapid_private_key_file: str = ""  # PEM, EC P-256 (openssl ecparam -name prime256v1 -genkey)
+    vapid_subject: str = ""          # mailto:admin@example.com or https://... (RFC 8292)
+    webpush_allowed_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_PUSH_HOSTS))
+    # At most N notifications per user within the given seconds; above that one alert
+    # without a link per window.
+    rate_limit: str = "3/600"
+    alert_on_deny: bool = True       # tell the user when a notified login is denied or times out
+    show_code: bool = True           # the login's correlation code in the notification
+
+    def rate(self) -> tuple[int, int]:
+        m = RATE_LIMIT.fullmatch(self.rate_limit)
+        assert m is not None  # parse() checked it
+        return int(m.group(1)), int(m.group(2))
+
+
 @dataclass
 class Config:
     webgate: WebgateSection
     oidc: OidcSection
     guacamole: GuacamoleSection
+    notify: NotifySection = field(default_factory=NotifySection)
 
 
 def _section(cls, data: dict, where: str):
@@ -101,6 +136,7 @@ def parse(raw: dict) -> Config:
         webgate=_section(WebgateSection, raw.pop("webgate", {}), "webgate"),
         oidc=_section(OidcSection, raw.pop("oidc", {}), "oidc"),
         guacamole=_section(GuacamoleSection, raw.pop("guacamole", {}), "guacamole"),
+        notify=_section(NotifySection, raw.pop("notify", {}), "notify"),
     )
     if raw:
         raise ConfigError(f"unknown sections: {', '.join(raw)}")
@@ -139,7 +175,51 @@ def parse(raw: dict) -> Config:
         if not isinstance(getattr(cfg.webgate, key), bool):
             raise ConfigError(f"webgate.{key} must be true or false")
     cfg.guacamole.rdp_parameters = {str(k): str(v) for k, v in cfg.guacamole.rdp_parameters.items()}
+    _check_notify(cfg)
     return cfg
+
+
+def _local_http(url: str) -> bool:
+    """http:// only to this host (tests, a lab without TLS); like public_url."""
+    return urllib.parse.urlsplit(url).hostname in ("localhost", "127.0.0.1", "::1")
+
+
+def _check_notify(cfg: Config) -> None:
+    n = cfg.notify
+    if not isinstance(n.backends, list) or any(b not in NOTIFY_BACKENDS for b in n.backends) \
+            or len(set(n.backends)) != len(n.backends):
+        raise ConfigError(f"notify.backends must be a list of {', '.join(NOTIFY_BACKENDS)} (each once)")
+    for key in ("alert_on_deny", "show_code"):
+        if not isinstance(getattr(n, key), bool):
+            raise ConfigError(f"notify.{key} must be true or false")
+    m = RATE_LIMIT.fullmatch(n.rate_limit) if isinstance(n.rate_limit, str) else None
+    if not m or not 1 <= int(m.group(1)) <= 100 or not 60 <= int(m.group(2)) <= 86400:
+        raise ConfigError('notify.rate_limit must be "N/SECONDS": 1..100 notifications per '
+                          '60..86400 seconds, e.g. "3/600"')
+    if not n.backends:
+        return
+    if not n.state_dir.startswith("/"):
+        raise ConfigError("notify.state_dir must be an absolute path")
+    if "ntfy" in n.backends:
+        url = n.ntfy_url.rstrip("/")
+        parts = urllib.parse.urlsplit(url)
+        if not parts.hostname or parts.query or parts.fragment or not (
+                parts.scheme == "https" or (parts.scheme == "http" and _local_http(url))):
+            raise ConfigError("notify.ntfy_url must be the ntfy server's https:// URL")
+        n.ntfy_url = url
+    if "webpush" in n.backends:
+        if not n.vapid_private_key_file:
+            raise ConfigError("notify.vapid_private_key_file is required for webpush")
+        if not re.fullmatch(r"(mailto:[^\s@]+@[^\s@]+|https://\S+)", n.vapid_subject or ""):
+            raise ConfigError("notify.vapid_subject must be mailto:<address> or an https:// URL (RFC 8292)")
+        if not cfg.webgate.public_url.startswith("https://") and not _local_http(cfg.webgate.public_url):
+            raise ConfigError("webpush needs an https:// webgate.public_url (service workers)")
+        hosts = n.webpush_allowed_hosts
+        if not isinstance(hosts, list) or not hosts or not all(
+                isinstance(h, str) and DNS_NAME.fullmatch(h) and "." in h and not h.replace(".", "").isdigit()
+                for h in hosts):
+            raise ConfigError("notify.webpush_allowed_hosts must be a list of DNS names (push services)")
+        n.webpush_allowed_hosts = [h.lower() for h in hosts]
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:

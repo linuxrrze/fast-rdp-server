@@ -1567,6 +1567,15 @@ for your values, or use Ansible for this part. In role order:
 11. `systemctl daemon-reload`; `systemctl start fastrdp-guacd fastrdp-guacamole` (quadlets
     are started, not enabled); `systemctl enable --now fastrdp-webgate nginx`; restart
     `fastrdp-brokerd` and `fastrdp-proxy`.
+12. Approval notifications (optional, `[mfa] mode` web or push_or_web;
+    [notifications.md](notifications.md)): `[notify]` in `webgate.toml` with
+    `backends = ["ntfy", "webpush"]` (or one of them). ntfy: `ntfy_url`, and the access
+    token plus a newline in `/etc/fastrdp/webgate-ntfy.token` (`ntfy_token_file`). Web
+    Push: `umask 077; openssl ecparam -name prime256v1 -genkey -noout -out
+    /etc/fastrdp/webgate-vapid.pem` once (a new key invalidates all browser
+    subscriptions), `vapid_private_key_file` and `vapid_subject = "mailto:root@<fqdn>"`.
+    Both files `root:_fastrdp-web 0640`. Subscriptions go to `/var/lib/fastrdp-webgate`
+    (the unit's `StateDirectory`). `fastrdp-webgate --check`, then restart it.
 
 Passkeys on the web path (Keycloak configuration): [passkeys.md](passkeys.md#recipe-a-acrmfa-via-a-forced-flow-recommended).
 

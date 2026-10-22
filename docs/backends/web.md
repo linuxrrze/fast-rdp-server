@@ -108,6 +108,8 @@ Role `web_gateway` (`ansible/roles/web_gateway/defaults/main.yml`):
 | `fastrdp_guacamole_image`, `fastrdp_guacd_image` | `docker.io/guacamole/{guacamole,guacd}:<version>` | quadlets |
 | `fastrdp_web_rdp_parameters` | `enable-font-smoothing: "true"`, `color-depth: "32"` | `[guacamole.rdp_parameters]` |
 | `fastrdp_audio_input` (roles/common) | `true` | `[guacamole.rdp_parameters]` `enable-audio-input` (unless set in `fastrdp_web_rdp_parameters`) |
+| `fastrdp_web_notify_backends` | `[]` | `[notify] backends`: approval notifications via `ntfy` / `webpush` ([notifications.md](../notifications.md); the other `fastrdp_web_notify_*` variables there) |
+| `fastrdp_web_notify_ntfy_token` | `vault_fastrdp_web_notify_ntfy_token` | `/etc/fastrdp/webgate-ntfy.token` (only with ntfy) |
 
 Broker `[web]` (`broker.toml.j2`): `gateway_user = "_fastrdp-web"`,
 `allowed_clients = ["127.0.0.1", "::1"]`; `token_ttl` stays at the `config.py`

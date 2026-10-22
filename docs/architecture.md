@@ -29,7 +29,7 @@ troubleshooting): [backends/](backends/README.md).
 | fastrdp proxy module | `broker/proxy-module/` (C) | in the proxy | Binds NLA identity to the Kerberos principal, asks the broker, routes to the back-end, swaps credentials |
 | `fastrdp-brokerd` | `broker/brokerd/` (Python, stdlib only) | root | Account and group checks, MFA, desktop choice, session start/reuse, one-time tokens |
 | `pam_fastrdp_token` | `broker/pam_fastrdp_token/` (C) | in xrdp-sesman | xrdp accepts only one-time broker tokens; hands the real password on for the TGT |
-| fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)); approval page for RDP logins (`[mfa] mode = "web"`) |
+| fastrdp-webgate (optional) | `broker/webgate/` (Python) | `_fastrdp-web` | Browser path: Keycloak OIDC login, one-time web token, encrypted Guacamole connection ([web-access.md](web-access.md)); approval page for RDP logins (`[mfa] mode = "web"`); opt-in approval notifications via ntfy / Web Push, sent by a notifier thread ([notifications.md](notifications.md)) |
 | xrdp + xorgxrdp | release tarballs + `patches/xrdp/`, built by Ansible or packaged as `fastrdp-xrdp` | `xrdp` (daemon), root (sesman) | X11 and wlroots desktops; H.264 via FFmpeg VA-API/NVENC/QSV (fastrdp patch) or x264 |
 | gnome-remote-desktop | distro package | the user | GNOME headless sessions, hardware H.264 (VA-API/NVENC) |
 | KRdp | distro package | the user | Plasma sessions (FreeRDP + PipeWire, VA-API H.264) |
@@ -131,10 +131,14 @@ Spec details: [rdp-spec-conformance.md](rdp-spec-conformance.md).
     `/var/lib/fastrdp/sessions.json`.
 - **Sockets:**
   - `broker.sock` (0660, group `_fastrdp-broker`: proxy and webgate) accepts `login`/`end` only from
-    the proxy uid, `web_token`/`web_desktops`/`web_set_desktop` and the web approval ops `mfa_pending`/`mfa_decide`
-    only from the webgate's uid (`[web] gateway_user`), and `status`/`logout` only from root.
+    the proxy uid, `web_token`/`web_desktops`/`web_set_desktop` and the web approval ops
+    `mfa_pending`/`mfa_decide`/`mfa_events` only from the webgate's uid (`[web] gateway_user`),
+    and `status`/`logout` only from root.
     The webgate names the user it signed in; `mfa_decide` acts only on that account's pending
-    logins and needs the sign-in's `auth_time`.
+    logins and needs the sign-in's `auth_time`. `mfa_events` is the notifier's long poll
+    (up to 25 s) for "pending"/"finished" events of web approvals: queued by the broker
+    without waiting (at most 256, then dropped and counted), only while a notifier polls,
+    one consumer expected. Logins never wait for it.
   - `token.sock` (0600) accepts only root, i.e. xrdp-sesman.
 
 ## Broker protocol

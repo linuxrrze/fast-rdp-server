@@ -3,3 +3,5 @@
 vault_fastrdp_join_password: "changeme"
 vault_fastrdp_privacyidea_service_password: "changeme"
 vault_fastrdp_web_oidc_client_secret: "changeme"
+# only with fastrdp_web_notify_backends containing ntfy (docs/notifications.md)
+#vault_fastrdp_web_notify_ntfy_token: "tk_changeme"

@@ -192,6 +192,40 @@
       fastrdp_web_kdcproxy_burst a whole number (docs/web-access.md#kdc-proxy).
     quiet: true
 
+# Role web_gateway's defaults: approval notifications (docs/notifications.md). They only
+# fire for logins waiting for web approval, so other MFA modes are refused, not ignored.
+- name: Approval notification settings (web_gateway role)
+  vars:
+    backends: "{{ fastrdp_web_notify_backends | default([]) }}"
+    backend_list: "{{ backends if backends is sequence and backends is not string and backends is not mapping else [] }}"
+    rate: "{{ fastrdp_web_notify_rate_limit | default('3/600') | string }}"
+  ansible.builtin.assert:
+    that:
+      - backends is sequence and backends is not string and backends is not mapping
+      - backend_list | map('string') | difference(['ntfy', 'webpush']) | length == 0
+      - backend_list | unique | length == backend_list | length
+      - backend_list | length == 0 or (fastrdp_web_enabled | bool and fastrdp_mfa_mode in ['web', 'push_or_web'])
+      - "'ntfy' not in backend_list or fastrdp_web_notify_ntfy_url | default('') | string
+        is match('^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[!-~]*)?\\Z')"
+      - "'webpush' not in backend_list or fastrdp_web_public_url is match('^https://')"
+      - "'webpush' not in backend_list or fastrdp_web_notify_vapid_subject | default('mailto:root@' ~ fastrdp_fqdn)
+        | string is match('^(mailto:[^\\s@]+@[^\\s@]+|https://\\S+)\\Z')"
+      - rate is match('^[0-9]{1,3}/[0-9]{1,5}\Z')
+      - (rate ~ '/0').split('/')[0] | int >= 1 and (rate ~ '/0').split('/')[0] | int <= 100
+      - (rate ~ '/0').split('/')[1] | int >= 60 and (rate ~ '/0').split('/')[1] | int <= 86400
+      - fastrdp_web_notify_alert_on_deny | default(true) | string | lower in ['true', 'false']
+      - fastrdp_web_notify_show_code | default(true) | string | lower in ['true', 'false']
+    fail_msg: >-
+      fastrdp_web_notify_backends is a list of ntfy and webpush, only with
+      fastrdp_web_enabled and fastrdp_mfa_mode web or push_or_web (notifications are sent
+      for logins waiting for web approval only); ntfy needs fastrdp_web_notify_ntfy_url
+      (https://), webpush an https:// fastrdp_web_public_url and
+      fastrdp_web_notify_vapid_subject mailto:<address> or https://...;
+      fastrdp_web_notify_rate_limit is "N/SECONDS" (1..100 per 60..86400 s);
+      fastrdp_web_notify_alert_on_deny and fastrdp_web_notify_show_code are true or false
+      (docs/notifications.md).
+    quiet: true
+
 - name: Required site settings are present and consistent
   ansible.builtin.assert:
     that:

@@ -107,7 +107,8 @@ language_from_keyboard = true    # the client's keyboard layout picks a language
 approve_url = ""
 qr_code = true                   # QR code of approve_url, to approve on a phone
 # Own texts per language, each optional; placeholders {user} {approve_url} {timeout}
-# {method} {desktop}; a line naming {approve_url} is left out while approve_url is "".
+# {method} {desktop} {code} (the web approval's two-digit code); a line naming
+# {approve_url} is left out while approve_url is "", one naming {code} without a code.
 #[ui.de]
 #mfa_push = "Anmeldung bestätigen\nBitte bestätigen Sie die Push-Benachrichtigung auf Ihrem Telefon."
 #mfa_web = "..."

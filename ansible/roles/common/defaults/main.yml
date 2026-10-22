@@ -162,7 +162,8 @@ fastrdp_proxy_status_info: false
 fastrdp_ui_language: en
 fastrdp_ui_language_from_keyboard: true
 # Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web, qr_hint,
-# session_start, countdown; placeholders {user} {approve_url} {timeout} {method} {desktop}.
+# session_start, countdown; placeholders {user} {approve_url} {timeout} {method} {desktop}
+# {code} (the web approval's two-digit code).
 fastrdp_ui_texts: {}
 # The approval page on the panel ("" = not named, no QR code) and its QR code.
 fastrdp_ui_approve_url: "{{ (fastrdp_web_public_url ~ '/web/approve') if fastrdp_web_enabled | bool else '' }}"
