@@ -278,7 +278,9 @@ class AdminDesktopTests(_BrokerHarness, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.broker.desktop_prefs.get("alice"))
 
     async def test_root_only(self):
-        for uid in (65534, os.getuid()):  # nobody; the webgate and proxy (the test's uid)
+        # nobody; the webgate and proxy (the test's uid), unless the tests run as root
+        # (CI containers, dpkg-buildpackage's dh_auto_test): root may use the op
+        for uid in (65534, *([os.getuid()] if os.getuid() else [1000])):
             with self.subTest(uid=uid):
                 reply = await self.admin(uid=uid, set="gnome")
                 self.assertEqual(reply, {"ok": False, "error": "not permitted", "reason": "denied"})
