@@ -91,19 +91,23 @@ What each test guards and where CI runs it: [tests/README.md](tests/README.md).
 
 | Area | State |
 |---|---|
-| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 127 unit/protocol tests incl. regression tests for review findings |
-| Proxy module | implemented; end-to-end tested in real freerdp-proxy (TLS, Kerberos NLA, smartcard) against fastrdp's FreeRDP 3.32.2, in CI |
+| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 521 unit/protocol tests incl. regression tests for review findings |
+| Proxy module | implemented; end-to-end tested in real freerdp-proxy (TLS, Kerberos NLA, smartcard, back-end certificate pinning, waiting screen, desktop picker) against fastrdp's FreeRDP 3.32.2, in CI |
+| Windows mstsc | Kerberos NLA (user-to-user) **confirmed in the field** with an AD-joined host; waiting screen, desktop picker and web approval with mstsc / Windows App to validate ([docs/windows-clients.md](docs/windows-clients.md)) |
+| Second factor | modes `none`, `push`, `otp`, `otp_or_push`, `web`, `push_or_web` ([docs/auth-matrix.md](docs/auth-matrix.md)): privacyIDEA push/OTP, web approval after a Keycloak passkey sign-in (login-bound QR code, login code), waiting screen in the RDP window; skip from KDC evidence (smartcard, Windows Hello for Business) implemented, real AD to validate |
+| Notifications (ntfy, Web Push) | implemented and checked against the RFC test vector and local servers ([docs/notifications.md](docs/notifications.md)); real devices to validate |
 | PAM token module | implemented; functional test through libpam |
-| Ansible roles | implemented; `ansible-lint` production profile passes; templates render and are accepted by broker and proxy |
+| Ansible roles | implemented and used for field deployments; `ansible-lint` production profile passes; templates render and are accepted by broker and proxy |
 | xrdp/X11 desktops, GNOME headless, Plasma headless | deployed by the roles; **need validation on a lab host** (see docs/desktop-matrix.md) |
 | Phase 4 tooling (rdpbench, perfload, session_report, tuning role) | implemented and tested; proxy overhead measured (no fps loss, ~0.3–0.5 % core per Mbit/s) |
 | Phase 4 GPU validation (Intel/AMD/NVIDIA) | **needs GPU hosts**, see the runbook in docs/performance.md |
-| Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); containers/Keycloak need a lab run |
+| Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); Keycloak passkey flow (`acr=mfa`) tested end to end against Keycloak 26.8.1; Guacamole containers need a lab run |
 | Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
 | xrdp PR #3868 (NLA) | assessed: FreeRDP default clients fail because of an MIT krb5 1.21–1.22.1 bug (fixed in 1.22.2); no smartcards; proxy stays the NLA point |
 | wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
+| Audio and microphone (PipeWire + `pipewire-module-xrdp`) | implemented; real clients to validate ([docs/audio.md](docs/audio.md)) |
 | xrdp hardware H.264 (FFmpeg: VA-API, NVENC, QSV) | patch for xrdp 0.10.6.1 (`patches/xrdp/`) in fastrdp's xrdp build; tested via libx264 through the same code path and the no-GPU fallback, in CI; real GPUs to validate |
-| Packaging | Debian/Ubuntu packages incl. vendored FreeRDP/xrdp, signed APT repository on GitHub Pages ([docs/packaging.md](docs/packaging.md)) |
+| Packaging | Debian/Ubuntu packages incl. vendored FreeRDP/xrdp, signed APT repository on GitHub Pages, live: `*-stable` = latest release tag, `*-testing` = latest `main` ([docs/packaging.md](docs/packaging.md)) |
 | Setup | guided assistant, read-only preflight, quick start ([docs/quickstart.md](docs/quickstart.md)); not yet run against a real target |
 
 ## License
