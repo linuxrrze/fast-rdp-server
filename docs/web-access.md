@@ -152,6 +152,10 @@ authenticator (`make test-keycloak`, tests/keycloak/run.sh; results in
    SSSD resolves it). A `@realm` suffix is stripped. Use `fastrdp_web_username_claim`
    for a different claim.
 
+Without Ansible: [examples/keycloak-mfa/](examples/keycloak-mfa/README.md) sets up the same
+flow and client policies by hand (`kcadm.sh` script, admin console JSON, keycloak-config-cli,
+realm import).
+
 ### Sample client (JSON import)
 
 [docs/examples/keycloak-fastrdp-web-client.json](examples/keycloak-fastrdp-web-client.json)

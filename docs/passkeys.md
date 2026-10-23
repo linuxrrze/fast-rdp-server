@@ -207,6 +207,10 @@ CID=$(kcadm.sh get clients -r lab -q clientId=fastrdp-web --fields id --format c
 kcadm.sh update clients/$CID -r lab -s 'attributes."acr.loa.map"="{\"mfa\":2}"'
 ```
 
+Without Ansible, [examples/keycloak-mfa/](examples/keycloak-mfa/README.md) has recipe A
+ready to apply: an idempotent `kcadm.sh` script (tested), the client policies for the
+admin console's JSON editor, a keycloak-config-cli file and a realm import for new realms.
+
 ### Recipe B: `amr` with explicit executions (alternative, other IdPs)
 
 Use this if you prefer `amr`, or your IdP emits RFC 8176 values natively.

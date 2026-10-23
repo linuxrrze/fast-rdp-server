@@ -1,0 +1,183 @@
+{
+  "realm": "YOUR_REALM",
+  "enabled": true,
+  "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "webAuthnPolicyPasswordlessResidentKey": "required",
+  "webAuthnPolicyPasswordlessPasskeysEnabled": true,
+  "webAuthnPolicyPasswordlessMediation": "conditional",
+  "webAuthnPolicyPasswordlessAttestationConveyancePreference": "none",
+  "webAuthnPolicyPasswordlessAcceptableAaguids": [],
+  "authenticationFlows": [
+    {
+      "alias": "fastrdp-mfa",
+      "description": "fastrdp: MFA for acr=mfa (passkey, or password + second factor); no Cookie step. Managed by Ansible (keycloak_passkeys).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 0,
+          "autheticatorFlow": false,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 1,
+          "autheticatorFlow": false,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "CONDITIONAL",
+          "priority": 2,
+          "autheticatorFlow": true,
+          "flowAlias": "fastrdp-mfa - 2FA unless passkey",
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fastrdp-mfa - 2FA unless passkey",
+      "description": "fastrdp (keycloak_passkeys)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorConfig": "fastrdp-mfa-conditional-credential",
+          "authenticator": "conditional-credential",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 0,
+          "autheticatorFlow": false,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "REQUIRED",
+          "priority": 1,
+          "autheticatorFlow": true,
+          "flowAlias": "fastrdp-mfa - second factor",
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fastrdp-mfa - second factor",
+      "description": "fastrdp (keycloak_passkeys)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 0,
+          "autheticatorFlow": false,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "webauthn-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 1,
+          "autheticatorFlow": false,
+          "userSetupAllowed": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "fastrdp-mfa-conditional-credential",
+      "config": {
+        "credentials": "webauthn-passwordless",
+        "included": "false"
+      }
+    }
+  ],
+  "clientProfiles": {
+    "profiles": [
+      {
+        "name": "fastrdp-mfa-flow",
+        "description": "fastrdp: force the MFA flow (managed by Ansible, keycloak_passkeys)",
+        "executors": [
+          {
+            "executor": "auth-flow-enforcer",
+            "configuration": {
+              "auth-flow-alias": "fastrdp-mfa",
+              "auth-flow-loa": 2
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "clientPolicies": {
+    "policies": [
+      {
+        "name": "fastrdp-mfa",
+        "description": "fastrdp: acr_values=mfa -> flow fastrdp-mfa (managed by Ansible, keycloak_passkeys)",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "acr-condition",
+            "configuration": {
+              "acr-property": "mfa"
+            }
+          }
+        ],
+        "profiles": [
+          "fastrdp-mfa-flow"
+        ]
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "fastrdp-web",
+      "name": "fastrdp web gateway",
+      "description": "fastrdp webgate (browser access, web approval, notifications): OIDC code flow + PKCE, confidential. docs/web-access.md",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "baseUrl": "https://rdp1.lab.example.com/web/",
+      "redirectUris": [
+        "https://rdp1.lab.example.com/web/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "acr.loa.map": "{\"mfa\":2}",
+        "post.logout.redirect.uris": "https://rdp1.lab.example.com/web/",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "require.pushed.authorization.requests": "false",
+        "use.refresh.tokens": "false"
+      },
+      "defaultClientScopes": [
+        "acr",
+        "basic",
+        "profile"
+      ],
+      "optionalClientScopes": [
+        "email"
+      ]
+    }
+  ]
+}

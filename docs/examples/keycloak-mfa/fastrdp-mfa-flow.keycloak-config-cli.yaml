@@ -1,0 +1,152 @@
+# fastrdp: Keycloak configuration for acr=mfa on the web gateway, for adorsys
+# keycloak-config-cli (https://github.com/adorsys/keycloak-config-cli).
+# Same result as ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py.
+#
+# Tested: keycloak-config-cli 6.5.1 (jar keycloak-config-cli-26.5.5.jar, i.e. built for
+# Keycloak 26.5.5) against Keycloak 26.8.1; after it plus the two-field kcadm update below
+# (ResidentKey, Mediation), fastrdp_keycloak_passkeys.py --check reports no changes.
+# Run with variable substitution on:
+#
+#   KC_REALM=YOUR_REALM FASTRDP_CLIENT_ID=YOUR_CLIENT_ID \
+#   java -jar keycloak-config-cli-26.5.5.jar \
+#     --keycloak.url=https://KEYCLOAK_HOST --keycloak.login-realm=master \
+#     --keycloak.user=ADMIN_USER --keycloak.password='...' \
+#     (or: --keycloak.grant-type=client_credentials --keycloak.client-id=ID --keycloak.client-secret=...)
+#     --import.var-substitution.enabled=true \
+#     --import.files.locations=fastrdp-mfa-flow.keycloak-config-cli.yaml
+#
+# READ BEFORE USE - keycloak-config-cli semantics:
+#  * clientProfiles / clientPolicies REPLACE the realm's whole lists (it PUTs them as
+#    given). If the realm has other client profiles or policies (realm settings ->
+#    Client policies; `kcadm.sh get client-policies/profiles -r REALM`), copy them into
+#    the two lists below, or they are deleted. Global (built-in) profiles are not affected.
+#  * clients: the acr.loa.map attribute is SET to the value below (a JSON string), not
+#    merged: add other entries of your map to it. Other client fields/attributes are kept.
+#  * authenticationFlows / requiredActions are "fully managed", but with the default
+#    import.remote-state.enabled=true only resources that keycloak-config-cli created
+#    itself are ever deleted; existing flows and required actions are left alone.
+#  * A flow that already exists (e.g. created by the Ansible role or fastrdp-mfa-kcadm.sh)
+#    is updated in place to this definition.
+realm: "$(env:KC_REALM)"
+
+# 1. WebAuthn passwordless policy (passkeys): UV + discoverable credential required,
+#    passkeys (conditional UI on the username form) on, attestation none, no AAGUID list.
+#    keycloak-config-cli 6.5.1 is built on Keycloak 26.0 representations and REFUSES the
+#    newer fields webAuthnPolicyPasswordlessResidentKey and webAuthnPolicyPasswordlessMediation
+#    ("Unrecognized field"). Set those two afterwards (admin console: Authentication ->
+#    Policies -> Webauthn Passwordless Policy: Discoverable credential = Required,
+#    Passkey Mediation = Conditional), or with kcadm:
+#      kcadm.sh update realms/REALM -s webAuthnPolicyPasswordlessResidentKey=required \
+#          -s webAuthnPolicyPasswordlessMediation=conditional
+#    Keycloak applies passwordless policy fields only when the request also carries
+#    webAuthnPolicyPasswordlessRpEntityName (tested on 26.8.1; without it the fields below
+#    are silently ignored), and then resets every passwordless field NOT in the request to
+#    its default. Keep RpEntityName at your realm's current value (default "keycloak") and
+#    copy any other customised webAuthnPolicyPasswordless* settings (RpId, signature
+#    algorithms, extra origins, ...) here. Mediation is then reset too: set it again (above).
+webAuthnPolicyPasswordlessRpEntityName: keycloak
+webAuthnPolicyPasswordlessUserVerificationRequirement: required
+webAuthnPolicyPasswordlessPasskeysEnabled: true
+webAuthnPolicyPasswordlessAttestationConveyancePreference: none
+webAuthnPolicyPasswordlessAcceptableAaguids: []
+
+requiredActions:
+  - alias: webauthn-register-passwordless
+    name: Webauthn Register Passwordless
+    providerId: webauthn-register-passwordless
+    enabled: true
+    defaultAction: false
+    priority: 90
+    config: {}
+
+# 2. The forced flow (no Cookie step: an SSO session must not upgrade to acr=mfa).
+authenticationFlows:
+  - alias: fastrdp-mfa
+    description: "fastrdp: MFA for acr=mfa (passkey, or password + second factor); no Cookie step."
+    providerId: basic-flow
+    topLevel: true
+    builtIn: false
+    authenticationExecutions:
+      - authenticator: auth-username-form
+        authenticatorFlow: false
+        requirement: REQUIRED
+        priority: 0
+        userSetupAllowed: false
+      - authenticator: auth-password-form
+        authenticatorFlow: false
+        requirement: REQUIRED
+        priority: 1
+        userSetupAllowed: false
+      - authenticatorFlow: true
+        flowAlias: "fastrdp-mfa - 2FA unless passkey"
+        requirement: CONDITIONAL
+        priority: 2
+        userSetupAllowed: false
+  - alias: "fastrdp-mfa - 2FA unless passkey"
+    description: "fastrdp (keycloak_passkeys)"
+    providerId: basic-flow
+    topLevel: false
+    builtIn: false
+    authenticationExecutions:
+      - authenticator: conditional-credential
+        authenticatorConfig: fastrdp-mfa-conditional-credential
+        authenticatorFlow: false
+        requirement: REQUIRED
+        priority: 0
+        userSetupAllowed: false
+      - authenticatorFlow: true
+        flowAlias: "fastrdp-mfa - second factor"
+        requirement: REQUIRED
+        priority: 1
+        userSetupAllowed: false
+  - alias: "fastrdp-mfa - second factor"
+    description: "fastrdp (keycloak_passkeys)"
+    providerId: basic-flow
+    topLevel: false
+    builtIn: false
+    authenticationExecutions:
+      - authenticator: auth-otp-form
+        authenticatorFlow: false
+        requirement: ALTERNATIVE
+        priority: 0
+        userSetupAllowed: false
+      - authenticator: webauthn-authenticator
+        authenticatorFlow: false
+        requirement: ALTERNATIVE
+        priority: 1
+        userSetupAllowed: false
+
+authenticatorConfig:
+  - alias: fastrdp-mfa-conditional-credential
+    config:
+      credentials: webauthn-passwordless   # skip the second factor after a passkey sign-in
+      included: "false"
+
+# 3. Client policy: acr_values=mfa -> flow fastrdp-mfa at LoA 2.
+#    REPLACES all realm client profiles/policies: add your existing ones here.
+clientProfiles:
+  profiles:
+    - name: fastrdp-mfa-flow
+      description: "fastrdp: force the MFA flow (managed by Ansible, keycloak_passkeys)"
+      executors:
+        - executor: auth-flow-enforcer
+          configuration:
+            auth-flow-alias: fastrdp-mfa
+            auth-flow-loa: 2
+clientPolicies:
+  policies:
+    - name: fastrdp-mfa
+      description: "fastrdp: acr_values=mfa -> flow fastrdp-mfa (managed by Ansible, keycloak_passkeys)"
+      enabled: true
+      conditions:
+        - condition: acr-condition
+          configuration:
+            acr-property: mfa
+      profiles:
+        - fastrdp-mfa-flow
+
+# 4. The webgate's OIDC client: ACR mfa -> LoA 2 (the value is SET, not merged).
+clients:
+  - clientId: "$(env:FASTRDP_CLIENT_ID)"
+    attributes:
+      acr.loa.map: '{"mfa":2}'
