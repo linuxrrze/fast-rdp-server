@@ -1,3 +1,26 @@
+fast-rdp-server (0.7.3) unstable; urgency=medium
+
+  * MFA mode code_or_web (opt-in): the RDP waiting screen shows a masked field
+    for the authenticator code next to the QR code of the web approval
+    (passkeys); the first answer wins. Nothing is appended to the password,
+    so Kerberos NLA logins work unchanged. The broker checks the code at
+    Keycloak through a direct grant on its own confidential client
+    (username + code, no password) and ends that session at once; limits
+    per login and per user. Users without TOTP get a clean refusal from a
+    Keycloak condition (no attempt counted, field closes). Safeguards: the
+    setup script compares the flow exactly on every run, and the broker
+    refuses tokens without otp in amr. Real RDP clients not yet tested
+    (docs/lab-waiting-screen-input.md).
+  * Proxy module: lab-only InputTrace switch (fastrdp_proxy_input_trace,
+    default off) logs the kind of each waiting-screen input event, never
+    its value.
+  * Docs: passwordless policy update warning, enrolment gap (account
+    console flow override), realms with password or passkey sign-in,
+    approving RDP logins with the default flow (password asked again,
+    Keycloak username must equal the RDP account); backlog W2-W5.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Fri, 23 Oct 2026 16:17:46 +0200
+
 fast-rdp-server (0.7.2) unstable; urgency=medium
 
   * Broker: a missing [web] gateway_user no longer crashes the broker (and
