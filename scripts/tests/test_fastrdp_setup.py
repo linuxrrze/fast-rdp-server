@@ -343,7 +343,8 @@ class TestRoleConsistency(unittest.TestCase):
             t = f.read_text()
             produced |= set(re.findall(r"register:\s*(fastrdp_[a-z0-9_]+)", t))
             produced |= set(re.findall(r"^\s+(fastrdp_[a-z0-9_]+):\s", t, re.M))   # set_fact keys
-        not_variables = {"fastrdp_broker", "fastrdp_web", "fastrdp_webgate"}  # python packages, nft table
+        # python packages, nft table; the error of the Keycloak code check's Deny access step
+        not_variables = {"fastrdp_broker", "fastrdp_web", "fastrdp_webgate", "fastrdp_no_otp"}
         self.assertEqual(used - defaults - produced - not_variables, set(),
                          "roles use these without a default; add them to roles/common/defaults")
         checks = (ROLES / "common/tasks/main.yml").read_text()
