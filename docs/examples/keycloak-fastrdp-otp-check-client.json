@@ -1,0 +1,28 @@
+{
+  "clientId": "fastrdp-otp-check",
+  "name": "fastrdp code check",
+  "description": "fastrdp broker ([mfa] mode code_or_web): checks the code typed on the RDP waiting screen with a direct grant (username + OTP, no password). Confidential, direct grants only. docs/auth-matrix.md#code-on-the-waiting-screen",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "clientAuthenticatorType": "client-secret",
+  "bearerOnly": false,
+  "consentRequired": false,
+  "standardFlowEnabled": false,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": true,
+  "serviceAccountsEnabled": false,
+  "frontchannelLogout": false,
+  "fullScopeAllowed": false,
+  "redirectUris": [],
+  "webOrigins": [],
+  "attributes": {
+    "oauth2.device.authorization.grant.enabled": "false",
+    "oidc.ciba.grant.enabled": "false",
+    "standard.token.exchange.enabled": "false",
+    "use.refresh.tokens": "true",
+    "client.use.lightweight.access.token.enabled": "true"
+  },
+  "defaultClientScopes": ["basic"],
+  "optionalClientScopes": []
+}

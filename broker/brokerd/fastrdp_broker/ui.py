@@ -9,7 +9,7 @@ a QR code of the approval page. Texts are templates in the configured language, 
 language of the client's keyboard layout ([ui] language_from_keyboard), with these
 placeholders: {user} (local account), {approve_url} ([ui] approve_url, short enough to
 type on another device), {timeout}
-(seconds), {method} (push, web, push_or_web), {desktop} (the desktop's label), {code}
+(seconds), {method} (push, web, push_or_web, code_or_web), {desktop} (the desktop's label), {code}
 (the web approval's two-digit correlation code, also on the approval page and in
 notifications; "" for a push), {running} (the desktop of a running session) and {count}
 (the desktop picker's rows). A line that names {approve_url} is left out while
@@ -24,7 +24,14 @@ The desktop picker ([broker] desktop_picker, Broker.pick_desktop) uses picker_ti
 lines above the rows; {desktop}: the preselected one), picker_hint (one line below them,
 cut at the panel's width), picker_countdown, and for the rows picker_running (the
 desktop of a running session) and picker_reconnects (another desktop of the same
-back-end: choosing it reconnects to the running {running}). """
+back-end: choosing it reconnects to the running {running}).
+
+[mfa] mode code_or_web uses mfa_code_or_web and, for the code field the module draws
+below the text, code_label (before the masked digits), code_checking (while Keycloak
+checks it), code_wrong ({count}: attempts left), code_unavailable (Keycloak not
+reachable), and without a field, the approval page only: code_blocked (too many wrong
+codes), code_no_otp (the user has no authenticator app in Keycloak) and code_off (the
+code check is not usable, e.g. a setup error). """
 
 from __future__ import annotations
 
@@ -33,14 +40,19 @@ import string
 from . import qrcode
 from .config import UiSection
 
-TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "qr_hint", "session_start", "countdown",
-             "picker_title", "picker_hint", "picker_countdown", "picker_running", "picker_reconnects")
+TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "mfa_code_or_web", "qr_hint", "session_start",
+             "countdown", "picker_title", "picker_hint", "picker_countdown", "picker_running",
+             "picker_reconnects", "code_label", "code_checking", "code_wrong", "code_unavailable",
+             "code_blocked", "code_no_otp", "code_off")
 PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code", "running", "count")
 MAX_TEMPLATE = 2000
 MAX_LINES = 12      # the module shows at most 16 after wrapping
 MAX_LINE = 200      # characters per line
 MAX_OPTION_LABEL = 44  # desktop picker rows: the module shows 48 glyphs with "[1] "
+CLOSED_STATES = ("blocked", "no_otp", "off")   # code_or_web states without a field
 QR_MAX_VERSION = 10  # 57 x 57 modules; [ui] approve_url with the id fits (config.MAX_APPROVE_URL)
+CODE_DIGITS = (4, 10)  # the code field: digits the module accepts (protocol.py "code")
+QR_METHODS = ("web", "push_or_web", "code_or_web")
 
 BUILTIN_TEXTS: dict[str, dict[str, str]] = {
     "en": {
@@ -55,6 +67,11 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
                            "approval page and approve this login:\n"
                            "{approve_url}\n"
                            "Login code: {code}",
+        "mfa_code_or_web": "Approve the sign-in\n"
+                           "Type the code from your authenticator app below, or sign in on the "
+                           "approval page (passkey) and approve this login:\n"
+                           "{approve_url}\n"
+                           "Login code: {code}",
         "qr_hint": "Scan the code to open the approval page on your phone.",
         "session_start": "Connecting to your desktop ({desktop})…",
         "countdown": "Time left:",
@@ -63,6 +80,14 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "picker_countdown": "Continuing in",
         "picker_running": "{desktop} (running)",
         "picker_reconnects": "{desktop} (opens the running {running})",
+        "code_label": "Authenticator code:",
+        "code_checking": "Checking the code…",
+        "code_wrong": "Wrong code. Attempts left: {count}",
+        "code_unavailable": "The code could not be checked. Try again or use the approval page.",
+        "code_blocked": "Too many wrong codes. Please use the approval page.",
+        "code_no_otp": "No authenticator app is set up for your account. Approve with your "
+                       "passkey: scan the QR code.",
+        "code_off": "Codes cannot be checked at the moment. Please use the approval page.",
     },
     "de": {
         "mfa_push": "Anmeldung bestätigen\n"
@@ -79,6 +104,12 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
                            "diese Anmeldung:\n"
                            "{approve_url}\n"
                            "Anmeldecode: {code}",
+        "mfa_code_or_web": "Anmeldung bestätigen\n"
+                           "Geben Sie unten den Code aus Ihrer Authenticator-App ein oder "
+                           "melden Sie sich auf der Freigabeseite an (Passkey) und bestätigen "
+                           "Sie diese Anmeldung:\n"
+                           "{approve_url}\n"
+                           "Anmeldecode: {code}",
         "qr_hint": "Code scannen, um die Freigabeseite auf dem Telefon zu öffnen.",
         "session_start": "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…",
         "countdown": "Verbleibend:",
@@ -87,6 +118,15 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "picker_countdown": "Weiter in",
         "picker_running": "{desktop} (läuft)",
         "picker_reconnects": "{desktop} (öffnet das laufende {running})",
+        "code_label": "Authenticator-Code:",
+        "code_checking": "Code wird geprüft…",
+        "code_wrong": "Falscher Code. Verbleibende Versuche: {count}",
+        "code_unavailable": "Der Code konnte nicht geprüft werden. Bitte erneut versuchen "
+                            "oder die Freigabeseite verwenden.",
+        "code_blocked": "Zu viele falsche Codes. Bitte die Freigabeseite verwenden.",
+        "code_no_otp": "Für Ihr Konto ist keine Authenticator-App eingerichtet. Bestätigen Sie "
+                       "mit Ihrem Passkey: QR-Code scannen.",
+        "code_off": "Codes können gerade nicht geprüft werden. Bitte die Freigabeseite verwenden.",
     },
 }
 
@@ -156,15 +196,31 @@ class WaitingTexts:
         return out[:MAX_LINES]
 
     def mfa(self, lang: str, method: str, timeout: int, user: str, code: str | None = None,
-            request_id: str | None = None) -> dict:
+            request_id: str | None = None, entry: dict | None = None, digits: int = 0) -> dict:
         """{"progress": "mfa", ...} for a push, web approval or both (method); `code`, `request_id`:
         the web approval's correlation code and id (in the QR code). The QR code is encoded
-        per login (at most some 50 ms, once or twice per login)."""
+        per login (at most some 50 ms, once or twice per login). `entry` (code_or_web,
+        mfa.SecondFactor.code_or_web): the code field's state; `digits`: the code's length
+        if all codes have one (the module sends it without Enter), else 0."""
         msg = {"progress": "mfa", "method": method, "timeout_s": int(timeout),
                "lines": self.lines(lang, f"mfa_{method}", user=user, timeout=int(timeout), method=method,
                                    code=code or ""),
                "countdown": self.texts[lang]["countdown"]}
-        if method in ("web", "push_or_web") and self.cfg.approve_url:
+        if entry is not None:
+            state = entry.get("state")
+            message = {"wrong": self.text(lang, "code_wrong", user=user, count=entry.get("attempts_left", 0)),
+                       "unavailable": self.text(lang, "code_unavailable", user=user),
+                       "blocked": self.text(lang, "code_blocked", user=user),
+                       "no_otp": self.text(lang, "code_no_otp", user=user),
+                       "off": self.text(lang, "code_off", user=user)}.get(state, "")
+            if state in CLOSED_STATES:
+                msg["lines"] = (msg["lines"] + [message])[:MAX_LINES]
+            else:
+                msg["code_entry"] = {"digits": digits if CODE_DIGITS[0] <= digits <= CODE_DIGITS[1] else 0,
+                                     "label": self.text(lang, "code_label", user=user),
+                                     "checking": self.text(lang, "code_checking", user=user),
+                                     "message": message}
+        if method in QR_METHODS and self.cfg.approve_url:
             msg["approve_url"] = self.cfg.approve_url
             if self.cfg.qr_code:
                 url = login_url(self.cfg.approve_url, request_id) if request_id else self.cfg.approve_url

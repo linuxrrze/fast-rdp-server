@@ -60,7 +60,7 @@ allow_groups = ["rdp-users"]      # empty list = every valid account
 allow_tls_password_login = true   # clients without NLA (password+OTP in one field)
 
 [mfa]
-mode = "otp_or_push"              # none | otp | push | otp_or_push | web | push_or_web
+mode = "otp_or_push"              # none | otp | push | otp_or_push | web | push_or_web | code_or_web
 exempt_groups = []
 otp_lengths = [6]                 # keep one TOTP length; see docs/auth-matrix.md
 yubikey_otp = true
@@ -89,6 +89,12 @@ yubikey_otp = true
                                     # [FastRDP] Timeout (180)
 #web_approval_max_auth_age = 30     # the sign-in may be this much older than the login
 #web_approval_single_pending = true # 2+ pending logins of a user: none can be approved
+# mode "code_or_web": the user types the authenticator code on the proxy's waiting screen
+# (checked by Keycloak, [mfa.keycloak]) or approves the login on the approval page
+# (passkey); the first success wins. docs/auth-matrix.md#code-on-the-waiting-screen
+#code_attempts = 3                  # wrong codes per login, then it fails
+#code_user_failures = 10            # wrong codes per user within code_failure_window:
+#code_failure_window = 900          # the code field stays closed (approval page only)
 
 [mfa.privacyidea]
 url = "https://privacyidea.example.com"
@@ -98,6 +104,17 @@ timeout = 10
 push_timeout = 60
 service_user = "fastrdp-trigger"  # admin with triggerchallenge policy; "" = use user password
 service_password_file = "/etc/fastrdp/privacyidea-service.secret"
+
+# mode "code_or_web": a confidential Keycloak client with direct grants only, whose
+# direct grant flow has Username Validation + OTP (no password); the broker checks the
+# code with it and ends the Keycloak session at once (docs/examples/keycloak-mfa).
+#[mfa.keycloak]
+#issuer = "https://keycloak.example.com/realms/example"
+#client_id = "fastrdp-otp-check"
+#client_secret_file = "/etc/fastrdp/keycloak-otp.secret"
+#ca_file = ""                      # "" = system trust store
+#timeout = 10
+#required_amr = "otp"              # a token counts only with this in amr (the OTP step's reference)
 
 # Connection type the proxy sends to xrdp, which selects gfx.toml's encoder profile
 # ([x264.<type>], [ffmpeg.<type>]). Only for clients that did not choose one themselves
@@ -123,6 +140,7 @@ qr_code = true                   # QR code of approve_url?login=<id>, to approve
 #mfa_push = "Anmeldung bestätigen\nBitte bestätigen Sie die Push-Benachrichtigung auf Ihrem Telefon."
 #mfa_web = "..."
 #mfa_push_or_web = "..."
+#mfa_code_or_web = "..."
 #qr_hint = "..."
 #session_start = "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…"
 #countdown = "Verbleibend:"
@@ -132,6 +150,12 @@ qr_code = true                   # QR code of approve_url?login=<id>, to approve
 #picker_countdown = "Weiter in"
 #picker_running = "{desktop} (läuft)"
 #picker_reconnects = "{desktop} (öffnet das laufende {running})"
+# Code field (mode code_or_web); code_wrong also {count} (attempts left):
+#code_label = "Authenticator-Code:"
+#code_checking = "Code wird geprüft…"
+#code_wrong = "Falscher Code. Verbleibende Versuche: {count}"
+#code_unavailable = "..."
+#code_blocked = "..."
 
 [defaults]
 desktop = "xfce"

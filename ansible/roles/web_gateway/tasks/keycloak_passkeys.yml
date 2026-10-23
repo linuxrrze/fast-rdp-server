@@ -20,7 +20,7 @@
     quiet: true
   run_once: true
 
-- name: Configure Keycloak (WebAuthn passwordless policy, MFA flow, client policy, ACR map)
+- name: Configure Keycloak (WebAuthn passwordless policy, MFA flow, client policy, ACR map, code check)
   ansible.builtin.command:
     argv: [python3, "{{ role_path }}/files/fastrdp_keycloak_passkeys.py"]
     stdin: "{{ settings | to_json }}"
@@ -42,6 +42,15 @@
       mediation: "{{ fastrdp_web_passkeys_mediation }}"
       hardware_only: "{{ fastrdp_web_passkeys_hardware_only | bool }}"
       aaguids: "{{ fastrdp_web_passkeys_aaguids }}"
+      # fastrdp_mfa_mode code_or_web: the broker's code check (direct grant flow, binding,
+      # client and realm checks), only in the webgate's realm; another realm by hand
+      otp_check_client_id: >-
+        {{ fastrdp_mfa_keycloak_client_id
+           if fastrdp_mfa_mode | default('none') == 'code_or_web'
+              and fastrdp_mfa_keycloak_issuer | default('') | regex_replace('/+$', '')
+                  == fastrdp_web_oidc_issuer | regex_replace('/+$', '')
+           else '' }}
+      otp_check_amr: "{{ fastrdp_mfa_keycloak_required_amr }}"
       check: "{{ ansible_check_mode }}"
   delegate_to: localhost
   run_once: true
@@ -63,4 +72,13 @@
       {{ ('would change: ' if ansible_check_mode else 'changed: ') ~ (result.changes | join('; '))
          if result.changes | default([]) else 'Keycloak already configured' }}
     quiet: false
+  run_once: true
+
+- name: Keycloak warnings (code check)
+  vars:
+    out: "{{ fastrdp_keycloak_passkeys.stdout | default('') }}"
+    result: "{{ out | from_json if out is match('^\\{') else {} }}"
+  ansible.builtin.debug:
+    msg: "{{ result.warnings }}"
+  when: result.warnings | default([]) | length > 0
   run_once: true

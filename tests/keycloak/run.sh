@@ -13,7 +13,10 @@
 #      merge checks, and a Cookie step injected into the flow is removed again;
 #   4. e2e.py: headless Chromium with a CDP virtual authenticator against the real
 #      fastrdp-webgate code (passkey, password + TOTP, password only, SSO pitfall,
-#      hardware-only mode).
+#      hardware-only mode);
+#   5. the broker's code check ([mfa] mode code_or_web): the role sets up the direct grant
+#      flow of the sample client fastrdp-otp-check, otp_check.py checks codes with
+#      keycloak_otp.py (right, wrong, no OTP credential, other client, replay).
 #
 # Manual (heavy: JDK + Keycloak + Chromium, ~2 min). Needs python3 >= 3.11,
 # python3-cryptography, ansible-playbook, curl, and:
@@ -186,4 +189,35 @@ T_PASS=$((T_PASS + $(grep -c '^ok  ' "$T/e2e.out")))
 T_FAIL=$((T_FAIL + $(grep -c '^FAIL' "$T/e2e.out")))
 [ "$rc" = 0 ] || [ "$(grep -c '^FAIL' "$T/e2e.out")" != 0 ] || { tail -20 "$T/e2e.out"; T_FAIL=$((T_FAIL + 1)); }
 echo "webgate decisions (acr/amr): $(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["webgate_decisions"]))' "$REPORT" 2>/dev/null)"
+
+# ------------------------------------------------------------------ code check (code_or_web)
+# The broker's code check: the sample client imported by hand, the role adds the direct
+# grant flow (Username Validation, OTP or Deny access for users without one), the amr
+# mapper and the binding; otp_check.py drives keycloak_otp.py, also with flows changed by hand.
+check "code check client imported from its sample" python3 "$HERE/kc_fixture.py" otp-client "$KC" admin "$ADMIN_PW"
+python3 - "$T/vars.json" "$T/otp-vars.json" "$KC" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1]))
+v.update(fastrdp_web_passkeys_hardware_only=False, fastrdp_mfa_mode="code_or_web",
+         fastrdp_web_enabled=True, fastrdp_mfa_keycloak_client_id="fastrdp-otp-check",
+         fastrdp_mfa_keycloak_client_secret="otp-check-test-secret",   # roles/common wants one
+         fastrdp_mfa_keycloak_issuer=sys.argv[3] + "/realms/fastrdp-test")
+json.dump(v, open(sys.argv[2], "w"))
+PY
+apply_otp() { (cd "$REPO/ansible" && ANSIBLE_CONFIG=$REPO/ansible/ansible.cfg ansible-playbook -i localhost, -c local \
+    "$HERE/apply.yml" -e "@$T/otp-vars.json" "$@"); }
+check "role with code_or_web applied" apply_otp
+if grep -q 'create direct grant flow fastrdp-otp-check' "$T_OUT" && grep -q 'direct grant flow fastrdp-otp-check' "$T_OUT" \
+    && grep -q 'used more than once' "$T_OUT"; then
+    ok "direct grant flow created and bound; the fixture's reusable OTP codes reported"
+else
+    fail "direct grant flow created and bound; reusable OTP codes reported"
+fi
+check "role with code_or_web applied again" apply_otp
+if [ "$(changed)" = changed=0 ]; then ok "code check setup is idempotent (changed=0)"; else fail "code check setup is idempotent ($(changed))"; fi
+if python3 "$HERE/otp_check.py" "$KC" "$ADMIN_PW" >"$T/otp.out" 2>&1; then rc=0; else rc=1; fi
+grep -E '^(ok  |FAIL)' "$T/otp.out"
+T_PASS=$((T_PASS + $(grep -c '^ok  ' "$T/otp.out")))
+T_FAIL=$((T_FAIL + $(grep -c '^FAIL' "$T/otp.out")))
+[ "$rc" = 0 ] || [ "$(grep -c '^FAIL' "$T/otp.out")" != 0 ] || { tail -20 "$T/otp.out"; T_FAIL=$((T_FAIL + 1)); }
 finish

@@ -20,7 +20,25 @@ What it manages, and nothing else:
      policy <policy_name> (acr-condition <acr>). Other profiles and policies are kept:
      the PUT endpoints replace the whole list, so the lists are read, merged and
      written back;
-  4. the OIDC client's ACR-to-LoA map: <acr> -> <loa>, other entries kept.
+  4. the OIDC client's ACR-to-LoA map: <acr> -> <loa>, other entries kept;
+  5. only with "otp_check_client_id" (broker [mfa] mode code_or_web): the direct grant
+     flow <otp_check_flow_alias> (default fastrdp-otp-check: Username Validation, then
+     OTP for users who have one and Deny access (error fastrdp_no_otp) for users who have
+     none; no password; the OTP step's reference value <otp_check_amr> goes into amr
+     through the client's mapper "fastrdp amr") bound as that client's direct grant flow
+     override. A flow that differs in any step, requirement or config is reported in
+     "warnings" and rebuilt (check mode: reported only). The client itself
+     is created by hand (docs/examples/keycloak-fastrdp-otp-check-client.json); the
+     script refuses it unless it is confidential, allows direct grants only (no browser
+     flow, implicit flow, service account, device or CIBA grant, standard token
+     exchange), has full scope off and no audience mapper. It warns ("warnings") when
+     the realm lets an OTP code be used twice or has brute-force detection off.
+
+Not managed (manual, docs/passkeys.md "Close the enrolment gap"): the browser flow
+override of the client account-console. The realm update sends all current
+webAuthnPolicyPasswordless* fields because Keycloak resets the ones missing from the
+request; the AAGUID list is ours, though (empty unless hardware_only), so a list set by
+hand in the realm is replaced (docs/backlog.md W3).
 
 Standard library only; runs on the Ansible controller (or anywhere with Python 3.11+).
 """
@@ -28,6 +46,7 @@ Standard library only; runs on the Ansible controller (or anywhere with Python 3
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import sys
 import urllib.error
@@ -59,6 +78,7 @@ def settings(raw: dict) -> dict:
         "second_factors": list(SECOND_FACTOR_DEFAULT),
         "mediation": "conditional",
         "hardware_only": False, "aaguids": [],
+        "otp_check_client_id": "", "otp_check_flow_alias": "fastrdp-otp-check", "otp_check_amr": "otp",
         "check": False,
     }
     unknown = set(raw) - set(s)
@@ -98,6 +118,16 @@ def settings(raw: dict) -> dict:
         if not isinstance(a, str) or len(a) != 36 or a.count("-") != 4:
             raise KeycloakError(f"not an AAGUID: {a!r}")
     s["aaguids"] = [a.lower() for a in s["aaguids"]]
+    if not isinstance(s["otp_check_client_id"], str):
+        raise KeycloakError("otp_check_client_id must be a client id or empty")
+    if s["otp_check_client_id"]:
+        if s["otp_check_client_id"] == s["client_id"]:
+            raise KeycloakError("otp_check_client_id must be a client of its own, not the webgate's")
+        if not isinstance(s["otp_check_flow_alias"], str) or not s["otp_check_flow_alias"].strip() \
+                or s["otp_check_flow_alias"] == s["flow_alias"]:
+            raise KeycloakError("otp_check_flow_alias must name a flow of its own")
+        if not isinstance(s["otp_check_amr"], str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", s["otp_check_amr"]):
+            raise KeycloakError("otp_check_amr must be an amr value such as otp")
     return s
 
 
@@ -190,6 +220,57 @@ def flow_wanted(s: dict) -> list[tuple]:
     return rows
 
 
+# The code check's direct grant flow: the username and the OTP, no password (the RDP
+# login checked that). A user with an OTP credential must pass the OTP step (sub-flow 1);
+# for one without, sub-flow 1 is skipped and sub-flow 2 denies with NO_OTP_ERROR, which
+# the broker tells apart from a wrong code (keycloak_otp.py). The OTP step's reference
+# value puts otp_check_amr into the token's amr (mapper OTP_CHECK_AMR_MAPPER): the broker
+# accepts no token without it, so a flow that lost its Deny or OTP step and lets a name
+# alone through still fails closed. Compared exactly on every run.
+NO_OTP_ERROR = "fastrdp_no_otp"   # = broker/brokerd/fastrdp_broker/keycloak_otp.py NO_OTP_ERROR
+OTP_REFERENCE_MAX_AGE = "60"      # seconds the reference counts after the step (AmrUtils)
+
+
+def otp_check_flow(s: dict) -> list[tuple]:
+    alias = s["otp_check_flow_alias"]
+    with_otp, without_otp = f"{alias} - otp", f"{alias} - no otp"
+    return [
+        (0, "exec", "direct-grant-validate-username", "REQUIRED", None),
+        (0, "flow", with_otp, "CONDITIONAL", None),
+        (1, "exec", "conditional-user-configured", "REQUIRED", None),
+        (1, "exec", "direct-grant-validate-otp", "REQUIRED",
+         {"default.reference.value": s["otp_check_amr"], "default.reference.maxAge": OTP_REFERENCE_MAX_AGE}),
+        (0, "flow", without_otp, "CONDITIONAL", None),
+        (1, "exec", "conditional-sub-flow-executed", "REQUIRED",
+         {"flow_to_check": with_otp, "check_result": "not-executed"}),
+        (1, "exec", "deny-access-authenticator", "REQUIRED", {"denyErrorMessage": NO_OTP_ERROR}),
+    ]
+
+
+OTP_CHECK_AMR_MAPPER = {"name": "fastrdp amr", "protocol": "openid-connect", "protocolMapper": "oidc-amr-mapper",
+                        "config": {"id.token.claim": "true", "access.token.claim": "true",
+                                   "lightweight.claim": "true", "introspection.token.claim": "true"}}
+
+
+def flow_diff(actual: list[tuple], wanted: list[tuple]) -> str:
+    """The steps that differ, for the report (configs included: they are no secrets)."""
+    lines = []
+    for i in range(max(len(actual), len(wanted))):
+        a = actual[i] if i < len(actual) else None
+        w = wanted[i] if i < len(wanted) else None
+        if a != w:
+            lines.append(f"step {i + 1}: {a if a else 'missing'} instead of {w if w else 'nothing'}")
+    return "; ".join(lines)
+
+
+# Client settings that would make the code check's client more than a code check
+OTP_CHECK_CLIENT = {"publicClient": False, "directAccessGrantsEnabled": True, "standardFlowEnabled": False,
+                    "implicitFlowEnabled": False, "serviceAccountsEnabled": False, "fullScopeAllowed": False,
+                    "bearerOnly": False}
+OTP_CHECK_ATTRIBUTES_OFF = ("oauth2.device.authorization.grant.enabled", "oidc.ciba.grant.enabled",
+                            "standard.token.exchange.enabled")
+
+
 def flow_actual(api: Api, alias: str) -> list[tuple]:
     rows = []
     for e in api.call("GET", f"/authentication/flows/{q(alias)}/executions"):
@@ -208,6 +289,7 @@ class Run:
     def __init__(self, api: Api, s: dict):
         self.api, self.s = api, s
         self.changes: list[str] = []
+        self.warnings: list[str] = []
 
     def change(self, what: str) -> bool:
         """Record a change; True when it should be written (not in check mode)."""
@@ -262,9 +344,10 @@ class Run:
                     self.api.call("DELETE", f"/authentication/executions/{q(e['id'])}")
         self._build_flow()
 
-    def _add_exec(self, parent: str, provider: str, requirement: str, config: dict | None = None) -> None:
+    def _add_exec(self, parent: str, provider: str, requirement: str, config: dict | None = None,
+                  config_alias: str | None = None) -> None:
         self.api.call("POST", f"/authentication/flows/{q(parent)}/executions/execution", {"provider": provider})
-        self._set_requirement(parent, lambda e: e.get("providerId") == provider, requirement, config)
+        self._set_requirement(parent, lambda e: e.get("providerId") == provider, requirement, config, config_alias)
 
     def _add_flow(self, parent: str, alias: str, requirement: str) -> None:
         self.api.call("POST", f"/authentication/flows/{q(parent)}/executions/flow",
@@ -273,7 +356,7 @@ class Run:
         self._set_requirement(parent, lambda e: e.get("authenticationFlow") and e.get("displayName") == alias,
                               requirement, None)
 
-    def _set_requirement(self, parent, match, requirement, config) -> None:
+    def _set_requirement(self, parent, match, requirement, config, config_alias=None) -> None:
         execs = [e for e in self.api.call("GET", f"/authentication/flows/{q(parent)}/executions")
                  if e["level"] == 0 and match(e)]
         if not execs:
@@ -287,7 +370,7 @@ class Run:
                           {**e, "requirement": requirement})
         if config is not None:
             self.api.call("POST", f"/authentication/executions/{q(e['id'])}/config",
-                          {"alias": f"{self.s['flow_alias']}-{e['providerId']}", "config": config})
+                          {"alias": config_alias or f"{self.s['flow_alias']}-{e['providerId']}", "config": config})
 
     def _build_flow(self) -> None:
         s, top = self.s, self.s["flow_alias"]
@@ -353,6 +436,102 @@ class Run:
             attrs["acr.loa.map"] = json.dumps(loa_map, separators=(",", ":"))
             self.api.call("PUT", f"/clients/{q(client['id'])}", {**client, "attributes": attrs})
 
+    # -------------------------------------------------------------- code check
+    def otp_check(self) -> None:
+        """Direct grant flow of the broker's code check and its binding (settings
+        otp_check_client_id); refuses an unsafe client, warns about the realm."""
+        s = self.s
+        client_id, alias = s["otp_check_client_id"], s["otp_check_flow_alias"]
+        found = self.api.call("GET", f"/clients?clientId={q(client_id)}")
+        if not found:
+            raise KeycloakError(f"client {client_id!r} (code check) not found in realm {s['realm']!r}: "
+                                "create it first (docs/examples/keycloak-fastrdp-otp-check-client.json)")
+        client = found[0]
+        attrs = client.get("attributes") or {}
+        bad = [f"{k}={client.get(k)}" for k, v in OTP_CHECK_CLIENT.items() if bool(client.get(k)) != v]
+        bad += [f"{k}=true" for k in OTP_CHECK_ATTRIBUTES_OFF if str(attrs.get(k, "")).lower() == "true"]
+        mappers = self.api.call("GET", f"/clients/{q(client['id'])}/protocol-mappers/models") or []
+        bad += [f"audience mapper {m.get('name')}" for m in mappers
+                if m.get("protocolMapper") == "oidc-audience-mapper"]
+        if bad:
+            raise KeycloakError(f"client {client_id} (code check) must be confidential, direct grants only, "
+                                f"full scope off, no token exchange or audience mapper; found: {', '.join(bad)}")
+
+        flows = {f["alias"]: f for f in self.api.call("GET", "/authentication/flows")}
+        if alias in flows and flows[alias].get("builtIn"):
+            raise KeycloakError(f"flow {alias!r} is a built-in flow; choose another otp_check_flow_alias")
+        wanted = otp_check_flow(s)
+        if alias not in flows:
+            if self.change(f"create direct grant flow {alias}"):
+                self.api.call("POST", "/authentication/flows", {
+                    "alias": alias, "providerId": "basic-flow", "topLevel": True, "builtIn": False,
+                    "description": "fastrdp: code check of the broker (username + OTP, no password; "
+                                   "users without OTP are denied), direct grants of one client only. "
+                                   "Managed by Ansible (keycloak_passkeys); do not edit."})
+                self._build_otp_check_flow()
+        else:
+            actual = flow_actual(self.api, alias)
+            if actual != wanted:
+                # a hand-made change (or the older two-step flow): never accept it silently
+                self.warnings.append(f"direct grant flow {alias} of the code check differs from the "
+                                     f"wanted structure ({flow_diff(actual, wanted)}); "
+                                     + ("would be rebuilt" if s["check"] else "rebuilt"))
+                if self.change(f"rebuild direct grant flow {alias}"):
+                    for e in self.api.call("GET", f"/authentication/flows/{q(alias)}/executions"):
+                        if e["level"] == 0:   # removing a sub-flow execution removes its sub-flow
+                            self.api.call("DELETE", f"/authentication/executions/{q(e['id'])}")
+                    self._build_otp_check_flow()
+        if not s["check"]:
+            built = flow_actual(self.api, alias)
+            if built != wanted:
+                raise KeycloakError(f"flow {alias!r} differs after building it: {flow_diff(built, wanted)}")
+            flows = {f["alias"]: f for f in self.api.call("GET", "/authentication/flows")}
+        self._otp_check_mapper(client)
+        flow_id = flows.get(alias, {}).get("id")
+        overrides = dict(client.get("authenticationFlowBindingOverrides") or {})
+        if flow_id is None or overrides.get("direct_grant") != flow_id:
+            if self.change(f"client {client_id}: direct grant flow {alias}"):
+                overrides["direct_grant"] = flow_id
+                self.api.call("PUT", f"/clients/{q(client['id'])}",
+                              {**client, "authenticationFlowBindingOverrides": overrides})
+
+        realm = self.api.call("GET", "")
+        if realm.get("otpPolicyCodeReusable"):
+            self.warnings.append("realm: OTP codes may be used more than once (otpPolicyCodeReusable): "
+                                 "a code typed on the RDP waiting screen can be replayed; turn it off")
+        if not realm.get("bruteForceProtected"):
+            self.warnings.append("realm: brute-force detection is off; wrong codes of the code check are "
+                                 "then limited only by the broker ([mfa] code_attempts, code_user_failures)")
+
+
+    def _build_otp_check_flow(self) -> None:
+        s, top = self.s, self.s["otp_check_flow_alias"]
+        _, with_otp, _, otp, without_otp, cond, deny = otp_check_flow(s)
+        self._add_exec(top, "direct-grant-validate-username", "REQUIRED")
+        self._add_flow(top, with_otp[2], "CONDITIONAL")
+        self._add_exec(with_otp[2], "conditional-user-configured", "REQUIRED")
+        self._add_exec(with_otp[2], "direct-grant-validate-otp", "REQUIRED", otp[4], f"{top}-otp-reference")
+        self._add_flow(top, without_otp[2], "CONDITIONAL")
+        self._add_exec(without_otp[2], "conditional-sub-flow-executed", "REQUIRED", cond[4], f"{top}-no-otp-condition")
+        self._add_exec(without_otp[2], "deny-access-authenticator", "REQUIRED", deny[4], f"{top}-no-otp-deny")
+
+    def _otp_check_mapper(self, client: dict) -> None:
+        """The amr mapper on the code check's client (the broker requires amr)."""
+        path = f"/clients/{q(client['id'])}/protocol-mappers/models"
+        mappers = self.api.call("GET", path) or []
+        want = OTP_CHECK_AMR_MAPPER
+        mine = next((m for m in mappers if m.get("name") == want["name"]), None)
+        if mine is None:
+            if self.change(f"client {self.s['otp_check_client_id']}: amr mapper"):
+                self.api.call("POST", path, want)
+        elif mine.get("protocolMapper") != want["protocolMapper"] or any(
+                str((mine.get("config") or {}).get(k)).lower() != v for k, v in want["config"].items()):
+            # our keys must match; Keycloak adds others (userinfo.token.claim) by itself
+            self.warnings.append(f"client {self.s['otp_check_client_id']}: amr mapper {want['name']!r} was changed by hand")
+            if self.change(f"client {self.s['otp_check_client_id']}: reset amr mapper"):
+                self.api.call("PUT", f"{path}/{q(mine['id'])}",
+                              {**want, "id": mine["id"], "config": {**(mine.get("config") or {}), **want["config"]}})
+
 
 def canon(obj):
     """Compare Keycloak JSON loosely: numbers and booleans as strings, key order ignored."""
@@ -373,10 +552,15 @@ def main() -> int:
         run.flow()
         run.client_policies()
         run.client_acr_map()
+        if s["otp_check_client_id"]:
+            run.otp_check()
     except (KeycloakError, ValueError) as exc:
         print(json.dumps({"failed": True, "msg": str(exc)}))
         return 1
-    print(json.dumps({"changed": bool(run.changes), "changes": run.changes, "check": s["check"]}))
+    out = {"changed": bool(run.changes), "changes": run.changes, "check": s["check"]}
+    if run.warnings:
+        out["warnings"] = run.warnings
+    print(json.dumps(out))
     return 0
 
 

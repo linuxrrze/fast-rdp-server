@@ -72,9 +72,11 @@ FreeRDP and Remmina settings for each login path (exact switches, errors): [free
 | `otp_or_push` | push challenge | appended OTP if present, otherwise push |
 | `web` | approval on the web gateway's `/web/approve` page | approval on `/web/approve` |
 | `push_or_web` | push challenge **and** approval on `/web/approve`; the first answer wins | as NLA (an appended OTP is not split off) |
+| `code_or_web` | authenticator code typed on the [waiting screen](#waiting-screen), checked by Keycloak, **or** approval on `/web/approve` (passkey); the first success wins | as NLA |
 
-`web` and `push_or_web` need `fastrdp_web_enabled: true`; `web` needs no privacyIDEA
-([Web approval](#web-approval)). Web logins (Guacamole) are unaffected by every mode:
+`web`, `push_or_web` and `code_or_web` need `fastrdp_web_enabled: true`; `web` and
+`code_or_web` need no privacyIDEA ([Web approval](#web-approval),
+[Code on the waiting screen](#code-on-the-waiting-screen)). Web logins (Guacamole) are unaffected by every mode:
 their second factor is at Keycloak.
 
 **`fastrdp_mfa_nla_kdc_enforced`** (broker `[mfa] nla_kdc_enforced`, default off):
@@ -118,7 +120,8 @@ alice: nla login from 192.0.2.10; second factor skipped: reconnect grace (push p
 How it works:
 
 - **What earns grace:** only a login whose second factor privacyIDEA confirmed (OTP or
-  push), the user approved on the web approval page, or the KDC's evidence in the ticket
+  push), Keycloak confirmed (a [code on the waiting screen](#code-on-the-waiting-screen),
+  factor `keycloak_otp`), the user approved on the web approval page, or the KDC's evidence in the ticket
   (`kdc_evidence_as_mfa`, factor `kdc <item>`), *and* whose session then started (the
   broker handed the target to the proxy).
   Refusals, wrong or missing OTPs, push timeouts, privacyIDEA errors and back-end errors
@@ -223,7 +226,11 @@ first wins and the other is cancelled. Both need the web gateway
    (`acr`/`amr`: passkey, TOTP, WebAuthn, privacyIDEA), and checks the ID token's
    `auth_time`, so an existing Keycloak session does not count. A sign-in without that
    proof gets the page *Second factor required*
-   ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)).
+   ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)). This is the
+   desktop client's flow: a passkey, or password **again** plus OTP or security key.
+   The Keycloak username (the `username_claim` after
+   `strip_domains`) must equal the RDP login's local account: the broker shows and decides
+   only that account's pending logins.
 4. The page lists the user's pending logins with client address, start time, login
    method and a two-digit **code**, the same one the [waiting screen](#waiting-screen) and
    the notification show, so the user can tell which login is theirs; opened from the
@@ -327,6 +334,172 @@ code for typing on another device; that way gets the plain page as before.
 
 *The login-bound page while a second login of the account waits (example data).*
 
+### Code on the waiting screen
+
+**`fastrdp_mfa_mode: code_or_web`** (broker `[mfa] mode = "code_or_web"`): Keycloak is the
+only MFA service, and both kinds of second factor work for every RDP client, NLA with a
+Kerberos ticket included:
+
+- **TOTP:** the user types the code from the authenticator app into the RDP window. The
+  [waiting screen](#waiting-screen) shows a field below its text; the proxy module reads
+  the digits and sends them to the broker, which has Keycloak check them.
+- **Passkey:** the user approves the login on `/web/approve` as with
+  [web approval](#web-approval): the QR code and the URL are on the same panel.
+
+The first success wins; the other way is cancelled. Nothing is appended to the password,
+so Kerberos NLA logins work as they are.
+
+**How Keycloak checks the code.** Keycloak has no API that only verifies a code. The
+broker signs the user in through a **direct grant** of its own confidential client
+(`fastrdp-otp-check`, sample `docs/examples/keycloak-fastrdp-otp-check-client.json`):
+username and code, **no password**. That client's direct grant flow:
+
+```
+fastrdp-otp-check (direct grant flow of the client fastrdp-otp-check only)
+├─ Username Validation                       REQUIRED
+├─ fastrdp-otp-check - otp                   CONDITIONAL (sub-flow)
+│  ├─ Condition - user configured            REQUIRED
+│  └─ OTP                                    REQUIRED  reference value "otp" (goes into amr), max age 60 s
+└─ fastrdp-otp-check - no otp                CONDITIONAL (sub-flow)
+   ├─ Condition - sub-flow executed          REQUIRED  "fastrdp-otp-check - otp", not executed
+   └─ Deny access                            REQUIRED  error message "fastrdp_no_otp"
+```
+
+A user with an OTP credential must pass the OTP step; a user without one is denied with
+`fastrdp_no_otp`, which the broker tells apart from a wrong code. A token counts only if
+its `amr` claim contains `otp` (the client's mapper *fastrdp amr* puts the OTP step's
+reference value there). The broker ends that Keycloak session at once (logout with the
+refresh token) and throws the tokens away (`broker/brokerd/fastrdp_broker/keycloak_otp.py`).
+[tested: Keycloak 26.8.1, `make test-keycloak`]
+
+**Two safeguards against a flow changed by hand.** A conditional flow is one wrong
+setting away from letting a username alone through: with the *no otp* sub-flow disabled,
+Keycloak issued a token to a user without OTP for the name alone [tested].
+1. The role (`fastrdp_keycloak_passkeys.py`) compares the flow exactly on every run, in
+   check mode too: steps, order, requirements and configs. Any difference is a warning
+   naming the step ("differs from the wanted structure … rebuilt"), and the flow is
+   rebuilt (check mode: reported only). The same for the amr mapper.
+2. The broker accepts a token only with `otp` in `amr` (and this issuer, this client as
+   audience and `azp`, not expired). A flow that skips the OTP step gives `amr: []`
+   [tested]. Such a token, and every other unexpected answer, closes the code field for
+   this login with "Codes cannot be checked at the moment", costs no attempt and is
+   logged as an error (`Keycloak flow issued a token without 'otp' in amr …`). The
+   signature is not checked: the token comes straight from the token endpoint over TLS
+   in answer to the client's authenticated request (OpenID Connect Core 3.1.3.7).
+
+Safeguard 2 protects against a broken flow, not against a Keycloak administrator who
+sets the reference value on another step; safeguard 1 reports that at the next run.
+
+| Check (Keycloak 26.8.1) | Result |
+|---|---|
+| right code, through `fastrdp-otp-check` | accepted; no Keycloak session left after the logout [tested] |
+| wrong code | refused (HTTP 400 `invalid_grant`), counted [tested] |
+| unknown user | refused (HTTP 400) [tested in a research run, not in `make test-keycloak`] |
+| user without an OTP credential (password-only or passkey-only users) | denied (HTTP 401 `{"error": "fastrdp_no_otp"}`, as JSON because the broker sends `Accept: application/json`); **not counted**: the field closes with "No authenticator app is set up for your account. Approve with your passkey: scan the QR code." [tested] |
+| wrong client secret or client id | HTTP 401 `unauthorized_client`: not counted, the field closes ("Codes cannot be checked at the moment"), error in the journal [tested] |
+| flow changed by hand (*no otp* sub-flow disabled; *Deny access* disabled) | a token without `otp` in `amr` (HTTP 200), or HTTP 500: the broker refuses both, not counted, the field closes; the role's check mode reports the flow, a run rebuilds it [tested] |
+| user with a pending required action | refused (HTTP 400 "Account is not fully set up", counted like a wrong code): nothing can be enrolled this way [tested] |
+| username + code through any other client (the webgate's, `admin-cli`) | refused: the shortened flow exists only behind this client's secret [tested] |
+| the same code twice | refused, **if** the realm keeps OTP codes single-use (`otpPolicyCodeReusable` off, Keycloak's default); the role warns otherwise [tested] |
+| token exchange with the check's token | refused (standard token exchange off, full scope off, no audience mapper; the role refuses a client with any of them) [tested in a research run, not in `make test-keycloak`] |
+| several OTP devices of a user | only the user's **default** OTP credential counts [verified: source, `ValidateOTP`] |
+
+**Why only the broker can use it:** the client is confidential and its secret is on the
+RDP host only (`/etc/fastrdp/keycloak-otp.secret`, root). The flow without a password is
+bound to that client alone (`authenticationFlowBindingOverrides.direct_grant`); the realm's
+own flows and every other client stay as they are. A direct grant sets no browser cookie,
+so no other application can be signed in through such a check. The broker asks for the
+code only after the first factor passed (Kerberos ticket or PAM password), so nobody can
+guess codes with a username alone.
+
+**Limits per login and per user:**
+
+| Variable (broker key) | Default | Meaning |
+|---|---|---|
+| `fastrdp_mfa_code_attempts` (`code_attempts`) | `3` | wrong codes per login; then the login fails (`mfa_failed`) |
+| `fastrdp_mfa_code_user_failures` (`code_user_failures`) | `10` | wrong codes of one user within the window: the code field stays closed for that user ("Too many wrong codes"), the approval page still works |
+| `fastrdp_mfa_code_failure_window` (`code_failure_window`) | `900` | seconds that window covers |
+| `fastrdp_mfa_keycloak_issuer` (`[mfa.keycloak] issuer`) | the webgate's `fastrdp_web_oidc_issuer` | the realm |
+| `fastrdp_mfa_keycloak_client_id` (`client_id`) | `fastrdp-otp-check` | the confidential client |
+| `vault_fastrdp_mfa_keycloak_client_secret` | – | its secret (`client_secret_file`, read at every check) |
+| `fastrdp_mfa_keycloak_ca_src` (`ca_file`) | the webgate's CA | Keycloak's CA, "" = system trust store |
+| `fastrdp_mfa_keycloak_timeout` (`timeout`) | `10` | seconds per check |
+| `fastrdp_mfa_keycloak_required_amr` (`required_amr`) | `otp` | a token counts only with this value in `amr`; the role sets it as the OTP step's reference value |
+
+A Keycloak that cannot be reached costs no attempt ("The code could not be checked"; the
+field stays). Answers that are neither a token with `otp` in `amr`, a wrong code
+(`invalid_grant`) nor the *Deny access* of a user without OTP close the field for this
+login without an attempt: they point to a setup error, and leaving the field open would
+let a Keycloak that answers oddly to wrong codes be used for unlimited guesses.
+`fastrdp_mfa_web_approval_timeout` bounds the whole wait, a check under way included.
+Keycloak's own brute-force detection counts the wrong codes on top; turn it on in the
+realm (the role warns when it is off).
+
+**Set up:**
+1. Import `docs/examples/keycloak-fastrdp-otp-check-client.json` into the realm
+   (*Clients → Import client*) and copy its secret (*Credentials*) into the vault as
+   `vault_fastrdp_mfa_keycloak_client_secret`.
+2. `fastrdp_mfa_mode: code_or_web`, `fastrdp_web_enabled: true` (the approval page),
+   `fastrdp_proxy_waiting_screen: true` (default). With `fastrdp_web_passkeys: true` the
+   web_gateway role also creates the direct grant flow `fastrdp-otp-check` (above) and
+   the client's amr mapper, binds the flow to the client, compares both on every run and
+   refuses an unsafe client (public, browser flow, implicit flow, service
+   account, device or CIBA grant, standard token exchange, full scope, an audience
+   mapper); it warns about reusable OTP codes and missing brute-force detection. Without
+   Ansible: [keycloak-mfa/README.md](examples/keycloak-mfa/README.md#scenario-2-approving-rdp-logins).
+3. Users need TOTP in Keycloak, or a passkey for the approval page. Users without TOTP
+   see the hint to the passkey after their first code.
+
+**What users see:** the panel says "Type the code from your authenticator app below, or
+sign in on the approval page (passkey) and approve this login", the URL, the login code,
+the QR code and the field *Authenticator code: ••••__*. Digits count by key position, so
+the top row works on every layout (also AZERTY without Shift), the keypad with NumLock;
+Backspace deletes, Esc clears, the sixth digit (or Enter, with several configured
+`fastrdp_otp_lengths`) sends the code. The field then shows "Checking the code…"; a wrong
+code brings the field back with "Wrong code. Attempts left: 2".
+
+**Security notes:**
+- A code typed in the user's own RDP window can only pass that login; somebody with the
+  password and a parallel login gets nothing from it (unlike push and the plain approval
+  page, which need `single_pending` or the [login-bound link](#login-bound-link-qr-code)).
+- A fake RDP server that relays everything live (password, then the code) defeats TOTP as
+  it defeats push and web approval. Only RDP-level server authentication helps: Kerberos
+  NLA (mutual authentication), or a server certificate the client checks.
+- Whoever holds the client secret can check codes for any user and, by guessing, lock
+  accounts out through Keycloak's brute-force detection. Keep it on the RDP host only.
+- The code is never logged (broker, module), and the module wipes it once sent.
+- Clients without the field (no waiting screen, a module without `patches/freerdp/0007`)
+  get the approval page only.
+
+**Not tested yet:** typing the code in real clients (mstsc, Windows App on macOS/iOS,
+Remmina): which keyboard events they send to the panel. The proxy module's part is built
+and syntax-checked against FreeRDP 3.32.2 with fastrdp's patches, and its key handling
+has unit tests (`tests/proxy-module/test_code.c`); see [backlog.md](backlog.md) W5 and
+the lab plan [lab-waiting-screen-input.md](lab-waiting-screen-input.md).
+
+**Input trace for the client lab** (`fastrdp_proxy_input_trace`, proxy.ini
+`[FastRDP] InputTrace`, default `false`, **lab only**): the proxy logs one line per input
+event the waiting screen reads (code field and desktop picker), with the event's
+**class** only, e.g.
+
+```
+[…] input trace: scancode top-row digit up (code field), code field 3 of 6 digits
+[…] input trace: unicode other down (code field), before the prompt
+[…] input trace: sync NumLock off CapsLock off (code field), code field 0 of 6 digits
+```
+
+Classes: scancode `top-row digit`, `keypad digit`, `keypad digit key (NumLock off)`,
+`backspace`, `esc`, `enter`, `keypad enter`, `modifier`, `caps lock`, `num lock`,
+`other`, `other (extended)`; Unicode `digit`, `full-width digit`, `backspace`, `enter`,
+`esc`, `other`; `sync` with the NumLock and CapsLock state; `mouse` button 1–3 down/up
+(no position, no moves). It never logs a digit's value, a key code or a character: all
+digit keys of one source share one class, and non-digit characters are one class
+because AZERTY's unshifted digit row (`&é"'(-è_çà`) is made of them
+(`broker/proxy-module/fastrdp_inputtrace.h`, `tests/proxy-module/test_inputtrace.c`).
+The field's length is logged, which the masked field shows on the screen anyway. Still,
+the trace tells *that* and *when* digits were typed: the proxy warns on every
+connection while it is on; switch it off after the lab.
+
 ### Waiting screen
 
 **`fastrdp_proxy_waiting_screen`** (proxy.ini `[FastRDP] WaitingScreen`, default
@@ -342,6 +515,7 @@ must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bi
 | push (`push`, `otp_or_push` without OTP) | "Approve the sign-in / Confirm the push notification for alice on your phone." and a countdown of privacyIDEA's `push_timeout` |
 | web approval (`web`) | "Sign in on the approval page and approve this login:", the approval URL, "Login code: 42" (the code the approval page and the [notification](notifications.md) show), a **QR code** of the [login-bound link](#login-bound-link-qr-code) `<URL>?login=<id>` ("Scan the code to open the approval page on your phone.") and a countdown of `fastrdp_mfa_web_approval_timeout` |
 | `push_or_web` | both ways in one panel, QR code, countdown of the web approval; if the push cannot start or runs out, the panel switches to the web approval alone with the time left |
+| `code_or_web` | "Type the code from your authenticator app below, or sign in on the approval page (passkey) and approve this login:", URL, login code, QR code, countdown and the [code field](#code-on-the-waiting-screen) "Authenticator code: ••••__" ("Checking the code…" while Keycloak checks, "Wrong code. Attempts left: n" after a wrong one, "Too many wrong codes" without a field) |
 | desktop picker (`fastrdp_desktop_picker`, after the second factor) | "Choose your desktop", one row per desktop (key badge and label: "1 Xfce", "2 GNOME (running)"), the preselected row filled, a hint line and a countdown of `fastrdp_desktop_picker_timeout`; keys 1-9, arrow keys and Enter, a click, Esc ([desktop-matrix.md](desktop-matrix.md#desktop-picker-in-the-rdp-window)) |
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
 | login granted | the panel is painted over in the screen colour just before the back-end's desktop arrives |
@@ -374,8 +548,9 @@ fastrdp_ui_texts:
     countdown: "Temps restant :"
 ```
 
-Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `qr_hint`, `session_start`,
-`countdown`, and for the desktop picker `picker_title` (above the rows), `picker_hint`
+Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `mfa_code_or_web`, `qr_hint`,
+`session_start`, `countdown`, for the code field `code_label`, `code_checking`,
+`code_wrong` (`{count}`: attempts left), `code_unavailable`, `code_blocked` (too many wrong codes), `code_no_otp` (no authenticator app in Keycloak), `code_off` (the code check is unusable; these three without a field), and for the desktop picker `picker_title` (above the rows), `picker_hint`
 (one line below them, cut at the panel's width), `picker_countdown`, `picker_running`
 (a running session's desktop: `{desktop} (running)`) and `picker_reconnects` (another
 X11 desktop while an xrdp session runs: `{desktop} (opens the running {running})`);

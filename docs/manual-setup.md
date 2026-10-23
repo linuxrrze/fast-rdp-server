@@ -1429,6 +1429,9 @@ AcceptRemoteGuard=false
 ; also Server Status Info PDUs, to clients that ask for them.
 WaitingScreen=true
 StatusInfo=false
+; Lab only: log the class of each input event the waiting screen reads (code field,
+; desktop picker), never a value (docs/lab-waiting-screen-input.md).
+InputTrace=false
 ```
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)
@@ -1537,7 +1540,9 @@ Role `mfa_privacyidea`; modes and privacyIDEA settings in [auth-matrix.md](auth-
   in `/etc/fastrdp/privacyidea-service.secret` (`root:root 0600`), and `service_user`;
 - `broker.toml`: `[mfa] mode` (`otp`, `push`, `otp_or_push`; `web`/`push_or_web` approve
   logins on the web gateway, which needs `[web] enabled`, see
-  [auth-matrix.md](auth-matrix.md#web-approval)), `exempt_groups`, `otp_lengths`;
+  [auth-matrix.md](auth-matrix.md#web-approval); `code_or_web` adds the TOTP code on the
+  waiting screen, checked by Keycloak through `[mfa.keycloak]`, see
+  [auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)), `exempt_groups`, `otp_lengths`;
   `[mfa.privacyidea] url`, `realm`, `verify_tls`;
 - optional: `[mfa] reconnect_grace` (seconds, e.g. `600`; `0` = off) so that reconnects
   after a network drop skip a second factor passed shortly before, bound to the same

@@ -39,10 +39,14 @@ nla_kdc_enforced = {{ fastrdp_mfa_nla_kdc_enforced | bool | lower }}
 kdc_evidence_as_mfa = {{ fastrdp_mfa_kdc_evidence_as_mfa | to_json }}
 reconnect_grace = {{ fastrdp_mfa_reconnect_grace | int }}
 reconnect_grace_same_address = {{ fastrdp_mfa_reconnect_grace_same_address | bool | lower }}
-# mode web / push_or_web: users approve their logins on the web gateway (/web/approve)
+# mode web / push_or_web / code_or_web: users approve their logins on the web gateway (/web/approve)
 web_approval_timeout = {{ fastrdp_mfa_web_approval_timeout | int }}
 web_approval_max_auth_age = {{ fastrdp_mfa_web_approval_max_auth_age | int }}
 web_approval_single_pending = {{ fastrdp_mfa_web_approval_single_pending | bool | lower }}
+# mode code_or_web: the code on the waiting screen, checked by Keycloak ([mfa.keycloak])
+code_attempts = {{ fastrdp_mfa_code_attempts | int }}
+code_user_failures = {{ fastrdp_mfa_code_user_failures | int }}
+code_failure_window = {{ fastrdp_mfa_code_failure_window | int }}
 
 [mfa.privacyidea]
 {% if fastrdp_broker_pi_ca.stat.checksum | default('') | length > 0 %}
@@ -54,6 +58,19 @@ ca_file = "{{ '/etc/fastrdp/privacyidea-ca.pem' if fastrdp_privacyidea_ca_src | 
 verify_tls = {{ fastrdp_privacyidea_verify_tls | default(true) | bool | lower }}
 service_user = "{{ fastrdp_privacyidea_service_user }}"
 service_password_file = "/etc/fastrdp/privacyidea-service.secret"
+{% if fastrdp_mfa_mode == 'code_or_web' %}
+
+[mfa.keycloak]
+{% if fastrdp_broker_kc_ca.stat.checksum | default('') | length > 0 %}
+# ca_file sha256 {{ fastrdp_broker_kc_ca.stat.checksum }} (read at start: a new CA restarts the broker)
+{% endif %}
+issuer = {{ fastrdp_mfa_keycloak_issuer | regex_replace('/+$', '') | to_json }}
+client_id = {{ fastrdp_mfa_keycloak_client_id | to_json }}
+client_secret_file = "/etc/fastrdp/keycloak-otp.secret"
+ca_file = "{{ '/etc/fastrdp/keycloak-otp-ca.pem' if fastrdp_mfa_keycloak_ca_src | length > 0 else '' }}"
+timeout = {{ fastrdp_mfa_keycloak_timeout | int }}
+required_amr = {{ fastrdp_mfa_keycloak_required_amr | string | to_json }}
+{% endif %}
 
 [network]
 # Connection type the proxy sends to xrdp (encoder profile) for clients that ask for

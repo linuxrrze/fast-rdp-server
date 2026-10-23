@@ -184,6 +184,8 @@ Authentication Flow"). Step-up LoA sub-flows do not fit passkeys:
    `fastrdp_web_required_amr_any: []` apply:
    - the webgate sends `acr_values=mfa`, which triggers the policy;
    - it refuses any ID token whose `acr` is not `mfa`.
+   - Approving RDP logins (`/web/approve`) uses the same flow
+     ([below](#passkeys-as-the-rdp-second-factor-web-approval)).
 
 **Automated:** `fastrdp_web_passkeys: true` in the inventory makes the web_gateway
 role apply steps 1–4 through the admin REST API, idempotently, merging client
@@ -207,9 +209,154 @@ CID=$(kcadm.sh get clients -r lab -q clientId=fastrdp-web --fields id --format c
 kcadm.sh update clients/$CID -r lab -s 'attributes."acr.loa.map"="{\"mfa\":2}"'
 ```
 
+#### Warning: a policy update replaces the whole passwordless policy
+
+[verified: Keycloak 26.8.1 source, `DefaultExportImportManager.updateRealm` and
+`getWebAuthnPolicyPasswordless`; tested with keycloak-config-cli, see
+[examples/keycloak-mfa/](examples/keycloak-mfa/README.md#method-4-keycloak-config-cli-adorsys-tested-with-caveats)]
+
+- Keycloak applies the `webAuthnPolicyPasswordless*` fields of a realm update **only
+  when the request also carries `webAuthnPolicyPasswordlessRpEntityName`**. Without it,
+  all of them are ignored, and the request still succeeds.
+- With it, Keycloak builds a **new** policy from the request. Every passwordless field
+  that the request leaves out goes back to its default: RP ID, signature algorithms,
+  extra origins, timeout, *Avoid same authenticator registration*, attestation,
+  acceptable AAGUIDs, passkeys switch, mediation.
+- The 2FA *WebAuthn Policy* (`webAuthnPolicy*`, gated by `webAuthnPolicyRpEntityName`)
+  behaves the same way.
+
+What is safe and what is not:
+
+| Way of changing the policy | Result |
+|---|---|
+| `kcadm.sh update realms/REALM -s field=value ...` (as above) | safe: without `-f` or `-n`, kcadm reads the realm and merges the `-s` values into it before the PUT, so all other fields are sent unchanged [verified: kcadm source, `AbstractRequestCmd`] |
+| `fastrdp_keycloak_passkeys.py` (Ansible) and `fastrdp-mfa-kcadm.sh` | safe: they read the realm and send **all** current `webAuthnPolicyPasswordless*` fields, with only their own fields changed [verified: code] |
+| Admin console, *Webauthn Passwordless Policy* tab | not checked here |
+| `PUT /admin/realms/REALM` with only some fields, `kcadm.sh update -f file` or `-n`, keycloak-config-cli | **unsafe**: the fields are ignored, or every field missing from the request is reset |
+
+Before and after a change by hand, compare the policy:
+`kcadm.sh get realms/REALM | jq 'with_entries(select(.key|startswith("webAuthnPolicyPasswordless")))'`.
+
+Both fastrdp scripts set attestation and acceptable AAGUIDs themselves (attestation
+`none` and an empty list, or `direct` and the configured list in hardware-only mode). An
+AAGUID list set by hand is therefore replaced on their next run (see
+[Hardware-only policy](#hardware-only-policy-attestation-aaguids-verified--docs)).
+
 Without Ansible, [examples/keycloak-mfa/](examples/keycloak-mfa/README.md) has recipe A
 ready to apply: an idempotent `kcadm.sh` script (tested), the client policies for the
 admin console's JSON editor, a keycloak-config-cli file and a realm import for new realms.
+
+### Realms where users sign in with a password or a passkey
+
+A common realm: users sign in to Keycloak either with username and password (perhaps
+plus OTP), or with a passkey ("Sign in with Passkey" or autofill, because *Enable
+Passkeys* is on). Before recipe A, fastrdp refused both kinds of sign-in with
+`acr '1' does not prove MFA`, **also the passkey sign-ins**.
+
+**Why a passkey in the normal browser flow gives `acr` 1** [verified: Keycloak 26.8.1
+source, `AcrProtocolMapper.getAcr`]: `acr` is the level of authentication (LoA) that the
+flow recorded, mapped through the client's ACR map. Keycloak does not derive a level
+from the credential type. The built-in `browser` flow has no *Condition – Level of
+Authentication* steps, and without recipe A's client policy no `auth-flow-loa` is set.
+The level is therefore unset, and the mapper falls back to `1` for a fresh sign-in (or
+`0` for an SSO-cookie sign-in), passkey or not. `acr_values=mfa` alone does not change
+this ([web-access.md](web-access.md#symptom-acr-1-does-not-prove-mfa)). Step-up LoA
+sub-flows do not help either (see the start of [recipe A](#recipe-a-acrmfa-via-a-forced-flow-recommended)).
+
+**With recipe A**, only requests with `acr_values=mfa` run the flow `fastrdp-mfa`. The
+webgate sends them for `/web/`, `/web/approve` and `/web/notify`:
+
+| Sign-in at fastrdp | Result |
+|---|---|
+| Passkey (discoverable credential, UV), via autofill or "Sign in with Passkey" | password and second factor are skipped; `acr=mfa` [tested, 26.8.1] |
+| Password, then OTP | `acr=mfa` [tested] |
+| Password, then a security key registered as **2FA** WebAuthn credential (`webauthn`) | `acr=mfa` [inferred: same sub-flow; not run in `make test-keycloak`] |
+| Password, user has OTP but does not enter it | stops at the OTP form, no token [tested] |
+| Password, user has **no** second factor | Keycloak error page ("Invalid username or password"), no token [tested] |
+| Password, user has **only a passkey** besides the password | refused like the case above: the second-factor step accepts only OTP and 2FA WebAuthn credentials, and a passkey (`webauthn-passwordless`) is neither. The user must use the passkey from the first page instead [verified: source, `ConditionalCredentialAuthenticator` checks which credential was **used** in this sign-in, `WebAuthnAuthenticator` accepts type `webauthn` only; not tested] |
+
+A password alone never gives `acr=mfa`.
+
+**Other clients of the realm are unchanged.** The client policy acts only on
+`acr_values=mfa` (`acr-condition`), and `fastrdp-mfa` is not bound as the realm's browser
+flow. Other applications, and the account console, keep the realm's normal browser flow:
+password or passkey as before, `acr` 1 as before. The exception is the account console
+override recommended in the next section.
+
+**What users see:**
+- At fastrdp: the **username-only** page with "Sign in with Passkey" and passkey
+  autofill, without a password field. A passkey ends the sign-in. Otherwise the next pages
+  are the password and the OTP (or security key). The page may look different from the
+  realm's usual login page, e.g. when that page is the combined username + password form.
+- No single sign-on into fastrdp: `fastrdp-mfa` has no *Cookie* step, so users sign in
+  again at fastrdp even when they are signed in to Keycloak for another application
+  [tested].
+- Elsewhere: nothing changes.
+
+Before switching, make sure every user who should use fastrdp has a passkey or a second
+factor. Users who only have a password are refused at fastrdp (table above), and the
+enrolment of their first factor needs care (next section).
+
+### Close the enrolment gap: enrolling a factor needs MFA
+
+**The gap.** Recipe A trusts every passkey, OTP device and security key that is stored
+for the user. If a user can **enrol** one after a sign-in with the password only, an
+attacker who knows the password can enrol **their own** passkey (or their own OTP app)
+and then passes fastrdp's `acr=mfa`. Where that is possible:
+- the account console (*Signing in → Set up passkey / authenticator application*). It
+  signs in through the client `account-console`, which uses the realm's browser flow:
+  password alone, if the realm allows that;
+- a required action (`webauthn-register-passwordless`, `CONFIGURE_TOTP`, ...) that an
+  admin set on the user, at the next sign-in to any application;
+- application-initiated actions: Keycloak accepts `kc_action=<required action>` in the
+  authorization request of **any** client, as long as the required action is enabled and
+  supports it, and runs it after that client's sign-in [verified: Keycloak 26.8.1 source,
+  `AuthorizationEndpoint`, `AuthenticationManager.executionActions`; not tested].
+
+Registration as a required action **at the fastrdp sign-in** is not a gap: it runs only
+after the full `fastrdp-mfa` flow.
+
+**Close it** (neither Ansible nor `fastrdp-mfa-kcadm.sh` does this; see
+[backlog.md](backlog.md#web-approval) W4):
+
+1. **Account console: browser flow override `fastrdp-mfa`.** Admin console: *Clients →
+   account-console → Advanced → Authentication flow overrides → Browser Flow* =
+   `fastrdp-mfa` → *Save*. Or with kcadm (the override takes the flow's **id**, not its
+   alias):
+
+   ```sh
+   FLOW_ID=$(kcadm.sh get authentication/flows -r REALM | jq -r '.[] | select(.alias == "fastrdp-mfa") | .id')
+   ACC_ID=$(kcadm.sh get clients -r REALM -q clientId=account-console --fields id --format csv --noquotes)
+   kcadm.sh update clients/$ACC_ID -r REALM -s "authenticationFlowBindingOverrides.browser=$FLOW_ID"
+   kcadm.sh get clients/$ACC_ID -r REALM --fields clientId,authenticationFlowBindingOverrides   # check
+   ```
+
+   Then the account console needs a passkey, or password + second factor, before anyone
+   can add or remove a credential. [verified: source, `AuthenticationFlowResolver`: a
+   client's browser override wins over the realm's browser flow; the commands and the
+   console path were not run here.] Consequences:
+   - users sign in to the account console again on each visit (no *Cookie* step);
+   - users **without** any second factor can no longer use the account console at all,
+     so they cannot enrol their first factor there (below);
+   - if the flow `fastrdp-mfa` is deleted, Keycloak logs a warning and falls back to the
+     realm's browser flow, i.e. the gap is open again. Re-creating the flow gives it a
+     new id: set the override again. Ansible and `fastrdp-mfa-kcadm.sh --rebuild`
+     rebuild only the steps and keep the flow (and its id).
+2. **Other clients.** Any client whose sign-in accepts a password alone can carry
+   `kc_action=webauthn-register-passwordless` (see above). Closing that completely needs
+   MFA in the realm's browser flow itself (e.g. a copy of the `browser` flow whose 2FA
+   sub-flow is not conditional on a configured credential), or the same override on those
+   clients. Whether that is acceptable depends on the other applications; decide it per
+   realm. [inferred from source, not tested]
+3. **First factor for users who have only a password.** Pick one controlled way:
+   - an admin enrols it with the user present, or sets the required action for **one**
+     user right before that user's first sign-in (the window is short and deliberate);
+   - *Users → user → Credentials → Credential reset* with the required action, sent by
+     e-mail: the mailbox is then the proof, which is weaker than MFA [not tested];
+   - privacyIDEA: enrolment by the helpdesk or a rollout process outside Keycloak.
+4. **Existing credentials.** Passkeys and OTP devices enrolled before the gap was
+   closed may have come in through it. Check *Users → user → Credentials* (creation date)
+   for accounts that matter and delete unknown ones.
 
 ### Recipe B: `amr` with explicit executions (alternative, other IdPs)
 
@@ -254,6 +401,13 @@ Use this if you prefer `amr`, or your IdP emits RFC 8176 values natively.
     from *Show data…* on a test registration.
   - The list is only checked at **registration**. Credentials registered before the
     policy change stay valid, so delete them.
+  - Keep the list in the inventory (`fastrdp_web_passkeys_aaguids`), not only in the
+    realm: `fastrdp_keycloak_passkeys.py` writes exactly its own value (an empty list
+    without hardware-only) and `fastrdp-mfa-kcadm.sh` always writes an empty list, so a
+    list set by hand in the admin console is removed on their next run [verified: code;
+    backlog W3]. Change the list by hand only in the ways the
+    [policy warning](#warning-a-policy-update-replaces-the-whole-passwordless-policy)
+    calls safe.
 - **Policy scope:** apply this to the passwordless policy (passkeys = hardware only)
   and/or the 2FA policy. Note that Windows Hello attestation depends on the TPM.
 - **privacyIDEA:**
@@ -451,7 +605,19 @@ broker hold an RDP login that owes its second factor until the user approves it 
 [recipe A](#recipe-a-acrmfa-via-a-forced-flow-recommended) is what proves the second
 factor, for mstsc, xfreerdp3 and Remmina alike (NLA or TLS) and without anything on the
 client. Origin binding stays with the browser and Keycloak; the broker only checks that
-the approving sign-in is recent (`auth_time`) and belongs to the same account.
+the approving sign-in is recent (`auth_time`) and belongs to the same account: the
+Keycloak username (after `strip_domains`) must equal the RDP login's local account.
+
+With recipe A a passkey user approves with one passkey confirmation; an OTP user types username,
+**password** and OTP again, although the RDP client already checked the password.
+`fastrdp_mfa_mode: code_or_web` avoids that for OTP users: they type the code in the RDP
+window's [waiting screen](auth-matrix.md#code-on-the-waiting-screen) and Keycloak checks
+it through a direct grant of a client of its own (username + code, nothing else), while
+passkey users keep approving on the page. A passkey cannot be checked in the RDP window
+itself: Keycloak verifies WebAuthn only on its own login page (origin binding), and the
+RDP client's WebAuthn channel (MS-RDPEWA) would let the RDP server choose the relying
+party, which is exactly what passkeys protect against
+([webauthn-redirection.md](webauthn-redirection.md)).
 
 Limits: the passkey proves the user signed in to the web page, not which RDP client
 they approved; the page shows the client address and refuses approval while two logins
@@ -495,12 +661,13 @@ A YubiKey 5 can do both at once (separate applets, separate PINs).
 - **No `Cookie` in the forced flow** (recipe A). Keycloak 26.8.1's step-up check
   already stopped a password-only SSO session from becoming `acr=mfa` in the test, but
   only as long as the client's ACR map gives `mfa` a higher level than the session.
-- **Registration is the weak point.** A user who logs in with a password only can
-  register a passkey through a required action. Ways to restrict that:
+- **Registration is the weak point.** A user who signs in with a password only can
+  enrol a passkey or an OTP device (account console, required action, `kc_action` of any
+  client) and then passes `acr=mfa`. Close it with the browser flow override
+  `fastrdp-mfa` on `account-console` (a manual step, not done by Ansible) and a
+  controlled first enrolment: [Close the enrolment gap](#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).
   - registering as a required action at the fastrdp login runs only after the full
     `fastrdp-mfa` flow;
-  - registering in the *Account Console* uses that client's login flow, so require MFA
-    there too (realm browser flow or the same client policy);
   - pre-register;
   - in privacyIDEA, enroll via multichallenge after MFA.
 - **Synced passkeys:** security follows the sync provider account (Apple, Google,
@@ -524,7 +691,9 @@ A YubiKey 5 can do both at once (separate applets, separate PINs).
    Keycloak's truststore (separate realm if only some users need it: the policy is
    per realm).
 4. Users: register a passkey (YubiKey, Windows Hello, phone, Bitwarden/KeePassXC) via
-   *Account Console → Signing in*; tell them about the RDP limits below.
+   *Account Console → Signing in*; tell them about the RDP limits below. Set the account
+   console's browser flow override to `fastrdp-mfa` first (manual step,
+   [enrolment gap](#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)).
 
 #### Stage 1 results (Keycloak 26.8.1)
 

@@ -33,7 +33,8 @@ test-pam:       # needs libpam0g-dev, libcjson-dev, pkg-config
 	  libpam0g-dev libcjson-dev pkg-config,$(MAKE) -C broker/pam_fastrdp_token check)
 
 # AllowTlsFrom address lists (fastrdp_addr.h), CredSSP mechanism offers (fastrdp_spnego.h),
-# PAC group SIDs (fastrdp_pac.h) and the waiting screen's panel (fastrdp_panel.h) of the proxy
+# PAC group SIDs (fastrdp_pac.h), the waiting screen's panel (fastrdp_panel.h) and its code
+# field (fastrdp_code.h) and InputTrace's event classes (fastrdp_inputtrace.h) of the proxy
 # module; gcc only, no FreeRDP
 test-proxy-module:
 	@$(call with_tool,test-proxy-module,$(CC),mkdir -p build && \
@@ -44,7 +45,11 @@ test-proxy-module:
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_pac tests/proxy-module/test_pac.c && \
 	  build/test_pac && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_panel tests/proxy-module/test_panel.c && \
-	  build/test_panel)
+	  build/test_panel && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_code tests/proxy-module/test_code.c && \
+	  build/test_code && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_inputtrace tests/proxy-module/test_inputtrace.c && \
+	  build/test_inputtrace)
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report

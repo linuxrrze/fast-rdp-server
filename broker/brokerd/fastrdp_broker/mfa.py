@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-"""Second factor: privacyIDEA (OTP appended to the password, or push), or approval of
-the pending login on fastrdp-webgate's approval page (web)."""
+"""Second factor: privacyIDEA (OTP appended to the password, or push), approval of the
+pending login on fastrdp-webgate's approval page (web), or a code typed on the proxy's
+waiting screen and checked by Keycloak, racing the approval page (code_or_web)."""
 
 from __future__ import annotations
 
@@ -11,10 +12,13 @@ import re
 import secrets
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from .config import PRIVACYIDEA_MODES, MfaSection
+from .config import KEYCLOAK_OTP_MODES, PRIVACYIDEA_MODES, MfaSection
+from . import keycloak_otp
+from .keycloak_otp import KeycloakError, KeycloakOtp
 from .privacyidea import PrivacyIdea, PrivacyIdeaError
 
 log = logging.getLogger(__name__)
@@ -22,22 +26,73 @@ log = logging.getLogger(__name__)
 YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}\Z")   # \Z: not before a trailing newline
 
 
-# Called once a login waits for the user: (method "push" | "web" | "push_or_web", seconds
-# the wait may take, the web approval's correlation code or None, the web approval's id
-# or None). The broker turns it into a progress message for the proxy's waiting screen
-# (ui.py: the QR code names the id); it must not block.
-Notify = Callable[[str, int, "str | None", "str | None"], None]
+# Called once a login waits for the user: (method "push" | "web" | "push_or_web" |
+# "code_or_web", seconds the wait may take, the web approval's correlation code or None,
+# the web approval's id or None), for code_or_web also entry= (the code field's state,
+# ui.WaitingTexts.mfa()). The broker turns it into a progress message for the proxy's
+# waiting screen (ui.py: the QR code names the id); it must not block.
+Notify = Callable[..., None]
 
 
 def notify_safely(notify: Notify | None, method: str, timeout: float, code: str | None = None,
-                  request_id: str | None = None) -> None:
+                  request_id: str | None = None, entry: dict | None = None) -> None:
     """The waiting screen is a courtesy: its errors never touch the login."""
     if notify is None:
         return
     try:
-        notify(method, max(0, int(timeout)), code, request_id)
+        if entry is None:
+            notify(method, max(0, int(timeout)), code, request_id)
+        else:
+            notify(method, max(0, int(timeout)), code, request_id, entry=entry)
     except Exception as exc:
         log.debug("progress message not sent: %s", exc)
+
+
+class CodeEntry:
+    """Codes the proxy module reads on the waiting screen for one login ({"op": "code"},
+    protocol.py; Broker.login_unless_abandoned puts them here). Accepted only while the
+    code field is open; a code that comes after it closed (the approval page answered
+    first) is dropped."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.open = False
+
+    def put(self, code: str) -> bool:
+        if not self.open:
+            return False
+        self.queue.put_nowait(code)
+        return True
+
+    async def get(self) -> str:
+        return await self.queue.get()
+
+
+class CodeFailures:
+    """Wrong codes per account within [mfa] code_failure_window seconds. At
+    code_user_failures the account's code field stays closed (the approval page still
+    works) until older failures leave the window. Memory only; the event loop only."""
+
+    def __init__(self, cfg: MfaSection, clock: Callable[[], float] = time.monotonic):
+        self.cfg = cfg
+        self.clock = clock
+        self.failures: dict[str, deque[float]] = {}
+
+    def _recent(self, account: str) -> deque[float]:
+        times = self.failures.get(account, deque())
+        while times and self.clock() - times[0] >= self.cfg.code_failure_window:
+            times.popleft()
+        if not times:
+            self.failures.pop(account, None)
+        return times
+
+    def blocked(self, account: str) -> bool:
+        return len(self._recent(account)) >= self.cfg.code_user_failures
+
+    def record(self, account: str) -> None:
+        times = self._recent(account)
+        times.append(self.clock())
+        self.failures[account] = times
 
 
 class MfaDenied(Exception):
@@ -299,7 +354,9 @@ class SecondFactor:
     def __init__(self, cfg: MfaSection):
         self.cfg = cfg
         self.pi = PrivacyIdea(cfg.privacyidea) if cfg.mode in PRIVACYIDEA_MODES else None
+        self.kc = KeycloakOtp(cfg.keycloak) if cfg.mode in KEYCLOAK_OTP_MODES else None
         self.approvals = WebApprovals(cfg)
+        self.code_failures = CodeFailures(cfg)
 
     @property
     def wants_otp_in_password(self) -> bool:
@@ -310,20 +367,24 @@ class SecondFactor:
 
     async def verify(self, user: str, otp: str | None, password: str | None, *,
                      account: str | None = None, method: str = "", client_address: str | None = None,
-                     notify: Notify | None = None) -> str:
+                     notify: Notify | None = None, codes: CodeEntry | None = None) -> str:
         """Run the configured second factor. Returns the factor used; raises MfaDenied.
-        `user`: privacyIDEA's name; `account` (default `user`), `method` and
+        `user`: privacyIDEA's and Keycloak's name; `account` (default `user`), `method` and
         `client_address`: the local account and the login shown on the approval page.
         `notify` hears when the login starts waiting for the user (push, web approval;
-        not for an OTP check), for the proxy's waiting screen."""
+        not for an OTP check), for the proxy's waiting screen. `codes`: the module can
+        read a code on its waiting screen (code_or_web; without it only the approval page)."""
         try:
             if otp is not None and self.wants_otp_in_password:
                 assert self.pi is not None
                 if await asyncio.to_thread(self.pi.check_otp, user, otp):
                     return "otp"
                 raise MfaDenied("OTP rejected")
-            if self.cfg.mode == "web":
+            if self.cfg.mode == "web" or (self.cfg.mode == "code_or_web" and codes is None):
                 return await self.approvals.wait(account or user, method, client_address, notify)
+            if self.cfg.mode == "code_or_web":
+                assert codes is not None
+                return await self.code_or_web(user, account or user, method, client_address, codes, notify)
             if self.cfg.mode == "push_or_web":
                 return await self.push_or_web(user, password, account or user, method, client_address,
                                               notify)
@@ -391,3 +452,86 @@ class SecondFactor:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(push, web, return_exceptions=True)
+
+    async def code_or_web(self, user: str, account: str, method: str, client_address: str | None,
+                          codes: CodeEntry, notify: Notify | None = None) -> str:
+        """A code typed on the waiting screen (checked by Keycloak) and the web approval at
+        once; the first success wins and the other is cancelled. Returns "keycloak_otp" or
+        "web"; raises MfaDenied: Deny or no decision in web_approval_timeout (as "web"; it
+        bounds the whole wait, a code check under way included), or
+        [mfa] code_attempts wrong codes for this login. A Keycloak that cannot be reached
+        costs no attempt. With code_user_failures wrong codes of the account in the window
+        the field stays closed and only the approval page is left; also for the rest of
+        the login when the user has no OTP credential (NO_OTP) or Keycloak's answer shows
+        a setup error (OFF, keycloak_otp.py), neither costing an attempt. `notify` hears
+        ("code_or_web", the time left, code, id, entry={"state": ..., "attempts_left": n})
+        at the start and after every code: state "ready", "wrong", "unavailable", or
+        without a field "blocked", "no_otp", "off"."""
+        assert self.kc is not None
+        started = time.monotonic()
+        timeout = self.cfg.web_approval_timeout
+        code, request_id = self.approvals.new_code(account), self.approvals.new_id()
+        attempts = self.cfg.code_attempts
+
+        def prompt(state: str) -> None:
+            notify_safely(notify, "code_or_web", timeout - (time.monotonic() - started), code, request_id,
+                          entry={"state": state, "attempts_left": attempts})
+
+        blocked = self.code_failures.blocked(account)
+        if blocked:
+            log.warning("%s: %d wrong codes within %ds: code entry closed, approval page only",
+                        account, self.cfg.code_user_failures, self.cfg.code_failure_window)
+        web = asyncio.ensure_future(self.approvals.wait(account, method, client_address, code=code,
+                                                        request_id=request_id))
+        codes.open = not blocked
+        prompt("blocked" if blocked else "ready")
+        typed: asyncio.Future | None = None
+        try:
+            while True:
+                typed = asyncio.ensure_future(codes.get())
+                await asyncio.wait({web, typed}, return_when=asyncio.FIRST_COMPLETED)
+                if web.done():
+                    return await web
+                # The approval page's decision or timeout ends the wait also while Keycloak
+                # checks: web_approval_timeout bounds the whole wait (the check's thread
+                # finishes on its own; a right code then only ends its Keycloak session).
+                check = asyncio.ensure_future(asyncio.to_thread(self.kc.check, user, typed.result()))
+                await asyncio.wait({web, check}, return_when=asyncio.FIRST_COMPLETED)
+                if web.done():  # decided on the approval page meanwhile: that counts (a Deny too)
+                    return await web
+                try:
+                    result = check.result()
+                except KeycloakError as exc:
+                    log.error("code of %s not checked: %s", account, exc)
+                    prompt("unavailable")
+                    continue
+                if result == keycloak_otp.OK:
+                    log.info("%s: code from the waiting screen accepted by Keycloak", account)
+                    return "keycloak_otp"
+                if result in (keycloak_otp.NO_OTP, keycloak_otp.OFF):
+                    # not the user's mistake: no attempt; the field stays closed, which
+                    # also keeps odd answers from becoming unlimited guesses
+                    log.info("%s: code entry closed for this login (%s), approval page only",
+                             account, "no OTP credential" if result == keycloak_otp.NO_OTP else "code check unusable")
+                    codes.open = False
+                    prompt(result)
+                    return await web
+                attempts -= 1
+                self.code_failures.record(account)
+                log.warning("%s: wrong code on the waiting screen (%s login from %s); %d attempt(s) left",
+                            account, method, client_address, attempts)
+                if attempts <= 0:
+                    raise MfaDenied("too many wrong codes")
+                if self.code_failures.blocked(account):
+                    log.warning("%s: %d wrong codes within %ds: code entry closed, approval page only",
+                                account, self.cfg.code_user_failures, self.cfg.code_failure_window)
+                    codes.open = False
+                    prompt("blocked")
+                else:
+                    prompt("wrong")
+        finally:
+            codes.open = False
+            for task in (web, typed):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(t for t in (web, typed) if t is not None), return_exceptions=True)

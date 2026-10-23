@@ -714,7 +714,7 @@
                        ~ session_start ~ ' s of it for the session start)',
              'fix': 'fastrdp_web_enabled: true; fastrdp_proxy_broker_timeout at least fastrdp_mfa_web_approval_timeout + '
                     ~ session_start ~ ' (the session start after the approval), at most 600 (docs/auth-matrix.md#web-approval)'}] }}
-      when: preflight_mfa_mode in ['web', 'push_or_web']
+      when: preflight_mfa_mode in ['web', 'push_or_web', 'code_or_web']
 
     - name: Probe the OIDC issuer from the host
       ansible.builtin.uri:
@@ -758,7 +758,7 @@
         step_up: >-
           {{ advertised | select('in', preflight_web_required_acr | map('string') | list) | list
              + advertised | select('match', '^[0-9]+$') | map('int') | select('ge', 2) | map('string') | list }}
-        refused: "every web sign-in{{ ' and every RDP login approval' if preflight_mfa_mode in ['web', 'push_or_web'] else '' }}"
+        refused: "every web sign-in{{ ' and every RDP login approval' if preflight_mfa_mode in ['web', 'push_or_web', 'code_or_web'] else '' }}"
         admin_login: >-
           {{ preflight_keycloak_admin_secret | length > 0
              or (preflight_keycloak_admin_user | length > 0 and preflight_keycloak_admin_password | length > 0) }}

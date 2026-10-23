@@ -141,6 +141,24 @@ What it writes, and nothing else:
   role reads, merges and writes back: other profiles and policies stay;
 - the client's ACR-to-LoA map entry `mfa → 2`, other entries kept.
 
+The passwordless policy update is a merge: the script reads the realm and sends **all**
+current `webAuthnPolicyPasswordless*` fields with only its own changed, because Keycloak
+resets every passwordless field missing from such a request to its default
+([warning](passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy)).
+RP name, RP ID, signature algorithms and extra origins therefore stay. Attestation and
+the AAGUID list are the script's own fields: without hardware-only it sets `none` and an
+empty list, so an AAGUID list set by hand in the realm is removed (keep it in
+`fastrdp_web_passkeys_aaguids` instead).
+
+**One manual step left: the account console.** The role does not touch the client
+`account-console`. As long as it signs in with the realm's normal browser flow, anyone
+with a user's password can enrol their own passkey or OTP app there and then passes
+`acr=mfa`. Set *Clients → account-console → Advanced → Authentication flow overrides →
+Browser Flow* = `fastrdp-mfa` (kcadm commands, consequences and the other enrolment
+paths: [passkeys.md](passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)).
+Realms whose users sign in with a password **or** a passkey: what changes and what users
+see is in [passkeys.md](passkeys.md#realms-where-users-sign-in-with-a-password-or-a-passkey).
+
 `--check` lists what would change and writes nothing; a second run reports
 `changed=0`. Hardware-only also needs the vendors' attestation roots in Keycloak's
 truststore (server option `truststore-paths`, not settable over REST): without them
@@ -224,7 +242,10 @@ use a second factor (MFA) …", with a link to the account console `<issuer>/acc
 WARNING fastrdp.webgate: OIDC login of alice refused: acr '1' does not prove MFA (required: mfa; amr: None). Keycloak issues acr 'mfa' only with a level-2 (MFA) step for this client: fastrdp_web_passkeys: true, or a step-up browser flow (docs/web-access.md#keycloak-setup)
 ```
 
-Keycloak issued `acr` 1 (password only). Either the realm has no level-2 step for
+Keycloak issued `acr` 1. That happens for a password-only sign-in, and also for a
+passkey sign-in through the realm's normal browser flow: Keycloak does not derive the
+level from the credential
+([why](passkeys.md#realms-where-users-sign-in-with-a-password-or-a-passkey)). Either the realm has no level-2 step for
 `acr=mfa` (the client's ACR map, also the one of the sample client, only names the
 level; it does not create a flow that reaches it), or this user signed in without a
 second factor. Fix one of:
@@ -235,7 +256,10 @@ second factor. Fix one of:
   `acr=mfa` ([passkeys.md](passkeys.md#recipe-a-acrmfa-via-a-forced-flow-recommended)).
 
 Then every user needs a second factor (passkey, security key, authenticator app) in
-Keycloak; users without one add it in the account console. `make preflight` warns
+Keycloak. Users without one add it in the account console, but only as long as the
+account console itself accepts a password alone, which is exactly the
+[enrolment gap](passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa):
+close it, and enrol first factors in a controlled way. `make preflight` warns
 (*Keycloak MFA for acr=mfa*) when `fastrdp_web_passkeys` is off and the discovery
 document shows no step-up; the client's ACR map and client policies are not visible
 there, so it cannot confirm a hand-made setup. Other refusals (state, token, a reused
@@ -284,6 +308,10 @@ approve their **native RDP logins** (mstsc, xfreerdp3, Remmina): the second fact
 an RDP login becomes "sign in with MFA in a browser and click Approve". Modes, settings
 and the broker's checks: [auth-matrix.md](auth-matrix.md#web-approval).
 
+With `fastrdp_mfa_mode: code_or_web` OTP users can instead type the code from their
+authenticator app into the RDP window; the approval page stays for passkeys
+([auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)).
+
 <img src="images/mfa/waiting-web-qr.png" alt="RDP window with the waiting screen: Approve the sign-in, the approval URL https://rdp.example.org/web/approve, Login code: 47, a QR code and a countdown of 1:44" width="560"> <img src="images/mfa/web-approve.png" alt="Approval page on a phone: Approve RDP login, signed in as alice, This RDP login from 192.0.2.15, Kerberos (NLA), code 47, buttons Approve and Deny" width="240">
 
 *The waiting screen in the RDP window and the approval page opened from its QR code (example data).*
@@ -296,11 +324,16 @@ How users reach it:
   page for this very login. Without it the window stays black or shows "connecting…".
 - Open `https://<rdp-fqdn>/web/approve` (typed, or a bookmark), or scan the QR code in
   the RDP window with the phone's camera, which opens
-  `https://<rdp-fqdn>/web/approve?login=<id>`, then sign in there with the passkey or
-  authenticator app on the phone. The webgate always
-  sends the browser to Keycloak for a **new** sign-in (`prompt=login`, `max_age=0`,
-  plus `acr_values=mfa` as for desktops), even if the user is signed in there already,
-  and refuses ID tokens whose `auth_time` shows a reused Keycloak session.
+  `https://<rdp-fqdn>/web/approve?login=<id>`, then sign in there. The webgate always
+  sends the browser to Keycloak for a **new** sign-in (`prompt=login`, `max_age=0`),
+  even if the user is signed in there already, and refuses ID tokens whose `auth_time`
+  shows a reused Keycloak session. Keycloak runs the same client and flow as for
+  desktops (`fastrdp-web`, `acr_values=mfa`, flow `fastrdp-mfa`): a passkey (one passkey
+  confirmation), or username, **password** and OTP or security key. The password is
+  asked again, although the RDP client gave it already.
+- The approving Keycloak account must be the RDP login's account: the username claim
+  (`preferred_username`, after `strip_domains`) must equal the local account name the
+  broker holds the login for. Otherwise the page lists nothing.
 - The page shows each waiting login of that user: client address, start time and age,
   NLA or password login, its two-digit **code** (the waiting screen shows the same) and
   the buttons **Approve** and **Deny**. "No RDP login is

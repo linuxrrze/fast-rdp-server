@@ -1,1 +1,2 @@
 broker/brokerd/config/broker.toml.example
+docs/examples/keycloak-fastrdp-otp-check-client.json

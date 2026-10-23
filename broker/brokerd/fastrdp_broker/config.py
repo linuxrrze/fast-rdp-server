@@ -107,8 +107,24 @@ class PrivacyIdeaSection:
 
 
 @dataclass
+class KeycloakOtpSection:
+    """[mfa.keycloak] (mode code_or_web): Keycloak checks the code typed on the waiting
+    screen through a direct grant (username + code, no password) of a confidential client
+    whose direct grant flow has only Username Validation and OTP (keycloak_otp.py)."""
+    # The realm's issuer, https://<host>/realms/<realm> (as [oidc] issuer of the webgate)
+    issuer: str = ""
+    client_id: str = ""
+    client_secret_file: str = ""   # root-only; the client's secret
+    ca_file: str = ""              # "" = system trust store
+    timeout: int = 10
+    # A token counts only with this value in its amr claim: the reference value of the
+    # flow's OTP step (fastrdp_keycloak_passkeys.py), absent if a broken flow skipped it
+    required_amr: str = "otp"
+
+
+@dataclass
 class MfaSection:
-    # none | otp | push | otp_or_push | web | push_or_web
+    # none | otp | push | otp_or_push | web | push_or_web | code_or_web
     mode: str = "none"
     exempt_groups: list[str] = field(default_factory=list)
     otp_lengths: list[int] = field(default_factory=lambda: [6])
@@ -144,7 +160,15 @@ class MfaSection:
     # More than one pending login of a user: approving is refused for all of them (an
     # attacker with the password may have started one alongside the user's own).
     web_approval_single_pending: bool = True
+    # mode code_or_web: wrong codes per login before it fails (mfa_failed), and wrong
+    # codes per user within code_failure_window seconds before code entry is refused for
+    # that user (the approval page still works). Keycloak's brute-force detection counts
+    # on top.
+    code_attempts: int = 3
+    code_user_failures: int = 10
+    code_failure_window: int = 900
     privacyidea: PrivacyIdeaSection = field(default_factory=PrivacyIdeaSection)
+    keycloak: KeycloakOtpSection = field(default_factory=KeycloakOtpSection)
 
 
 @dataclass
@@ -218,9 +242,17 @@ class Config:
 
 
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
-VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push", "web", "push_or_web")
+VALID_MFA_MODES = ("none", "otp", "push", "otp_or_push", "web", "push_or_web", "code_or_web")
 PRIVACYIDEA_MODES = ("otp", "push", "otp_or_push", "push_or_web")
-WEB_APPROVAL_MODES = ("web", "push_or_web")
+WEB_APPROVAL_MODES = ("web", "push_or_web", "code_or_web")
+KEYCLOAK_OTP_MODES = ("code_or_web",)
+AMR_VALUE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+# [mfa.keycloak] issuer: https://<host>[:port][/prefix]/realms/<realm> (plain http only on loopback)
+KEYCLOAK_ISSUER = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))"
+                             r"(:[0-9]{1,5})?(/[\x21-\x7e]*)?/realms/[^/\s]+")
+CODE_ATTEMPTS = (1, 10)
+CODE_USER_FAILURES = (1, 100)
+CODE_FAILURE_WINDOW = (60, 86400)
 VALID_SESSION_TGT = ("auto", "off", "required")
 DOMAIN_NAME = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*")
 VALID_HOME_CHECK = ("create", "check", "off")
@@ -360,9 +392,11 @@ def parse(raw: dict) -> Config:
 
     mfa_raw = dict(raw.pop("mfa", {}))
     pi = _section(PrivacyIdeaSection, dict(mfa_raw.pop("privacyidea", {})), "mfa.privacyidea")
+    kc = _section(KeycloakOtpSection, dict(mfa_raw.pop("keycloak", {})), "mfa.keycloak")
     mfa = _section(MfaSection, mfa_raw, "mfa")
     web = _section(WebSection, dict(raw.pop("web", {})), "web")
     mfa.privacyidea = pi
+    mfa.keycloak = kc
     if mfa.mode not in VALID_MFA_MODES:
         raise ConfigError(f"[mfa] mode must be one of {VALID_MFA_MODES}")
     if mfa.mode in PRIVACYIDEA_MODES and not pi.url:
@@ -410,6 +444,25 @@ def parse(raw: dict) -> Config:
             f"[mfa] web_approval_max_auth_age must be whole seconds in 0..{MAX_WEB_APPROVAL_AUTH_AGE}")
     if not isinstance(mfa.web_approval_single_pending, bool):
         raise ConfigError("[mfa] web_approval_single_pending must be true or false")
+    for key, (lo, hi) in (("code_attempts", CODE_ATTEMPTS), ("code_user_failures", CODE_USER_FAILURES),
+                          ("code_failure_window", CODE_FAILURE_WINDOW)):
+        value = getattr(mfa, key)
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ConfigError(f"[mfa] {key} must be a whole number in {lo}..{hi}")
+    if mfa.mode in KEYCLOAK_OTP_MODES:
+        if not isinstance(kc.issuer, str) or not KEYCLOAK_ISSUER.fullmatch(kc.issuer.rstrip("/")):
+            raise ConfigError(f"[mfa.keycloak] issuer must be https://<host>/realms/<realm> (http on loopback) for "
+                              f"[mfa] mode = {mfa.mode!r}")
+        kc.issuer = kc.issuer.rstrip("/")
+        if not kc.client_id or not isinstance(kc.client_id, str):
+            raise ConfigError(f"[mfa.keycloak] client_id is required for [mfa] mode = {mfa.mode!r}")
+        if not kc.client_secret_file or not os.path.isabs(str(kc.client_secret_file)):
+            raise ConfigError("[mfa.keycloak] client_secret_file must be an absolute path")
+        if isinstance(kc.timeout, bool) or not isinstance(kc.timeout, int) or not 1 <= kc.timeout <= 60:
+            raise ConfigError("[mfa.keycloak] timeout must be whole seconds in 1..60")
+        if not isinstance(kc.required_amr, str) or not AMR_VALUE.fullmatch(kc.required_amr):
+            raise ConfigError("[mfa.keycloak] required_amr must be an amr value such as \"otp\" "
+                              "(letters, digits, . _ -; at most 64)")
 
     network = _section(NetworkSection, dict(raw.pop("network", {})), "network")
     try:

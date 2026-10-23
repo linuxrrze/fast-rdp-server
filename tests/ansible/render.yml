@@ -326,6 +326,21 @@
         - {mode: web}
         - {mode: push_or_web}
 
+    - name: Broker.toml, code on the waiting screen checked by Keycloak (code_or_web)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
+        dest: "{{ render_out }}/broker-code_or_web.toml"
+        mode: "0644"
+      vars:
+        fastrdp_mfa_mode: code_or_web
+        fastrdp_web_enabled: true
+        fastrdp_web_oidc_issuer: https://keycloak.lab.example.com/realms/lab/
+        fastrdp_mfa_keycloak_ca_src: /nonexistent/ca.pem
+        fastrdp_mfa_keycloak_timeout: 5
+        fastrdp_mfa_code_attempts: 4
+        fastrdp_mfa_code_user_failures: 20
+        fastrdp_mfa_code_failure_window: 600
+
     - name: Broker.toml, waiting screen texts (German default, own texts, URL behind a proxy)
       ansible.builtin.template:
         src: "{{ roles_dir }}/broker/templates/broker.toml.j2"
@@ -353,6 +368,14 @@
         mode: "0644"
       vars:
         fastrdp_proxy_status_info: true
+
+    - name: Proxy.ini, input trace for the client lab
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-input-trace.ini"
+        mode: "0644"
+      vars:
+        fastrdp_proxy_input_trace: true
 
     - name: Proxy.ini, waiting screen switched off
       ansible.builtin.template:

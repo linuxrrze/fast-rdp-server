@@ -334,7 +334,8 @@ class Audio(unittest.TestCase):
 
 
 class ProxyIni(unittest.TestCase):
-    def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false"):
+    def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false",
+              input_trace="false"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -358,6 +359,8 @@ class ProxyIni(unittest.TestCase):
         # waiting screen: on unless fastrdp_proxy_waiting_screen is false (fastrdp_plugin.c
         # waitingScreen); Status Info PDUs only with fastrdp_proxy_status_info
         self.assertEqual((p["FastRDP"]["WaitingScreen"], p["FastRDP"]["StatusInfo"]), (waiting, status_info))
+        # input trace (lab only): off unless fastrdp_proxy_input_trace
+        self.assertEqual(p["FastRDP"]["InputTrace"], input_trace)
 
     def test_tls_logins(self):
         self.check("proxy-lab.ini", "true")
@@ -377,6 +380,9 @@ class ProxyIni(unittest.TestCase):
     def test_waiting_screen(self):
         self.check("proxy-waiting.ini", "true", status_info="true")
         self.check("proxy-no-waiting.ini", "true", waiting="false")
+
+    def test_input_trace(self):
+        self.check("proxy-input-trace.ini", "true", input_trace="true")
 
 
 class GpuPackages(unittest.TestCase):
@@ -458,6 +464,19 @@ class BrokerToml(unittest.TestCase):
         both = broker_config.parse(toml("broker-push_or_web.toml")).mfa
         self.assertEqual(both.mode, "push_or_web")
         self.assertEqual(both.privacyidea.url, "https://privacyidea.lab.example.com")
+        self.assertEqual(both.keycloak.issuer, "")              # [mfa.keycloak] only for code_or_web
+
+    def test_code_or_web(self):
+        mfa = broker_config.parse(toml("broker-code_or_web.toml")).mfa
+        self.assertEqual(mfa.mode, "code_or_web")
+        self.assertEqual(mfa.privacyidea.url, "")
+        self.assertEqual((mfa.keycloak.issuer, mfa.keycloak.client_id, mfa.keycloak.client_secret_file,
+                          mfa.keycloak.ca_file, mfa.keycloak.timeout, mfa.keycloak.required_amr),
+                         ("https://keycloak.lab.example.com/realms/lab", "fastrdp-otp-check",
+                          "/etc/fastrdp/keycloak-otp.secret", "/etc/fastrdp/keycloak-otp-ca.pem", 5, "otp"))
+        self.assertEqual((mfa.code_attempts, mfa.code_user_failures, mfa.code_failure_window), (4, 20, 600))
+        lab = broker_config.parse(toml("broker-lab.toml")).mfa
+        self.assertEqual((lab.code_attempts, lab.code_user_failures, lab.code_failure_window), (3, 10, 900))
 
     def test_waiting_screen_texts(self):
         lab = broker_config.parse(toml("broker-lab.toml")).ui
@@ -636,6 +655,24 @@ class CommonChecks(unittest.TestCase):
                 ok, fastrdp_mfa_mode="web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=200,
                 fastrdp_proxy_broker_timeout=150),
             "web approval timeout too short": dict(ok, fastrdp_mfa_web_approval_timeout=5),
+            "code_or_web without web access": dict(ok, fastrdp_mfa_mode="code_or_web",
+                                                   fastrdp_mfa_keycloak_issuer="https://kc.example.com/realms/r",
+                                                   fastrdp_mfa_keycloak_client_secret="s"),
+            "code_or_web without a secret": dict(ok, fastrdp_mfa_mode="code_or_web", fastrdp_web_enabled=True,
+                                                 fastrdp_mfa_keycloak_issuer="https://kc.example.com/realms/r"),
+            "code_or_web with an issuer that is no realm": dict(
+                ok, fastrdp_mfa_mode="code_or_web", fastrdp_web_enabled=True,
+                fastrdp_mfa_keycloak_issuer="https://kc.example.com/", fastrdp_mfa_keycloak_client_secret="s"),
+            "code_or_web without the waiting screen": dict(
+                ok, fastrdp_mfa_mode="code_or_web", fastrdp_web_enabled=True, fastrdp_proxy_waiting_screen=False,
+                fastrdp_mfa_keycloak_issuer="https://kc.example.com/realms/r", fastrdp_mfa_keycloak_client_secret="s"),
+            "code_or_web approval timeout leaves no time for the session start": dict(
+                ok, fastrdp_mfa_mode="code_or_web", fastrdp_web_enabled=True, fastrdp_mfa_web_approval_timeout=91,
+                fastrdp_mfa_keycloak_issuer="https://kc.example.com/realms/r", fastrdp_mfa_keycloak_client_secret="s"),
+            "code attempts over the limit": dict(ok, fastrdp_mfa_code_attempts=11),
+            "code failure window too short": dict(ok, fastrdp_mfa_code_failure_window=30),
+            "keycloak timeout zero": dict(ok, fastrdp_mfa_keycloak_timeout=0),
+            "keycloak required amr not an amr value": dict(ok, fastrdp_mfa_keycloak_required_amr="otp/totp"),
             "web approval timeout over the limit": dict(ok, fastrdp_mfa_web_approval_timeout=511,
                                                         fastrdp_proxy_broker_timeout=600),
             "web approval timeout in minutes": dict(ok, fastrdp_mfa_web_approval_timeout="2m"),
@@ -645,6 +682,7 @@ class CommonChecks(unittest.TestCase):
             "desktop picker without the waiting screen": dict(ok, fastrdp_proxy_waiting_screen=False,
                                                               fastrdp_desktop_picker="always"),
             "waiting screen not a bool": dict(ok, fastrdp_proxy_waiting_screen="maybe"),
+            "input trace not a bool": dict(ok, fastrdp_proxy_input_trace="lab"),
             # the QR code adds ?login=<id> (22 characters) within 213 bytes
             "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),
             "approval URL not https": dict(ok, fastrdp_ui_approve_url="http://rdp1.example.com/web/approve"),
@@ -789,6 +827,11 @@ class CommonChecks(unittest.TestCase):
         self.assertEqual(self.run_checks(**ok, fastrdp_mfa_mode="web", fastrdp_mfa_web_approval_timeout=510,
                                          fastrdp_proxy_broker_timeout=600, fastrdp_mfa_web_approval_max_auth_age=0,
                                          fastrdp_mfa_web_approval_single_pending=False), 0)
+        kc = {"fastrdp_mfa_keycloak_issuer": "https://kc.example.com:8443/auth/realms/r",
+              "fastrdp_mfa_keycloak_client_secret": "s"}
+        self.assertEqual(self.run_checks(**ok, **kc, fastrdp_mfa_mode="code_or_web"), 0)
+        self.assertEqual(self.run_checks(**ok, **kc, fastrdp_mfa_mode="code_or_web",
+                                         fastrdp_web_notify_backends=["webpush"]), 0)
         # without web approval the timeout is not compared with the proxy's
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com",
                                          fastrdp_mfa_web_approval_timeout=300), 0)

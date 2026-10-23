@@ -48,6 +48,9 @@
  *                             ; QR code, session start) while the login waits
  *                             ; (waitingScreen)
  *   StatusInfo    = false     ; also Server Status Info PDUs, to clients that ask for them
+ *   InputTrace    = false     ; LAB ONLY: log the class of each input event the waiting
+ *                             ; screen reads (code field, picker), never a value
+ *                             ; (fastrdp_inputtrace.h, ws_trace())
  */
 
 #include <errno.h>
@@ -88,6 +91,8 @@
 #include <freerdp/private/proxy_client.h>
 
 #include "fastrdp_addr.h"
+#include "fastrdp_code.h"
+#include "fastrdp_inputtrace.h"
 #include "fastrdp_panel.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
 #if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
@@ -421,6 +426,32 @@ typedef struct
 	BOOL channel_capped;
 } wsPicker;
 
+#define WS_CODE_TEXT 512 /* bytes of the code field's label, "checking" text and message */
+
+typedef enum
+{
+	WS_CODE_OFF = 0, /* no field */
+	WS_CODE_SHOWN,   /* on the screen, reading digits */
+	WS_CODE_ANSWER,  /* complete, to be sent to the broker */
+	WS_CODE_SENT     /* sent; "checking" until the broker's next message */
+} wsCodeState;
+
+/* The code field on the waiting screen ([mfa] code_or_web; ws_code_listen()). It shares
+ * the picker's way of reading the client's input (wsPicker: saved callbacks, key state,
+ * NumLock, channel data cap). */
+typedef struct
+{
+	BOOL offered; /* the login announced "code_entry": 1 (ws_picker_possible()) */
+	wsCodeState state;
+	fastrdpCode field;
+	cJSON* lines; /* the prompt's text, shown above the field */
+	char label[WS_CODE_TEXT];
+	char checking[WS_CODE_TEXT];
+	char message[WS_CODE_TEXT];
+	UINT16 unicode; /* bit n: Unicode '0' + n, 10: Backspace, 11: Enter pressed after arming */
+	unsigned sent;  /* codes sent for this login */
+} wsCode;
+
 /* The front connection while the broker works on the login ([FastRDP] WaitingScreen):
  * a panel with the broker's progress texts (MFA push, web approval with a QR code of the
  * approval URL, session start), drawn by fastrdp_panel.h and sent as Bitmap Updates
@@ -442,6 +473,7 @@ typedef struct
 	proxyData* pdata;
 	BOOL draw;        /* WaitingScreen: Bitmap Updates */
 	BOOL status_info; /* StatusInfo, and the client accepts the PDU */
+	BOOL input_trace; /* InputTrace (lab only): ws_trace() */
 	UINT32 width, height, bpp;
 	BOOL no_compression_hdr; /* the client's NoBitmapCompressionHeader */
 	UINT32 budget;           /* bytes per Bitmap Update */
@@ -463,6 +495,7 @@ typedef struct
 	UINT32 nrects;
 	size_t batch_bytes;
 	wsPicker picker;
+	wsCode code;
 } waitingScreen;
 
 static long ws_ms_until(const struct timespec* t)
@@ -650,6 +683,8 @@ static void waiting_screen_free(waitingScreen* ws, BOOL clear)
 	if (ws->updates > 0)
 		WLog_INFO(TAG, "[%s] waiting screen: %u Bitmap Updates sent", ws->pdata->session_id,
 		          ws->updates);
+	fastrdp_code_wipe(&ws->code.field);
+	cJSON_Delete(ws->code.lines);
 	freerdp_bitmap_planar_context_free(ws->planar);
 	bitmap_interleaved_context_free(ws->interleaved);
 	free(ws->panel);
@@ -688,6 +723,11 @@ static waitingScreen* waiting_screen_new(proxyData* pdata)
 	ws->pdata = pdata;
 	ws->draw = draw;
 	ws->status_info = status_info;
+	ws->input_trace = config_bool(pdata, "InputTrace", FALSE);
+	if (ws->input_trace)
+		WLog_WARN(TAG, "[%s] InputTrace is on: the classes of waiting screen input events are "
+		               "logged (lab only, docs/lab-waiting-screen-input.md); turn it off in production",
+		          pdata->session_id);
 	ws->width = freerdp_settings_get_uint32(front, FreeRDP_DesktopWidth);
 	ws->height = freerdp_settings_get_uint32(front, FreeRDP_DesktopHeight);
 	ws->bpp = bpp;
@@ -725,9 +765,13 @@ static waitingScreen* waiting_screen_new(proxyData* pdata)
 
 static void ws_picker_start(waitingScreen* ws, const cJSON* msg);
 static void ws_picker_end(waitingScreen* ws);
+static BOOL ws_code_prepare(waitingScreen* ws, const cJSON* msg);
+static void ws_code_listen(waitingScreen* ws);
+static void ws_code_end(waitingScreen* ws);
 
 /* One {"progress": ...} message from the broker (protocol.py): new text, QR code and
- * countdown, or the desktop picker ("choose_desktop"). Malformed parts are left out. */
+ * countdown, the code field ("code_entry"), or the desktop picker ("choose_desktop").
+ * Malformed parts are left out. */
 static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
 {
 	const char* kind = json_str(msg, "progress");
@@ -735,6 +779,9 @@ static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
 	/* the broker moved on without the picker's answer (its wait ended) */
 	if (ws->picker.state == WS_PICKER_SHOWN)
 		ws_picker_end(ws);
+	/* every message replaces the code field: a new one, or none */
+	if (ws->code.state != WS_CODE_OFF)
+		ws_code_end(ws);
 	if (kind && strcmp(kind, "choose_desktop") == 0)
 	{
 		ws_picker_start(ws, msg);
@@ -787,7 +834,10 @@ static void waiting_screen_progress(waitingScreen* ws, const cJSON* msg)
 	}
 	else
 		fastrdp_panel_set_countdown(ws->panel, NULL);
-	ws_redraw(ws, FALSE);
+	if (kind && strcmp(kind, "mfa") == 0 && ws_code_prepare(ws, msg))
+		ws_code_listen(ws); /* draws the text with the field */
+	else
+		ws_redraw(ws, FALSE);
 }
 
 /* Milliseconds until the countdown shows the next second; -1 without a countdown. */
@@ -885,6 +935,13 @@ static BOOL ws_picker_read(waitingScreen* ws);
 static void ws_picker_check_timeout(waitingScreen* ws);
 static int ws_picker_next_ms(const waitingScreen* ws);
 static BOOL ws_picker_answer(waitingScreen* ws, int fd);
+static BOOL ws_code_answer(waitingScreen* ws, int fd);
+
+/* The module reads the front connection's input: the picker or the code field shows. */
+static BOOL ws_reading(const waitingScreen* ws)
+{
+	return ws && (ws->picker.state == WS_PICKER_SHOWN || ws->code.state == WS_CODE_SHOWN);
+}
 
 /* Sends one JSON line and waits for the one-line reply (parsed into *reply, caller frees).
  * With `abort_on`, the wait ends early when that session's front connection closes or
@@ -895,7 +952,9 @@ static BOOL ws_picker_answer(waitingScreen* ws, int fd);
  * MAX_REPLY like the reply; the countdown is redrawn once a second meanwhile.
  * While the desktop picker shows (ws_picker_start()), the front connection's input is
  * read instead of only watched, the picker's answer goes to the broker as one line, and
- * the wait grows by the picker's timeout plus WS_PICKER_GRACE_S. */
+ * the wait grows by the picker's timeout plus WS_PICKER_GRACE_S. The code field
+ * (ws_code_listen()) reads it the same way and sends each complete code as one line; its
+ * wait is the broker's web approval timeout, within this one (no growth). */
 static brokerCallResult broker_call(const char* path, const cJSON* request, int timeout_s,
                                     proxyData* abort_on, waitingScreen* screen, cJSON** reply)
 {
@@ -942,8 +1001,9 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			rc = BROKER_TIMED_OUT;
 			goto out;
 		}
-		/* the picker reads the front connection; otherwise it is only watched */
-		const BOOL picking = screen && screen->picker.state == WS_PICKER_SHOWN;
+		/* the picker or the code field reads the front connection; otherwise it is only
+		 * watched */
+		const BOOL picking = ws_reading(screen);
 		const nfds_t nfds = 1 + (picking ? ws_picker_fds(screen, &fds[1], MAX_ABORT_FDS)
 		                                 : abort_fds(abort_on, &fds[1], MAX_ABORT_FDS));
 		int wait_ms = (int)left_ms;
@@ -977,7 +1037,8 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 				aborted = TRUE;
 			if (aborted)
 			{
-				WLog_WARN(TAG, "[%s] request abandoned during the desktop picker", sid);
+				WLog_WARN(TAG, "[%s] request abandoned during the %s", sid,
+				          screen->picker.state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
 				rc = BROKER_ABANDONED;
 				goto out;
 			}
@@ -985,6 +1046,11 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 			if (screen->picker.state == WS_PICKER_ANSWER && !ws_picker_answer(screen, fd))
 			{
 				WLog_ERR(TAG, "[%s] desktop choice not sent to the broker", sid);
+				goto out;
+			}
+			if (screen->code.state == WS_CODE_ANSWER && !ws_code_answer(screen, fd))
+			{
+				WLog_ERR(TAG, "[%s] code not sent to the broker", sid);
 				goto out;
 			}
 			if (!fds[0].revents)
@@ -1066,7 +1132,10 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 
 out:
 	if (screen)
+	{
 		ws_picker_end(screen); /* the proxy's input callbacks back */
+		ws_code_end(screen);
+	}
 	if (fd >= 0)
 		close(fd);
 	if (text)
@@ -1157,8 +1226,32 @@ static waitingScreen* ws_of_input(rdpInput* input)
 		return NULL;
 	fastrdpSession* s = (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata);
 	waitingScreen* ws = s ? (waitingScreen*)s->screen : NULL;
-	return (ws && ws->picker.state == WS_PICKER_SHOWN) ? ws : NULL;
+	return ws_reading(ws) ? ws : NULL;
 }
+
+/* InputTrace: one line per input event the waiting screen reads, with the event's class
+ * (fastrdp_inputtrace.h), never its value. The code field's length is logged as well:
+ * the masked field shows it on the screen anyway, and it tells whether a key counted
+ * (repeat, NumLock, a dropped character). "before the prompt" marks input that is read
+ * and dropped before the field or picker takes keys (ws_picker_drain()). */
+static void ws_trace(const waitingScreen* ws, const char* source, const char* what,
+                     const char* how)
+{
+	if (!ws || !ws->input_trace)
+		return;
+	char field[48] = "";
+	if (ws->code.state != WS_CODE_OFF && ws->picker.state != WS_PICKER_SHOWN && ws->code.field.digits)
+		(void)_snprintf(field, sizeof(field), ", code field %u of %u digits", ws->code.field.len,
+		                ws->code.field.digits);
+	else if (ws->code.state != WS_CODE_OFF && ws->picker.state != WS_PICKER_SHOWN)
+		(void)_snprintf(field, sizeof(field), ", code field %u digits", ws->code.field.len);
+	WLog_INFO(TAG, "[%s] input trace: %s %s %s (%s)%s%s", ws->pdata->session_id, source, what, how,
+	          ws->picker.state == WS_PICKER_SHOWN ? "picker" : "code field",
+	          ws->picker.armed ? "" : ", before the prompt", field);
+}
+
+static void ws_code_key(waitingScreen* ws, unsigned key);
+static void ws_code_unicode(waitingScreen* ws, UINT16 flags, UINT16 code);
 
 /* Sends picker row i (desktop coordinates). */
 static void ws_picker_send_row(waitingScreen* ws, unsigned i)
@@ -1260,35 +1353,44 @@ static void ws_picker_key(waitingScreen* ws, unsigned key)
 static BOOL ws_picker_keyboard(rdpInput* input, UINT16 flags, UINT8 code)
 {
 	waitingScreen* ws = ws_of_input(input);
-	if (!ws || !ws->picker.armed)
+	if (!ws)
 		return TRUE;
 	wsPicker* pk = &ws->picker;
 	const unsigned key = code | ((flags & KBD_FLAGS_EXTENDED) ? 0x100u : 0u);
+	const char* what = ws->input_trace ? fastrdp_trace_key_class(key, pk->num_lock) : NULL;
 	const BYTE bit = (BYTE)(1u << (key % 8));
-	if (!(flags & KBD_FLAGS_RELEASE))
+	if (pk->armed && !(flags & KBD_FLAGS_RELEASE))
 		pk->keys[key / 8] |= bit;
-	else if (pk->keys[key / 8] & bit)
+	else if (pk->armed && (pk->keys[key / 8] & bit))
 	{
 		pk->keys[key / 8] &= (BYTE)~bit;
-		ws_picker_key(ws, key);
+		if (pk->state == WS_PICKER_SHOWN)
+			ws_picker_key(ws, key);
+		else
+			ws_code_key(ws, key);
 	}
+	ws_trace(ws, "scancode", what, (flags & KBD_FLAGS_RELEASE) ? "up" : "down");
 	return TRUE;
 }
 
 /* Clients that type characters instead of scancodes: '1'-'9' and Enter */
-static BOOL ws_picker_unicode(rdpInput* input, UINT16 flags, UINT16 code)
+static void ws_picker_unicode_event(waitingScreen* ws, UINT16 flags, UINT16 code)
 {
-	waitingScreen* ws = ws_of_input(input);
-	if (!ws || !ws->picker.armed)
-		return TRUE;
 	wsPicker* pk = &ws->picker;
+	if (!pk->armed)
+		return;
+	if (pk->state != WS_PICKER_SHOWN)
+	{
+		ws_code_unicode(ws, flags, code);
+		return;
+	}
 	int n = -1;
 	if (code >= '1' && code <= '9')
 		n = code - '1';
 	else if (code == '\r')
 		n = 9;
 	if (n < 0)
-		return TRUE;
+		return;
 	const UINT16 bit = (UINT16)(1u << n);
 	if (!(flags & KBD_FLAGS_RELEASE))
 		pk->unicode |= bit;
@@ -1300,13 +1402,30 @@ static BOOL ws_picker_unicode(rdpInput* input, UINT16 flags, UINT16 code)
 		else
 			ws_picker_digit(ws, (unsigned)n + 1);
 	}
+}
+
+static BOOL ws_picker_unicode(rdpInput* input, UINT16 flags, UINT16 code)
+{
+	waitingScreen* ws = ws_of_input(input);
+	if (!ws)
+		return TRUE;
+	ws_picker_unicode_event(ws, flags, code);
+	if (ws->input_trace)
+		ws_trace(ws, "unicode", fastrdp_trace_char_class(code),
+		         (flags & KBD_FLAGS_RELEASE) ? "up" : "down");
 	return TRUE;
 }
 
 static BOOL ws_picker_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
 {
 	waitingScreen* ws = ws_of_input(input);
-	if (!ws || !ws->picker.armed || !(flags & PTR_FLAGS_BUTTON1) || (flags & PTR_FLAGS_WHEEL))
+	if (ws && ws->input_trace && (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) &&
+	    !(flags & PTR_FLAGS_WHEEL)) /* buttons only: moves would flood the log; no position */
+		ws_trace(ws, "mouse",
+		         (flags & PTR_FLAGS_BUTTON1) ? "button 1" : (flags & PTR_FLAGS_BUTTON2) ? "button 2" : "button 3",
+		         (flags & PTR_FLAGS_DOWN) ? "down" : "up");
+	if (!ws || !ws->picker.armed || ws->picker.state != WS_PICKER_SHOWN ||
+	    !(flags & PTR_FLAGS_BUTTON1) || (flags & PTR_FLAGS_WHEEL))
 		return TRUE;
 	wsPicker* pk = &ws->picker;
 	const int row = fastrdp_panel_hit(ws->panel, x, y);
@@ -1346,6 +1465,9 @@ static BOOL ws_picker_sync(rdpInput* input, UINT32 flags)
 	if (!ws)
 		return TRUE;
 	ws->picker.num_lock = (flags & KBD_SYNC_NUM_LOCK) != 0;
+	if (ws_reading(ws))
+		ws_trace(ws, "sync", ws->picker.num_lock ? "NumLock on" : "NumLock off",
+		         (flags & KBD_SYNC_CAPS_LOCK) ? "CapsLock on" : "CapsLock off");
 	return ws->picker.sync ? ws->picker.sync(input, flags) : TRUE;
 }
 
@@ -1368,8 +1490,9 @@ static BOOL ws_picker_channel_data(freerdp_peer* peer, UINT16 channelId, const B
 	if (pk->channel_bytes > WS_PICKER_MAX_CHANNEL_BYTES)
 	{
 		if (!pk->channel_capped)
-			WLog_WARN(TAG, "[%s] more than %d bytes of channel data during the desktop picker",
-			          pdata->session_id, WS_PICKER_MAX_CHANNEL_BYTES);
+			WLog_WARN(TAG, "[%s] more than %d bytes of channel data during the %s",
+			          pdata->session_id, WS_PICKER_MAX_CHANNEL_BYTES,
+			          pk->state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
 		pk->channel_capped = TRUE;
 		return FALSE;
 	}
@@ -1406,8 +1529,8 @@ static BOOL ws_picker_read(waitingScreen* ws)
 	if (peer->CheckFileDescriptor(peer))
 		return TRUE;
 	ws->picker.gone = TRUE;
-	WLog_WARN(TAG, "[%s] front connection closed during the desktop picker",
-	          ws->pdata->session_id);
+	WLog_WARN(TAG, "[%s] front connection closed during the %s", ws->pdata->session_id,
+	          ws->picker.state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
 	return FALSE;
 }
 
@@ -1433,6 +1556,66 @@ static BOOL ws_picker_drain(waitingScreen* ws)
 			return FALSE;
 	}
 	return TRUE;
+}
+
+/* Installs the module's input callbacks (and the channel data counter) in place of the
+ * proxy's, which are saved in the picker's state; key state and arming start afresh.
+ * ws_input_restore() puts the proxy's back. */
+static void ws_input_take(waitingScreen* ws)
+{
+	wsPicker* pk = &ws->picker;
+	if (pk->keyboard)
+		return; /* taken already */
+	memset(pk->keys, 0, sizeof(pk->keys));
+	pk->unicode = 0;
+	pk->armed = FALSE;
+	ws->code.unicode = 0;
+	rdpInput* input = ws->pdata->ps->input;
+	pk->sync = input->SynchronizeEvent;
+	pk->keyboard = input->KeyboardEvent;
+	pk->unicode_keyboard = input->UnicodeKeyboardEvent;
+	pk->mouse = input->MouseEvent;
+	pk->extended_mouse = input->ExtendedMouseEvent;
+	input->SynchronizeEvent = ws_picker_sync;
+	input->KeyboardEvent = ws_picker_keyboard;
+	input->UnicodeKeyboardEvent = ws_picker_unicode;
+	input->MouseEvent = ws_picker_mouse;
+	input->ExtendedMouseEvent = ws_picker_extended_mouse;
+	freerdp_peer* peer = ws->pdata->ps->peer;
+	if (peer->ReceiveChannelData && !pk->receive_channel_data)
+	{
+		pk->receive_channel_data = peer->ReceiveChannelData;
+		peer->ReceiveChannelData = ws_picker_channel_data;
+	}
+}
+
+static void ws_input_restore(waitingScreen* ws)
+{
+	wsPicker* pk = &ws->picker;
+	pk->armed = FALSE;
+	if (pk->sync || pk->keyboard)
+	{
+		rdpInput* input = ws->pdata->ps->input;
+		if (input->SynchronizeEvent == ws_picker_sync)
+			input->SynchronizeEvent = pk->sync;
+		if (input->KeyboardEvent == ws_picker_keyboard)
+			input->KeyboardEvent = pk->keyboard;
+		if (input->UnicodeKeyboardEvent == ws_picker_unicode)
+			input->UnicodeKeyboardEvent = pk->unicode_keyboard;
+		if (input->MouseEvent == ws_picker_mouse)
+			input->MouseEvent = pk->mouse;
+		if (input->ExtendedMouseEvent == ws_picker_extended_mouse)
+			input->ExtendedMouseEvent = pk->extended_mouse;
+		pk->sync = NULL;
+		pk->keyboard = NULL;
+	}
+	if (pk->receive_channel_data)
+	{
+		freerdp_peer* peer = ws->pdata->ps->peer;
+		if (peer->ReceiveChannelData == ws_picker_channel_data)
+			peer->ReceiveChannelData = pk->receive_channel_data;
+		pk->receive_channel_data = NULL;
+	}
 }
 
 /* The broker's {"progress": "choose_desktop", ...}: shows the rows, installs the input
@@ -1510,23 +1693,7 @@ static void ws_picker_start(waitingScreen* ws, const cJSON* msg)
 	    !update->pointer->PointerSystem(ws->pdata->ps, &arrow))
 		WLog_DBG(TAG, "[%s] default pointer not sent", sid);
 
-	rdpInput* input = ws->pdata->ps->input;
-	pk->sync = input->SynchronizeEvent;
-	pk->keyboard = input->KeyboardEvent;
-	pk->unicode_keyboard = input->UnicodeKeyboardEvent;
-	pk->mouse = input->MouseEvent;
-	pk->extended_mouse = input->ExtendedMouseEvent;
-	input->SynchronizeEvent = ws_picker_sync;
-	input->KeyboardEvent = ws_picker_keyboard;
-	input->UnicodeKeyboardEvent = ws_picker_unicode;
-	input->MouseEvent = ws_picker_mouse;
-	input->ExtendedMouseEvent = ws_picker_extended_mouse;
-	freerdp_peer* peer = ws->pdata->ps->peer;
-	if (peer->ReceiveChannelData)
-	{
-		pk->receive_channel_data = peer->ReceiveChannelData;
-		peer->ReceiveChannelData = ws_picker_channel_data;
-	}
+	ws_input_take(ws);
 	pk->state = WS_PICKER_SHOWN;
 	WLog_INFO(TAG, "[%s] desktop picker: %u desktops, default %s, %d s", sid, pk->n,
 	          pk->names[pk->def], (int)t->valuedouble);
@@ -1539,31 +1706,9 @@ static void ws_picker_start(waitingScreen* ws, const cJSON* msg)
 static void ws_picker_end(waitingScreen* ws)
 {
 	wsPicker* pk = &ws->picker;
-	if (pk->sync || pk->keyboard)
-	{
-		rdpInput* input = ws->pdata->ps->input;
-		if (input->SynchronizeEvent == ws_picker_sync)
-			input->SynchronizeEvent = pk->sync;
-		if (input->KeyboardEvent == ws_picker_keyboard)
-			input->KeyboardEvent = pk->keyboard;
-		if (input->UnicodeKeyboardEvent == ws_picker_unicode)
-			input->UnicodeKeyboardEvent = pk->unicode_keyboard;
-		if (input->MouseEvent == ws_picker_mouse)
-			input->MouseEvent = pk->mouse;
-		if (input->ExtendedMouseEvent == ws_picker_extended_mouse)
-			input->ExtendedMouseEvent = pk->extended_mouse;
-		pk->sync = NULL;
-		pk->keyboard = NULL;
-	}
-	if (pk->receive_channel_data)
-	{
-		freerdp_peer* peer = ws->pdata->ps->peer;
-		if (peer->ReceiveChannelData == ws_picker_channel_data)
-			peer->ReceiveChannelData = pk->receive_channel_data;
-		pk->receive_channel_data = NULL;
-	}
 	if (pk->state == WS_PICKER_OFF)
 		return;
+	ws_input_restore(ws);
 	pk->state = WS_PICKER_OFF;
 	if (!ws->draw || ws->panel->nopt == 0)
 		return;
@@ -1608,6 +1753,185 @@ static BOOL ws_picker_answer(waitingScreen* ws, int fd)
 	cJSON_Delete(msg);
 	const BOOL ok = text && write_all(fd, text, strlen(text)) && write_all(fd, "\n", 1);
 	free(text);
+	return ok;
+}
+
+/* ------------------------------------------------------------ code field */
+
+/* [mfa] code_or_web: an "mfa" prompt with "code_entry" (protocol.py) shows a field for the
+ * authenticator code below its text; the QR code of the approval page stays next to it
+ * (passkeys). The digits are read like the picker's keys (fastrdp_code.h: by scancode, so
+ * every layout works; keypad with NumLock; Unicode digits) on their release, after input
+ * from before the prompt was drained, and shown masked. A complete code (the prompt's
+ * "digits", or Enter) goes to the broker as {"op": "code", "code": ...}; the field then
+ * shows the "checking" text and stops reading until the broker's next message, which
+ * brings a new field (wrong code), none, or the session start. The code is never logged
+ * and wiped from every buffer once sent. Offered with the picker's requirements
+ * (ws_picker_possible(): the panel and patches/freerdp/0007). */
+
+static void ws_code_copy(char* dst, const char* src)
+{
+	snprintf(dst, WS_CODE_TEXT, "%s", src ? src : "");
+}
+
+/* Takes the prompt's field ("code_entry") and text; FALSE if there is none to show. */
+static BOOL ws_code_prepare(waitingScreen* ws, const cJSON* msg)
+{
+	wsCode* c = &ws->code;
+	const cJSON* entry = cJSON_GetObjectItemCaseSensitive(msg, "code_entry");
+	if (!cJSON_IsObject(entry))
+		return FALSE;
+	if (!c->offered || !ws->draw)
+	{
+		WLog_WARN(TAG, "[%s] code field from the broker ignored (%s)", ws->pdata->session_id,
+		          !c->offered ? "not offered" : "no waiting screen");
+		return FALSE;
+	}
+	const cJSON* digits = cJSON_GetObjectItemCaseSensitive(entry, "digits");
+	fastrdp_code_reset(&c->field, cJSON_IsNumber(digits) && digits->valuedouble >= 0 &&
+	                                      digits->valuedouble <= FASTRDP_CODE_MAX
+	                                  ? (unsigned)digits->valuedouble
+	                                  : 0);
+	ws_code_copy(c->label, json_str(entry, "label"));
+	ws_code_copy(c->checking, json_str(entry, "checking"));
+	ws_code_copy(c->message, json_str(entry, "message"));
+	cJSON_Delete(c->lines);
+	c->lines = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(msg, "lines"), 1);
+	return TRUE;
+}
+
+/* The prompt's text, the message (if any) and the field line; then the panel. */
+static void ws_code_show(waitingScreen* ws)
+{
+	wsCode* c = &ws->code;
+	const char* text[FASTRDP_PANEL_MAX_LINES] = { 0 };
+	unsigned n = 0;
+	const cJSON* lines = cJSON_IsArray(c->lines) ? c->lines : NULL;
+	const cJSON* line = NULL;
+	cJSON_ArrayForEach(line, lines)
+	{
+		if (n == FASTRDP_PANEL_MAX_LINES - 2)
+			break;
+		text[n++] = cJSON_GetStringValue(line);
+	}
+	if (c->message[0])
+		text[n++] = c->message;
+	char mask[FASTRDP_CODE_MASK_MAX];
+	char field[WS_CODE_TEXT + FASTRDP_CODE_MASK_MAX + 1];
+	fastrdp_code_mask(&c->field, mask, sizeof(mask));
+	if (c->state == WS_CODE_SENT)
+		snprintf(field, sizeof(field), "%s", c->checking);
+	else
+		snprintf(field, sizeof(field), "%s %s", c->label, mask);
+	text[n++] = field;
+	fastrdp_panel_set_text(ws->panel, text, n);
+	ws_redraw(ws, FALSE);
+	memset(mask, 0, sizeof(mask));
+	memset(field, 0, sizeof(field));
+}
+
+/* Shows the field and reads the client's input for it. */
+static void ws_code_listen(waitingScreen* ws)
+{
+	wsCode* c = &ws->code;
+	c->state = WS_CODE_SHOWN;
+	ws_code_show(ws);
+	if (!ws->draw)
+	{
+		c->state = WS_CODE_OFF; /* drawing failed: the approval page is left */
+		return;
+	}
+	ws_input_take(ws);
+	WLog_INFO(TAG, "[%s] code field shown (%u digits)", ws->pdata->session_id, c->field.digits);
+	if (ws_picker_drain(ws))
+		ws->picker.armed = TRUE;
+}
+
+/* The field goes: input back to the proxy, digits wiped. */
+static void ws_code_end(waitingScreen* ws)
+{
+	wsCode* c = &ws->code;
+	if (c->state == WS_CODE_OFF)
+		return;
+	if (ws->picker.state == WS_PICKER_OFF)
+		ws_input_restore(ws);
+	fastrdp_code_wipe(&c->field);
+	c->state = WS_CODE_OFF;
+}
+
+static void ws_code_event(waitingScreen* ws, fastrdpCodeEvent ev)
+{
+	if (ev == FASTRDP_CODE_NONE)
+		return;
+	if (ev == FASTRDP_CODE_SUBMIT)
+		ws->code.state = WS_CODE_ANSWER;
+	ws_code_show(ws);
+}
+
+static void ws_code_key(waitingScreen* ws, unsigned key)
+{
+	if (ws->code.state == WS_CODE_SHOWN)
+		ws_code_event(ws, fastrdp_code_key(&ws->code.field, key, ws->picker.num_lock));
+}
+
+/* Clients that type characters: '0'-'9', Backspace, Enter, each on its release */
+static void ws_code_unicode(waitingScreen* ws, UINT16 flags, UINT16 code)
+{
+	wsCode* c = &ws->code;
+	int n = -1;
+	if (code >= '0' && code <= '9')
+		n = code - '0';
+	else if (code == 0x08)
+		n = 10;
+	else if (code == '\r')
+		n = 11;
+	if (n < 0 || c->state != WS_CODE_SHOWN)
+		return;
+	const UINT16 bit = (UINT16)(1u << n);
+	if (!(flags & KBD_FLAGS_RELEASE))
+		c->unicode |= bit;
+	else if (c->unicode & bit)
+	{
+		c->unicode &= (UINT16)~bit;
+		ws_code_event(ws, fastrdp_code_char(&c->field, code));
+	}
+}
+
+/* {"op": "code", "code": ...} to the broker; the field shows the "checking" text. */
+static BOOL ws_code_answer(waitingScreen* ws, int fd)
+{
+	wsCode* c = &ws->code;
+	char digits[FASTRDP_CODE_MAX + 1] = { 0 };
+	if (!fastrdp_code_take(&c->field, digits))
+	{
+		c->state = WS_CODE_SHOWN;
+		return TRUE;
+	}
+	if (ws->picker.state == WS_PICKER_OFF)
+		ws_input_restore(ws);
+	c->state = WS_CODE_SENT;
+	c->sent++;
+	BOOL ok = FALSE;
+	char* text = NULL;
+	cJSON* msg = cJSON_CreateObject();
+	if (msg && cJSON_AddStringToObject(msg, "op", "code"))
+	{
+		cJSON* item = cJSON_AddStringToObject(msg, "code", digits);
+		text = item ? cJSON_PrintUnformatted(msg) : NULL;
+		if (item && item->valuestring)
+			memset(item->valuestring, 0, strlen(item->valuestring));
+	}
+	cJSON_Delete(msg);
+	memset(digits, 0, sizeof(digits));
+	if (text)
+	{
+		ok = write_all(fd, text, strlen(text)) && write_all(fd, "\n", 1);
+		memset(text, 0, strlen(text));
+		free(text);
+	}
+	WLog_INFO(TAG, "[%s] code %u from the waiting screen %s the broker", ws->pdata->session_id,
+	          c->sent, ok ? "sent to" : "not sent to");
+	ws_code_show(ws);
 	return ok;
 }
 
@@ -2029,6 +2353,10 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		screen->picker.offered = ws_picker_possible(screen);
 		if (screen->picker.offered)
 			cJSON_AddNumberToObject(req, "picker", 1);
+		/* the code field reads the input the same way ([mfa] code_or_web) */
+		screen->code.offered = screen->picker.offered;
+		if (screen->code.offered)
+			cJSON_AddNumberToObject(req, "code_entry", 1);
 		s->screen = screen;
 	}
 

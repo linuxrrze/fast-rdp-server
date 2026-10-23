@@ -56,7 +56,9 @@ troubleshooting): [backends/](backends/README.md).
    including AD GPO "logon through RDS" rights), `allow_groups`, then MFA: privacyIDEA
    OTP or push, or (`[mfa] mode = "web"`/`"push_or_web"`) the login waits until its user
    approves it on the webgate's `/web/approve` page after a fresh MFA sign-in at the IdP
-   ([auth-matrix.md](auth-matrix.md#web-approval)).
+   ([auth-matrix.md](auth-matrix.md#web-approval)); with `"code_or_web"` the user may
+   instead type the TOTP code on the waiting screen, which the broker has Keycloak check
+   ([auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)).
    While the module waits for the broker, the RDP connection is already active; with
    `[FastRDP] WaitingScreen` (default on) the module draws a panel into the client's
    window (Bitmap Updates): what the login waits for, a countdown, for web approval the

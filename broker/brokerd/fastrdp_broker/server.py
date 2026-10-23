@@ -21,11 +21,11 @@ from .config import WEB_APPROVAL_MODES, Config
 from .desktopprefs import DesktopPrefs, PrefsError
 from .grace import GraceKey, ReconnectGrace
 from .identity import IdentityError, LocalUser
-from .mfa import ApprovalError, ApprovalEvents, MfaDenied, SecondFactor, split_otp
+from .mfa import ApprovalError, ApprovalEvents, CodeEntry, MfaDenied, SecondFactor, split_otp
 from .protocol import ProtocolError, int_field, peer_uid, read_message, str_field, write_message
 from .state import StateStore
 from .tokens import WEB_TOKEN_PREFIX, TokenStore
-from .ui import WaitingTexts
+from .ui import CODE_DIGITS, WaitingTexts
 
 log = logging.getLogger("fastrdp.broker")
 
@@ -36,6 +36,9 @@ Progress = Callable[[dict], None]
 AskDesktop = Callable[[dict, float], Awaitable[tuple[bool, str | None]]]
 # The broker waits this much longer than the picker's countdown for the answer.
 PICKER_GRACE = 5
+# {"op": "code"} lines per login ([mfa] code_or_web): attempts at most 10, plus codes
+# typed while Keycloak was unreachable or after the field closed (dropped)
+MAX_CODE_LINES = 32
 # A missing [web] gateway_user (fastrdp-webgate installed later) is looked up again at most
 # this often (seconds); until it exists, the webgate's operations are refused.
 WEB_UID_RETRY = 30
@@ -93,6 +96,11 @@ class Broker:
                      "(sign-in at most %ds older than the login%s)", cfg.mfa.mode,
                      cfg.mfa.web_approval_timeout, cfg.mfa.web_approval_max_auth_age,
                      "; one pending login per user" if cfg.mfa.web_approval_single_pending else "")
+        if cfg.mfa.mode == "code_or_web":
+            log.info("[mfa] code_or_web: codes typed on the waiting screen are checked by Keycloak "
+                     "(%s, client %s); %d attempt(s) per login, at most %d wrong codes per user in %ds",
+                     cfg.mfa.keycloak.issuer, cfg.mfa.keycloak.client_id, cfg.mfa.code_attempts,
+                     cfg.mfa.code_user_failures, cfg.mfa.code_failure_window)
         if cfg.mfa.kdc_evidence_as_mfa and cfg.mfa.mode != "none":
             log.info(
                 "[mfa] kdc_evidence_as_mfa: Kerberos NLA logins from %s whose ticket carries %s "
@@ -447,20 +455,24 @@ class Broker:
         return None
 
     async def login(self, msg: dict, progress: Progress | None = None,
-                    ask: AskDesktop | None = None) -> dict:
+                    ask: AskDesktop | None = None, codes: CodeEntry | None = None) -> dict:
         """`progress`: the module asked for progress messages ("progress": 1) and shows
         them on its waiting screen: "mfa" once the login waits for a push or web approval
         (not for an exempt group, nla_kdc_enforced, KDC evidence or reconnect grace),
         "choose_desktop" for the desktop picker (with `ask`: the module also announced
         "picker": 1; pick_desktop()), "session_start" before the back-end is started or
-        reused."""
+        reused. `codes`: the module announced "code_entry": 1, so [mfa] code_or_web can
+        read a code on its waiting screen (login_unless_abandoned() fills it)."""
         session_id = str_field(msg, "session_id", required=True, max_len=64)
         user, password, otp, mfa_done = await self.first_factor(msg)
         lang = self.waiting.language(int_field(msg, "keyboard_layout", 0, 0xFFFFFFFF)) if progress else ""
+        lengths = self.cfg.mfa.otp_lengths
+        digits = lengths[0] if len(lengths) == 1 else 0
 
-        def notify(method: str, timeout: int, code: str | None = None, request_id: str | None = None) -> None:
+        def notify(method: str, timeout: int, code: str | None = None, request_id: str | None = None,
+                   entry: dict | None = None) -> None:
             assert progress is not None
-            progress(self.waiting.mfa(lang, method, timeout, user.name, code, request_id))
+            progress(self.waiting.mfa(lang, method, timeout, user.name, code, request_id, entry, digits))
 
         if not identity.user_allowed(user, self.cfg.auth):
             proven = msg.get("method") == "nla" or mfa_done is not None
@@ -497,7 +509,8 @@ class Broker:
                     factor = await self.mfa.verify(mfa_user, otp, password, account=user.name,
                                                    method=str_field(msg, "method", required=True),
                                                    client_address=str_field(msg, "client_address"),
-                                                   notify=notify if progress else None)
+                                                   notify=notify if progress else None,
+                                                   codes=codes if progress else None)
                 except MfaDenied as exc:
                     raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
                 log.info("second factor ok for %s via %s", user.name, factor)
@@ -571,11 +584,16 @@ class Broker:
         (closed the client during an MFA push or the desktop picker) and the proxy dropped
         the request (fastrdp_plugin.c broker_call). Returns None then. Cancelling stops a
         push wait (mfa.py); a session start already under way completes (login()). While
-        a login is pending the proxy sends one line at most: the desktop picker's answer
-        {"op": "choice", "desktop": str|null}, only after a "choose_desktop" prompt and
-        only with "picker": 1 in the request. Anything else is a protocol error."""
+        a login is pending the proxy sends only these lines: the desktop picker's answer
+        {"op": "choice", "desktop": str|null}, once, after a "choose_desktop" prompt and
+        only with "picker": 1 in the request; codes from the waiting screen
+        {"op": "code", "code": "<digits>"}, only with "code_entry": 1, at most
+        MAX_CODE_LINES (one that comes when no code field is open is dropped). Anything
+        else is a protocol error."""
         prompted: asyncio.Future | None = None
         answers = 0
+        code_lines = 0
+        codes = CodeEntry() if progress is not None and msg.get("code_entry") == 1 else None
 
         async def ask(prompt: dict, timeout: float) -> tuple[bool, str | None]:
             nonlocal prompted
@@ -589,7 +607,7 @@ class Broker:
                 return False, None
 
         picker = ask if progress is not None and msg.get("picker") == 1 else None
-        login = asyncio.ensure_future(self.login(msg, progress, picker))
+        login = asyncio.ensure_future(self.login(msg, progress, picker, codes))
         peer = asyncio.ensure_future(reader.readline())
         try:
             while True:
@@ -597,10 +615,21 @@ class Broker:
                 if login.done() or peer.exception() is not None or not peer.result():
                     break  # a reset counts as closed
                 line = peer.result()
+                answer = self.parse_answer(line)
+                if answer["op"] == "code":
+                    code_lines += 1
+                    if codes is None or code_lines > MAX_CODE_LINES:
+                        raise ProtocolError("data received while a login was pending")
+                    code = self.parse_code(answer)
+                    if not codes.put(code):
+                        log.info("session %s: code from the waiting screen came while no code field "
+                                 "was open; ignored", msg.get("session_id"))
+                    peer = asyncio.ensure_future(reader.readline())
+                    continue
                 if prompted is None or answers:
                     raise ProtocolError("data received while a login was pending")
                 answers += 1
-                desktop = self.parse_choice(line)
+                desktop = self.parse_choice(answer)
                 if prompted.done():
                     log.info("session %s: desktop picker answer %r came too late; ignored",
                              msg.get("session_id"), desktop)
@@ -623,17 +652,34 @@ class Broker:
         return None
 
     @staticmethod
-    def parse_choice(line: bytes) -> str | None:
-        """The desktop picker's answer line (protocol.py): the desktop or None (default)."""
+    def parse_answer(line: bytes) -> dict:
+        """A line the module sent while its login is pending (protocol.py): an object
+        with "op" "choice" or "code"."""
         if not line.endswith(b"\n"):
             raise ProtocolError("data received while a login was pending")
         try:
-            choice = json.loads(line)
+            answer = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise ProtocolError("invalid desktop picker answer") from None
-        if not isinstance(choice, dict) or choice.get("op") != "choice" or "desktop" not in choice:
+            raise ProtocolError("invalid answer while a login was pending") from None
+        if not isinstance(answer, dict) or answer.get("op") not in ("choice", "code"):
+            raise ProtocolError("data received while a login was pending")
+        return answer
+
+    @staticmethod
+    def parse_choice(choice: dict) -> str | None:
+        """The desktop picker's answer (protocol.py): the desktop or None (default)."""
+        if "desktop" not in choice:
             raise ProtocolError("data received while a login was pending")
         return str_field(choice, "desktop", max_len=64)
+
+    @staticmethod
+    def parse_code(answer: dict) -> str:
+        """A code typed on the waiting screen: digits only, ui.CODE_DIGITS long."""
+        code = answer.get("code")
+        lo, hi = CODE_DIGITS
+        if not isinstance(code, str) or not lo <= len(code) <= hi or not code.isascii() or not code.isdigit():
+            raise ProtocolError("invalid code from the waiting screen")
+        return code
 
     # ---------------------------------------------------------------- network
     def add_connection_type(self, target: dict, msg: dict, backend: Backend, user: LocalUser) -> None:

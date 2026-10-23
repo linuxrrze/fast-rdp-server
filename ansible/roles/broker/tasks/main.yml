@@ -106,6 +106,42 @@
   register: fastrdp_broker_pi_ca
   when: fastrdp_privacyidea_ca_src | length > 0
 
+# mode code_or_web: the Keycloak client the broker checks codes with (secret read per
+# check, so a new secret needs no restart; the CA is read at start, as privacyIDEA's).
+- name: Keycloak client secret for code checks
+  ansible.builtin.copy:
+    dest: /etc/fastrdp/keycloak-otp.secret
+    content: "{{ fastrdp_mfa_keycloak_client_secret }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: fastrdp_mfa_mode == 'code_or_web'
+  no_log: true
+
+- name: CA certificate of Keycloak for code checks
+  ansible.builtin.copy:
+    src: "{{ fastrdp_mfa_keycloak_ca_src }}"
+    dest: /etc/fastrdp/keycloak-otp-ca.pem
+    owner: root
+    group: root
+    mode: "0644"
+  when: fastrdp_mfa_mode == 'code_or_web' and fastrdp_mfa_keycloak_ca_src | length > 0
+
+- name: Checksum of Keycloak's CA for code checks
+  ansible.builtin.stat:
+    path: /etc/fastrdp/keycloak-otp-ca.pem
+    checksum_algorithm: sha256
+    get_mime: false
+  register: fastrdp_broker_kc_ca
+  when: fastrdp_mfa_mode == 'code_or_web' and fastrdp_mfa_keycloak_ca_src | length > 0
+
+- name: No Keycloak code-check secret without code_or_web
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: [/etc/fastrdp/keycloak-otp.secret, /etc/fastrdp/keycloak-otp-ca.pem]
+  when: fastrdp_mfa_mode != 'code_or_web'
+
 # validate: a config the broker rejects never replaces the working one (with force_handlers
 # the restart would otherwise run and stop the broker).
 - name: Broker configuration

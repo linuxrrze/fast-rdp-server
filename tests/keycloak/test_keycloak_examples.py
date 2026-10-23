@@ -3,7 +3,9 @@
 """Offline checks of the Keycloak sample docs/examples/keycloak-fastrdp-web-client.json
 against what the webgate needs (broker/webgate/config/webgate.toml.example, oidc.py) and
 what the passkey automation writes (fastrdp_keycloak_passkeys.py), so the sample cannot
-drift. tests/keycloak/run.sh imports it into a real Keycloak."""
+drift. tests/keycloak/run.sh imports it into a real Keycloak. The code check's sample
+client (keycloak-fastrdp-otp-check-client.json, [mfa] mode code_or_web) must pass the
+automation's client checks."""
 
 import importlib.util
 import json
@@ -97,6 +99,36 @@ class WebClientSample(unittest.TestCase):
     def test_shipped(self):
         examples = (ROOT / "debian/fastrdp-webgate.examples").read_text().split()
         self.assertIn(str(SAMPLE.relative_to(ROOT)), examples)
+
+
+
+OTP_SAMPLE = ROOT / "docs/examples/keycloak-fastrdp-otp-check-client.json"
+OTP_CLIENT = json.loads(OTP_SAMPLE.read_text())
+
+
+class OtpCheckClientSample(unittest.TestCase):
+    def test_passes_the_automation(self):
+        for key, want in kp.OTP_CHECK_CLIENT.items():
+            self.assertEqual(bool(OTP_CLIENT.get(key)), want, key)
+        for key in kp.OTP_CHECK_ATTRIBUTES_OFF:
+            self.assertNotEqual(OTP_CLIENT["attributes"].get(key), "true", key)
+        self.assertNotIn("protocolMappers", OTP_CLIENT)
+
+    def test_refresh_tokens_for_the_logout(self):
+        # keycloak_otp.py ends the check's session with the refresh token
+        self.assertEqual(OTP_CLIENT["attributes"]["use.refresh.tokens"], "true")
+        self.assertNotIn("secret", OTP_CLIENT)
+
+    def test_names_match_the_defaults(self):
+        self.assertEqual(OTP_CLIENT["clientId"], "fastrdp-otp-check")
+        self.assertIn('#client_id = "fastrdp-otp-check"',
+                      (ROOT / "broker/brokerd/config/broker.toml.example").read_text())
+        self.assertIn("fastrdp_mfa_keycloak_client_id: fastrdp-otp-check",
+                      (ROOT / "ansible/roles/common/defaults/main.yml").read_text())
+
+    def test_shipped(self):
+        examples = (ROOT / "debian/fastrdp-broker.examples").read_text().split()
+        self.assertIn(str(OTP_SAMPLE.relative_to(ROOT)), examples)
 
 
 if __name__ == "__main__":

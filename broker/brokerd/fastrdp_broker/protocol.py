@@ -8,7 +8,7 @@ Proxy module -> broker.sock:
    "desktop_hint": str|null, "client_address": str|null, "width": int|null,
    "height": int|null, "connection_type": int, "kdc_evidence": [str] (NLA only),
    "progress": 1 (optional), "keyboard_layout": int (with "progress"),
-   "picker": 1 (optional, with "progress")}
+   "picker": 1 (optional, with "progress"), "code_entry": 1 (optional, with "progress")}
   -> 0..n progress messages (only if the request has "progress": 1), then
   -> {"ok": true, "user": str, "desktop": str,
       "target": {"host": str, "port": int, "username": str, "password": str,
@@ -35,8 +35,9 @@ Proxy module -> broker.sock:
   Requests without "progress" (older modules, WaitingScreen off) get the reply alone; a
   module that asks gets none from an older broker and keeps its generic panel. The module
   accepts at most 32 progress messages, each within the 64 KiB line limit.
-    {"progress": "mfa", "method": "push"|"web"|"push_or_web", "timeout_s": int,
-     "lines": [str], "countdown": str, "approve_url": str, "qr": [str]}
+    {"progress": "mfa", "method": "push"|"web"|"push_or_web"|"code_or_web", "timeout_s": int,
+     "lines": [str], "countdown": str, "approve_url": str, "qr": [str],
+     "code_entry": {"digits": int, "label": str, "checking": str, "message": str}}
       once the login waits for the user's second factor (mfa.SecondFactor notify): a
       privacyIDEA push, the approval page, or both; again with method "web" when only the
       approval page is left (push_or_web, push failed or timed out). Never for exempt
@@ -47,6 +48,20 @@ Proxy module -> broker.sock:
       code of the login-bound URL <approve_url>?login=<id> (ui.login_url(), "id" as in
       mfa_pending below) as rows of "0"/"1" (qrcode.py, dark = "1", without the quiet
       zone), at most version 10 (57 rows).
+      "code_entry" ([mfa] code_or_web, only if the request has "code_entry": 1: the
+      module draws the field and reads the client's input, as for the picker): the module
+      shows a field for the authenticator code below the lines, "label" in front of the
+      masked digits and "message" (the previous code was wrong, or could not be checked;
+      "" at first) below it. It reads digits until "digits" are typed (4..10; 0: until
+      Enter, at most 10) and sends
+        {"op": "code", "code": "<4..10 ASCII digits>"}
+      then shows "checking" until the broker's next message: a prompt with a new field
+      (wrong code: "message" says so and how many attempts are left), one without
+      "code_entry" (too many wrong codes of the user: the approval page only), or what
+      follows a success (session start, picker, reply). The broker accepts codes only
+      while a field is open; one that comes after the approval page answered is dropped.
+      The code is never logged by either side. Each "mfa" message restarts the countdown
+      with the time left.
     {"progress": "choose_desktop", "options": [{"name": str, "label": str, "running": bool}],
      "default": str, "timeout_s": int, "lines": [str], "countdown": str, "hint": str}
       the desktop picker ([broker] desktop_picker, Broker.pick_desktop): after the second
@@ -73,9 +88,10 @@ Proxy module -> broker.sock:
   broker then cancels the login (Broker.login_unless_abandoned): a push or web approval
   wait stops, a session start already under way completes, nothing is recorded as
   connected. While a login is pending the module sends nothing but the one "choice" line
-  after a "choose_desktop" prompt; any other data (also a "choice" before the prompt, a
-  second one, or one from a module without "picker": 1) is a protocol error and closes
-  the connection without a reply.
+  after a "choose_desktop" prompt and "code" lines (at most 32) after prompts with
+  "code_entry"; any other data (also a "choice" before the prompt, a second one, one from
+  a module without "picker": 1, a "code" from a module without "code_entry": 1, or a
+  malformed code) is a protocol error and closes the connection without a reply.
 
 fastrdp-webgate ([web] gateway_user) -> broker.sock:
   {"op": "web_token", "user": str}
@@ -93,7 +109,7 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   user may not use is refused ("not_allowed"), a failed write gives "unavailable". The
   "desktop" field must be present.
 
-  [mfa] mode web / push_or_web (mfa.WebApprovals): logins waiting for their user's
+  [mfa] mode web / push_or_web / code_or_web (mfa.WebApprovals): logins waiting for their user's
   approval on the webgate's approval page. "user" is the name the webgate signed in
   (resolved like a TLS login); only that account's logins are listed or decided.
   {"op": "mfa_pending", "user": str}

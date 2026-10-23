@@ -9,7 +9,8 @@ Creates realm REALM with
     run can prove that the role adds mfa and merges instead of replacing;
   - alice: password + TOTP (secret below), required action to register a passkey;
   - carol: password only;
-  - a non-default passwordless RP entity name, which the role must keep.
+  - a non-default passwordless RP entity name, which the role must keep;
+  - otp-client: the code check's client ([mfa] mode code_or_web) from its sample.
 check-sample imports the sample client unchanged into a realm of its own and compares
 what Keycloak stores with the file (no field dropped or rewritten).
 Standard library only.
@@ -27,6 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from pathlib import Path
 
 SAMPLE = Path(__file__).resolve().parents[2] / "docs" / "examples" / "keycloak-fastrdp-web-client.json"
 SAMPLE_URL = "https://rdp1.lab.example.com"   # the sample's webgate public_url
@@ -35,6 +37,7 @@ REALM = "fastrdp-test"
 CLIENT_ID = "fastrdp-web"
 CLIENT_SECRET = "webgate-test-secret"
 TOTP_SECRET = "fastrdp-totp-test-secret"   # raw HMAC key as Keycloak stores it
+OTP_CLIENT_SECRET = "otp-check-test-secret"  # the code check's client (otp-client)
 USERS = {"alice": "alice-Passw0rd!", "carol": "carol-Passw0rd!"}
 OTHER_PROFILE = "unrelated-profile"
 OTHER_POLICY = "unrelated-policy"
@@ -153,6 +156,16 @@ def setup(base: str, webgate_url: str, probe_url: str, admin_user: str, admin_pa
         })
 
 
+def otp_client(base: str, admin_user: str, admin_password: str) -> None:
+    """The code check's client ([mfa] mode code_or_web) from its sample, as an admin
+    would import it, with a known secret; the role sets up its flow."""
+    a = Admin(base, admin_user, admin_password)
+    sample = Path(__file__).resolve().parents[2] / "docs/examples/keycloak-fastrdp-otp-check-client.json"
+    client = json.loads(sample.read_text())
+    client["secret"] = OTP_CLIENT_SECRET
+    a.call("POST", f"/realms/{REALM}/clients", client)
+
+
 def state(base: str, admin_user: str, admin_password: str) -> dict:
     """What run.sh checks after the role: merged lists, kept settings."""
     a = Admin(base, admin_user, admin_password)
@@ -207,6 +220,8 @@ def main(argv: list[str]) -> int:
         print(json.dumps(state(base, argv[3], argv[4])))
     elif cmd == "add-cookie":
         add_cookie_to_flow(base, argv[3], argv[4], argv[5])
+    elif cmd == "otp-client":
+        otp_client(base, argv[3], argv[4])
     elif cmd == "totp":
         print(totp())
     else:

@@ -80,3 +80,6 @@ AcceptRemoteGuard={{ fastrdp_accept_remote_guard | bool | lower }}
 ; also Server Status Info PDUs, to clients that ask for them.
 WaitingScreen={{ fastrdp_proxy_waiting_screen | bool | lower }}
 StatusInfo={{ fastrdp_proxy_status_info | bool | lower }}
+; Lab only: log the class of each input event the waiting screen reads (code field,
+; desktop picker), never a value (docs/lab-waiting-screen-input.md).
+InputTrace={{ fastrdp_proxy_input_trace | bool | lower }}

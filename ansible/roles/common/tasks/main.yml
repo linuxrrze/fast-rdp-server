@@ -206,7 +206,7 @@
       - backends is sequence and backends is not string and backends is not mapping
       - backend_list | map('string') | difference(['ntfy', 'webpush']) | length == 0
       - backend_list | unique | length == backend_list | length
-      - backend_list | length == 0 or (fastrdp_web_enabled | bool and fastrdp_mfa_mode in ['web', 'push_or_web'])
+      - backend_list | length == 0 or (fastrdp_web_enabled | bool and fastrdp_mfa_mode in ['web', 'push_or_web', 'code_or_web'])
       - "'ntfy' not in backend_list or fastrdp_web_notify_ntfy_url | default('') | string
         is match('^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[!-~]*)?\\Z')"
       - "'webpush' not in backend_list or fastrdp_web_public_url is match('^https://')"
@@ -222,7 +222,7 @@
         | list | length == 0
     fail_msg: >-
       fastrdp_web_notify_backends is a list of ntfy and webpush, only with
-      fastrdp_web_enabled and fastrdp_mfa_mode web or push_or_web (notifications are sent
+      fastrdp_web_enabled and fastrdp_mfa_mode web, push_or_web or code_or_web (notifications are sent
       for logins waiting for web approval only); ntfy needs fastrdp_web_notify_ntfy_url
       (https://), webpush an https:// fastrdp_web_public_url and
       fastrdp_web_notify_vapid_subject mailto:<address> or https://...;
@@ -244,7 +244,7 @@
       - fastrdp_group_desktops.values() | difference(fastrdp_desktops) | length == 0
       - fastrdp_desktop_groups.keys() | difference(fastrdp_desktops) | length == 0
       - fastrdp_identity_provider in ['ad', 'ipa', 'none']
-      - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push', 'web', 'push_or_web']
+      - fastrdp_mfa_mode in ['none', 'otp', 'push', 'otp_or_push', 'web', 'push_or_web', 'code_or_web']
       - fastrdp_gpu in ['auto', 'nvidia', 'mesa', 'none']
       - fastrdp_session_tgt in ['auto', 'off', 'required']
       - fastrdp_session_tgt_groups is mapping
@@ -252,7 +252,24 @@
       - fastrdp_session_tgt_groups.keys() | map('string') | reject('match', '^\S([^\x00-\x1f]*\S)?\Z') | list | length == 0
       - fastrdp_sssd_fully_qualified_names | string | lower in ['true', 'false']
       - fastrdp_mfa_mode not in ['otp', 'push', 'otp_or_push', 'push_or_web'] or fastrdp_privacyidea_url | length > 0
-      - fastrdp_mfa_mode not in ['web', 'push_or_web'] or fastrdp_web_enabled | bool
+      - fastrdp_mfa_mode not in ['web', 'push_or_web', 'code_or_web'] or fastrdp_web_enabled | bool
+      # code_or_web: the same issuer shape as the broker (config.py KEYCLOAK_ISSUER), a
+      # client and its secret; the code field needs the waiting screen
+      - fastrdp_mfa_mode != 'code_or_web'
+        or (fastrdp_mfa_keycloak_issuer | string
+            is match('^(https://[A-Za-z0-9.-]+|http://(localhost|127[.]0[.]0[.]1|\[::1\]))(:[0-9]{1,5})?(/[!-~]*)?/realms/[^/\s]+/?\Z')
+            and fastrdp_mfa_keycloak_client_id | string | length > 0
+            and fastrdp_mfa_keycloak_client_secret | string | length > 0
+            and fastrdp_proxy_waiting_screen | bool)
+      - fastrdp_mfa_keycloak_timeout | string is match('^[0-9]+$')
+      - fastrdp_mfa_keycloak_timeout | int >= 1 and fastrdp_mfa_keycloak_timeout | int <= 60
+      - fastrdp_mfa_keycloak_required_amr | string is match('^[A-Za-z0-9._-]{1,64}\Z')
+      - fastrdp_mfa_code_attempts | string is match('^[0-9]+$')
+      - fastrdp_mfa_code_attempts | int >= 1 and fastrdp_mfa_code_attempts | int <= 10
+      - fastrdp_mfa_code_user_failures | string is match('^[0-9]+$')
+      - fastrdp_mfa_code_user_failures | int >= 1 and fastrdp_mfa_code_user_failures | int <= 100
+      - fastrdp_mfa_code_failure_window | string is match('^[0-9]+$')
+      - fastrdp_mfa_code_failure_window | int >= 60 and fastrdp_mfa_code_failure_window | int <= 86400
       - fastrdp_backend_port_range | length == 2
       - fastrdp_backend_port_range[0] | int < fastrdp_backend_port_range[1] | int
       - fastrdp_xrdp_port | int != fastrdp_listen_port | int
@@ -281,6 +298,9 @@
       # session start that follows the approval within the same proxy wait
       - fastrdp_mfa_mode not in ['web', 'push_or_web']
         or fastrdp_mfa_web_approval_timeout | int + 90 <= fastrdp_proxy_broker_timeout | int
+      # code_or_web: the approval timeout bounds the code checks too (mfa.py code_or_web)
+      - fastrdp_mfa_mode != 'code_or_web'
+        or fastrdp_mfa_web_approval_timeout | int + 90 <= fastrdp_proxy_broker_timeout | int
       - fastrdp_mfa_web_approval_max_auth_age | string is match('^[0-9]+$')
       - fastrdp_mfa_web_approval_max_auth_age | int <= 300
       - fastrdp_mfa_web_approval_single_pending | string | lower in ['true', 'false']
@@ -291,6 +311,7 @@
       - fastrdp_accept_remote_guard | string | lower in ['true', 'false']
       - fastrdp_proxy_waiting_screen | string | lower in ['true', 'false']
       - fastrdp_proxy_status_info | string | lower in ['true', 'false']
+      - fastrdp_proxy_input_trace | string | lower in ['true', 'false']
       - fastrdp_ui_language_from_keyboard | string | lower in ['true', 'false']
       - fastrdp_ui_qr_code | string | lower in ['true', 'false']
       - fastrdp_ui_texts is mapping
@@ -312,9 +333,15 @@
       Check the site settings (docs/quickstart.md, roles/common/defaults/main.yml):
       fastrdp_realm and fastrdp_domain (a DNS domain name) are required; fastrdp_default_desktop,
       fastrdp_group_desktops and fastrdp_desktop_groups may only name desktops from
-      fastrdp_desktops; fastrdp_mfa_mode is none, otp, push, otp_or_push, web or
-      push_or_web; the privacyIDEA modes (all but none and web) need fastrdp_privacyidea_url,
-      web and push_or_web need fastrdp_web_enabled;
+      fastrdp_desktops; fastrdp_mfa_mode is none, otp, push, otp_or_push, web,
+      push_or_web or code_or_web; the privacyIDEA modes (otp, push, otp_or_push,
+      push_or_web) need fastrdp_privacyidea_url, web, push_or_web and code_or_web need
+      fastrdp_web_enabled; code_or_web also needs fastrdp_mfa_keycloak_issuer
+      (https://<host>/realms/<realm>), fastrdp_mfa_keycloak_client_id, the vault's
+      vault_fastrdp_mfa_keycloak_client_secret and fastrdp_proxy_waiting_screen;
+      fastrdp_mfa_keycloak_timeout is 1..60 s, fastrdp_mfa_keycloak_required_amr an amr
+      value (letters, digits, . _ -), fastrdp_mfa_code_attempts 1..10,
+      fastrdp_mfa_code_user_failures 1..100, fastrdp_mfa_code_failure_window 60..86400 s;
       fastrdp_session_tgt is auto, off or required; fastrdp_session_tgt_groups maps group
       names to auto, "off" (quoted) or required; fastrdp_sssd_fully_qualified_names is
       true or false; fastrdp_gpu is auto, nvidia, mesa or none;
@@ -333,8 +360,8 @@
       modem or default; fastrdp_lan_networks is a list of CIDRs (docs/performance.md);
       fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md);
       fastrdp_accept_remote_guard is true or false (docs/windows-clients.md §3.11);
-      fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_ui_language_from_keyboard
-      and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language
+      fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_proxy_input_trace,
+      fastrdp_ui_language_from_keyboard and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language
       (two or three lower-case letters) of fastrdp_ui_texts; fastrdp_ui_approve_url is ""
       or an https:// URL of at most 184 characters (docs/auth-matrix.md#waiting-screen);
       fastrdp_desktop_picker is never, if_multiple or always (not never only with

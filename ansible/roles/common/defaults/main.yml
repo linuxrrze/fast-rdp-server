@@ -82,7 +82,9 @@ fastrdp_accept_remote_guard: false
 
 # ---------------------------------------------------------------- MFA
 # Second factor of RDP logins (docs/auth-matrix.md): none; web = Keycloak's MFA (users approve
-# on <public_url>/web/approve); push | otp | otp_or_push = privacyIDEA; push_or_web = both.
+# on <public_url>/web/approve); push | otp | otp_or_push = privacyIDEA; push_or_web = both;
+# code_or_web = the authenticator code typed on the waiting screen, checked by Keycloak, or
+# web approval (passkey).
 fastrdp_mfa_mode: none
 fastrdp_privacyidea_url: ""          # REQUIRED for otp, push, otp_or_push, push_or_web
 fastrdp_privacyidea_realm: ""
@@ -133,6 +135,23 @@ fastrdp_mfa_web_approval_max_auth_age: 30
 # Two or more pending logins of a user: none can be approved (somebody with the password
 # may have started one alongside the user's own); the user denies them and retries.
 fastrdp_mfa_web_approval_single_pending: true
+# Code on the waiting screen (fastrdp_mfa_mode code_or_web; needs fastrdp_web_enabled and
+# fastrdp_proxy_waiting_screen; docs/auth-matrix.md#code-on-the-waiting-screen): the broker
+# checks the code with a direct grant of a confidential Keycloak client whose direct grant
+# flow is Username Validation + OTP (no password); create the client by hand
+# (docs/examples/keycloak-fastrdp-otp-check-client.json), fastrdp_web_passkeys sets up its
+# flow. The realm (issuer) is the webgate's unless set here.
+fastrdp_mfa_keycloak_issuer: "{{ fastrdp_web_oidc_issuer | default('') }}"
+fastrdp_mfa_keycloak_client_id: fastrdp-otp-check
+fastrdp_mfa_keycloak_client_secret: "{{ vault_fastrdp_mfa_keycloak_client_secret | default('') }}"  # vault.yml
+fastrdp_mfa_keycloak_ca_src: "{{ fastrdp_web_oidc_ca_src | default('') }}"   # PEM on the controller; "" = system trust store
+fastrdp_mfa_keycloak_timeout: 10       # seconds per check, 1..60
+# A token counts only with this value in its amr claim; fastrdp_web_passkeys sets it as the
+# reference value of the flow's OTP step (a broken flow that skips the OTP gives no amr)
+fastrdp_mfa_keycloak_required_amr: otp
+fastrdp_mfa_code_attempts: 3           # wrong codes per login, then it fails (1..10)
+fastrdp_mfa_code_user_failures: 10     # wrong codes per user within the window: the code
+fastrdp_mfa_code_failure_window: 900   # field stays closed, web approval only (seconds)
 
 # Seconds the proxy waits for the broker (proxy.ini [FastRDP] Timeout, at most 600): an
 # MFA push (privacyIDEA push_timeout 60) or web approval (fastrdp_mfa_web_approval_timeout
@@ -160,13 +179,20 @@ fastrdp_proxy_waiting_screen: true
 # Server Status Info PDUs as well (proxy.ini [FastRDP] StatusInfo), for clients that ask
 # for them (FreeRDP clients never do; what mstsc shows is untested).
 fastrdp_proxy_status_info: false
+# LAB ONLY (proxy.ini [FastRDP] InputTrace; docs/lab-waiting-screen-input.md): log the
+# class of each input event the waiting screen reads ("top-row digit", "keypad digit",
+# "unicode other", "backspace", ...), never a digit, key code or character. For the
+# client lab of the code field and the desktop picker; the proxy warns on every
+# connection while it is on.
+fastrdp_proxy_input_trace: false
 # The panel's texts (broker [ui]): language en or de (built in) or one of fastrdp_ui_texts;
 # the client's keyboard layout picks the language when there are texts for it.
 fastrdp_ui_language: en
 fastrdp_ui_language_from_keyboard: true
-# Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web, qr_hint,
-# session_start, countdown and for the desktop picker picker_title, picker_hint,
-# picker_countdown, picker_running, picker_reconnects; placeholders {user} {approve_url}
+# Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web,
+# mfa_code_or_web, qr_hint, session_start, countdown, for the desktop picker picker_title,
+# picker_hint, picker_countdown, picker_running, picker_reconnects and for the code field
+# code_label, code_checking, code_wrong, code_unavailable, code_blocked, code_no_otp, code_off; placeholders {user} {approve_url}
 # {timeout} {method} {desktop} {code} (the web approval's two-digit code) {running}
 # {count} (broker/brokerd/fastrdp_broker/ui.py).
 fastrdp_ui_texts: {}

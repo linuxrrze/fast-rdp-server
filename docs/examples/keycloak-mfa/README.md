@@ -25,7 +25,9 @@ fastrdp's web gateway asks Keycloak for `acr_values=mfa` and accepts only ID tok
 4. on the webgate's OIDC client: ACR-to-LoA map entry `mfa` → `2`.
 
 `ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py` (Ansible:
-`fastrdp_web_passkeys: true`) creates exactly this. All methods below produce the same
+`fastrdp_web_passkeys: true`) creates exactly this. None of the methods, Ansible included,
+sets the account console's flow override: do that by hand afterwards
+([Close the enrolment gap](#after-every-method-close-the-enrolment-gap)). All methods below produce the same
 result. Each was checked against Keycloak 26.8.1: afterwards that script, run with
 `"check": true`, reported `{"changed": false, "changes": []}`.
 
@@ -81,7 +83,10 @@ How it works:
   and policies are kept.
 - It adds `mfa: 2` to the client's `acr.loa.map` and keeps any other entries.
 - When it updates the realm, it sends all `webAuthnPolicyPasswordless*` fields, with its
-  own values changed. Keycloak rebuilds the whole policy from such a request.
+  own values changed. Keycloak rebuilds the whole policy from such a request
+  ([warning](../../passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy)).
+  Its own values include attestation `none` and an **empty** AAGUID list: an allow-list
+  set in the realm is removed.
 - It skips every piece that is already correct. If a flow `fastrdp-mfa` exists with a
   different structure, the script prints the current and wanted steps and stops.
   `--rebuild` deletes the flow's steps and builds them again, which is what the Ansible
@@ -102,7 +107,9 @@ as already configured.
 1. **Authentication → Policies → Webauthn Passwordless Policy**: set *User verification
    requirement* = Required, *Discoverable credential* = Required, *Enable Passkeys* = on,
    *Passkey Mediation* = Conditional, *Attestation conveyance preference* = None,
-   *Acceptable AAGUIDs* empty → Save.
+   *Acceptable AAGUIDs* empty → Save. (Whether this form sends the whole policy was not
+   checked; compare `kcadm.sh get realms/REALM` before and after, see the
+   [warning](../../passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy).)
 2. **Authentication → Required actions**: *Webauthn Register Passwordless* enabled
    (it is enabled by default).
 3. **Authentication → Create flow**: name `fastrdp-mfa`, type *Basic flow*. Then:
@@ -146,9 +153,12 @@ caveats (all observed):
   `...Mediation` (`Unrecognized field`). The YAML leaves them out. Afterwards, set them
   with `kcadm.sh update realms/REALM -s webAuthnPolicyPasswordlessResidentKey=required -s webAuthnPolicyPasswordlessMediation=conditional`,
   or in the admin console.
-- Keycloak ignores the passwordless fields unless `webAuthnPolicyPasswordlessRpEntityName`
-  is in the request. The YAML therefore sets it; keep it at your realm's value (default
-  `keycloak`). Passwordless fields that are not in the file are reset to their defaults.
+- **Keycloak ignores the passwordless fields unless `webAuthnPolicyPasswordlessRpEntityName`
+  is in the request, and then resets every passwordless field that is not in the file
+  to its default** (RP ID, signature algorithms, extra origins, AAGUIDs, ...;
+  [warning](../../passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy)).
+  The YAML therefore sets the RP name; keep it at your realm's value (default
+  `keycloak`) and copy your other customised passwordless fields into the file.
 - `clientProfiles`/`clientPolicies` **replace** the realm's lists. In the test, an
   existing unrelated profile was deleted. Copy your existing profiles and policies into
   the file.
@@ -186,6 +196,30 @@ client `fastrdp-web` from `docs/examples/keycloak-fastrdp-web-client.json`, with
 Do **not** add a `requiredActions` list to this file: in a test, the new realm then had
 only the listed actions, plus `delete_account`.
 
+## After every method: close the enrolment gap
+
+Not done by any method above, nor by Ansible. As long as the account console signs in
+with the realm's normal browser flow, anyone with a user's password can enrol their own
+passkey or OTP app there and then passes `acr=mfa`. Make the account console use
+`fastrdp-mfa` too:
+
+- admin console: *Clients → account-console → Advanced → Authentication flow overrides →
+  Browser Flow* = `fastrdp-mfa` → *Save*;
+- or kcadm (the override takes the flow's id):
+
+  ```sh
+  FLOW_ID=$(kcadm.sh get authentication/flows -r REALM | jq -r '.[] | select(.alias == "fastrdp-mfa") | .id')
+  ACC_ID=$(kcadm.sh get clients -r REALM -q clientId=account-console --fields id --format csv --noquotes)
+  kcadm.sh update clients/$ACC_ID -r REALM -s "authenticationFlowBindingOverrides.browser=$FLOW_ID"
+  ```
+
+Not tested here (Keycloak source: a client's browser override wins over the realm's
+browser flow). Users then sign in to the account console with a passkey or password +
+second factor each time, and users without any second factor cannot use it. Other
+enrolment paths (required actions, `kc_action` from other clients), the first factor for
+password-only users and the method-specific caveats:
+[passkeys.md](../../passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).
+
 ## Verify
 
 1. `fastrdp_keycloak_passkeys.py` with `"check": true` (Method 1) prints
@@ -194,10 +228,70 @@ only the listed actions, plus `delete_account`.
 2. Open `https://<webgate>/web/` in a private window. Keycloak shows the
    **username-only** form with **"Sign in with Passkey"** (the passkey autofill), and
    no password field. Signing in with a passkey skips the password; password + OTP (or a
-   security key) also works. Password alone stops at the OTP step.
+   security key) also works. Password alone stops at the OTP step. A user whose only
+   other credential is a passkey must use the passkey: after the password, the passkey
+   does not count as the second factor
+   ([password or passkey](../../passkeys.md#realms-where-users-sign-in-with-a-password-or-a-passkey)).
 3. `journalctl -u fastrdp-webgate` shows `web login <user>`. If it instead says
    `acr '1' does not prove MFA`, the flow or policy is missing, or the user has no
    second factor (docs/web-access.md, "Symptom: acr '1' does not prove MFA").
+4. Open `https://KEYCLOAK_HOST/realms/REALM/account` in a private window: signing in
+   there must ask for a passkey, or password + second factor (enrolment gap closed).
+
+## Scenario 2: approving RDP logins
+
+Everything above is scenario 1, the desktop in the browser (`/web/`): Keycloak checks
+both factors. With `fastrdp_mfa_mode: web` or `push_or_web` the webgate also approves
+**native RDP logins** on `/web/approve` ([web-access.md](../../web-access.md#approving-rdp-logins)).
+There the RDP client has checked the first factor already.
+
+`/web/approve` uses the same client and flow, `fastrdp-mfa`: users sign in with a
+passkey (one passkey confirmation), or type username, **password** and OTP (or use a
+security key) again. Nothing else to set up. The Keycloak username (the webgate's
+`username_claim` after `strip_domains`) must equal the RDP login's local account: the
+approval page shows only that account's waiting logins.
+
+### Code in the RDP window (`code_or_web`)
+
+With `fastrdp_mfa_mode: code_or_web` OTP users type the code into the RDP window instead
+and do not type the password again; passkey users keep the approval page. The broker
+checks the code through a direct grant of a client of its own
+([auth-matrix.md](../../auth-matrix.md#code-on-the-waiting-screen)). In Keycloak:
+
+1. **Clients → Import client**: `docs/examples/keycloak-fastrdp-otp-check-client.json`
+   (confidential, direct grants only, full scope off, refresh tokens on), then copy the
+   secret from *Credentials* into the broker's `client_secret_file`
+   (`vault_fastrdp_mfa_keycloak_client_secret`).
+2. **Authentication → Create flow** `fastrdp-otp-check` (*Basic flow*), no Password step:
+   - *Add step* *Username Validation* → REQUIRED;
+   - *Add sub-flow* `fastrdp-otp-check - otp` → CONDITIONAL; in it *Add condition*
+     *Condition - user configured* → REQUIRED and *Add step* *OTP* → REQUIRED. Gear icon
+     of *OTP*: alias `fastrdp-otp-check-otp-reference`, the reference value
+     (`default.reference.value`) `otp` and its max age (`default.reference.maxAge`) `60`
+     [config keys verified in the source; the console's labels for them not checked];
+   - *Add sub-flow* `fastrdp-otp-check - no otp` → CONDITIONAL; in it *Add condition*
+     *Condition - sub-flow executed* → REQUIRED (gear icon: flow
+     `fastrdp-otp-check - otp`, *not-executed*) and *Add step* *Deny access* → REQUIRED
+     (gear icon: error message `fastrdp_no_otp`, exactly this text: the broker
+     recognises users without OTP by it).
+3. **Clients → fastrdp-otp-check → Client scopes → fastrdp-otp-check-dedicated → Add
+   mapper → By configuration → Authentication Method Reference (AMR)**: name
+   `fastrdp amr`, *Add to ID token*, *Add to access token*, *Add to lightweight access
+   token* and *Add to token introspection* on. The broker accepts no token without `otp`
+   in `amr`: if the flow ever lets a name alone through, the token lacks it.
+4. **Clients → fastrdp-otp-check → Advanced → Authentication flow overrides → Direct
+   Grant Flow** = `fastrdp-otp-check` → *Save*.
+5. **Realm settings → Security defenses → Brute force detection** on, and
+   **Authentication → Policies → OTP Policy → Reusable token** off (the default).
+
+Method 1 (and Ansible with `fastrdp_web_passkeys: true`) does steps 2–4 when the
+settings name the client: `"otp_check_client_id": "fastrdp-otp-check"`. It refuses an
+unsafe client, reports step 5 as warnings, and compares the flow and the mapper exactly
+on every run: a step that was disabled, removed or reconfigured by hand is a warning,
+and the flow is rebuilt (with `"check": true` only reported). [tested: Keycloak 26.8.1,
+`make test-keycloak`] Methods 2–5 do not cover it; follow the steps above
+[steps by hand not tested in the console; the result is what Method 1 creates through the
+same REST API; afterwards run Method 1 with `"check": true`: it must report no changes].
 
 ## Files
 
