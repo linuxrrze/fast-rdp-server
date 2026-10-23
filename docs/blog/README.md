@@ -19,11 +19,11 @@ Figures in the post: 1–4 and 9–10 are the diagrams; 5–8 are the screenshot
 Diagrams:
 
 1. `01-approaches-compared`: xrdp alone vs native per-desktop servers vs ogon-style broker vs fastrdp hybrid
-2. `02-architecture-overview`: clients → proxy + module → broker → loopback back-ends, with KDC, privacyIDEA and Keycloak
-3. `03-login-sequence`: Kerberos NLA → MFA push → desktop choice → token / back-end start → session
+2. `02-architecture-overview`: clients → proxy + module (waiting screen) → broker → loopback back-ends, with KDC, privacyIDEA, Keycloak, the web gateway's approval page and notifications (ntfy / Web Push)
+3. `03-login-sequence`: Kerberos NLA → broker login → second factor by mode (KDC evidence, or waiting screen + privacyIDEA push / web approval with QR code, Keycloak passkey sign-in, optional notification) → optional desktop picker → token / back-end start → session
 4. `04-gpu-encoding-paths`: rendering and H.264 encoder per back-end, with fallbacks
 5. `05-build-delivery-pipeline`: sources.yml + patches → build scripts → Ansible / packages / CI → APT repository + corresponding source
-6. `06-web-path`: browser → nginx → webgate ↔ Keycloak → broker web token → Guacamole → guacd → proxy
+6. `06-web-path`: browser → nginx → webgate ↔ Keycloak → broker web token → Guacamole → guacd → proxy; plus `/web/approve`, `/web/notify` (→ ntfy / Web Push), the stored desktop for RDP logins and the `.rdp` download
 
 Colours, the same in every diagram: blue = front end (proxy, web gateway); orange = broker; green = back-ends and sessions; purple = identity/MFA (KDC, privacyIDEA, Keycloak); grey = clients, external parties and inputs. In diagrams 1 and 4, green, yellow and red mean covered, partly covered/fallback and not covered.
 
@@ -125,12 +125,3 @@ validated.
 - [ ] GitHub repository, quick start link (`blob/main/docs/quickstart.md`) and the APT repository resolve.
 - [ ] privacyIDEA push needs a push token and, for Kerberos SSO, the service account with
   `triggerchallenge`; web approval needs the web gateway and Keycloak with an MFA flow (`acr=mfa`).
-
-**Diagrams that are now partly outdated (text-only captions were adjusted, images unchanged):**
-- [ ] Figure 2 (architecture): no notification path (webgate → ntfy / Web Push services) and no approval
-  page; privacyIDEA is shown as the only MFA source.
-- [ ] Figure 3 (login sequence): push only; no waiting screen, web approval, KDC evidence or desktop
-  picker. Caption now says it shows the push variant.
-- [ ] Figure 4 (web path): no `/web/approve` or `/web/notify`, no chooser's "Use for Remote Desktop
-  logins" / `.rdp` download.
-- [ ] Figure 6 → now Figure 10 (pipeline): still correct; the APT repository is live now.

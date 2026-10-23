@@ -71,8 +71,8 @@ The point: authentication happens **once, in one place** (NLA, Kerberos, smartca
 
 ## Architecture and login flow
 
-![Architecture overview: RDP clients and a browser connect to the RDP host; freerdp-proxy with the fastrdp module talks to fastrdp-brokerd, which uses privacyIDEA for MFA; xrdp, GNOME and Plasma back-ends run on loopback behind nftables; Kerberos KDC and Keycloak are external](diagrams/02-architecture-overview.png)
-*Figure 2: Architecture overview. Only port 3389 (and 443 for the optional web path) is reachable from the network.*
+![Architecture overview: RDP clients and a browser or phone connect to the RDP host; freerdp-proxy with the fastrdp module talks to fastrdp-brokerd and draws the waiting screen and desktop picker into the RDP window; the broker gets the second factor from KDC evidence, a privacyIDEA push or a web approval on fastrdp-webgate, which signs users in at Keycloak and sends opt-in notifications through ntfy and Web Push services; xrdp, GNOME and Plasma back-ends run on loopback behind nftables; Kerberos KDC, Keycloak and privacyIDEA are external](diagrams/02-architecture-overview.png)
+*Figure 2: Architecture overview. Only port 3389 (and 443 for the optional web gateway) is reachable from the network. The second factor comes from KDC evidence in the ticket, a privacyIDEA push or an approval on the web gateway.*
 
 A login goes like this:
 
@@ -86,15 +86,15 @@ A login goes like this:
    - **Plasma:** `fastrdp-plasma@USER` runs `kwin_wayland --virtual` and `krdpserver` on a per-user loopback port.
 6. The proxy connects to the back-end with the broker's credentials and relays the session. GFX/H.264 is passed through without being decoded, and so are the other channels. Sound and microphone, for example, are handled in the session: xrdp, wlroots and GNOME sessions get PipeWire with `pipewire-module-xrdp` or `pipewire-pulse` (implemented, not yet tested with real clients); KRdp has no audio, so Plasma users who need sound use `plasma-x11`. On disconnect the session keeps running, and the next login reconnects to it.
 
-![Sequence diagram of a Kerberos NLA login: client gets a ticket from the KDC, connects to the proxy, the broker checks the account and triggers a privacyIDEA push, chooses the desktop, prepares the back-end and returns a loopback target; the proxy connects with swapped credentials](diagrams/03-login-sequence.png)
-*Figure 3: The login sequence for an RDP client with Kerberos NLA and a privacyIDEA push. Web approval and the waiting screen follow further below.*
+![Sequence diagram of a Kerberos NLA login: the client gets a ticket from the KDC (mstsc: user-to-user) and connects to the proxy; the broker checks the account; KDC evidence, an exempt group or reconnect grace skips the second factor, otherwise the proxy shows the waiting screen with login code, QR code and countdown while the broker waits for a privacyIDEA push or a web approval (the phone scans the QR code, signs in at Keycloak with a passkey and approves on the webgate, which calls mfa_decide; optionally a ntfy or Web Push notification first); optionally the user picks the desktop in the RDP window; the broker starts or reuses the back-end and returns a loopback target, and the proxy connects with swapped credentials](diagrams/03-login-sequence.png)
+*Figure 3: The login sequence for an RDP client with Kerberos NLA: the second factor by MFA mode (KDC evidence, privacyIDEA push, web approval), the optional desktop picker, then the session start. The waiting screen and the approval page follow further below.*
 
 ### The browser path
 
 For users without an RDP client there is an optional web path. The browser logs in at **Keycloak** (OIDC with PKCE). MFA happens there (passkeys, OTP, WebAuthn/FIDO2 or the privacyIDEA provider), and the webgate checks the `acr`/`amr` claims to prove it. Ansible can set up the Keycloak flow for passkeys so that a passkey sign-in yields `acr=mfa` (`fastrdp_web_passkeys`, tested against Keycloak 26.8.1); a sign-in without that proof gets a clear "Second factor required" page instead of a desktop. The webgate then asks the broker for a single-use **web token** and hands Guacamole an encrypted, signed connection blob that is valid for 30 seconds. guacd connects to the proxy with that token like any other client.
 
-![Web path: browser to nginx, fastrdp-webgate with Keycloak OIDC login and MFA, broker issues a one-time web token, Guacamole and guacd connect to the proxy on loopback](diagrams/06-web-path.png)
-*Figure 4: The optional web path through Keycloak and Guacamole.*
+![Web path: browser to nginx, fastrdp-webgate with Keycloak OIDC login and MFA, broker issues a one-time web token, Guacamole and guacd connect to the proxy on loopback; the webgate also serves the approval page /web/approve and the notification opt-in /web/notify (sending through ntfy and Web Push services), stores the desktop chosen for later RDP logins in the broker and offers .rdp files for mstsc and the Windows App](diagrams/06-web-path.png)
+*Figure 4: The optional web gateway: the browser path through Keycloak and Guacamole, the approval page and notifications for RDP logins, and the stored desktop choice and .rdp files for RDP apps.*
 
 It's a convenience path. guacd re-encodes the screen as images, so there is no H.264 to the browser, and sessions get no Kerberos ticket because no password ever reaches the server.
 
