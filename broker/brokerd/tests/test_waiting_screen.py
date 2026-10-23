@@ -363,7 +363,7 @@ class WebProgressTests(_ProgressMixin, _ApprovalHarness, unittest.IsolatedAsynci
         self.assertEqual((mfa["timeout_s"], mfa["approve_url"], mfa["qr"]),
                          (10, URL, qrcode.encode(f"{URL}?login={rid}".encode())))
         self.assertIn(URL, mfa["lines"])
-        self.assertEqual(mfa["lines"][-1], "Scan the code to open the approval page on your phone.")
+        self.assertEqual(mfa["lines"][-1], "Scan the code to open the approval page.")
 
 
 class PushOrWebProgressTests(_ProgressMixin, _ApprovalHarness, unittest.IsolatedAsyncioTestCase):

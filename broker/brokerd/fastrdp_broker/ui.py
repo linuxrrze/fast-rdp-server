@@ -72,7 +72,7 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
                            "approval page (passkey) and approve this login:\n"
                            "{approve_url}\n"
                            "Login code: {code}",
-        "qr_hint": "Scan the code to open the approval page on your phone.",
+        "qr_hint": "Scan the code to open the approval page.",
         "session_start": "Connecting to your desktop ({desktop})…",
         "countdown": "Time left:",
         "picker_title": "Choose your desktop",
@@ -110,7 +110,7 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
                            "Sie diese Anmeldung:\n"
                            "{approve_url}\n"
                            "Anmeldecode: {code}",
-        "qr_hint": "Code scannen, um die Freigabeseite auf dem Telefon zu öffnen.",
+        "qr_hint": "Code scannen, um die Freigabeseite zu öffnen.",
         "session_start": "Verbindung zu Ihrem Desktop ({desktop}) wird hergestellt…",
         "countdown": "Verbleibend:",
         "picker_title": "Desktop auswählen",
