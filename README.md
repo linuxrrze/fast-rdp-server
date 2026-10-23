@@ -91,17 +91,17 @@ What each test guards and where CI runs it: [tests/README.md](tests/README.md).
 
 | Area | State |
 |---|---|
-| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 521 unit/protocol tests incl. regression tests for review findings |
-| Proxy module | implemented; end-to-end tested in real freerdp-proxy (TLS, Kerberos NLA, smartcard, back-end certificate pinning, waiting screen, desktop picker) against fastrdp's FreeRDP 3.32.2, in CI |
-| Windows mstsc | Kerberos NLA (user-to-user) **confirmed in the field** with an AD-joined host; waiting screen, desktop picker and web approval with mstsc / Windows App to validate ([docs/windows-clients.md](docs/windows-clients.md)) |
-| Second factor | modes `none`, `push`, `otp`, `otp_or_push`, `web`, `push_or_web`, `code_or_web` ([docs/auth-matrix.md](docs/auth-matrix.md)): privacyIDEA push/OTP, web approval after a Keycloak passkey sign-in (login-bound QR code, login code), waiting screen in the RDP window; TOTP typed on the waiting screen and checked by Keycloak (`code_or_web`, real clients to validate); skip from KDC evidence (smartcard, Windows Hello for Business) implemented, real AD to validate |
+| Broker (auth flow, MFA modes, desktop choice, tokens, back-end drivers) | implemented; 561 unit/protocol tests incl. regression tests for review findings |
+| Proxy module | implemented; end-to-end tested in real freerdp-proxy (TLS, Kerberos NLA, smartcard, back-end certificate pinning, waiting screen, desktop picker) against fastrdp's FreeRDP 3.32.2, in CI; code field of `code_or_web` and the lab-only input trace unit-tested (also with sanitizers), not yet run in a proxy session |
+| Windows mstsc | Kerberos NLA (user-to-user) **confirmed in the field** with an AD-joined host; waiting screen, desktop picker, web approval and the code field with mstsc / Windows App to validate ([lab plan](docs/lab-waiting-screen-input.md)) ([docs/windows-clients.md](docs/windows-clients.md)) |
+| Second factor | modes `none`, `push`, `otp`, `otp_or_push`, `web`, `push_or_web`, `code_or_web` ([docs/auth-matrix.md](docs/auth-matrix.md)): privacyIDEA push/OTP, web approval after a Keycloak passkey sign-in (login-bound QR code, login code), waiting screen in the RDP window; TOTP typed on the waiting screen and checked by Keycloak (`code_or_web`: direct grant without password, clean refusal for users without TOTP, `amr` safeguard; real clients to validate, not yet offered by `fastrdp-setup`); skip from KDC evidence (smartcard, Windows Hello for Business) implemented, real AD to validate |
 | Notifications (ntfy, Web Push) | implemented and checked against the RFC test vector and local servers ([docs/notifications.md](docs/notifications.md)); real devices to validate |
 | PAM token module | implemented; functional test through libpam |
 | Ansible roles | implemented and used for field deployments; `ansible-lint` production profile passes; templates render and are accepted by broker and proxy |
 | xrdp/X11 desktops, GNOME headless, Plasma headless | deployed by the roles; **need validation on a lab host** (see docs/desktop-matrix.md) |
 | Phase 4 tooling (rdpbench, perfload, session_report, tuning role) | implemented and tested; proxy overhead measured (no fps loss, ~0.3–0.5 % core per Mbit/s) |
 | Phase 4 GPU validation (Intel/AMD/NVIDIA) | **needs GPU hosts**, see the runbook in docs/performance.md |
-| Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); Keycloak passkey flow (`acr=mfa`) tested end to end against Keycloak 26.8.1; Guacamole containers need a lab run |
+| Web path (Keycloak + Guacamole, role `web_gateway`) | implemented; webgate flow and Guacamole crypto tested (byte-identical to Guacamole's reference); Keycloak passkey flow (`acr=mfa`) and the code check of `code_or_web` tested end to end against Keycloak 26.8.1 (50 checks); Guacamole containers need a lab run |
 | Smartcard (PKINIT) logon through the proxy | works with a software token end to end; PIN-leak bug fixed; real cards/AD to validate |
 | xrdp PR #3868 (NLA) | assessed: FreeRDP default clients fail because of an MIT krb5 1.21–1.22.1 bug (fixed in 1.22.2); no smartcards; proxy stays the NLA point |
 | wlroots desktops (Sway, labwc, Wayfire) | implemented; launcher tested with all three on Xvfb (15 checks); full xrdp session to validate. Hyprland not supported (no X11 backend) |
