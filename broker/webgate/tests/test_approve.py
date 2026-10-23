@@ -171,7 +171,9 @@ class ApproveTests(unittest.TestCase):
         self.assertIn('value="approve"', body)
         self.assertIn('value="deny"', body)
         self.assertIn("click <b>Deny</b>", body)
-        self.assertEqual(self.broker.seen, [{"op": "mfa_pending", "user": "alice"}])
+        (seen,) = self.broker.seen
+        self.assertEqual({k: seen[k] for k in ("op", "user")}, {"op": "mfa_pending", "user": "alice"})
+        self.assertAlmostEqual(seen["auth_time"], time.time(), delta=5)   # the sign-in's, for the mark
         self.assertEqual(h["X-Frame-Options"], "DENY")
 
     def test_mfa_required(self):
@@ -354,6 +356,88 @@ class ApproveTests(unittest.TestCase):
         q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
         self.assertEqual(q["prompt"], "login")
 
+    # ------------------------------------------ sign-in too old for a login (W6)
+    def approval_cookie(self, **change):
+        """The approval cookie's content; with `change`, re-signed with those fields."""
+        (c,) = self.cookie("fastrdp_web_approve")
+        appr = self.app.signer.loads("approve", c.value)
+        if change:
+            appr = {k: v for k, v in {**appr, **change}.items() if v is not None}
+            c.value = self.app.signer.dumps("approve", appr, 300)
+        return appr
+
+    def test_marked_login_offers_a_new_sign_in(self):
+        self.sign_in()
+        self.assertAlmostEqual(self.approval_cookie()["i"], time.time(), delta=5)
+        self.broker.replies["mfa_pending"]["pending"][0]["needs_fresh_sign_in"] = True
+        status, _, body = self.fetch("/web/approve")
+        self.assertEqual(status, 200)
+        self.assertNotIn('value="approve"', body)                   # no button bound to fail
+        self.assertIn('value="deny"', body)                         # Deny stays
+        self.assertIn('Your sign-in is older than this login. '
+                      '<a href="/web/approve?signin=1">Sign in again to approve</a>', body)
+        status, h, _ = self.fetch("/web/approve?signin=1")
+        self.assertEqual(status, 303)
+        q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
+        self.assertEqual((q["prompt"], q["max_age"]), ("login", "0"))
+        pending = self.app.signer.loads("pending", self.cookie("fastrdp_web_login")[0].value)
+        self.assertEqual(pending["a"], 1)
+        self.assertNotIn("l", pending)          # the plain list: back to the plain list, not "bound"
+        self.broker.replies["mfa_pending"]["pending"][0]["needs_fresh_sign_in"] = False
+        self.assertIn('value="approve"', self.fetch("/web/approve")[2])
+
+    def test_marked_login_with_conflict_offers_nothing_to_approve(self):
+        self.sign_in()
+        self.broker.replies["mfa_pending"]["pending"] = [
+            dict(PENDING[0], id=f"r{i}", single_pending_conflict=True, needs_fresh_sign_in=True)
+            for i in range(2)]
+        body = self.fetch("/web/approve")[2]
+        self.assertNotIn('value="approve"', body)
+        self.assertNotIn("Sign in again to approve", body)
+        self.assertEqual(body.count('value="deny"'), 2)
+
+    def test_bound_marked_login_signs_in_again_at_once(self):
+        self.two_pending(needs_fresh_sign_in=True, age_s=20)
+        self.sign_in(f"/web/approve?login={MINE}")
+        for issued in (int(time.time()) - 200, None):          # an older cookie; one without "i"
+            with self.subTest(issued=issued):
+                self.approval_cookie(i=issued)
+                with self.assertLogs("fastrdp.webgate", "INFO") as logs:
+                    status, h, _ = self.fetch(f"/web/approve?login={MINE}")
+                self.assertEqual(status, 303)
+                q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(h["Location"]).query))
+                self.assertEqual((q["prompt"], q["max_age"]), ("login", "0"))
+                pending = self.app.signer.loads("pending", self.cookie("fastrdp_web_login")[0].value)
+                self.assertEqual((pending["a"], pending["l"]), (1, MINE))
+                self.assertTrue(any("signing in again" in line for line in logs.output), logs.output)
+                self.sign_in(f"/web/approve?login={MINE}")
+
+    def test_bound_marked_after_a_fresh_sign_in_does_not_loop(self):
+        """Signed in after the login started, yet still too old for the broker (the IdP's
+        clock differs): the page, with the link and a hint, instead of another redirect."""
+        self.two_pending(needs_fresh_sign_in=True, age_s=20)
+        self.sign_in(f"/web/approve?login={MINE}")                   # cookie "i" = now > login start
+        status, _, body = self.fetch(f"/web/approve?login={MINE}")
+        self.assertEqual(status, 200)
+        mine = body.split("<h2>This RDP login</h2>")[1].split("Another login with your password")[0]
+        self.assertNotIn('value="approve"', mine)
+        self.assertIn(f'<a href="/web/approve?login={MINE}&amp;signin=1">Sign in again to approve</a>', mine)
+        self.assertIn("clocks of this server and the sign-in service may differ", mine)
+        self.assertIn('value="deny"', mine)
+        status, h, _ = self.fetch(f"/web/approve?login={MINE}&signin=1")   # the link: a fresh sign-in
+        self.assertEqual(status, 303)
+        pending = self.app.signer.loads("pending", self.cookie("fastrdp_web_login")[0].value)
+        self.assertEqual(pending["l"], MINE)
+
+    def test_bound_unmarked_unchanged(self):
+        self.two_pending(needs_fresh_sign_in=False, age_s=20)
+        self.sign_in(f"/web/approve?login={MINE}")
+        self.approval_cookie(i=int(time.time()) - 200)
+        status, _, body = self.fetch(f"/web/approve?login={MINE}")
+        self.assertEqual(status, 200)
+        self.assertIn('value="approve"', body.split("Another login with your password")[0])
+        self.assertNotIn("Sign in again to approve", body)
+
     # --------------------------------------------------- login-bound link
     def two_pending(self, **mine):
         """The user's login (MINE, from the QR code) and another one with the same
@@ -383,7 +467,7 @@ class ApproveTests(unittest.TestCase):
         status, _, body = self.fetch(h["Location"])
         self.assertEqual(status, 200)
         self.assertIn("<h2>This RDP login</h2>", body)
-        self.assertEqual(self.broker.seen, [{"op": "mfa_pending", "user": "alice"}])
+        self.assertEqual([r["op"] for r in self.broker.seen], ["mfa_pending"])
 
     def test_login_id_kept_when_sign_in_lacks_mfa(self):
         FakeIdP.acr = "1"
@@ -524,10 +608,12 @@ class BrokerClientTests(unittest.TestCase):
         try:
             b = ApprovalBroker(f"{tmp}/b.sock")
             self.assertEqual(broker_mfa_pending(f"{tmp}/b.sock", "alice"), PENDING)
+            broker_mfa_pending(f"{tmp}/b.sock", "alice", auth_time=1234)
             self.assertEqual(broker_mfa_decide(f"{tmp}/b.sock", "alice", "req-1_A", False, 1234),
                              {"ok": True, "approved": True})
             broker_mfa_decide(f"{tmp}/b.sock", "alice", MINE, True, 1234, bound=True)
             self.assertEqual(b.seen, [{"op": "mfa_pending", "user": "alice"},
+                                      {"op": "mfa_pending", "user": "alice", "auth_time": 1234},
                                       {"op": "mfa_decide", "user": "alice", "id": "req-1_A",
                                        "approve": False, "auth_time": 1234},
                                       {"op": "mfa_decide", "user": "alice", "id": MINE,

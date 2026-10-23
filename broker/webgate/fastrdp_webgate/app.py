@@ -123,9 +123,11 @@ def broker_web_set_desktop(path: str, user: str, desktop: str | None, timeout: f
     return broker_request(path, "web_set_desktop", user, timeout, desktop=desktop)
 
 
-def broker_mfa_pending(path: str, user: str, timeout: float = 15) -> list[dict]:
-    """The user's RDP logins waiting for web approval."""
-    return broker_request(path, "mfa_pending", user, timeout).get("pending", [])
+def broker_mfa_pending(path: str, user: str, timeout: float = 15, auth_time: int | None = None) -> list[dict]:
+    """The user's RDP logins waiting for web approval; with `auth_time` (the approval
+    sign-in) each says whether that sign-in is too old to approve it ("needs_fresh_sign_in")."""
+    extra = {"auth_time": auth_time} if auth_time is not None else {}
+    return broker_request(path, "mfa_pending", user, timeout, **extra).get("pending", [])
 
 
 def broker_mfa_decide(path: str, user: str, request_id: str, approve: bool, auth_time: int,
@@ -140,6 +142,13 @@ def broker_mfa_decide(path: str, user: str, request_id: str, approve: bool, auth
 def approve_path(login: str | None) -> str:
     """/approve, or /approve?login=<id> for an id that SAFE_LOGIN_ID accepts."""
     return f"/approve?login={login}" if login and SAFE_LOGIN_ID.fullmatch(login) else "/approve"
+
+
+def sign_in_again_path(login: str | None) -> str:
+    """A fresh approval sign-in that returns to approve_path(login) (GET <prefix>/approve
+    with signin=1)."""
+    path = approve_path(login)
+    return path + ("&" if "?" in path else "?") + "signin=1"
 
 
 class Webgate:
@@ -312,7 +321,8 @@ def make_handler(app: Webgate):
                 if login is not None and not SAFE_LOGIN_ID.fullmatch(login):
                     return self.approval_message(404, NOT_WAITING)   # like an unknown id
                 appr, raw = self.approval_session()
-                if not appr:
+                if not appr or query.get("signin") == "1":
+                    # signin=1: "Sign in again to approve" (a sign-in too old for a login)
                     return self.start_login(approve=True, login=login)
                 return self.approve_page(appr, app.signer.csrf(raw), login)
             if path == "/logout":  # logout is a POST with CSRF token (see chooser form)
@@ -373,7 +383,9 @@ def make_handler(app: Webgate):
                 log.warning("unusable username claim %r", claims.get(app.cfg.oidc.username_claim))
                 return self.error_page(403, "Your account name cannot be used here.")
             if auth_time is not None:
-                appr = app.signer.dumps("approve", {"user": user, "auth_time": auth_time}, APPROVE_TTL)
+                # "i": when this webgate issued it (its own clock, like the broker's age_s)
+                appr = app.signer.dumps("approve", {"user": user, "auth_time": auth_time,
+                                                    "i": int(time.time())}, APPROVE_TTL)
                 log.info("web sign-in %s for login approval", user)
                 return self.redirect(app.prefix + approve_path(pending.get("l")), [
                     ("Set-Cookie", app.cookie(APPROVE_COOKIE, appr, APPROVE_TTL)),
@@ -555,8 +567,14 @@ def make_handler(app: Webgate):
                     f'<input type="hidden" name="csrf" value="{csrf}">'
                     f'<input type="hidden" name="id" value="{rid}">'
                     + (f'<input type="hidden" name="login" value="{rid}">' if bound else ""))
-            buttons = (f'{form}<input type="hidden" name="decision" value="approve">'
-                       f'<button type="submit">Approve</button></form> ' if approve else "")
+            if approve and p.get("needs_fresh_sign_in") is True:
+                # the broker would refuse Approve (approval_stale): a fresh sign-in instead
+                again = html.escape(app.prefix + sign_in_again_path(rid if bound else None))
+                buttons = (f'Your sign-in is older than this login. <a href="{again}">Sign in again '
+                           "to approve</a><br>")
+            else:
+                buttons = (f'{form}<input type="hidden" name="decision" value="approve">'
+                           f'<button type="submit">Approve</button></form> ' if approve else "")
             buttons += (f'{form}<input type="hidden" name="decision" value="deny">'
                         f'<button type="submit">Deny</button></form>')
             address = html.escape(str(p.get("client_address") or "unknown address"))
@@ -571,7 +589,8 @@ def make_handler(app: Webgate):
             first (login_page())."""
             user = appr["user"]
             try:
-                pending = broker_mfa_pending(app.cfg.webgate.broker_socket, user)
+                pending = broker_mfa_pending(app.cfg.webgate.broker_socket, user,
+                                             auth_time=appr["auth_time"])
             except (OSError, BrokerError) as exc:
                 return self.broker_refused("pending logins", user, exc)
             pending = [p for p in pending if SAFE_REQUEST_ID.fullmatch(str(p.get("id", "")))]
@@ -579,7 +598,12 @@ def make_handler(app: Webgate):
             if login:
                 bound = [p for p in pending if p["id"] == login]
                 if bound:
-                    return self.login_page(user, bound[0], [p for p in pending if p["id"] != login], csrf)
+                    p = bound[0]
+                    if p.get("needs_fresh_sign_in") is True and self.signed_in_before(appr, p):
+                        # opened for this login with an older sign-in: sign in again at once
+                        log.info("%s: approval sign-in older than the login, signing in again", user)
+                        return self.start_login(approve=True, login=login)
+                    return self.login_page(user, p, [o for o in pending if o["id"] != login], csrf)
                 # not (or no longer) pending, or not the user's: told apart nowhere
                 log.info("%s opened the approval page for a login that is not waiting", user)
                 signed_in += f"<p><b>{html.escape(NOT_WAITING)}</b></p>"
@@ -603,6 +627,17 @@ def make_handler(app: Webgate):
                     f'<p><a href="{app.prefix}/approve">Reload</a></p>')
             self.send(200, page("Approve RDP login", body))
 
+        @staticmethod
+        def signed_in_before(appr: dict, p: dict) -> bool:
+            """The approval cookie was issued before the login `p` started (both on this
+            host's clock). Only then can a new sign-in help; a sign-in made after the login
+            that the broker still finds too old (the IdP's clock differs) is not repeated
+            automatically, which would loop."""
+            age = p.get("age_s")
+            if not isinstance(age, int) or isinstance(age, bool):
+                return False
+            return int(appr.get("i") or 0) < time.time() - age
+
         def login_page(self, user: str, p: dict, others: list[dict], csrf: str):
             """?login=<id> of a pending login of the user (the QR code on its waiting
             screen): that login with Approve (the broker allows it although others wait,
@@ -612,6 +647,10 @@ def make_handler(app: Webgate):
                     f"{self.others_warning(p, others)}"
                     f'<p style="border:2px solid;border-radius:.4rem;padding:.6rem 1rem">'
                     f"{self.login_item(p, csrf, True, bound=True)}</p>"
+                    + ("<p>You signed in after this login started, but the server still finds the "
+                       "sign-in too old: the clocks of this server and the sign-in service may differ. "
+                       "If signing in again does not help, tell your administrator.</p>"
+                       if p.get("needs_fresh_sign_in") is True else "") +
                     "<p>Approve it only if you started it yourself just now and its code is the one "
                     "your RDP window shows. If you did not start it, or somebody sent you this link "
                     "or asked you to approve it, click <b>Deny</b>.</p>")

@@ -355,7 +355,10 @@ What the page protects against:
   (`fastrdp_web_approve`, 5 min) that cannot open desktops, and the desktop chooser's
   sign-in cannot approve logins.
 - A sign-in may be at most `fastrdp_mfa_web_approval_max_auth_age` (30 s) older than
-  the login it approves; otherwise the page asks to sign in again.
+  the login it approves. For a login that the current sign-in is too old for (e.g. a
+  sign-in for an earlier login, minutes ago), the page shows "Sign in again to approve"
+  instead of Approve; opened from that login's QR code it starts the new sign-in at once
+  ([details](auth-matrix.md#a-sign-in-too-old-for-a-login)).
 - **Two or more waiting logins** (`fastrdp_mfa_web_approval_single_pending`): the page
   warns that somebody else may be using the password and offers only Deny. Deny them
   all and start one new login. Opened from the QR code of your own RDP window, the

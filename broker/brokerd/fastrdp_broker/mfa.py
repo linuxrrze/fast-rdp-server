@@ -305,13 +305,23 @@ class WebApprovals:
             raise MfaDenied("web approval denied")
         return "web"
 
-    def list(self, user: str) -> list[dict]:
-        """The pending logins of `user` (local account), oldest first."""
+    def stale(self, entry: PendingApproval, auth_time: int) -> float | None:
+        """Seconds by which a sign-in at `auth_time` (IdP clock) is older than the login,
+        if that is more than web_approval_max_auth_age: such a sign-in cannot approve it
+        (decide() refuses, list() marks it). None if it may."""
+        age = entry.created_wall - auth_time
+        return age if age > self.cfg.web_approval_max_auth_age else None
+
+    def list(self, user: str, auth_time: int | None = None) -> list[dict]:
+        """The pending logins of `user` (local account), oldest first. With `auth_time`
+        (the webgate's sign-in), "needs_fresh_sign_in" says which of them that sign-in is
+        too old to approve (the rule of decide())."""
         conflict = self.cfg.web_approval_single_pending and self.count(user) > 1
         now = self.clock()
         return [
             {"id": e.id, "method": e.method, "client_address": e.client_address,
-             "age_s": int(now - e.created), "single_pending_conflict": conflict, "code": e.code}
+             "age_s": int(now - e.created), "single_pending_conflict": conflict, "code": e.code,
+             "needs_fresh_sign_in": auth_time is not None and self.stale(e, auth_time) is not None}
             for e in sorted(self.pending.values(), key=lambda e: e.created) if e.user == user
         ]
 
@@ -336,8 +346,8 @@ class WebApprovals:
             if self.cfg.web_approval_single_pending and self.count(user) > 1 and not bound:
                 raise ApprovalError(f"{self.count(user)} logins pending; approving none of them "
                                     "([mfa] web_approval_single_pending)", "approval_conflict")
-            age = entry.created_wall - auth_time
-            if age > self.cfg.web_approval_max_auth_age:
+            age = self.stale(entry, auth_time)
+            if age is not None:
                 raise ApprovalError(f"sign-in {age:.0f}s older than the login "
                                     f"(web_approval_max_auth_age = {self.cfg.web_approval_max_auth_age})",
                                     "approval_stale")

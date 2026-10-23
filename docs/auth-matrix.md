@@ -249,7 +249,7 @@ and 4 stay the same, the notification approves nothing. ntfy and Web Push, rate 
 | Variable (broker key) | Default | Meaning |
 |---|---|---|
 | `fastrdp_mfa_web_approval_timeout` (`web_approval_timeout`) | `90` | seconds a login waits for the decision, 10..510. In `push_or_web` it bounds the whole wait (keep `push_timeout` below it). `fastrdp_proxy_broker_timeout` (default 180) must be at least this plus 90 s for the session start after the approval (`session_start_timeout`; checked): raise the proxy's timeout along with this one. 510 = the module's 600 s limit minus the session start |
-| `fastrdp_mfa_web_approval_max_auth_age` (`web_approval_max_auth_age`) | `30` | the approving sign-in may be at most this many seconds older than the pending login (0..300). Signing in first and starting the login afterwards works only within this window; otherwise the page asks to sign in again |
+| `fastrdp_mfa_web_approval_max_auth_age` (`web_approval_max_auth_age`) | `30` | the approving sign-in may be at most this many seconds older than the pending login (0..300). Signing in first and starting the login afterwards works only within this window. For a login the current sign-in is too old for, the page shows "Sign in again to approve" instead of Approve (Deny stays); opened from that login's QR code it starts the new sign-in at once ([below](#a-sign-in-too-old-for-a-login)) |
 | `fastrdp_mfa_web_approval_single_pending` (`web_approval_single_pending`) | `true` | with two or more pending logins of one user, none can be approved (each can still be denied); the user denies them and starts one new login. Not for the login named by the [login-bound link](#login-bound-link-qr-code) |
 
 **Why `single_pending`:** whoever has the user's password (or Kerberos ticket) can start
@@ -287,6 +287,23 @@ Security notes:
 - The code is a convenience for telling logins apart, not a secret (two digits); the
   safeguards are the fresh sign-in, `single_pending` or the
   [login-bound link](#login-bound-link-qr-code), and the user's judgement.
+
+#### A sign-in too old for a login
+
+The approval cookie lives 5 minutes, so a sign-in made for one login is still there when
+the next login starts, and it is too old for that one (`web_approval_max_auth_age`). The webgate passes its
+sign-in's `auth_time` to `mfa_pending`; the broker marks each login that this sign-in
+cannot approve (`needs_fresh_sign_in`, the same rule `mfa_decide` refuses by,
+`approval_stale`). For such a login the page shows "Your sign-in is older than this
+login. Sign in again to approve" instead of an Approve button bound to fail; Deny stays.
+On the list the link returns to the list; on the login-bound page (`?login=<id>`) it
+keeps the id. Opened from the QR code with an older sign-in, the page starts the new
+sign-in at once. It does so only if the approval cookie was issued before the login
+started (both on this host's clock): if a sign-in made after the login is still too old
+for the broker (the IdP's clock differs), the page shows the link and a hint about the
+clocks instead of redirecting again, so it never loops. The broker's `approval_stale`
+refusal stays as the safety net. [tested: unit tests, `test_approve.py`,
+`test_web_approval.py`; not against a real Keycloak (backlog W2)]
 
 #### Login-bound link (QR code)
 

@@ -753,9 +753,11 @@ class Broker:
 
     # ------------------------------------------------------------ web approval
     def mfa_pending(self, msg: dict) -> dict:
-        """fastrdp-webgate lists the user's logins waiting for web approval (mfa.WebApprovals)."""
+        """fastrdp-webgate lists the user's logins waiting for web approval (mfa.WebApprovals);
+        with `auth_time` (its sign-in) each says whether that sign-in is too old to approve it."""
         user = identity.resolve_login(str_field(msg, "user", required=True), self.cfg.auth)
-        return {"ok": True, "user": user.name, "pending": self.mfa.approvals.list(user.name)}
+        auth_time = int_field(msg, "auth_time", 0, 2**40)
+        return {"ok": True, "user": user.name, "pending": self.mfa.approvals.list(user.name, auth_time)}
 
     def mfa_decide(self, msg: dict) -> dict:
         """fastrdp-webgate approves or denies one of them for the user it signed in;

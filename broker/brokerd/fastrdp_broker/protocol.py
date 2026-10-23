@@ -112,10 +112,13 @@ fastrdp-webgate ([web] gateway_user) -> broker.sock:
   [mfa] mode web / push_or_web / code_or_web (mfa.WebApprovals): logins waiting for their user's
   approval on the webgate's approval page. "user" is the name the webgate signed in
   (resolved like a TLS login); only that account's logins are listed or decided.
-  {"op": "mfa_pending", "user": str}
+  {"op": "mfa_pending", "user": str, "auth_time": int (optional)}
   -> {"ok": true, "user": str, "pending": [{"id": str, "method": "nla"|"tls",
       "client_address": str|null, "age_s": int, "single_pending_conflict": bool,
-      "code": str}]}
+      "code": str, "needs_fresh_sign_in": bool}]}
+  "auth_time" (mfa_pending): the webgate's sign-in; "needs_fresh_sign_in" is true for a
+  login that this sign-in cannot approve ("approval_stale" below), so the page offers a
+  new sign-in instead of an Approve button bound to fail. Without "auth_time": false.
   {"op": "mfa_decide", "user": str, "id": str, "approve": bool, "auth_time": int,
    "bound": bool (optional, absent: false)}
   -> {"ok": true, "approved": bool}

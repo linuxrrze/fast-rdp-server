@@ -15,7 +15,7 @@ from unittest import mock
 
 from fastrdp_broker import config, tickets
 from fastrdp_broker.config import MfaSection
-from fastrdp_broker.mfa import WebApprovals
+from fastrdp_broker.mfa import ApprovalError, WebApprovals
 from fastrdp_broker.privacyidea import PrivacyIdeaError
 from test_gaps import _BrokerHarness, raw_example, request
 
@@ -87,6 +87,27 @@ class WebApprovalStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.finished, {})
 
 
+    async def test_needs_fresh_sign_in_follows_the_decide_rule(self):
+        """list() marks a login that a sign-in at auth_time cannot approve, with the rule
+        decide() refuses by (approval_stale): exactly max_auth_age older still approves."""
+        wall = 1_800_000_000.0
+        store = WebApprovals(MfaSection(web_approval_timeout=30, web_approval_max_auth_age=30),
+                             Clock(), lambda: wall)
+        task = asyncio.create_task(store.wait("alice", "nla", ADDR))
+        await asyncio.sleep(0)
+        (rid,) = store.pending
+        self.assertFalse(store.list("alice")[0]["needs_fresh_sign_in"])          # no auth_time
+        for auth_time, stale in ((int(wall) - 31, True), (int(wall) - 30, False),
+                                 (int(wall), False), (int(wall) + 5, False)):
+            with self.subTest(auth_time=auth_time):
+                self.assertEqual(store.list("alice", auth_time)[0]["needs_fresh_sign_in"], stale)
+        with self.assertRaises(ApprovalError) as cm:
+            store.decide("alice", rid, True, int(wall) - 31)
+        self.assertEqual(cm.exception.reason, "approval_stale")
+        store.decide("alice", rid, True, int(wall) - 30)                          # the boundary
+        self.assertEqual(await task, "web")
+
+
 # ------------------------------------------------------------------ broker
 class _ApprovalHarness(_BrokerHarness):
     """The broker with a web approval mode; the test acts as proxy and webgate (same uid)."""
@@ -102,8 +123,8 @@ class _ApprovalHarness(_BrokerHarness):
         """A login waiting in the broker (TLS, client address ADDR unless given)."""
         return asyncio.create_task(self.login(**{"client_address": ADDR, **kw}))
 
-    def pending_op(self, user="alice"):
-        return request(self.cfg.broker.socket, {"op": "mfa_pending", "user": user})
+    def pending_op(self, user="alice", **extra):
+        return request(self.cfg.broker.socket, {"op": "mfa_pending", "user": user, **extra})
 
     def decide(self, rid, approve=True, user="alice", auth_time=None, bound=None):
         msg = {"op": "mfa_decide", "user": user, "id": rid, "approve": approve,
@@ -322,6 +343,21 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(login.done())
         self.mfa_cfg.web_approval_max_auth_age = 30
         self.assertEqual(await self.decide(rid, auth_time=int(created) - 29), {"ok": True, "approved": True, "others_pending": 0})
+        self.assertTrue((await login)["ok"])
+
+    async def test_pending_marks_logins_the_sign_in_cannot_approve(self):
+        login = self.start()
+        (rid,) = await self.wait_pending()
+        created = int(self.broker.mfa.approvals.pending[rid].created_wall)
+        self.assertFalse((await self.pending_op())["pending"][0]["needs_fresh_sign_in"])
+        self.assertTrue((await self.pending_op(auth_time=created - 40))["pending"][0]["needs_fresh_sign_in"])
+        self.assertEqual(await self.decide(rid, auth_time=created - 40), self.refused_decision("approval_stale"))
+        self.assertFalse((await self.pending_op(auth_time=created))["pending"][0]["needs_fresh_sign_in"])
+        for bad in ("now", True, -1, 1.5):
+            with self.subTest(auth_time=bad):
+                self.assertEqual(await self.pending_op(auth_time=bad), {})        # connection dropped
+        self.assertFalse(login.done())
+        await self.decide(rid, auth_time=created)
         self.assertTrue((await login)["ok"])
 
     async def test_stale_sign_in_may_still_deny(self):
