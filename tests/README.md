@@ -87,7 +87,7 @@ does the same with `ansible-playbook`.
 | Test | Regression it catches | Run locally | Dependencies | CI |
 |---|---|---|---|---|
 | `ansible-lint site.yml` (production profile) | Ansible style and safety rules | `make lint` | ansible-lint 26.10.1 | `tests` |
-| shellcheck (session launchers, all test scripts, `third_party/`, `packaging/`, `debian/bin`) | shell bugs (quoting, unset variables, ...) | `make lint` | shellcheck 0.11 | `tests` |
+| shellcheck (session launchers, all test scripts, `third_party/`, `packaging/`, `debian/bin`, the Keycloak kcadm example `docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh`) | shell bugs (quoting, unset variables, ...) | `make lint` | shellcheck 0.11 | `tests` |
 | `packaging/ci/check-build-deps.sh` | vendored Build-Depends lag behind `build-*.sh --deps` | `make lint` | bash | `tests` |
 | actionlint | workflow syntax, expressions, shellcheck of `run:` blocks | `make lint-ci` | actionlint 1.7.7 | `tests` (resolute) |
 | `tests/docs/check_module_refs.py` | Every `fastrdp_plugin.c:N[-M]` reference in `docs/**/*.md` and `README.md` names a module function as `name()` on the same line and points inside it; the old `module:N` shorthand is refused; self-test with known-bad lines | `make test-docs` (offline) | python3 | `tests` |

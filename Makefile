@@ -131,7 +131,8 @@ lint:   # ansible-lint, shellcheck (missing: SKIP, or FAIL with FASTRDP_TESTS_ST
 		broker/session/libexec/kwin-wayland-launch broker/session/libexec/wlroots-in-x \
 		broker/session/libexec/xrdp-audio \
 		tests/proxy-e2e/*.sh tests/krb5-spnego/run.sh tests/smoke/*.sh tests/perf/*.sh patches/xrdp/test/run_test.sh \
-		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh tests/ansible/*.sh && \
+		third_party/*.sh tests/lib.sh tests/packaging/*.sh tests/keycloak/run.sh tests/lab/*.sh tests/docs/*.sh tests/ansible/*.sh \
+		broker/pam_fastrdp_token/test/run_test.sh docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh && \
 	  shellcheck -e SC1090$(comma)SC2015 tests/wlroots/run.sh && \
 	  shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* ansible/roles/base/files/*.sh \
 		packaging/xrdp/debian/fastrdp-xrdp.postinst packaging/xrdp/debian/fastrdp-xrdp.postrm)
