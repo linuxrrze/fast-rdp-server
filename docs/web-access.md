@@ -207,6 +207,8 @@ client made from it.
 
 ### Symptom: acr '1' does not prove MFA
 
+<img src="images/mfa/web-mfa-required.png" alt="Page Second factor required: the sign-in at id.example.org did not use a second factor; sign in again with a passkey, security key or authenticator app, or add one in the account settings" width="300">
+
 Users get the page **Second factor required** ("Your sign-in at <Keycloak host> did not
 use a second factor (MFA) …", with a link to the account console `<issuer>/account` and
 *Sign in again*) on `/web/`, `/web/approve` or `/web/notify`, and the journal of
@@ -275,6 +277,10 @@ With `fastrdp_mfa_mode: web` or `push_or_web` the web gateway is also where user
 approve their **native RDP logins** (mstsc, xfreerdp3, Remmina): the second factor of
 an RDP login becomes "sign in with MFA in a browser and click Approve". Modes, settings
 and the broker's checks: [auth-matrix.md](auth-matrix.md#web-approval).
+
+<img src="images/mfa/waiting-web-qr.png" alt="RDP window with the waiting screen: Approve the sign-in, the approval URL https://rdp.example.org/web/approve, Login code: 47, a QR code and a countdown of 1:44" width="560"> <img src="images/mfa/web-approve.png" alt="Approval page on a phone: Approve RDP login, signed in as alice, This RDP login from 192.0.2.15, Kerberos (NLA), code 47, buttons Approve and Deny" width="240">
+
+*The waiting screen in the RDP window and the approval page opened from its QR code (example data).*
 
 How users reach it:
 - Start the RDP login as usual. The client waits (90 s by default,

@@ -108,6 +108,8 @@ Choose your desktop
 Continuing in 0:09
 ```
 
+![Desktop picker in the RDP window: Choose your desktop, rows 1 Xfce, 2 GNOME (running) selected, 3 KDE Plasma, hint 1-3, arrow keys + Enter, or click, Esc: GNOME, countdown Continuing in 0:14](images/mfa/waiting-picker.png)
+
 Keys 1-9 (top row, or the numeric keypad with NumLock) start a desktop at once; Up/Down
 (Tab, Home, End) move the selection and Enter starts it; a click on a row starts that
 row; Esc starts the preselected one. When the countdown (`fastrdp_desktop_picker_timeout`,

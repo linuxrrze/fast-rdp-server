@@ -72,6 +72,10 @@ but go through their own small queue, so they never delay an approval notificati
   ntfy account the administrator gave the user. *New topic* replaces it (the old one gets
   nothing any more).
 
+<img src="images/mfa/web-notify.png" alt="Page Login notifications for alice: no devices yet, Turn on notifications in this browser, iPhone hint (Add to Home Screen), Set up ntfy" width="280"> <img src="images/mfa/web-notify-ntfy.png" alt="Login notifications page after Set up ntfy: device list with the ntfy entry and a test button, the topic, server https://ntfy.example.org, a QR code of the topic URL, New topic and Stop ntfy notifications" width="280">
+
+*`/web/notify` before and after "Set up ntfy" (example data).*
+
 Tell users the rule from [web-access.md](web-access.md#approving-rdp-logins): approve
 only a login you started yourself, just now (the waiting screen in the RDP window shows
 the same code as the notification and the page). A notification you did not expect means somebody has your password: tap nothing, or open

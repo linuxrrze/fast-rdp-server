@@ -323,6 +323,10 @@ code for typing on another device; that way gets the plain page as before.
   you did not start, and scan only the QR code in your own RDP window.
 - Notifications never carry the id; typed URLs and bookmarks have none (plain page).
 
+<img src="images/mfa/web-approve-warning.png" alt="Approval page opened from the QR code while two logins wait: red warning box (2 logins with your account are waiting, its code is 47, approve only if your own RDP window shows this code), this login with Approve and Deny, the other login from 192.0.2.77 with code 83 and only Deny" width="300">
+
+*The login-bound page while a second login of the account waits (example data).*
+
 ### Waiting screen
 
 **`fastrdp_proxy_waiting_screen`** (proxy.ini `[FastRDP] WaitingScreen`, default
@@ -342,6 +346,10 @@ must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bi
 | session start or reuse | "Connecting to your desktop (Xfce)…" |
 | login granted | the panel is painted over in the screen colour just before the back-end's desktop arrives |
 | refused, timed out | the client's own error message (Set Error Info, as without the screen) |
+
+![Waiting screen for push_or_web: Approve the sign-in, confirm the push notification or approve on https://rdp.example.org/web/approve, Login code: 47, QR code, Time left 1:38](images/mfa/waiting-push-or-web.png)
+
+*Waiting screen in `push_or_web` mode (rendered with the module's own drawing code, example data).*
 
 No push or approval panel appears when no second factor is due (exempt groups,
 `nla_kdc_enforced`, KDC evidence, reconnect grace, OTP appended to the password); the
