@@ -54,7 +54,7 @@ Do not repeat these steps; the rest of this guide covers what the packages leave
 | Package | Provides |
 |---|---|
 | `fastrdp-broker` | broker code, `fastrdp-brokerd` and `fastrdpctl` in `/usr/sbin`, `fastrdp-brokerd.service` (disabled), `/etc/pam.d/fastrdp` and `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, group `_fastrdp-broker`, example `broker.toml` in `/usr/share/doc/fastrdp-broker/examples/`; TERMSRV keytab helpers `fastrdp-termsrv-check` and `fastrdp-termsrv-keytab` in `/usr/sbin`, their settings `/etc/fastrdp/termsrv.conf`, `fastrdp-termsrv-keytab.path`/`.service` (disabled) |
-| `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab`), user `_fastrdp-proxy` |
+| `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab` and `WLOG_APPENDER=JOURNALD`, [logs](#12-start-the-services)), user `_fastrdp-proxy` |
 | `fastrdp-freerdp3` | FreeRDP in `/opt/fastrdp` (`freerdp-proxy`, `xfreerdp`) |
 | `libpam-fastrdp-token` | `pam_fastrdp_token.so` |
 | `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman`, the Kerberos login reminder `/usr/libexec/fastrdp/tgt-notify` with `/etc/xdg/autostart/fastrdp-tgt-notify.desktop` |
@@ -1484,6 +1484,19 @@ After a configuration change restart the service that reads it: `broker.toml` �
 `fastrdp-brokerd`; `proxy.ini`, `front.*`, `termsrv.keytab` → `fastrdp-proxy`;
 `/etc/xrdp/*`, `xorg.conf` → `xrdp-sesman` and `xrdp`; `sssd.conf`, `conf.d` → `sssd`
 and `sssd-kcm`.
+
+**Logs.** The proxy unit sets `WLOG_APPENDER=JOURNALD` and `WLOG_JOURNALD_ID=fastrdp-proxy`:
+FreeRDP and the fastrdp module write each message straight to the journal, at once and
+with its priority. Without it, WLog's console appender buffers stdout in the pipe to
+journald, and lines arrive minutes late or torn ([backlog.md](backlog.md#sessions) A4).
+The appender needs `fastrdp-freerdp3` built with it (`patches/freerdp/0009`; older builds
+fall back to the console without a message).
+
+```sh
+journalctl -u fastrdp-proxy.service -p warning      # warnings and errors only
+journalctl -t fastrdp-proxy -o short-precise        # by the identifier
+systemctl edit fastrdp-proxy.service                # debug: [Service] Environment=WLOG_LEVEL=DEBUG
+```
 
 ## 13. Verify
 

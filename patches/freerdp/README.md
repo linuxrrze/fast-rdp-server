@@ -350,3 +350,42 @@ suite passes either way.
 
 **Drop it when** FreeRDP processes PDUs read during `PostConnect` as input (or offers
 another way to read input before `Activate`), and the module checks for that instead.
+
+## 0009 – [winpr,wlog] make WITH_SYSTEMD reach config.h (journald appender)
+
+**Problem.** With the CMake option `WITH_SYSTEMD`, `winpr/libwinpr/utils/CMakeLists.txt`
+compiles `wlog/JournaldAppender.c`, links libsystemd and sets `WINPR_HAVE_JOURNALD_H`
+for `winpr/config.h`. That header is configured in `winpr/include`, which
+`winpr/CMakeLists.txt` adds after `libwinpr`, so in a sibling directory scope: a plain
+`set()` in `libwinpr/utils` never reaches it, and `config.h` always has
+`/* #undef WINPR_HAVE_JOURNALD_H */` [verified: 3.32.2 source; a minimal CMake model with
+the same directory layout gives the same result]. `wlog.c` and `Appender.c` test that
+macro, so `WLOG_APPENDER=JOURNALD` is ignored without a message and WLog keeps the
+console appender, although the appender is compiled in.
+
+**Who is affected.** Every 3.32.2 build that wants WLog in the journal. fastrdp's
+`fastrdp-proxy.service` sets `WLOG_APPENDER=JOURNALD`: with the console appender,
+stdout in the pipe to journald is block-buffered, and the proxy's log lines arrive
+minutes late or torn ([docs/backlog.md](../../docs/backlog.md#sessions) A4).
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp-proxy logging to the journal (unit file, `WLOG_APPENDER=JOURNALD`) | yes: without it the proxy logs through the console appender as before |
+| everything else | no |
+
+**Fix.** Set `WINPR_HAVE_JOURNALD_H` as an internal cache entry, which every later
+scope reads, and remove the entry when `WITH_SYSTEMD` is off, so a reconfigure without
+systemd keeps no stale define. `third_party/build-freerdp.sh` passes `-DWITH_SYSTEMD=ON`
+(it used to pass `-DWITH_LIBSYSTEMD=ON`, which is no FreeRDP option) and fails the
+build if `winpr/config.h` lacks `WINPR_HAVE_JOURNALD_H` or `libwinpr3` is not linked
+against libsystemd.
+
+**Regression test.** The build check above. Not yet run through a full vendored build
+and a proxy under systemd ([docs/backlog.md](../../docs/backlog.md#sessions) A4).
+
+**Status upstream.** Still present in 3.32.2. Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** upstream's `config.h` gets `WINPR_HAVE_JOURNALD_H` with `WITH_SYSTEMD`.

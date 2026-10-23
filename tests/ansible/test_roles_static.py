@@ -142,6 +142,20 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("gnome-headless-session@.service.d/fastrdp.conf", tasks)
         self.assertIn("daemon_reload: true", (ANSIBLE / "roles" / "gnome_rd" / "handlers" / "main.yml").read_text())
 
+    def test_proxy_logs_to_the_journal(self):
+        # WLog's console appender block-buffers stdout in the pipe to journald: late, torn
+        # lines (backlog A4). The unit is used by the package and by build installs alike.
+        unit = (REPO / "broker" / "session" / "systemd" / "fastrdp-proxy.service").read_text()
+        self.assertIn("\nEnvironment=WLOG_APPENDER=JOURNALD\n", unit)
+        self.assertIn("\nEnvironment=WLOG_JOURNALD_ID=fastrdp-proxy\n", unit)
+        self.assertIn("AF_UNIX", unit)   # sd_journal_stream_fd() connects to journald's socket
+        build = (REPO / "third_party" / "build-freerdp.sh").read_text()
+        self.assertIn("-DWITH_SYSTEMD=ON", build)
+        self.assertNotIn("WITH_LIBSYSTEMD", build)
+        self.assertIn("WINPR_HAVE_JOURNALD_H", build)
+        series = (REPO / "patches" / "freerdp" / "series").read_text()
+        self.assertIn("0009-winpr-wlog-make-WITH_SYSTEMD-reach-config.h-journald-appender.patch", series)
+
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
         # the inventory name first (reverse DNS can give the bare domain), the fact as fallback

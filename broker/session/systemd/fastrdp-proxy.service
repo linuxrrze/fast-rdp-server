@@ -11,6 +11,11 @@ SupplementaryGroups=_fastrdp-broker
 # Kerberos NLA: the acceptor reads TERMSRV/<fqdn> keys from this keytab.
 Environment=KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab
 Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
+# FreeRDP's log straight to the journal, one line per message with its priority: the
+# default console appender block-buffers stdout in a pipe (late, torn lines; backlog A4).
+# Without journald support in libwinpr3 WLog falls back to the console.
+Environment=WLOG_APPENDER=JOURNALD
+Environment=WLOG_JOURNALD_ID=fastrdp-proxy
 # fastrdp's own FreeRDP build (fastrdp-freerdp3 / third_party/build-freerdp.sh)
 ExecStart=/opt/fastrdp/bin/freerdp-proxy /etc/fastrdp/proxy.ini
 Restart=on-failure

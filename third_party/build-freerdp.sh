@@ -66,7 +66,7 @@ cmake -S "$src" -B "$build" "${generator[@]}" \
     -DWITH_JPEG=OFF -DWITH_URIPARSER=OFF -DWITH_FAAC=OFF -DWITH_FAAD2=OFF \
     -DWITH_SOXR=OFF -DWITH_LAME=OFF -DWITH_OPUS=OFF -DCHANNEL_URBDRC=OFF \
     -DWITH_INTERNAL_RC4=ON -DWITH_INTERNAL_MD4=ON -DWITH_INTERNAL_MD5=ON \
-    -DWITH_LIBSYSTEMD=ON -DWITH_TIMEZONE_ICU=OFF -DWITH_UNICODE_BUILTIN=OFF \
+    -DWITH_SYSTEMD=ON -DWITH_TIMEZONE_ICU=OFF -DWITH_UNICODE_BUILTIN=OFF \
     "${webauthn[@]}" ${FASTRDP_CMAKE_ARGS:-}
 cmake --build "$build" -j"${JOBS:-$(nproc)}"
 DESTDIR=$destdir cmake --install "$build"
@@ -85,6 +85,12 @@ done
 # WITH_GFX_H264 is derived from WITH_VIDEO_FFMPEG; check what the build really did
 grep -q '^#define WITH_GFX_H264' "$build/include/freerdp/config.h" \
     || { echo "build-freerdp.sh: H.264 (WITH_GFX_H264) is not enabled" >&2; exit 1; }
+# fastrdp-proxy.service logs through WLog's journald appender (WLOG_APPENDER=JOURNALD);
+# without it WLog falls back to the console unnoticed (patches/freerdp/0009)
+grep -q '^#define WINPR_HAVE_JOURNALD_H' "$build/winpr/include/winpr/config.h" \
+    || { echo "build-freerdp.sh: WLog journald appender (WINPR_HAVE_JOURNALD_H) is not enabled" >&2; exit 1; }
+readelf -d "$root/lib/libwinpr3.so.3" | grep -q 'NEEDED.*libsystemd' \
+    || { echo "build-freerdp.sh: libwinpr3 is not linked against libsystemd" >&2; exit 1; }
 if [ ${#webauthn[@]} -gt 0 ]; then
     grep -q '^#define CHANNEL_RDPEWA_CLIENT' "$build/include/freerdp/config.h" \
         || { echo "build-freerdp.sh: WebAuthn channel (CHANNEL_RDPEWA_CLIENT) is not enabled" >&2; exit 1; }
