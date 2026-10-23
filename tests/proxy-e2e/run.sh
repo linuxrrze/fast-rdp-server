@@ -82,6 +82,10 @@ mkproxy d 23393 a.sock '127.0.0.0/8' allow WaitingScreen=false
 # like A, with the waiting screen by default (no WaitingScreen key) and Status Info PDUs
 # for clients that ask
 mkproxy e 23394 a.sock '127.0.0.0/8' deny StatusInfo=true
+# backlog A5 diagnostics, own fake broker (f.log) so the counts in a.log stay as they are:
+# F reads the client during the whole wait (lab switch WaitingScreenObserve), G nobody does
+mkproxy f 23395 f.sock '127.0.0.0/8' deny WaitingScreenObserve=true
+mkproxy g 23396 f.sock '127.0.0.0/8' deny WaitingScreen=false
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -89,15 +93,19 @@ export E2E_CERT_SHA256
 export E2E_LOGIN_ID=k3Jq9vX2-PzR7wLm0aTb_Q
 python3 "$HERE/fake_broker.py" a.sock a.log 23390 > a.out 2>&1 &
 python3 "$HERE/fake_broker.py" b.sock b.log 23391 > b.out 2>&1 &
+python3 "$HERE/fake_broker.py" f.sock f.log 23390 > f.out 2>&1 &
 # connection state transitions (core.rdp DEBUG) show whether multitransport was offered
 WLOG_FILTER="com.freerdp.core.rdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" a.ini > proxy-a.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" b.ini > proxy-b.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" c.ini > proxy-c.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" d.ini > proxy-d.log 2>&1 &
 WLOG_FILTER="proxy.modules.fastrdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" e.ini > proxy-e.log 2>&1 &
-for _ in $(seq 50); do grep -q ready a.out b.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
+LD_PRELOAD="$W/shim.so" "$PROXY" f.ini > proxy-f.log 2>&1 &
+LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
+for _ in $(seq 50); do grep -q ready a.out b.out f.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
-    (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && break; sleep 0.2; done
+    (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23395) 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && break; sleep 0.2; done
 
 E2E_CLIENT_ADDRESS=203.0.113.7 timeout 20 ./client 127.0.0.1 23389 alice good fastrdp:gnome >/dev/null 2>&1 || true
 timeout 20 ./client 127.0.0.1 23389 mallory bad "" > mallory.out 2>&1 || true
@@ -158,6 +166,13 @@ E2E_KEEP_S=10 timeout 30 ./client 127.0.0.1 23394 floodprogress good "" > ws-flo
 # the client gives up while the waiting screen shows the push
 E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23394 pushwait good "" > ws-giveup.out 2>&1 || true
 for _ in $(seq 50); do [ "$(grep -c '"pushwait"' a.log)" -ge 2 ] && break; sleep 0.2; done
+# Backlog A5 diagnostics. Proxy F (WaitingScreenObserve) during an MFA wait (pushwait, 8 s):
+# a Refresh Rect 1.5 s in repaints the whole desktop (at least 1024x768: 192 tiles), Suppress Output
+# 2.7 s in stops the panel until the client allows output again, which repaints it all.
+E2E_KEEP_S=7 E2E_REFRESH_AT_MS=1500 E2E_SUPPRESS_AT_MS=2700 timeout 30 ./client 127.0.0.1 23395 pushwait good "" > observe.out 2>&1 || true
+# Proxy G reads nobody's input during the wait (waiting screen off): keys typed then stay
+# unread, which the module reports at the end of the wait
+E2E_KEEP_S=5 E2E_EARLY_KEYS=1,2,3 timeout 30 ./client 127.0.0.1 23396 oldbroker good "" > unread.out 2>&1 || true
 # Desktop picker (proxy E): the fake broker prompts 1.5 s after the login (the MFA wait),
 # the clients answer 2.5 s after connecting, in parallel. Keys typed before the prompt and
 # a key released that went down before it do not count.
@@ -211,7 +226,8 @@ expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not an
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-expect "back-end received the token, not the password" 'len(lb) == 24 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# 25 logins reach proxy B: 24 through proxy A and the unread-keys login through proxy G
+expect "back-end received the token, not the password" 'len(lb) == 25 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -355,6 +371,24 @@ if grep -q "shutdown_request sent=1" pickershutdown.out && ! grep -q shutdown_de
 else
     echo "FAIL Shutdown Request during the picker ($(grep -E 'shutdown|closed|itself' pickershutdown.out | tr '\n' ' '))"; fail=1
 fi
+logged "front connection described once per login" proxy-a.log "] front: client \""
+logged "... without an auto-reconnect cookie from the e2e client" proxy-a.log "auto-reconnect cookie no, "
+observed() { # description key python-expression-over(v)
+    if python3 - "$2" "$3" <<'PY'
+import re, sys
+m = re.search(sys.argv[1] + r"=(\d+)", open("observe.out").read())
+v = int(m.group(1)) if m else -1
+sys.exit(0 if m and eval(sys.argv[2]) else 1)
+PY
+    then echo "ok   $1"; else echo "FAIL $1 ($(grep -E 'refresh|suppress|resumed' observe.out | tr '\n' ' '))"; fail=1; fi
+}
+observed "WaitingScreenObserve: Refresh Rect repaints the whole desktop" refresh_rects 'v >= 192'
+observed "WaitingScreenObserve: nothing drawn while the client suppresses output" suppressed_rects 'v == 0'
+observed "WaitingScreenObserve: allowing output again repaints the whole desktop" resumed_rects 'v >= 192'
+logged "WaitingScreenObserve: Refresh Rect logged" proxy-f.log "client Refresh Rect #1: 1 area(s), first 0,0-"
+logged "WaitingScreenObserve: Suppress Output logged" proxy-f.log "client Suppress Output #1: allowDisplayUpdates 0"
+logged "WaitingScreenObserve: counts at the end of the wait" proxy-f.log "waiting screen: 1 Refresh Rect, 2 Suppress Output PDU(s) from the client"
+logged "unread client data during a wait reported" proxy-g.log "bytes during the wait that were not read"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

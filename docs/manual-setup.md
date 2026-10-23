@@ -1432,6 +1432,9 @@ StatusInfo=false
 ; Lab only: log the class of each input event the waiting screen reads (code field,
 ; desktop picker), never a value (docs/lab-waiting-screen-input.md).
 InputTrace=false
+; Lab only: read the client during the whole MFA wait, answer Refresh Rect and Suppress
+; Output on the waiting screen and log them (docs/backlog.md A5).
+WaitingScreenObserve=false
 ```
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)

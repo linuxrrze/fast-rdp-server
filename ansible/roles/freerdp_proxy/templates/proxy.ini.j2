@@ -83,3 +83,6 @@ StatusInfo={{ fastrdp_proxy_status_info | bool | lower }}
 ; Lab only: log the class of each input event the waiting screen reads (code field,
 ; desktop picker), never a value (docs/lab-waiting-screen-input.md).
 InputTrace={{ fastrdp_proxy_input_trace | bool | lower }}
+; Lab only: read the client during the whole MFA wait, answer Refresh Rect and Suppress
+; Output on the waiting screen and log them (docs/backlog.md A5).
+WaitingScreenObserve={{ fastrdp_proxy_waiting_screen_observe | bool | lower }}

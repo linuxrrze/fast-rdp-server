@@ -58,6 +58,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -72,12 +73,14 @@
 #include <winpr/stream.h>
 #include <winpr/synch.h>
 
+#include <freerdp/channels/wtsvc.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/interleaved.h>
 #include <freerdp/codec/planar.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
+#include <freerdp/session.h>
 #include <freerdp/settings.h>
 #include <freerdp/transport_io.h>
 #include <freerdp/update.h>
@@ -92,6 +95,7 @@
 
 #include "fastrdp_addr.h"
 #include "fastrdp_code.h"
+#include "fastrdp_frontdiag.h"
 #include "fastrdp_inputtrace.h"
 #include "fastrdp_panel.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
@@ -496,6 +500,14 @@ typedef struct
 	size_t batch_bytes;
 	wsPicker picker;
 	wsCode code;
+	/* [FastRDP] WaitingScreenObserve (lab, backlog A5): the front connection is read during
+	 * the whole wait, not only for the picker or the code field (ws_observe_start()) */
+	BOOL observe;    /* asked for, and possible (ws_picker_possible()) */
+	BOOL observing;  /* reading for it now */
+	BOOL suppressed; /* the client's Suppress Output said allowDisplayUpdates 0 */
+	unsigned refresh_rects, suppress_outputs;
+	pRefreshRect refresh_rect;       /* the proxy's, while observing */
+	pSuppressOutput suppress_output; /* the proxy's, while observing */
 } waitingScreen;
 
 static long ws_ms_until(const struct timespec* t)
@@ -622,7 +634,7 @@ static BOOL ws_send(waitingScreen* ws, fastrdpRect r)
 {
 	const fastrdpRect desk = { 0, 0, ws->width, ws->height };
 	fastrdpRect c;
-	if (!ws->draw || !fastrdp_rect_intersect(r, desk, &c))
+	if (!ws->draw || ws->suppressed || !fastrdp_rect_intersect(r, desk, &c))
 		return TRUE;
 	for (UINT32 y = ((UINT32)c.y / WS_TILE) * WS_TILE; y < (UINT32)c.y + c.h; y += WS_TILE)
 		for (UINT32 x = ((UINT32)c.x / WS_TILE) * WS_TILE; x < (UINT32)c.x + c.w; x += WS_TILE)
@@ -940,7 +952,18 @@ static BOOL ws_code_answer(waitingScreen* ws, int fd);
 /* The module reads the front connection's input: the picker or the code field shows. */
 static BOOL ws_reading(const waitingScreen* ws)
 {
-	return ws && (ws->picker.state == WS_PICKER_SHOWN || ws->code.state == WS_CODE_SHOWN);
+	return ws && (ws->picker.state == WS_PICKER_SHOWN || ws->code.state == WS_CODE_SHOWN ||
+	              ws->observing);
+}
+
+/* What the reading is for, in log lines. */
+static const char* ws_reading_what(const waitingScreen* ws)
+{
+	if (ws->picker.state == WS_PICKER_SHOWN)
+		return "desktop picker";
+	if (ws->code.state == WS_CODE_SHOWN)
+		return "code entry";
+	return "waiting screen";
 }
 
 /* Sends one JSON line and waits for the one-line reply (parsed into *reply, caller frees).
@@ -1037,8 +1060,7 @@ static brokerCallResult broker_call(const char* path, const cJSON* request, int 
 				aborted = TRUE;
 			if (aborted)
 			{
-				WLog_WARN(TAG, "[%s] request abandoned during the %s", sid,
-				          screen->picker.state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
+				WLog_WARN(TAG, "[%s] request abandoned during the %s", sid, ws_reading_what(screen));
 				rc = BROKER_ABANDONED;
 				goto out;
 			}
@@ -1491,8 +1513,7 @@ static BOOL ws_picker_channel_data(freerdp_peer* peer, UINT16 channelId, const B
 	{
 		if (!pk->channel_capped)
 			WLog_WARN(TAG, "[%s] more than %d bytes of channel data during the %s",
-			          pdata->session_id, WS_PICKER_MAX_CHANNEL_BYTES,
-			          pk->state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
+			          pdata->session_id, WS_PICKER_MAX_CHANNEL_BYTES, ws_reading_what(ws));
 		pk->channel_capped = TRUE;
 		return FALSE;
 	}
@@ -1530,7 +1551,7 @@ static BOOL ws_picker_read(waitingScreen* ws)
 		return TRUE;
 	ws->picker.gone = TRUE;
 	WLog_WARN(TAG, "[%s] front connection closed during the %s", ws->pdata->session_id,
-	          ws->picker.state == WS_PICKER_SHOWN ? "desktop picker" : "code entry");
+	          ws_reading_what(ws));
 	return FALSE;
 }
 
@@ -1593,6 +1614,7 @@ static void ws_input_restore(waitingScreen* ws)
 {
 	wsPicker* pk = &ws->picker;
 	pk->armed = FALSE;
+	ws->observing = FALSE; /* the proxy reads again (after the picker or the code field) */
 	if (pk->sync || pk->keyboard)
 	{
 		rdpInput* input = ws->pdata->ps->input;
@@ -1616,6 +1638,202 @@ static void ws_input_restore(waitingScreen* ws)
 			peer->ReceiveChannelData = pk->receive_channel_data;
 		pk->receive_channel_data = NULL;
 	}
+}
+
+/* The waiting screen of a session, whether or not it reads the client now. */
+static waitingScreen* ws_of_context(rdpContext* context)
+{
+	const pServerContext* ps = (const pServerContext*)context;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	if (!pdata || !fastrdp_mgr)
+		return NULL;
+	fastrdpSession* s = (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata);
+	return s ? (waitingScreen*)s->screen : NULL;
+}
+
+/* [FastRDP] WaitingScreenObserve (lab, backlog A5): while the module reads the client
+ * during the wait, a Refresh Rect PDU ([MS-RDPBCGR] 2.2.11.2) repaints the whole desktop
+ * (the proxy itself would forward it to a back-end that does not exist yet) and is
+ * logged; at most FASTRDP_PDU_LOG_FIRST lines, then every 100th. */
+static BOOL ws_observe_refresh_rect(rdpContext* context, BYTE count, const RECTANGLE_16* areas)
+{
+	waitingScreen* ws = ws_of_context(context);
+	if (!ws || !ws->refresh_rect)
+		return TRUE;
+	if (fastrdp_pdu_log_this(&ws->refresh_rects))
+	{
+		if (count > 0 && areas)
+			WLog_INFO(TAG, "[%s] client Refresh Rect #%u: %u area(s), first %u,%u-%u,%u",
+			          ws->pdata->session_id, ws->refresh_rects, count, areas[0].left,
+			          areas[0].top, areas[0].right, areas[0].bottom);
+		else
+			WLog_INFO(TAG, "[%s] client Refresh Rect #%u: no area", ws->pdata->session_id,
+			          ws->refresh_rects);
+	}
+	ws_redraw(ws, TRUE);
+	return ws->refresh_rect(context, count, areas);
+}
+
+/* Suppress Output ([MS-RDPBCGR] 2.2.11.3): with allowDisplayUpdates 0 the client wants no
+ * graphics (minimised window); the panel stops until it allows them again, then the
+ * whole desktop is sent. Logged like Refresh Rect. */
+static BOOL ws_observe_suppress_output(rdpContext* context, BYTE allow, const RECTANGLE_16* area)
+{
+	waitingScreen* ws = ws_of_context(context);
+	if (!ws || !ws->suppress_output)
+		return TRUE;
+	if (fastrdp_pdu_log_this(&ws->suppress_outputs))
+	{
+		if (area)
+			WLog_INFO(TAG, "[%s] client Suppress Output #%u: allowDisplayUpdates %u, area %u,%u-%u,%u",
+			          ws->pdata->session_id, ws->suppress_outputs, allow, area->left, area->top,
+			          area->right, area->bottom);
+		else
+			WLog_INFO(TAG, "[%s] client Suppress Output #%u: allowDisplayUpdates %u",
+			          ws->pdata->session_id, ws->suppress_outputs, allow);
+	}
+	const BOOL was = ws->suppressed;
+	ws->suppressed = allow == 0;
+	if (was && !ws->suppressed)
+		ws_redraw(ws, TRUE);
+	return ws->suppress_output(context, allow, area);
+}
+
+/* Starts reading the client for the whole wait (WaitingScreenObserve): input as for the
+ * picker, dropped while neither the picker nor the code field shows; Refresh Rect and
+ * Suppress Output answered by the panel (above). The input callbacks go back with
+ * ws_input_restore(), the update callbacks with ws_observe_end(). */
+static void ws_observe_start(waitingScreen* ws)
+{
+	if (!ws->observe || ws->observing)
+		return;
+	rdpUpdate* update = ws->pdata->ps->update;
+	if (!update)
+		return;
+	if (!ws->refresh_rect)
+	{
+		ws->refresh_rect = update->RefreshRect;
+		ws->suppress_output = update->SuppressOutput;
+		update->RefreshRect = ws_observe_refresh_rect;
+		update->SuppressOutput = ws_observe_suppress_output;
+	}
+	ws_input_take(ws);
+	ws->observing = TRUE;
+	WLog_INFO(TAG, "[%s] waiting screen reads the client (WaitingScreenObserve)",
+	          ws->pdata->session_id);
+}
+
+static void ws_observe_end(waitingScreen* ws)
+{
+	if (ws->observing && ws->picker.state == WS_PICKER_OFF && ws->code.state == WS_CODE_OFF)
+		ws_input_restore(ws);
+	ws->observing = FALSE;
+	rdpUpdate* update = ws->pdata->ps->update;
+	if (ws->refresh_rect && update)
+	{
+		if (update->RefreshRect == ws_observe_refresh_rect)
+			update->RefreshRect = ws->refresh_rect;
+		if (update->SuppressOutput == ws_observe_suppress_output)
+			update->SuppressOutput = ws->suppress_output;
+	}
+	ws->refresh_rect = NULL;
+	ws->suppress_output = NULL;
+	if (ws->observe)
+		WLog_INFO(TAG, "[%s] waiting screen: %u Refresh Rect, %u Suppress Output PDU(s) from the client%s",
+		          ws->pdata->session_id, ws->refresh_rects, ws->suppress_outputs,
+		          ws->suppressed ? ", output still suppressed" : "");
+}
+
+/* Bytes the client sent during a wait in which nobody read its connection (no picker,
+ * code field or WaitingScreenObserve): what waits in the socket's receive queue, still
+ * TLS-encrypted, so only an indication that the client spoke (Refresh Rect, Suppress
+ * Output, Shutdown Request, input); logged at the end of the wait. */
+static unsigned long front_unread_bytes(proxyData* pdata)
+{
+	struct pollfd fds[MAX_ABORT_FDS];
+	const nfds_t n = abort_fds(pdata, fds, ARRAYSIZE(fds));
+	unsigned long total = 0;
+	for (nfds_t i = 0; i < n; i++)
+	{
+		if (pdata->abort_event && fds[i].fd == GetEventFileDescriptor(pdata->abort_event))
+			continue;
+		int pending = 0;
+		if (ioctl(fds[i].fd, FIONREAD, &pending) == 0 && pending > 0)
+			total += (unsigned long)pending;
+	}
+	return total;
+}
+
+/* One line per connection with what the client announced (fastrdp_frontdiag.h), so two
+ * connections of one mstsc process can be compared (backlog A5). */
+static void log_front_info(proxyData* pdata)
+{
+	const rdpSettings* f = pdata->ps->settings;
+	const ARC_CS_PRIVATE_PACKET* arc =
+	    (const ARC_CS_PRIVATE_PACKET*)freerdp_settings_get_pointer(f, FreeRDP_ClientAutoReconnectCookie);
+	const pServerContext* ps = (const pServerContext*)pdata->ps;
+	fastrdpFrontInfo info = {
+		.client_name = freerdp_settings_get_string(f, FreeRDP_ClientHostname),
+		.build = freerdp_settings_get_uint32(f, FreeRDP_ClientBuild),
+		.width = freerdp_settings_get_uint32(f, FreeRDP_DesktopWidth),
+		.height = freerdp_settings_get_uint32(f, FreeRDP_DesktopHeight),
+		.bpp = freerdp_settings_get_uint32(f, FreeRDP_ColorDepth),
+		.monitors = freerdp_settings_get_uint32(f, FreeRDP_MonitorCount),
+		.desktop_scale = freerdp_settings_get_uint32(f, FreeRDP_DesktopScaleFactor),
+		.device_scale = freerdp_settings_get_uint32(f, FreeRDP_DeviceScaleFactor),
+		.gfx = freerdp_settings_get_bool(f, FreeRDP_SupportGraphicsPipeline),
+		.dynvc = ps && ps->vcm && WTSVirtualChannelManagerIsChannelJoined(ps->vcm, "drdynvc"),
+		.bitmap_cache = freerdp_settings_get_bool(f, FreeRDP_BitmapCacheEnabled),
+		.bitmap_cache_version = freerdp_settings_get_uint32(f, FreeRDP_BitmapCacheVersion),
+		.persist = freerdp_settings_get_bool(f, FreeRDP_BitmapCachePersistEnabled),
+		.glyph_level = freerdp_settings_get_uint32(f, FreeRDP_GlyphSupportLevel),
+		.offscreen_level = freerdp_settings_get_uint32(f, FreeRDP_OffscreenSupportLevel),
+		.arc = arc && arc->cbLen > 0,
+		.arc_logon_id = arc ? arc->logonId : 0,
+		.performance_flags = freerdp_settings_get_uint32(f, FreeRDP_PerformanceFlags),
+		.connection_type = freerdp_settings_get_uint32(f, FreeRDP_ConnectionType),
+		.autodetect = freerdp_settings_get_bool(f, FreeRDP_NetworkAutoDetect),
+		.heartbeat = freerdp_settings_get_bool(f, FreeRDP_SupportHeartbeatPdu),
+		.monitor_layout = freerdp_settings_get_bool(f, FreeRDP_SupportMonitorLayoutPdu),
+		.status_info = freerdp_settings_get_bool(f, FreeRDP_SupportStatusInfoPdu),
+		.multitransport = freerdp_settings_get_bool(f, FreeRDP_SupportMultitransport),
+		.keyboard_layout = freerdp_settings_get_uint32(f, FreeRDP_KeyboardLayout),
+	};
+	char line[512];
+	fastrdp_front_describe(&info, line, sizeof(line));
+	WLog_INFO(TAG, "[%s] front: %s", pdata->session_id, line);
+}
+
+/* The proxy forwards the back-end's Save Session Info PDUs to the client
+ * (pf_client_save_session_info()). Logged by type, never the content (user names, the
+ * auto-reconnect cookie): whether mstsc gets a logon notification or an auto-reconnect
+ * cookie that it would bring to its next connection (backlog A5). The proxy's callback is
+ * the same for all sessions (rdp_send_save_session_info()), so one copy is kept. */
+static pSaveSessionInfo fastrdp_save_session_info_orig;
+
+static BOOL fastrdp_save_session_info(rdpContext* context, UINT32 type, const void* data)
+{
+	const pServerContext* ps = (const pServerContext*)context;
+	const char* sid = (ps && ps->pdata) ? ps->pdata->session_id : "-";
+	const char* cookie = "";
+	if (type == 3 && data)
+		cookie = ((const logon_info_ex*)data)->haveCookie ? ", with auto-reconnect cookie"
+		                                                   : ", without auto-reconnect cookie";
+	WLog_INFO(TAG, "[%s] back-end Save Session Info to the client: %s%s", sid,
+	          fastrdp_save_session_info_name(type), cookie);
+	return fastrdp_save_session_info_orig ? fastrdp_save_session_info_orig(context, type, data)
+	                                      : FALSE;
+}
+
+static void watch_save_session_info(proxyData* pdata)
+{
+	rdpUpdate* update = pdata->ps->update;
+	if (!update || !update->SaveSessionInfo || update->SaveSessionInfo == fastrdp_save_session_info)
+		return;
+	if (!fastrdp_save_session_info_orig)
+		fastrdp_save_session_info_orig = update->SaveSessionInfo;
+	if (update->SaveSessionInfo == fastrdp_save_session_info_orig)
+		update->SaveSessionInfo = fastrdp_save_session_info;
 }
 
 /* The broker's {"progress": "choose_desktop", ...}: shows the rows, installs the input
@@ -2344,6 +2562,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	 * keyboard layout lets it pick the language of its texts. With the panel on the
 	 * screen and patches/freerdp/0007, the user can also pick the desktop there
 	 * ([broker] desktop_picker). */
+	log_front_info(pdata);
+	watch_save_session_info(pdata);
 	screen = waiting_screen_new(pdata);
 	if (screen)
 	{
@@ -2358,6 +2578,19 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		if (screen->code.offered)
 			cJSON_AddNumberToObject(req, "code_entry", 1);
 		s->screen = screen;
+		if (config_bool(pdata, "WaitingScreenObserve", FALSE))
+		{
+			screen->observe = screen->picker.offered;
+			if (screen->observe)
+				WLog_WARN(TAG, "[%s] WaitingScreenObserve is on: the waiting screen reads the client "
+				               "during the whole wait (lab only, backlog A5)",
+				          pdata->session_id);
+			else
+				WLog_WARN(TAG, "[%s] WaitingScreenObserve ignored: needs the waiting screen and "
+				               "patches/freerdp/0007",
+				          pdata->session_id);
+			ws_observe_start(screen);
+		}
 	}
 
 	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);
@@ -2366,6 +2599,14 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	const brokerCallResult called =
 	    broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout, pdata,
 	                screen, &reply);
+	if (!screen || !screen->observe)
+	{
+		const unsigned long unread = front_unread_bytes(pdata);
+		if (unread > 0)
+			WLog_INFO(TAG, "[%s] the client sent at least %lu bytes during the wait that were not "
+			               "read (WaitingScreenObserve reads them)",
+			          pdata->session_id, unread);
+	}
 
 	/* the request held the user's password */
 	cJSON* pw = cJSON_GetObjectItemCaseSensitive(req, "password");
@@ -2425,6 +2666,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 out:
 	if (s)
 		s->screen = NULL;
+	if (screen)
+		ws_observe_end(screen);
 	/* a granted login: no trace of the panel before the back-end's first frame */
 	waiting_screen_free(screen, rc);
 	if (!rc)

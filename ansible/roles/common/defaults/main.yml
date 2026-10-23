@@ -185,6 +185,12 @@ fastrdp_proxy_status_info: false
 # client lab of the code field and the desktop picker; the proxy warns on every
 # connection while it is on.
 fastrdp_proxy_input_trace: false
+# LAB ONLY (proxy.ini [FastRDP] WaitingScreenObserve; backlog A5): the waiting screen reads
+# the client during the whole MFA wait, not only for the desktop picker or the code field,
+# answers Refresh Rect (repaint) and Suppress Output (pause, then repaint), and logs both.
+# For the mstsc test of a second Connect in the same mstsc window; needs the waiting screen
+# and fastrdp-freerdp3 with patches/freerdp/0007.
+fastrdp_proxy_waiting_screen_observe: false
 # The panel's texts (broker [ui]): language en or de (built in) or one of fastrdp_ui_texts;
 # the client's keyboard layout picks the language when there are texts for it.
 fastrdp_ui_language: en

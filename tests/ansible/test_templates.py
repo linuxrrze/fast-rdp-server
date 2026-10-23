@@ -335,7 +335,7 @@ class Audio(unittest.TestCase):
 
 class ProxyIni(unittest.TestCase):
     def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false",
-              input_trace="false"):
+              input_trace="false", observe="false"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -361,6 +361,9 @@ class ProxyIni(unittest.TestCase):
         self.assertEqual((p["FastRDP"]["WaitingScreen"], p["FastRDP"]["StatusInfo"]), (waiting, status_info))
         # input trace (lab only): off unless fastrdp_proxy_input_trace
         self.assertEqual(p["FastRDP"]["InputTrace"], input_trace)
+        # waiting screen observation (lab only, backlog A5): off unless
+        # fastrdp_proxy_waiting_screen_observe
+        self.assertEqual(p["FastRDP"]["WaitingScreenObserve"], observe)
 
     def test_tls_logins(self):
         self.check("proxy-lab.ini", "true")
@@ -382,7 +385,7 @@ class ProxyIni(unittest.TestCase):
         self.check("proxy-no-waiting.ini", "true", waiting="false")
 
     def test_input_trace(self):
-        self.check("proxy-input-trace.ini", "true", input_trace="true")
+        self.check("proxy-input-trace.ini", "true", input_trace="true", observe="true")
 
 
 class GpuPackages(unittest.TestCase):
@@ -683,6 +686,7 @@ class CommonChecks(unittest.TestCase):
                                                               fastrdp_desktop_picker="always"),
             "waiting screen not a bool": dict(ok, fastrdp_proxy_waiting_screen="maybe"),
             "input trace not a bool": dict(ok, fastrdp_proxy_input_trace="lab"),
+            "waiting screen observation not a bool": dict(ok, fastrdp_proxy_waiting_screen_observe="lab"),
             # the QR code adds ?login=<id> (22 characters) within 213 bytes
             "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),
             "approval URL not https": dict(ok, fastrdp_ui_approve_url="http://rdp1.example.com/web/approve"),

@@ -39,6 +39,13 @@
  *   "shutdown_denied at N ms" for a Shutdown Request Denied PDU (2.2.2.3); 300 ms after
  *   that the client disconnects itself (Disconnect Provider Ultimatum, "user requested")
  *   and prints "disconnected itself after the denied shutdown request".
+ * E2E_REFRESH_AT_MS=N: N ms after connecting, a Refresh Rect PDU ([MS-RDPBCGR] 2.2.11.2)
+ *   for the whole desktop; prints "refresh_rect sent=0|1" and, 1000 ms later,
+ *   "refresh_rects=N" (bitmap rectangles received in those 1000 ms).
+ * E2E_SUPPRESS_AT_MS=N: N ms after connecting, Suppress Output with allowDisplayUpdates 0
+ *   (2.2.11.3), 2000 ms later with 1; prints "suppress_output sent=0|1",
+ *   "suppressed_rects=N" (rectangles received while suppressed, the first 200 ms of
+ *   in-flight data not counted) and "resumed_rects=N" (in the 1000 ms after allowing).
  * Prints how the server ended the connection: "server_end: deactivate_all=0|1 dpu=N"
  *   (the reason of the MCS Disconnect Provider Ultimatum, 1 provider initiated, 3 user
  *   requested; -1: none, a bare close).
@@ -251,6 +258,28 @@ static void send_shutdown_request(freerdp* inst)
  *   pduType2 PDUTYPE2_SHUTDOWN_DENIED (0x25) sets shutdown_denied_ms. */
 static rdpTransportIo io_orig;
 static long shutdown_denied_ms = -1;
+
+/* E2E_REFRESH_AT_MS / E2E_SUPPRESS_AT_MS: FreeRDP's client sends both PDUs when the
+ * server announced them (the proxy does). */
+static void send_refresh_rect(freerdp* inst)
+{
+	rdpSettings* s = inst->context->settings;
+	const RECTANGLE_16 all = { 0, 0, (UINT16)(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth) - 1),
+		                       (UINT16)(freerdp_settings_get_uint32(s, FreeRDP_DesktopHeight) - 1) };
+	rdpUpdate* update = inst->context->update;
+	const BOOL sent = update->RefreshRect && update->RefreshRect(inst->context, 1, &all);
+	printf("client: refresh_rect sent=%d\n", sent);
+}
+
+static void send_suppress_output(freerdp* inst, BYTE allow)
+{
+	rdpSettings* s = inst->context->settings;
+	const RECTANGLE_16 all = { 0, 0, (UINT16)(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth) - 1),
+		                       (UINT16)(freerdp_settings_get_uint32(s, FreeRDP_DesktopHeight) - 1) };
+	rdpUpdate* update = inst->context->update;
+	const BOOL sent = update->SuppressOutput && update->SuppressOutput(inst->context, allow, allow ? &all : NULL);
+	printf("client: suppress_output allow=%u sent=%d\n", allow, sent);
+}
 static int server_dpu = -1;
 static BOOL deactivate_all;
 static int sniff_read_pdu(rdpTransport* transport, wStream* s)
@@ -366,6 +395,10 @@ int main(int argc, char** argv)
 	const char* click = getenv("E2E_CLICK");
 	const long input_at = getenv("E2E_INPUT_AT_MS") ? atol(getenv("E2E_INPUT_AT_MS")) : 2500;
 	long shutdown_at = getenv("E2E_SHUTDOWN_AT_MS") ? atol(getenv("E2E_SHUTDOWN_AT_MS")) : -1;
+	long refresh_at = getenv("E2E_REFRESH_AT_MS") ? atol(getenv("E2E_REFRESH_AT_MS")) : -1;
+	long suppress_at = getenv("E2E_SUPPRESS_AT_MS") ? atol(getenv("E2E_SUPPRESS_AT_MS")) : -1;
+	long refresh_count_until = -1, suppressed_from = -1, resumed_at = -1;
+	unsigned refresh_base = 0, suppressed_base = 0, resumed_base = 0;
 	clock_gettime(CLOCK_MONOTONIC, &started);
 	BOOL ok = freerdp_connect(inst);
 	printf("client: freerdp_connect=%d\n", ok);
@@ -398,6 +431,40 @@ int main(int argc, char** argv)
 		{
 			send_shutdown_request(inst);
 			shutdown_at = -1;
+		}
+		const long t = elapsed_ms() - connected_ms;
+		if (refresh_at >= 0 && t >= refresh_at)
+		{
+			refresh_base = bitmap_rects;
+			send_refresh_rect(inst);
+			refresh_at = -1;
+			refresh_count_until = t + 1000;
+		}
+		if (refresh_count_until >= 0 && t >= refresh_count_until)
+		{
+			printf("client: refresh_rects=%u\n", bitmap_rects - refresh_base);
+			refresh_count_until = -1;
+		}
+		if (suppress_at >= 0 && t >= suppress_at)
+		{
+			send_suppress_output(inst, 0);
+			suppressed_from = t + 200; /* data already on its way does not count */
+			suppress_at = -1;
+		}
+		if (suppressed_from >= 0 && t >= suppressed_from && suppressed_base == 0)
+			suppressed_base = bitmap_rects + 1; /* +1: 0 means not yet taken */
+		if (suppressed_from >= 0 && t >= suppressed_from + 1800)
+		{
+			printf("client: suppressed_rects=%u\n", bitmap_rects - (suppressed_base - 1));
+			send_suppress_output(inst, 1);
+			suppressed_from = -1;
+			resumed_base = bitmap_rects;
+			resumed_at = t + 1000;
+		}
+		if (resumed_at >= 0 && t >= resumed_at)
+		{
+			printf("client: resumed_rects=%u\n", bitmap_rects - resumed_base);
+			resumed_at = -1;
 		}
 		if (shutdown_denied_ms >= 0 && elapsed_ms() - shutdown_denied_ms >= 300)
 		{
