@@ -1,3 +1,16 @@
+fast-rdp-server (0.7.2) unstable; urgency=medium
+
+  * Broker: a missing [web] gateway_user no longer crashes the broker (and
+    every RDP login with it). It logs an error, refuses the web gateway's
+    operations, fails logins in [mfa] mode web at once, and picks the
+    account up without a restart once it exists; --check only warns.
+  * Docs: Keycloak MFA flow without Ansible (docs/examples/keycloak-mfa:
+    kcadm.sh script, admin console JSON, keycloak-config-cli, realm import);
+    screenshots of the waiting screen and the web approval pages; status
+    table updated.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Fri, 23 Oct 2026 11:03:10 +0200
+
 fast-rdp-server (0.7.1) unstable; urgency=medium
 
   * Security fixes from the 0.7.0 review: test notifications limited to one
