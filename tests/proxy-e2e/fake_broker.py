@@ -23,6 +23,10 @@ Progress lines (protocol.py; only when the login asks with "progress": 1):
   'badprogress'   a malformed QR code and non-string lines, then the reply
   'floodprogress' more progress messages than the module accepts
 A "progresswait" record says whether the login asked and whether the peer closed.
+User 'holdsession' (a session that stays up): the reply comes after HOLD_WAIT seconds
+unless the proxy closes the connection first; a "holdwait" record with the seconds waited
+and whether the peer closed. Behind two chained proxies the front proxy's client is then
+connected (its broker answered) while the back proxy still holds the login.
 Desktop picker (protocol.py "choose_desktop"; users whose name starts with 'picker'):
 after PICKER_DELAY s (the MFA wait) a choose_desktop prompt with PICKER_OPTIONS, default
 xfce, PICKER_TIMEOUT s, if the login announced "picker": 1; then it waits up to
@@ -54,6 +58,7 @@ REFUSALS = {
 CONNECTION_TYPES = {"lanuser": "lan", "bogususer": "bogus"}
 CERT_SHA256 = os.environ.get("E2E_CERT_SHA256", "0" * 64)
 PUSH_WAIT = 8.0
+HOLD_WAIT = 3.0
 PROGRESS_WAIT = 3.5
 PROGRESS_TIMEOUT = 5
 APPROVE_URL = "https://rdp1.lab.example.com/web/approve"
@@ -87,6 +92,15 @@ def wait_push(conn: socket.socket, asked: bool) -> bool:
             closed = conn.recv(1) == b""  # the module never sends while it waits
             break
     record({"op": "pushwait", "asked": asked, "closed": closed,
+            "waited": round(time.monotonic() - start, 2)})
+    return not closed
+
+
+def wait_hold(conn: socket.socket, user: str) -> bool:
+    """The 'holdsession' login: False if the peer closed within HOLD_WAIT."""
+    start = time.monotonic()
+    closed = wait_closed(conn, HOLD_WAIT)
+    record({"op": "holdwait", "user": user, "closed": closed,
             "waited": round(time.monotonic() - start, 2)})
     return not closed
 
@@ -166,6 +180,8 @@ def serve(conn: socket.socket) -> None:
                     send(conn, MFA_PROGRESS)
                 if not wait_push(conn, req.get("progress") == 1):
                     return
+            if req["op"] == "login" and req["user"] == "holdsession" and not wait_hold(conn, req["user"]):
+                return
             if req["op"] == "login" and req["user"] in ("progress", "oldbroker", "badprogress",
                                                          "floodprogress") and not progress(conn, req):
                 return

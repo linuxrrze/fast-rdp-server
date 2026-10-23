@@ -12,7 +12,8 @@
 # SYSROOT=/path runs against FreeRDP extracted from .debs instead of the system;
 # FREERDP_PREFIX=/opt/fastrdp against fastrdp's patched build (see freerdp-env.sh).
 # The desktop picker checks need patches/freerdp/0007 (fastrdp-freerdp3 3.32.2-6); without
-# it the module does not offer the picker and they fail.
+# it the module does not offer the picker and they fail. The Shutdown Request Denied checks
+# need patches/freerdp/0008 (3.32.2-7).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -132,6 +133,16 @@ timeout 20 ./client 127.0.0.1 23392 outsider good "" > outsider.out 2>&1 || true
 # The proxy must drop the broker request at once, not when the broker answers.
 E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23389 pushwait good "" > pushwait.out 2>&1 || true
 for _ in $(seq 50); do grep -q '"pushwait"' a.log 2>/dev/null && break; sleep 0.2; done
+# The user clicks the X in mstsc's connection bar during the session: mstsc sends a Shutdown
+# Request ([MS-RDPBCGR] 1.3.1.4.1). The fake brokers hold 'holdsession' for 3 s each, so
+# proxy A has accepted the client (its broker answered) while proxy B still holds the login;
+# 4.5 s in, proxy A must deny the request and leave the disconnect to the client.
+E2E_KEEP_S=10 E2E_SHUTDOWN_AT_MS=4500 timeout 30 ./client 127.0.0.1 23389 holdsession good "" > shutdown.out 2>&1 || true
+# The back-end ends a running session (GNOME logout: gnome-remote-desktop sends Set Error
+# Info and closes). Here proxy B accepts proxy A's client, then fails to reach its own
+# back-end and closes with 0x400: proxy A forwards the code, then ends the front with
+# Deactivate All, Set Error Info and a Disconnect Provider Ultimatum, not a bare close.
+E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 backendend good "" > backendend.out 2>&1 || true
 # Waiting screen (proxy E): the broker's progress messages as Bitmap Updates while the
 # login waits; the screen is dumped 1.5 s in (MFA panel with the QR code)
 E2E_KEEP_S=10 E2E_STATUS_INFO=1 E2E_DUMP="$W/panel32.ppm" timeout 30 ./client 127.0.0.1 23394 progress good "" > ws32.out 2>&1 || true
@@ -164,6 +175,8 @@ picker pickerclick E2E_CLICK=+1 & pids+=($!)
 picker pickerearly E2E_EARLY_KEYS=3,enter,d4 E2E_KEYS=r4,u2 & pids+=($!)
 picker pickerkeypad E2E_NUMLOCK=1 E2E_KEYS=kp3 & pids+=($!)
 picker pickergone E2E_GIVE_UP_S=3 & pids+=($!)
+# a Shutdown Request while the picker shows (no session yet): the proxy closes at once
+picker pickershutdown E2E_SHUTDOWN_AT_MS=2500 & pids+=($!)
 # static channel data read during the picker: passed on below the module's cap (4 MiB),
 # the login abandoned above it (the proxy's queue for the back-end has no limit)
 picker pickerchan E2E_CHANNEL_DATA=65536 E2E_KEYS=2 & pids+=($!)
@@ -185,18 +198,20 @@ ct = lambda logins, user: [r.get("connection_type") for r in logins if r["user"]
 pw = [r for r in a if r["op"] == "pushwait"]
 pr = lambda user: [r for r in a if r["op"] == "progresswait" and r["user"] == user]
 pc = {r["user"]: r for r in a if r["op"] == "pickerchoice"}
+hold = lambda log: [r for r in log if r["op"] == "holdwait"]
+sid = lambda user: [r["session_id"] for r in la if r["user"] == user]
 chose = lambda user: (pc[user].get("line") or {}).get("desktop", "none") if pc.get(user, {}).get("line") else "none"
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 37'
+expect "front broker saw the expected logins"         'len(la) == 40'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-expect "back-end received the token, not the password" 'len(lb) == 22 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 24 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -236,6 +251,10 @@ expect "picker: channel data above the cap: login abandoned, broker connection c
     'pc["pickerflood"]["closed"] and pc["pickerflood"].get("line") is None'
 expect "picker: chosen logins reached the back-end, the abandoned one not" \
     'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff"])'
+expect "Shutdown Request during the session: session end reported, back-end connection closed" \
+    'hold(a)[0]["closed"] is False and hold(b)[0]["closed"] and hold(b)[0]["waited"] < 2.9 and any(r["op"] == "end" and r["session_id"] in sid("holdsession") for r in a)'
+expect "Shutdown Request during the picker: login abandoned, broker connection closed" \
+    'pc["pickershutdown"]["closed"] and pc["pickershutdown"].get("line") is None'
 errinfo() { # description client-output expected-code
     if grep -q "errinfo=$3" "$2"; then echo "ok   $1"; else echo "FAIL $1 ($(grep errinfo "$2"))"; fail=1; fi
 }
@@ -316,6 +335,26 @@ logged "picker: channel data cap logged" proxy-e.log "more than 4194304 bytes of
 # the client really sent the data: without it the pickerchan choice check passes anyway
 logged "picker: channel data below the cap sent on the announced channel" pickerchan.out \
     "channel_data=65536 sent=1"
+logged "Shutdown Request during the session: Shutdown Request Denied" shutdown.out "shutdown_denied at"
+if grep -q "disconnected itself after the denied shutdown request" shutdown.out &&
+   ! grep -q "session closed by server" shutdown.out; then
+    echo "ok   ... the proxy kept the connection, the client disconnected itself"
+else
+    echo "FAIL Shutdown Request during the session ($(grep -E 'shutdown|closed|errinfo' shutdown.out | tr '\n' ' '))"; fail=1
+fi
+# FreeRDP's mcs_send_disconnect_provider_ultimatum() writes reason 3 ("user requested")
+# whatever it is asked for, so dpu=3 here although the proxy logs "provider initiated"
+if grep -q "errinfo=0x00000400" backendend.out && grep -q "server_end: deactivate_all=1 dpu=3" backendend.out; then
+    echo "ok   back-end ended the session: code forwarded, Deactivate All and Disconnect Provider Ultimatum to the client"
+else
+    echo "FAIL back-end ended the session ($(grep -E 'errinfo|server_end' backendend.out | tr '\n' ' '))"; fail=1
+fi
+if grep -q "shutdown_request sent=1" pickershutdown.out && ! grep -q shutdown_denied pickershutdown.out &&
+   ! grep -q "disconnected itself" pickershutdown.out; then
+    echo "ok   Shutdown Request during the picker: closed at once, not denied (no session yet)"
+else
+    echo "FAIL Shutdown Request during the picker ($(grep -E 'shutdown|closed|itself' pickershutdown.out | tr '\n' ' '))"; fail=1
+fi
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

@@ -33,6 +33,15 @@
  *   selected one (found on the decoded screen: the accent-filled row).
  * E2E_CHANNEL_DATA=N: announce the static virtual channel "e2echan" and, at
  *   E2E_INPUT_AT_MS, send N bytes on it (before the keys); prints "channel_data=N sent=0|1".
+ * E2E_SHUTDOWN_AT_MS=N: N ms after connecting, send a Shutdown Request PDU ([MS-RDPBCGR]
+ *   2.2.2.2), as mstsc does when the user clicks the X in its connection bar (FreeRDP's
+ *   client has no function for it). Prints "shutdown_request sent=0|1", and
+ *   "shutdown_denied at N ms" for a Shutdown Request Denied PDU (2.2.2.3); 300 ms after
+ *   that the client disconnects itself (Disconnect Provider Ultimatum, "user requested")
+ *   and prints "disconnected itself after the denied shutdown request".
+ * Prints how the server ended the connection: "server_end: deactivate_all=0|1 dpu=N"
+ *   (the reason of the MCS Disconnect Provider Ultimatum, 1 provider initiated, 3 user
+ *   requested; -1: none, a bare close).
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."),
  * if freerdp_connect failed, the connect error ("connect_error=0x..."), and the Bitmap
  * Updates received ("bitmap_updates=N bitmap_rects=N first_bitmap_ms=N", -1: none). */
@@ -41,6 +50,7 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
+#include <freerdp/transport_io.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
@@ -214,6 +224,67 @@ static void send_channel_data(freerdp* inst, size_t size)
 	free(data);
 	printf("client: channel_data=%zu sent=%d\n", size, sent);
 }
+/* E2E_SHUTDOWN_AT_MS. The PDU over TLS (no security header): TPKT, X.224 Data, MCS
+ * SendDataRequest (initiator 1007, I/O channel 1003, 18 bytes), Share Control Header
+ * (PDUTYPE_DATAPDU), Share Data Header (pduType2 PDUTYPE2_SHUTDOWN_REQUEST). The server
+ * checks neither the initiator nor the shareId. */
+static void send_shutdown_request(freerdp* inst)
+{
+	static const BYTE pdu[] = { 0x03, 0x00, 0x00, 0x20, 0x02, 0xf0, 0x80, 0x64, 0x00, 0x06,
+		                        0x03, 0xeb, 0x70, 0x12, 0x12, 0x00, 0x17, 0x00, 0xef, 0x03,
+		                        0xea, 0x03, 0x01, 0x00, 0x00, 0x01, 0x04, 0x00, 0x24, 0x00,
+		                        0x00, 0x00 };
+	const rdpTransportIo* io = freerdp_get_io_callbacks(inst->context);
+	wStream* s = Stream_New(NULL, sizeof(pdu));
+	int rc = -1;
+	if (io && io->WritePdu && s)
+	{
+		Stream_Write(s, pdu, sizeof(pdu));
+		rc = io->WritePdu(freerdp_get_transport(inst->context), s);
+	}
+	Stream_Free(s, TRUE);
+	printf("client: shutdown_request sent=%d at %ld ms\n", rc >= 0, elapsed_ms());
+}
+/* The server's PDUs pass here first (slow path, over TLS without a security header):
+ * - MCS Disconnect Provider Ultimatum: its reason in server_dpu;
+ * - on the I/O channel, PDUTYPE_DEACTIVATEALLPDU sets deactivate_all, and a Data PDU with
+ *   pduType2 PDUTYPE2_SHUTDOWN_DENIED (0x25) sets shutdown_denied_ms. */
+static rdpTransportIo io_orig;
+static long shutdown_denied_ms = -1;
+static int server_dpu = -1;
+static BOOL deactivate_all;
+static int sniff_read_pdu(rdpTransport* transport, wStream* s)
+{
+	const int rc = io_orig.ReadPdu(transport, s);
+	const BYTE* p = Stream_Buffer(s);
+	size_t o = 4 + 3; /* TPKT, X.224 Data */
+	if (rc >= (int)o + 2 && p[0] == 0x03 && (p[o] >> 2) == 8 /* DisconnectProviderUltimatum */)
+		server_dpu = ((p[o] & 0x03) << 1) | (p[o + 1] >> 7);
+	if (rc < (int)o + 7 || p[0] != 0x03 || (p[o] >> 2) != 26 /* SendDataIndication */ ||
+	    ((p[o + 3] << 8) | p[o + 4]) != 1003)
+		return rc;
+	o += 6; /* choice, initiator, channelId, dataPriority */
+	o += (p[o] & 0x80) ? 2 : 1; /* PER length */
+	if ((size_t)rc >= o + 6 && (p[o + 2] & 0x0f) == 0x6 /* PDUTYPE_DEACTIVATEALLPDU */)
+		deactivate_all = TRUE;
+	if ((size_t)rc >= o + 6 + 9 && (p[o + 2] & 0x0f) == 0x7 /* PDUTYPE_DATAPDU */ &&
+	    p[o + 6 + 8] == 0x25)
+	{
+		shutdown_denied_ms = elapsed_ms();
+		printf("client: shutdown_denied at %ld ms\n", shutdown_denied_ms);
+	}
+	return rc;
+}
+static BOOL sniff_server_pdus(freerdp* inst)
+{
+	const rdpTransportIo* io = freerdp_get_io_callbacks(inst->context);
+	if (!io)
+		return FALSE;
+	io_orig = *io;
+	rdpTransportIo sniff = *io;
+	sniff.ReadPdu = sniff_read_pdu;
+	return freerdp_set_io_callbacks(inst->context, &sniff);
+}
 static void give_up(int sig)
 {
 	(void)sig;
@@ -294,6 +365,7 @@ int main(int argc, char** argv)
 	const char* keys = getenv("E2E_KEYS");
 	const char* click = getenv("E2E_CLICK");
 	const long input_at = getenv("E2E_INPUT_AT_MS") ? atol(getenv("E2E_INPUT_AT_MS")) : 2500;
+	long shutdown_at = getenv("E2E_SHUTDOWN_AT_MS") ? atol(getenv("E2E_SHUTDOWN_AT_MS")) : -1;
 	clock_gettime(CLOCK_MONOTONIC, &started);
 	BOOL ok = freerdp_connect(inst);
 	printf("client: freerdp_connect=%d\n", ok);
@@ -304,6 +376,8 @@ int main(int argc, char** argv)
 	const long connected_ms = elapsed_ms();
 	if (ok && getenv("E2E_EARLY_KEYS"))
 		send_keys(inst, getenv("E2E_EARLY_KEYS"));
+	if (ok && !sniff_server_pdus(inst))
+		printf("client: cannot watch the server's PDUs\n");
 	while (ok && elapsed_ms() - connected_ms < keep_ms &&
 	       !freerdp_shall_disconnect_context(inst->context))
 	{
@@ -320,6 +394,16 @@ int main(int argc, char** argv)
 				click_row(inst, atoi(click));
 			keys = click = NULL;
 		}
+		if (shutdown_at >= 0 && elapsed_ms() - connected_ms >= shutdown_at)
+		{
+			send_shutdown_request(inst);
+			shutdown_at = -1;
+		}
+		if (shutdown_denied_ms >= 0 && elapsed_ms() - shutdown_denied_ms >= 300)
+		{
+			printf("client: disconnected itself after the denied shutdown request\n");
+			break;
+		}
 		if (dump && elapsed_ms() >= dump_at)
 		{
 			dump_screen(inst, dump);
@@ -335,6 +419,7 @@ int main(int argc, char** argv)
 		}
 	}
 	printf("client: errinfo=0x%08" PRIX32 "\n", freerdp_error_info(inst));
+	printf("client: server_end: deactivate_all=%d dpu=%d\n", deactivate_all, server_dpu);
 	printf("client: bitmap_updates=%u bitmap_rects=%u first_bitmap_ms=%ld\n", bitmap_updates,
 	       bitmap_rects, first_bitmap_ms);
 	freerdp_disconnect(inst);

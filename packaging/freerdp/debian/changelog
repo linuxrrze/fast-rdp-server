@@ -1,5 +1,10 @@
 fastrdp-freerdp3 (3.32.2-7) unstable; urgency=medium
 
+  * patches/freerdp: core/peer: a client's Shutdown Request PDU (mstsc: the X
+    in its connection bar) is answered with a Shutdown Request Denied PDU once
+    PostConnect accepted the client, and the client disconnects itself
+    ([MS-RDPBCGR] 1.3.1.4.1); before that the connection is still closed at
+    once. Until now the server always disconnected with "provider initiated".
   * patches/freerdp: winpr/wlog: WITH_SYSTEMD now reaches winpr/config.h, so
     WLOG_APPENDER=JOURNALD selects the journald appender (it was compiled but
     unreachable). Build with -DWITH_SYSTEMD=ON (was the non-existent

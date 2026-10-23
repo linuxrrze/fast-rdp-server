@@ -242,6 +242,8 @@ default field of 6 digits the sixth digit submits; Enter is only needed with sev
 | F17b | the OTP client's secret wrong in the vault | Type a correct code | **Not counted**: Keycloak answers HTTP 401 `unauthorized_client`; the field closes with `Codes cannot be checked at the moment. Please use the approval page.` (`code_off`); broker `Keycloak cannot check codes of alice: HTTP 401, … (wrong [mfa.keycloak] client secret or client_id?) …` at ERROR; QR approval works | fail if an attempt is counted or the field stays open |
 | F17c | in Keycloak, the flow `fastrdp-otp-check`: set the sub-flow `fastrdp-otp-check - no otp` to *Disabled* (a hand-made mistake); afterwards run the role again | dave types any 6 digits; then run the role in check mode, then normally | Keycloak issues dave a token on his name alone, without `otp` in `amr`; the broker refuses it: the field closes with `code_off`, no attempt, broker `Keycloak flow issued a token without 'otp' in amr …` at ERROR. Check mode lists `rebuild direct grant flow fastrdp-otp-check` and a warning naming the disabled step; the normal run rebuilds the flow, after which dave gets F11 again | fail if dave passes, or if check mode reports nothing (safeguards 2 and 1, [auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)) |
 | F18 | combinations with privacyIDEA push | – | Not offered: `code_or_web` uses Keycloak only | – |
+| F19 | C1–C3 (mstsc), `fastrdp-freerdp3` ≥ 3.32.2-7 (`patches/freerdp/0008`) | After F1: click the X in mstsc's connection bar, confirm mstsc's dialog; then *Connect* again in the **same** mstsc (no restart). Once more with the X while the panel waits for the code | X during the session: mstsc's own disconnect dialog, then a clean close; proxy journal without `disconnect provider ultimatum sent to peer` for that session; broker `session end`. The next *Connect*: the panel with code field and QR code within 1 s, F1 and the QR approval both work (field report 2026-10-23 before the patch: black window until `mfa_timeout`). X while the panel waits: the login is abandoned at once (broker log), no Keycloak call; record what mstsc shows | fail if the next *Connect* in the same mstsc shows no panel, or if the proxy still logs the provider-initiated disconnect for a running session |
+| F19b | C1–C3 (mstsc) | After F1: log out inside the session (GNOME *Log Out*; on an xrdp desktop its logout), no X; then *Connect* again in the same mstsc; once more with a restarted mstsc for comparison. Note the times | Proxy journal: `received ErrorInfo PDU. code=0x…` (gnome-remote-desktop sends 0x1) and the session end; mstsc's message after the logout; the next *Connect*: the panel within 1 s and F1 works. On Windows, export Event Viewer → *Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational* for both connections (disconnect reasons). Field report 2026-10-23: mstsc closed the next connection itself after 7.5 s while the login waited (`front connection closed while waiting for the broker`); record whether anybody cancelled | fail if the next *Connect* in the same mstsc shows no panel or ends by itself; attach the event log either way |
 
 ### 4.4 Security observations (S)
 
@@ -277,6 +279,8 @@ with a workaround: note it), **–** (not applicable), **?** (not run).
 | F1 code accepted | | | | | | | |
 | F2/F3 wrong code, limit | | | | | | | |
 | F6/F7 race | | | | | | | |
+| F19 X, then *Connect* in the same mstsc | | – | – | – | – | – | |
+| F19b logout, then *Connect* in the same mstsc | | – | – | – | – | – | |
 | S2 nothing in the session | | | | | | | |
 | S4 masking | | | | | | | |
 
@@ -291,7 +295,7 @@ Summary sheet:
 ## Go / no-go per client
 
 - **Go (code entry on):** R1, R3 and I1 pass on K1 and on the site's own layouts; F1–F3,
-  F6, F7 and F9 pass; S1, S2 and S4 pass.
+  F6, F7 and F9 pass (mstsc also F19 and F19b); S1, S2 and S4 pass.
 - **QR only:** the panel renders (R1, R3) but digits are unreliable (I1 fails on a
   layout the site uses, I12 fails on the platform's soft keyboard). The client keeps the
   waiting screen and QR approval; the docs say "type the code" does not work on it.

@@ -145,5 +145,16 @@ compiled out without `FREERDP_PEER_IN_POST_CONNECT`, and a weak reference finds 
 `freerdp_peer_in_post_connect()` in an unpatched `libfreerdp3`), so only the picker
 checks fail.
 
+2026-10-23, `3.32.2-7` (patch 0008, Shutdown Request Denied for a running session, mstsc's
+X): minimal local build of 3.32.2 with 0001–0008 (proxy, server and client libraries; no
+Kerberos, X11 or FFmpeg; OpenSSL 3.5.5 from source), TLS e2e suite 78/78 without
+zxing-cpp (4 new shutdown checks, 1 new check for a session the back-end ends). Without
+0008 (same build, `peer.c` reverted, before the back-end check was added) 75/77: the two
+checks for the request during a session fail, the proxy disconnects as before.
+`fetch.sh` applies the full series (0001–0009) to the release tarball, and `peer.c`
+matches the tested tree; the same revision also carries 0009 (journald appender, CMake
+only), which this local build did not include. NLA and smartcard suites not rerun (no Kerberos in that build; 0008 touches only
+`libfreerdp/core/peer.c`); the full `build-freerdp.sh` configuration is left to CI.
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

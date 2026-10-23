@@ -351,6 +351,61 @@ suite passes either way.
 **Drop it when** FreeRDP processes PDUs read during `PostConnect` as input (or offers
 another way to read input before `Activate`), and the module checks for that instead.
 
+## 0008 – [core,peer] deny a client's Shutdown Request once the session runs
+
+**Problem.** A client that wants to close the connection may first send a Shutdown
+Request PDU ([MS-RDPBCGR] 2.2.2.2); mstsc does so when the user clicks the X in its
+connection bar. [MS-RDPBCGR] 1.3.1.4.1: "If a logged-on user account is associated with
+the session, the server always denies the shutdown request and sends the client a
+Shutdown Request Denied PDU"; the client then sends a Disconnect Provider Ultimatum with
+reason "user requested" and closes the connection. Only "if a logged-on user account is
+not associated with the session, the server closes the connection immediately"
+[verified: Microsoft Learn, MS-RDPBCGR "User-Initiated on Client"]. FreeRDP's
+`peer_recv_data_pdu()` (`libfreerdp/core/peer.c`) always takes the second way: it sends a
+Disconnect Provider Ultimatum with reason "provider initiated" and quits. FreeRDP's server
+side cannot send the Denied PDU at all; only its client parses it
+(`rdp_recv_server_shutdown_denied_pdu()`, which does nothing).
+
+**Who is affected.** Every FreeRDP server whose clients send the Shutdown Request:
+mstsc, not FreeRDP's own client (it never sends one [verified: source]). In fastrdp the
+front connection of freerdp-proxy. Field report 2026-10-23 (mstsc, Kerberos NLA, web
+approval): after a disconnect with the X, the next *Connect* in the same mstsc process
+showed a black window instead of the waiting screen, although the proxy sent it (97
+Bitmap Updates logged), until the login timed out; a restarted mstsc worked. The proxy log
+shows `disconnect provider ultimatum sent to peer, closing connection` at the X. That
+the Denied answer also fixes the next *Connect* in mstsc is [inferred, not tested].
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| mstsc (and other clients that send the Shutdown Request) closing a fastrdp session | yes: without it the proxy ends the connection itself, as a server-side disconnect |
+| everything else | no: FreeRDP clients never send the request |
+
+**Fix.** Once `PostConnect` has accepted the client (`client->connected`), answer with a
+Shutdown Request Denied PDU (a Share Data Header with `pduType2` 0x25) and keep the
+connection; the client's Disconnect Provider Ultimatum ends it as any client
+disconnect does (the proxy closes the back-end connection, the session keeps running,
+the module reports the session end). Before that, while `PostConnect` runs (fastrdp: the
+broker call with MFA, the desktop picker) or before it, there is no session yet, and the
+connection is closed at once as before. No setting: the old behaviour contradicts the
+specification for a running session.
+
+**Regression test.** `tests/proxy-e2e/run.sh` (3.32.2-7): the e2e client sends the
+Shutdown Request PDU itself (FreeRDP's client has no function for it) through the
+transport and watches the server's PDUs. During a session (proxy A has accepted the
+client, its back-end proxy B still holds the login): Denied within milliseconds, no
+disconnect by the proxy, the client's own disconnect ends the session (session end at
+broker A, back-end connection closed); without the patch the proxy disconnects and these
+two checks fail. During the desktop picker: closed at once, not denied, login abandoned
+(same with and without the patch).
+
+**Status upstream.** Still present in 3.32.2. Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** FreeRDP's server answers the Shutdown Request with Shutdown Request
+Denied for a running session.
+
 ## 0009 – [winpr,wlog] make WITH_SYSTEMD reach config.h (journald appender)
 
 **Problem.** With the CMake option `WITH_SYSTEMD`, `winpr/libwinpr/utils/CMakeLists.txt`

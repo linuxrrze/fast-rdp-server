@@ -410,6 +410,22 @@ Notes on the options above:
   (60/90 s) and the session start after it ([auth-matrix.md](auth-matrix.md)).
   Timeout → Set Error Info 0x409, refusal → 0x7. After a network drop mstsc reconnects
   without auto-reconnect cookies: a new push or approval unless `reconnect_grace` is set.
+- **Disconnect with the X in mstsc's connection bar.** mstsc sends a Shutdown Request PDU
+  and expects a Shutdown Request Denied PDU while a user is logged on; it then
+  disconnects itself ([MS-RDPBCGR] 1.3.1.4.1). Up to `fastrdp-freerdp3` 3.32.2-6 the
+  proxy's FreeRDP disconnected instead ("provider initiated"). Field report 2026-10-23
+  (mstsc, Kerberos NLA, web approval): the next *Connect* in the same mstsc showed a black
+  window instead of the waiting screen, although the proxy sent it, until the login timed
+  out; a restarted mstsc worked. 3.32.2-7 (`patches/freerdp/0008`) answers with the
+  Denied PDU once the session runs [tested: e2e with a client that sends the request;
+  not yet confirmed with mstsc, lab S15 in [rdp-spec-conformance.md](rdp-spec-conformance.md#13-lab-tests)].
+  Until then: restart mstsc after a disconnect, or approve on `/web/approve` while the
+  window is black (the login waits there with its code). The same report came after a
+  **logout inside the session** (GNOME): there the proxy forwards gnome-remote-desktop's
+  Set Error Info 0x1 ("administrative tool"; Windows sends 0xC on a logoff) and ends the
+  connection with Deactivate All and a Disconnect Provider Ultimatum, a conforming
+  sequence, and 0008 does not change it; the cause is open ([backlog.md](backlog.md#sessions)
+  A5, lab S15).
 - **TLS path with mstsc.** `enablecredsspsupport:i:0` (default 1) turns NLA off; "the
   client connects to the server and lets the server handle the authentication" [doc:
   Microsoft, RDP properties]. fastrdp has no logon screen, so only saved credentials reach
