@@ -3,7 +3,7 @@
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Anyone who has run Windows Remote Desktop Services knows the experience: users open <code>mstsc</code>, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became <strong>fast-rdp-server</strong>, or <strong>fastrdp</strong> for short (<a href="https://github.com/linuxrrze/fast-rdp-server">GitHub</a>). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what works today, and what still needs testing on real hardware.</p>
+<p>Anyone who has run Windows Remote Desktop Services knows the experience: users open <code>mstsc</code>, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became <strong>fast-rdp-server</strong>, or <strong>fastrdp</strong> for short (<a href="https://github.com/linuxrrze/fast-rdp-server">GitHub</a>). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what the second factor looks like for users, what works today, and what still needs testing on real hardware. It describes release <strong>0.7.1</strong> (October 2026), which is available from a signed APT repository.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading -->
@@ -18,7 +18,7 @@
 <ul class="wp-block-list"><!-- wp:list-item -->
 <li><strong>Fast.</strong> Use the GPU wherever possible, both for rendering and for H.264 encoding of the screen.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Single sign-on plus MFA.</strong> Kerberos against the existing realm (Samba AD, FreeIPA or MIT). A second factor from privacyIDEA: push, TOTP/HOTP, YubiKey OTP. Smartcards and YubiKey PIV for NLA logons. Keycloak for browser access.</li>
+<li><strong>Single sign-on plus MFA.</strong> Kerberos against the existing realm (Samba AD, FreeIPA or MIT). A second factor from privacyIDEA (push, TOTP/HOTP, YubiKey OTP) or an approval on a web page after a Keycloak sign-in with a passkey. Smartcards and YubiKey PIV for NLA logons. Keycloak for browser access.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Every common desktop, X11 and Wayland.</strong> Xfce, MATE, Cinnamon, LXQt and Plasma X11, but also GNOME 50 and Plasma 6 on Wayland, plus the wlroots compositors Sway, labwc and Wayfire.</li>
 <!-- /wp:list-item --></ul>
@@ -36,8 +36,8 @@
 <p>Before writing code, I looked at what the Linux RDP world offers today.</p>
 <!-- /wp:paragraph -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/01-approaches-compared.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/01-approaches-compared.png" alt="Comparison matrix of four approaches: xrdp alone, native per-desktop servers, an ogon-style broker and the fastrdp hybrid, rated for X11, Wayland, NLA/Kerberos, MFA, GPU encoding, multi-user sessions and maintenance"/></a><figcaption class="wp-element-caption">Figure 1: What each approach covers. Green = covered, yellow = partly, red = not covered. The fastrdp column is implemented and tested in CI and a sandbox; the back-ends and GPU paths still need lab validation.</figcaption></figure>
+<!-- wp:image {"id":2487,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-four-approaches-compared-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-four-approaches-compared-scaled.png" alt="Comparison matrix of four approaches: xrdp alone, native per-desktop servers, an ogon-style broker and the fastrdp hybrid, rated for X11, Wayland, NLA/Kerberos, MFA, GPU encoding, multi-user sessions and maintenance" class="wp-image-2487"/></a><figcaption class="wp-element-caption">Figure 1: What each approach covers. Green = covered, yellow = partly, red = not covered. The fastrdp column is implemented and tested in CI and a sandbox; the back-ends and GPU paths still need lab validation.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:heading {"level":3} -->
@@ -128,8 +128,8 @@
 <h2 class="wp-block-heading">Architecture and login flow</h2>
 <!-- /wp:heading -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/02-architecture-overview.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/02-architecture-overview.png" alt="Architecture overview: RDP clients and a browser connect to the RDP host; freerdp-proxy with the fastrdp module talks to fastrdp-brokerd, which uses privacyIDEA for MFA; xrdp, GNOME and Plasma back-ends run on loopback behind nftables; Kerberos KDC and Keycloak are external"/></a><figcaption class="wp-element-caption">Figure 2: Architecture overview. Only port 3389 (and 443 for the optional web path) is reachable from the network.</figcaption></figure>
+<!-- wp:image {"id":2488,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-architecture-overview-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-architecture-overview-scaled.png" alt="Architecture overview: RDP clients and a browser connect to the RDP host; freerdp-proxy with the fastrdp module talks to fastrdp-brokerd, which uses privacyIDEA for MFA; xrdp, GNOME and Plasma back-ends run on loopback behind nftables; Kerberos KDC and Keycloak are external" class="wp-image-2488"/></a><figcaption class="wp-element-caption">Figure 2: Architecture overview. Only port 3389 (and 443 for the optional web path) is reachable from the network.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:paragraph -->
@@ -138,13 +138,13 @@
 
 <!-- wp:list {"ordered":true} -->
 <ol class="wp-block-list"><!-- wp:list-item -->
-<li>The client (mstsc, xfreerdp3, Remmina) gets a Kerberos service ticket for <code>TERMSRV/&lt;fqdn&gt;</code> and connects to the proxy with <strong>NLA</strong>. The proxy accepts only Kerberos. NTLM is refused, because the proxy has no way to check domain passwords that way.</li>
+<li>The client (mstsc, xfreerdp3, Remmina) gets a Kerberos service ticket for <code>TERMSRV/&lt;fqdn&gt;</code> and connects to the proxy with <strong>NLA</strong>. The proxy accepts only Kerberos. NTLM is refused, because the proxy has no way to check domain passwords that way. Windows mstsc uses Kerberos <em>user-to-user</em> here, which needed a FreeRDP patch to work with Active Directory (more below).</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li>The module reads the authenticated principal and sends a <code>login</code> request to the broker over a Unix socket.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li>The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs <strong>MFA</strong>. NLA has no field for an OTP, so NLA logins use a <strong>privacyIDEA push</strong>; the client shows "connecting…" until it is confirmed. Because the broker never sees a password with Kerberos single sign-on, it triggers that push through a privacyIDEA service account with the <code>triggerchallenge</code> right. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP).</li>
+<li>The broker runs the PAM account phase (SSSD, including the AD GPO "Allow log on through Remote Desktop Services"), checks groups and runs <strong>MFA</strong>. NLA has no field for an OTP, so NLA logins use a <strong>privacyIDEA push</strong> or an <strong>approval on the web gateway</strong> (or both, whichever answers first); meanwhile the proxy draws a waiting screen into the RDP window (see below). Because the broker never sees a password with Kerberos single sign-on, it triggers the push through a privacyIDEA service account with the <code>triggerchallenge</code> right. Clients without Kerberos can use TLS with password plus appended OTP (TOTP or YubiKey OTP). Smartcard or Windows Hello for Business logons can count as MFA on their own: the proxy's FreeRDP keeps the KDC's evidence from the ticket (authentication indicators, PAC SIDs), and the broker can skip the second factor for matching logins.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li>The broker picks the desktop: the client hint <code>fastrdp:&lt;desktop&gt;</code> in the RDP <em>alternate shell</em> field, then <code>~/.config/fastrdp/desktop</code>, then a group default, then the global default.</li>
+<li>The broker picks the desktop: the client hint <code>fastrdp:&lt;desktop&gt;</code> in the RDP <em>alternate shell</em> field, then (optionally) the user's pick in a desktop picker drawn into the RDP window, then a choice stored on the web gateway's chooser page, then <code>~/.config/fastrdp/desktop</code>, then a group default, then the global default. mstsc and the Windows App have no field for the hint, which is why the picker and the stored choice exist.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li>It starts or reuses the session and returns a loopback target plus credentials:<!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
@@ -156,12 +156,12 @@
 <!-- /wp:list-item --></ul>
 <!-- /wp:list --></li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li>The proxy connects to the back-end with the broker's credentials and relays the session. GFX/H.264 is passed through without being decoded. On disconnect the session keeps running, and the next login reconnects to it.</li>
+<li>The proxy connects to the back-end with the broker's credentials and relays the session. GFX/H.264 is passed through without being decoded, and so are the other channels. Sound and microphone, for example, are handled in the session: xrdp, wlroots and GNOME sessions get PipeWire with <code>pipewire-module-xrdp</code> or <code>pipewire-pulse</code> (implemented, not yet tested with real clients); KRdp has no audio, so Plasma users who need sound use <code>plasma-x11</code>. On disconnect the session keeps running, and the next login reconnects to it.</li>
 <!-- /wp:list-item --></ol>
 <!-- /wp:list -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/03-login-sequence.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/03-login-sequence.png" alt="Sequence diagram of a Kerberos NLA login: client gets a ticket from the KDC, connects to the proxy, the broker checks the account and triggers a privacyIDEA push, chooses the desktop, prepares the back-end and returns a loopback target; the proxy connects with swapped credentials"/></a><figcaption class="wp-element-caption">Figure 3: The login sequence for an RDP client with Kerberos NLA.</figcaption></figure>
+<!-- wp:image {"id":2489,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-Kerberos-NLA-login-sequence-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-Kerberos-NLA-login-sequence-scaled.png" alt="Sequence diagram of a Kerberos NLA login: client gets a ticket from the KDC, connects to the proxy, the broker checks the account and triggers a privacyIDEA push, chooses the desktop, prepares the back-end and returns a loopback target; the proxy connects with swapped credentials" class="wp-image-2489"/></a><figcaption class="wp-element-caption">Figure 3: The login sequence for an RDP client with Kerberos NLA and a privacyIDEA push. Web approval and the waiting screen follow further below.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:heading {"level":3} -->
@@ -169,15 +169,101 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>For users without an RDP client there is an optional web path. The browser logs in at <strong>Keycloak</strong> (OIDC with PKCE). MFA happens there (OTP, WebAuthn/FIDO2 or the privacyIDEA provider), and the webgate checks the <code>acr</code>/<code>amr</code> claims to prove it. The webgate then asks the broker for a single-use <strong>web token</strong> and hands Guacamole an encrypted, signed connection blob that is valid for 30 seconds. guacd connects to the proxy with that token like any other client.</p>
+<p>For users without an RDP client there is an optional web path. The browser logs in at <strong>Keycloak</strong> (OIDC with PKCE). MFA happens there (passkeys, OTP, WebAuthn/FIDO2 or the privacyIDEA provider), and the webgate checks the <code>acr</code>/<code>amr</code> claims to prove it. Ansible can set up the Keycloak flow for passkeys so that a passkey sign-in yields <code>acr=mfa</code> (<code>fastrdp_web_passkeys</code>, tested against Keycloak 26.8.1); a sign-in without that proof gets a clear "Second factor required" page instead of a desktop. The webgate then asks the broker for a single-use <strong>web token</strong> and hands Guacamole an encrypted, signed connection blob that is valid for 30 seconds. guacd connects to the proxy with that token like any other client.</p>
 <!-- /wp:paragraph -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/06-web-path.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/06-web-path.png" alt="Web path: browser to nginx, fastrdp-webgate with Keycloak OIDC login and MFA, broker issues a one-time web token, Guacamole and guacd connect to the proxy on loopback"/></a><figcaption class="wp-element-caption">Figure 4: The optional web path through Keycloak and Guacamole.</figcaption></figure>
+<!-- wp:image {"id":2492,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-web-path-through-Keycloak-and-Guacamole-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-web-path-through-Keycloak-and-Guacamole-scaled.png" alt="Web path: browser to nginx, fastrdp-webgate with Keycloak OIDC login and MFA, broker issues a one-time web token, Guacamole and guacd connect to the proxy on loopback" class="wp-image-2492"/></a><figcaption class="wp-element-caption">Figure 4: The optional web path through Keycloak and Guacamole.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:paragraph -->
 <p>It's a convenience path. guacd re-encodes the screen as images, so there is no H.264 to the browser, and sessions get no Kerberos ticket because no password ever reaches the server.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>The same web gateway also serves the RDP apps: its chooser page lets users store the desktop their mstsc logins get, or download an <code>.rdp</code> file for one desktop. And it hosts the approval page for RDP logins, which brings us to the second factor.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading -->
+<h2 class="wp-block-heading">The second factor, from the user's side</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>For users, the second factor is the part of fastrdp they meet every day. NLA has no prompt for a code, and with Kerberos single sign-on there is no password dialog either: the client connects, and then the login waits for the push or the approval. The first test with a real Windows client showed what that looks like without help: a black window. So the proxy now tells the user what is going on.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">The waiting screen</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>While the broker works on a login, the proxy module paints a panel into the RDP window. It uses plain Bitmap Updates, the one kind of graphics output every RDP client must accept at that stage, so there is no client plugin and no client setting. The panel shows "Signing you in…", then what to do for the second factor with a countdown, and finally "Connecting to your desktop…". For web approval it adds the approval URL, a two-digit <strong>login code</strong> and a <strong>QR code</strong> for the phone. English and German texts are built in and chosen from the client's keyboard layout; admins can override them per language. It has been on by default since 0.7.0.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":2534,"sizeSlug":"full","linkDestination":"media","align":"center"} -->
+<figure class="wp-block-image aligncenter size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-waiting-screen-push-or-web-approval-1.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-waiting-screen-push-or-web-approval-1.png" alt="RDP window with the fastrdp waiting screen in push_or_web mode: Approve the sign-in, confirm the push notification or approve on https://rdp.example.org/web/approve, Login code: 47, a QR code and a countdown of 1:38" class="wp-image-2534"/></a><figcaption class="wp-element-caption">Figure 5: The waiting screen in the RDP window, here for push or web approval. Rendered with the proxy module's own drawing code and example data.</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Approving the login</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Which second factor is due depends on the MFA mode: <code>none</code>, <code>otp</code> (appended to the password, TLS logins only), <code>push</code>, <code>otp_or_push</code>, <code>web</code>, or <code>push_or_web</code>, where whichever answer comes first wins. In practice that means:</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><!-- wp:list-item -->
+<li><strong>privacyIDEA push:</strong> confirm the notification in the privacyIDEA app, as before.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>Web approval:</strong> scan the QR code in the RDP window with the phone (or type the short URL shown there), sign in at Keycloak with a passkey, security key or authenticator app, and click <strong>Approve</strong>. The approval page shows the login's client address, start time and the same login code as the RDP window. Nothing is needed on the client, so it works the same for mstsc, xfreerdp3 and Remmina (with mstsc, so far without a full lab run; see the status below).</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>Notifications</strong> (opt-in on <code>/web/notify</code>): users who turn them on get a message on their phone or in their browser the moment a login waits, through <strong>ntfy</strong> (also on Android phones without Google services) or <strong>Web Push</strong> (desktop browsers, Android, and iPhone/iPad as a home-screen web app). The notification is only a hint: it links to the plain approval page and approves nothing.</li>
+<!-- /wp:list-item --></ul>
+<!-- /wp:list -->
+
+<!-- wp:image {"id":2500,"width":"360px","sizeSlug":"full","linkDestination":"media","align":"center"} -->
+<figure class="wp-block-image aligncenter size-full is-resized"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-approval-page.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-approval-page.png" alt="Approval page on a phone: Approve RDP login, signed in as alice, This RDP login from 192.0.2.15, Kerberos (NLA), code 47, buttons Approve and Deny" class="wp-image-2500" style="width:360px"/></a><figcaption class="wp-element-caption">Figure 6: The approval page, opened from the QR code: same login code, client address and start time.</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>A few details make this harder to abuse than "click yes on whatever pops up":</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul class="wp-block-list"><!-- wp:list-item -->
+<li><strong>The QR code is bound to this login.</strong> It encodes the approval URL plus the broker's random id of exactly this pending login. Someone who has the password and starts a login at the same moment gets a different id, which only their own screen shows. Scanning the code in your own RDP window can only approve your own login.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>The login code ties the three places together.</strong> RDP window, approval page and notification show the same two-digit code, so the user can check that the login on the page is the one on their screen. It's a bit like number matching in push apps, except that you compare instead of type.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>A warning when several logins wait.</strong> If the page was opened from the QR code while other logins of the same account are pending, it puts a red box above the buttons: how many logins wait, this login's code in large type, and "approve only if your own RDP window shows this code". The other logins can only be denied from there, and the approval is logged with a warning.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>Every approval needs a fresh MFA sign-in.</strong> The page sends the user to Keycloak with <code>prompt=login</code> and <code>max_age=0</code> and checks <code>auth_time</code>, so an existing browser session doesn't count, and the id in the link is no credential on its own. A sign-in that doesn't prove MFA ends on a "Second factor required" page.</li>
+<!-- /wp:list-item --></ul>
+<!-- /wp:list -->
+
+<!-- wp:image {"id":2501,"width":"360px","sizeSlug":"full","linkDestination":"media","align":"center"} -->
+<figure class="wp-block-image aligncenter size-full is-resized"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-approval-page-with-two-logins-waiting.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-approval-page-with-two-logins-waiting.png" alt="Approval page while two logins wait: red warning box saying 2 logins with your account are waiting, its code is 47, approve only if your own RDP window shows this code; this login with Approve and Deny; another login from 192.0.2.77 with code 83 and only Deny" class="wp-image-2501" style="width:360px"/></a><figcaption class="wp-element-caption">Figure 7: The same page while a second login of the account waits.</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p>None of this stops a user who approves a login they didn't start, which is still the weak spot of every push-style factor. But it gives them a fair chance to notice. If the KDC has already proven a strong logon (smartcard, Windows Hello for Business, see above), there is no second prompt at all.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Choosing the desktop in the RDP window</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>The same panel can also ask for the desktop. With the opt-in desktop picker, users who may use more than one desktop choose after the second factor, with a digit, the arrow keys and Enter, or a click; a countdown starts the preselected one. Logins that already name a desktop, and users with only one, never see it. This needed one more FreeRDP patch, because the proxy has to read the client's input while it still waits for the broker.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:image {"id":2535,"sizeSlug":"full","linkDestination":"media","align":"center"} -->
+<figure class="wp-block-image aligncenter size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-desktop-picker-in-the-RDP-window-1.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-desktop-picker-in-the-RDP-window-1.png" alt="Desktop picker in the RDP window: Choose your desktop, rows 1 Xfce, 2 GNOME (running) selected, 3 KDE Plasma, keyboard hint and a countdown Continuing in 0:14" class="wp-image-2535"/></a><figcaption class="wp-element-caption">Figure 8: The optional desktop picker after the second factor.</figcaption></figure>
+<!-- /wp:image -->
+
+<!-- wp:paragraph -->
+<p><strong>Status:</strong> the waiting screen, the QR code and the picker are tested end to end with FreeRDP clients through the real proxy; the test decodes the QR code from the client's screen. With mstsc and the Windows App they still have to be confirmed in a lab: panel visible, countdown updating, QR code scannable, nothing left over when the desktop appears. Web approval with a real Keycloak and mstsc together is a lab item, too. Notifications are checked against the RFC test vectors and local servers, but not yet on real iOS and Android devices.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading -->
@@ -188,8 +274,8 @@
 <h3 class="wp-block-heading">Rendering and encoding per back-end</h3>
 <!-- /wp:heading -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/04-gpu-encoding-paths.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/04-gpu-encoding-paths.png" alt="Rendering and H.264 encoding paths per back-end: xrdp with glamor and the fastrdp FFmpeg encoder (VA-API, NVENC, QSV) falling back to libx264; GNOME with VA-API via Vulkan or NVENC, else RFX progressive; Plasma with h264_vaapi, else libx264/libopenh264; the web path re-encodes as images"/></a><figcaption class="wp-element-caption">Figure 5: Which part uses the GPU where. This is derived from upstream sources and sandbox tests; it still has to be confirmed on real Intel, AMD and NVIDIA hosts.</figcaption></figure>
+<!-- wp:image {"id":2490,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-GPU-rendering-and-H.264-encoding-paths-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-GPU-rendering-and-H.264-encoding-paths-scaled.png" alt="Rendering and H.264 encoding paths per back-end: xrdp with glamor and the fastrdp FFmpeg encoder (VA-API, NVENC, QSV) falling back to libx264; GNOME with VA-API via Vulkan or NVENC, else RFX progressive; Plasma with h264_vaapi, else libx264/libopenh264; the web path re-encodes as images" class="wp-image-2490"/></a><figcaption class="wp-element-caption">Figure 9: Which part uses the GPU where. This is derived from upstream sources and sandbox tests; it still has to be confirmed on real Intel, AMD and NVIDIA hosts.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:list -->
@@ -243,18 +329,20 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>Some decisions I'd like to highlight:</p>
+<p>Some decisions I'd like to highlight (the code has also been through several review rounds; the findings are fixed and covered by regression tests):</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
-<li><strong>Only the proxy is exposed.</strong> Back-end ports are dropped on non-loopback interfaces. On loopback, an nftables owner rule (<code>meta skuid</code>) lets only the proxy user and root open connections. Before routing, the broker checks in <code>/proc/net/tcp</code> that the target port is held by exactly the expected uid, so a user can't grab a back-end port and collect credentials.</li>
+<li><strong>Only the proxy is exposed.</strong> Back-end ports are dropped on non-loopback interfaces. On loopback, an nftables owner rule (<code>meta skuid</code>) lets only the proxy user and root open connections. Before routing, the broker checks in <code>/proc/net/tcp</code> that the target port is held by exactly the expected uid, so a user can't grab a back-end port and collect credentials. Since 0.5.1 the proxy also pins each back-end's TLS certificate: the broker names the expected SHA-256 fingerprint, and any other certificate ends the login.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>One-time tokens instead of passwords</strong> towards xrdp: 60 s, single use, kept in memory only. The client's password never travels over the RDP hop to xrdp.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>The smartcard PIN is never forwarded.</strong> Testing smartcard logon (PKINIT) end to end showed that FreeRDP stores the card PIN in the password setting, and the module forwarded it: the PIN could have reached <code>pam_sss</code> (AD lockout counts) or privacyIDEA. The module now checks <code>PasswordIsSmartcardPin</code>, the broker drops passwords on smartcard logins, and a regression test covers it.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Unprivileged daemons.</strong> The xrdp daemon runs as user <code>xrdp</code>, including the hardware encoder. The proxy runs as <code>_fastrdp-proxy</code>. GNOME and Plasma back-ends run as the user.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>One user can't shut down the shared host.</strong> RDP sessions have no seat, so polkit would let users shut down or reboot the host with an admin's password. A polkit rule now refuses the power actions in RDP sessions; only members of an admin group can still authenticate for them.</li>
 <!-- /wp:list-item --></ul>
 <!-- /wp:list -->
 
@@ -272,7 +360,7 @@
 
 <!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
-<li><strong>FreeRDP 3.32.2</strong> in a private prefix, <code>/opt/fastrdp</code>. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. g-r-d and KRdp keep the distribution's FreeRDP.</li>
+<li><strong>FreeRDP 3.32.2</strong> in a private prefix, <code>/opt/fastrdp</code>, with seven fastrdp patches. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. The patches fix the smartcard slot id, let mstsc's Kerberos user-to-user work with AD, handle Remote Credential Guard requests cleanly, keep the KDC's evidence from the ticket, and let the proxy read input for the desktop picker. g-r-d and KRdp keep the distribution's FreeRDP.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>xrdp 0.10.6.1 + xorgxrdp 0.10.5</strong>, because the distributions ship 0.10.1, and because the FFmpeg encoder patch lives there.</li>
 <!-- /wp:list-item --></ul>
@@ -287,7 +375,7 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>Two bugs that belong to other projects came out of this work:</p>
+<p>Several bugs that belong to other projects came out of this work. Three examples:</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:list -->
@@ -295,11 +383,13 @@
 <li><strong>MIT krb5 SPNEGO regression.</strong> Kerberos NLA from default FreeRDP clients to xrdp's NLA pull request failed with "Invalid token was supplied". I traced it to MIT krb5 1.21.0–1.22.1: FreeRDP offers Kerberos user-to-user first, so MIT must check the client's mechListMIC, and since commit fdceb225 it looks for it under ASN.1 tag <code>0xA4</code> instead of <code>0xA3</code>. MIT had already fixed this in <strong>1.22.2</strong> (ticket 9183), but Debian 13 and Ubuntu 26.04 ship affected versions. fastrdp isn't affected (freerdp-proxy uses WinPR's SPNEGO), which is one more reason NLA stays at the proxy.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>FreeRDP PKCS#11 slot id truncated to 16 bits.</strong> The client formats the slot id as <code>UINT16</code>, so PKCS#11 modules with 32-bit slot ids (SoftHSM2, some HSMs) fail smartcard logon. The fix is four lines. OpenSC and YubiKey PIV use small slot ids and are not affected.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>FreeRDP's Kerberos user-to-user acceptor and Active Directory.</strong> mstsc always starts Kerberos under CredSSP with a user-to-user request. WinPR's acceptor then asks the KDC for a TGT of <code>TERMSRV/&lt;host&gt;</code>, which AD refuses, so every mstsc Kerberos login to an AD-joined FreeRDP server failed. fastrdp's patch answers with the machine account's TGT from the keytab. Confirmed in the field: two Windows clients logged in with mstsc and Kerberos through the proxy of an AD-joined host.</li>
 <!-- /wp:list-item --></ul>
 <!-- /wp:list -->
 
 <!-- wp:paragraph -->
-<p>Reports and pull request texts, including one for the xrdp encoder, are drafted in <code>docs/upstream.md</code>. <strong>Nothing has been submitted yet</strong>; that happens once the stack works end to end.</p>
+<p>Reports and pull request texts, including one for the xrdp encoder, are drafted in <code>docs/upstream.md</code>, and each FreeRDP patch has its reasoning in the repository. <strong>Nothing has been submitted yet</strong>; that happens once the stack works end to end.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading {"level":3} -->
@@ -312,9 +402,9 @@
 
 <!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
-<li><strong>Unit and protocol tests</strong> for the broker (127 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.</li>
+<li><strong>Unit and protocol tests</strong> for the broker (521 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>End-to-end tests against a real freerdp-proxy</strong> with the module and the vendored FreeRDP: TLS, Kerberos NLA against a throwaway KDC, and smartcard PKINIT (the SoftHSM variant guards the slot id fix).</li>
+<li><strong>End-to-end tests against a real freerdp-proxy</strong> with the module and the vendored FreeRDP: TLS, Kerberos NLA against a throwaway KDC (including the user-to-user path and the KDC evidence), smartcard PKINIT (the SoftHSM variant guards the slot id fix), back-end certificate pinning, and the waiting screen and desktop picker as a client sees them.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>The xrdp encoder test</strong> runs the FFmpeg backend with libx264 through the same code path (30 of 30 frames decode, luma PSNR 56 dB at QP 20) and checks the VA-API/NVENC fallback.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
@@ -322,8 +412,8 @@
 <!-- /wp:list-item --></ul>
 <!-- /wp:list -->
 
-<!-- wp:image {"sizeSlug":"full","linkDestination":"media"} -->
-<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/05-build-delivery-pipeline.png"><img src="https://blog.linux-ng.de/wp-content/uploads/REPLACE-AFTER-UPLOAD/05-build-delivery-pipeline.png" alt="Build and delivery pipeline: sources.yml and patches feed fetch.sh and the build scripts, which feed the Ansible build path, the Debian packages and CI; CI runs tests, vendored builds, package builds, e2e and krb5 checks, then publishes a signed APT repository and the corresponding source"/></a><figcaption class="wp-element-caption">Figure 6: One source of truth for the vendored builds, three consumers, and the CI pipeline that publishes the APT repository.</figcaption></figure>
+<!-- wp:image {"id":2491,"sizeSlug":"full","linkDestination":"media"} -->
+<figure class="wp-block-image size-full"><a href="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-build-and-delivery-pipeline-scaled.png"><img src="https://blog.linux-ng.de/wp-content/uploads/2026/10/fastrdp-build-and-delivery-pipeline-scaled.png" alt="Build and delivery pipeline: sources.yml and patches feed fetch.sh and the build scripts, which feed the Ansible build path, the Debian packages and CI; CI runs tests, vendored builds, package builds, e2e and krb5 checks, then publishes a signed APT repository and the corresponding source" class="wp-image-2491"/></a><figcaption class="wp-element-caption">Figure 10: One source of truth for the vendored builds, three consumers, and the CI pipeline that publishes the APT repository.</figcaption></figure>
 <!-- /wp:image -->
 
 <!-- wp:heading {"level":3} -->
@@ -331,7 +421,7 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI is set up to publish them as a <strong>signed APT repository on GitHub Pages</strong> (stable and testing suites for Ubuntu 26.04 and Debian 13). Ansible can install from it or compile on the host.</p>
+<p>There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI publishes them as a <strong>signed APT repository on GitHub Pages</strong>, <a href="https://linuxrrze.github.io/fast-rdp-server/">linuxrrze.github.io/fast-rdp-server</a>, with a stable suite (release tags, currently 0.7.1) and a testing suite (the main branch) each for Ubuntu 26.04 and Debian 13. Ansible can install from it or compile on the host.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
@@ -343,7 +433,11 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p><strong>Working and tested in CI or a sandbox:</strong> the broker, the proxy module end to end in a real freerdp-proxy (TLS, Kerberos NLA, smartcard), the PAM token module, the web path's token and crypto flow, the Ansible roles, the wlroots launcher on Xvfb, the xrdp encoder via libx264 and its fallback, packaging and CI.</p>
+<p><strong>Working and tested in CI or a sandbox:</strong> the broker with all MFA modes, the proxy module end to end in a real freerdp-proxy (TLS, Kerberos NLA, smartcard, waiting screen, desktop picker), the PAM token module, the web path's token and crypto flow, the web approval and notification code, Keycloak's passkey flow against a real Keycloak 26.8.1, the Ansible roles, the wlroots launcher on Xvfb, the xrdp encoder via libx264 and its fallback, packaging and CI.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p><strong>Confirmed in the field:</strong> Windows mstsc logs in with Kerberos NLA through the proxy of an AD-joined host (user-to-user, two Windows clients). First deployments on real hosts also turned up a few Ansible problems, which are fixed in 0.6.1 and 0.7.0.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
@@ -356,11 +450,17 @@
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>The GNOME and Plasma headless back-ends on a lab host.</strong> Headless KRdp is unofficial, and no real GNOME or Plasma session has been started yet. Full xrdp sessions through the proxy also need a lab run.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Windows mstsc with Kerberos</strong> against fastrdp, as well as real smartcards with an AD PKI. Smartcard logon so far works with a software token. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses. The details still need a lab test.</li>
+<li><strong>Windows clients beyond the Kerberos login:</strong> the waiting screen, QR code and desktop picker in mstsc and the Windows App, web approval with a real Keycloak, and real smartcards with an AD PKI. Smartcard logon so far works with a software token. Skipping the second factor based on the KDC's evidence (smartcard, Windows Hello for Business) is implemented but needs a real AD to confirm which SIDs these logons carry. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>The guided setup assistant</strong> (<code>make setup</code>, <code>make preflight</code>) against a real target.</li>
+<li><strong>Audio and microphone</strong> with real clients, and <strong>notifications</strong> on real iOS and Android devices.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>The guided setup assistant</strong> (<code>make setup</code>, <code>make preflight</code>) in a systematic lab run.</li>
 <!-- /wp:list-item --></ul>
 <!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p><strong>Deferred for now:</strong> seamless application windows (RemoteApp), because none of the back-ends can serve them today, and Windows hosts as back-ends, which would put fastrdp's MFA in front of real Windows RDP servers but means relaying clear-text domain passwords. Both are researched and written up in the backlog, should someone need them.</p>
+<!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
 <p>To try it in a lab, the <a href="https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/quickstart.md">quick start</a> walks through four steps: answer about 15 questions, run the read-only preflight, deploy, then run the smoke test and connect:</p>
@@ -389,7 +489,9 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /gfx:avc4
 <ul class="wp-block-list"><!-- wp:list-item -->
 <li><strong>Testers with GPUs</strong>: Intel and AMD with VA-API, NVIDIA with NVENC. The runbook in <code>docs/performance.md</code> and <code>tests/gpu/session_report.py</code> show what to measure.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Windows/AD labs</strong>: mstsc with Kerberos SSO, AD GPOs, smartcard logon with a real PKI.</li>
+<li><strong>Windows/AD labs</strong>: mstsc and the Windows App with the waiting screen, web approval and the desktop picker, AD GPOs, smartcard and Windows Hello for Business logons with a real PKI.</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>Phones</strong>: approval notifications through ntfy and Web Push on iOS and Android.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>GNOME and Plasma users</strong> who want to try the headless back-ends.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
