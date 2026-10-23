@@ -1,3 +1,27 @@
+fast-rdp-server (0.7.4) unstable; urgency=medium
+
+  * Proxy: a client's Shutdown Request (mstsc's X in the connection bar)
+    during a running session is answered with Shutdown Request Denied, as
+    MS-RDPBCGR 1.3.1.4.1 requires, so mstsc disconnects cleanly instead of
+    seeing a server-side drop (FreeRDP patch 0008). The next Connect in the
+    same mstsc is still to be confirmed in the lab; the same symptom after a
+    GNOME logout is open (backlog A5).
+  * Proxy: log lines go straight to the journal through WLog's journald
+    appender, in order and not torn; FreeRDP patch 0009 makes WITH_SYSTEMD
+    reach winpr's config.h, the build checks for it (backlog A4).
+    fastrdp-freerdp3 3.32.2-7 carries both patches.
+  * Approval page: no Approve button for a login the current sign-in is too
+    old for; it offers a fresh sign-in instead, at once on the login-bound
+    page, without loops (backlog W6).
+  * Waiting screen: the QR hint names no device.
+  * Setup: fastrdp-setup offers code_or_web (realm, client, secret, CA) and
+    preflight checks the Keycloak code check; fastrdp-mfa-kcadm.sh sets up
+    the code check (--otp-client). make lint also checks the kcadm example
+    and the PAM test script.
+  * Docs: debian/changelog always carries the version of the git release.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Fri, 23 Oct 2026 21:53:25 +0200
+
 fast-rdp-server (0.7.3) unstable; urgency=medium
 
   * MFA mode code_or_web (opt-in): the RDP waiting screen shows a masked field
