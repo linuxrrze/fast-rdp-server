@@ -10,7 +10,8 @@ Creates realm REALM with
   - alice: password + TOTP (secret below), required action to register a passkey;
   - carol: password only;
   - a non-default passwordless RP entity name, which the role must keep;
-  - otp-client: the code check's client ([mfa] mode code_or_web) from its sample.
+  - otp-client: the code check's client ([mfa] mode code_or_web) from its sample;
+    drop-otp-check, set-otp-deny, set-otp-client: changes for the kcadm script's test.
 check-sample imports the sample client unchanged into a realm of its own and compares
 what Keycloak stores with the file (no field dropped or rewritten).
 Standard library only.
@@ -166,6 +167,39 @@ def otp_client(base: str, admin_user: str, admin_password: str) -> None:
     a.call("POST", f"/realms/{REALM}/clients", client)
 
 
+def drop_otp_check(base: str, admin_user: str, admin_password: str, flow: str = "fastrdp-otp-check") -> None:
+    """Remove what the setup script added for the code check (binding, flow, amr mapper),
+    so that fastrdp-mfa-kcadm.sh builds it again; the client stays."""
+    a = Admin(base, admin_user, admin_password)
+    r = f"/realms/{REALM}"
+    client = a.call("GET", f"{r}/clients?clientId=fastrdp-otp-check")[0]
+    # an empty map changes nothing; an empty value removes the binding
+    a.call("PUT", f"{r}/clients/{client['id']}", {**client, "authenticationFlowBindingOverrides": {"direct_grant": ""}})
+    for m in a.call("GET", f"{r}/clients/{client['id']}/protocol-mappers/models"):
+        if m["name"] == "fastrdp amr":
+            a.call("DELETE", f"{r}/clients/{client['id']}/protocol-mappers/models/{m['id']}")
+    for alias in (flow, f"{flow} - otp", f"{flow} - no otp"):   # sub-flows too, if left behind
+        f = [x for x in a.call("GET", f"{r}/authentication/flows") if x["alias"] == alias]
+        if f:
+            a.call("DELETE", f"{r}/authentication/flows/{f[0]['id']}")
+
+
+def set_otp_deny(base: str, admin_user: str, admin_password: str, requirement: str) -> None:
+    """A hand-made change: the code check's Deny access step DISABLED (or back)."""
+    a = Admin(base, admin_user, admin_password)
+    flow = urllib.parse.quote("fastrdp-otp-check - no otp")
+    for e in a.call("GET", f"/realms/{REALM}/authentication/flows/{flow}/executions"):
+        if e.get("providerId") == "deny-access-authenticator":
+            a.call("PUT", f"/realms/{REALM}/authentication/flows/{flow}/executions", {**e, "requirement": requirement})
+
+
+def set_otp_client(base: str, admin_user: str, admin_password: str, field: str, value: str) -> None:
+    """Change one top-level field of the code check's client (JSON value)."""
+    a = Admin(base, admin_user, admin_password)
+    client = a.call("GET", f"/realms/{REALM}/clients?clientId=fastrdp-otp-check")[0]
+    a.call("PUT", f"/realms/{REALM}/clients/{client['id']}", {**client, field: json.loads(value)})
+
+
 def state(base: str, admin_user: str, admin_password: str) -> dict:
     """What run.sh checks after the role: merged lists, kept settings."""
     a = Admin(base, admin_user, admin_password)
@@ -222,6 +256,12 @@ def main(argv: list[str]) -> int:
         add_cookie_to_flow(base, argv[3], argv[4], argv[5])
     elif cmd == "otp-client":
         otp_client(base, argv[3], argv[4])
+    elif cmd == "drop-otp-check":
+        drop_otp_check(base, argv[3], argv[4])
+    elif cmd == "set-otp-deny":
+        set_otp_deny(base, argv[3], argv[4], argv[5])
+    elif cmd == "set-otp-client":
+        set_otp_client(base, argv[3], argv[4], argv[5], argv[6])
     elif cmd == "totp":
         print(totp())
     else:

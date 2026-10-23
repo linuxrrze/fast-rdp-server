@@ -16,7 +16,11 @@
 #      hardware-only mode);
 #   5. the broker's code check ([mfa] mode code_or_web): the role sets up the direct grant
 #      flow of the sample client fastrdp-otp-check, otp_check.py checks codes with
-#      keycloak_otp.py (right, wrong, no OTP credential, other client, replay).
+#      keycloak_otp.py (right, wrong, no OTP credential, other client, replay);
+#   6. docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh --otp-client (Method 2, kcadm.sh of
+#      that Keycloak): finds the role's result unchanged, builds the code check again after
+#      it was removed (the role's check mode then reports nothing), codes work, a hand-made
+#      change stops it until --rebuild, an unsafe client is refused.
 #
 # Manual (heavy: JDK + Keycloak + Chromium, ~2 min). Needs python3 >= 3.11,
 # python3-cryptography, ansible-playbook, curl, and:
@@ -220,4 +224,74 @@ grep -E '^(ok  |FAIL)' "$T/otp.out"
 T_PASS=$((T_PASS + $(grep -c '^ok  ' "$T/otp.out")))
 T_FAIL=$((T_FAIL + $(grep -c '^FAIL' "$T/otp.out")))
 [ "$rc" = 0 ] || [ "$(grep -c '^FAIL' "$T/otp.out")" != 0 ] || { tail -20 "$T/otp.out"; T_FAIL=$((T_FAIL + 1)); }
+
+# ------------------------------------------------------------------ kcadm script (Method 2)
+KCADM_SCRIPT=$REPO/docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh
+export KCADM=$KEYCLOAK_HOME/bin/kcadm.sh KCADM_CONFIG=$T/kcadm.config
+fixture() { python3 "$HERE/kc_fixture.py" "$1" "$KC" admin "$ADMIN_PW" "${@:2}"; }
+kcadm_run() { "$KCADM_SCRIPT" -r fastrdp-test -c fastrdp-web --otp-client fastrdp-otp-check "$@"; }
+codes_work() {   # alice's right code passes, carol (no OTP) gets Deny access
+    python3 - "$KC" "$REPO" <<'PY'
+import sys
+sys.path[:0] = [sys.argv[2] + "/tests/keycloak", sys.argv[2] + "/broker/brokerd"]
+from fastrdp_broker import keycloak_otp
+from fastrdp_broker.config import KeycloakOtpSection
+from kc_fixture import OTP_CLIENT_SECRET, REALM, totp
+kc = keycloak_otp.KeycloakOtp(KeycloakOtpSection(issuer=f"{sys.argv[1]}/realms/{REALM}", client_id="fastrdp-otp-check",
+                                                 client_secret_file="/nonexistent", timeout=10), secret=OTP_CLIENT_SECRET)
+got = (kc.check("alice", totp()), kc.check("carol", "123456"))
+assert got == (keycloak_otp.OK, keycloak_otp.NO_OTP), got
+PY
+}
+check "kcadm.sh logged in" "$KCADM" config credentials --config "$KCADM_CONFIG" --server "$KC" --realm master \
+    --user admin --password "$ADMIN_PW"
+check "kcadm script --check on the role's result" kcadm_run --check
+if grep -q '^no changes: .*code check fastrdp-otp-check' "$T_OUT"; then
+    ok "kcadm script finds the role's setup (code check included) unchanged"
+else
+    fail "kcadm script finds the role's setup unchanged"
+fi
+fixture drop-otp-check
+check "kcadm script --check after the code check was removed" kcadm_run --check
+if grep -q 'would change: create direct grant flow fastrdp-otp-check' "$T_OUT" \
+    && grep -q 'would change: client fastrdp-otp-check: amr mapper' "$T_OUT" \
+    && grep -q 'would change: client fastrdp-otp-check: direct grant flow' "$T_OUT" \
+    && ! grep -q '^ok: direct grant flow' "$T_OUT"; then
+    ok "kcadm script check mode lists flow, mapper and binding"
+else
+    fail "kcadm script check mode lists flow, mapper and binding"
+fi
+check "kcadm script builds the code check" kcadm_run
+check "role's check mode after the kcadm script" apply_otp --check
+if [ "$(changed)" = changed=0 ]; then
+    ok "kcadm script's code check equals the role's (role check mode: changed=0)"
+else
+    fail "kcadm script's code check equals the role's ($(changed))"
+fi
+check "codes work through the kcadm script's flow (alice OK, carol Deny access)" codes_work
+check "kcadm script run again" kcadm_run
+if grep -q '^no changes:' "$T_OUT"; then ok "kcadm script is idempotent"; else fail "kcadm script is idempotent"; fi
+fixture set-otp-deny DISABLED
+if kcadm_run --check >"$T/kcadm-drift.out" 2>&1; then rc=0; else rc=1; fi
+if [ "$rc" = 1 ] && grep -q 'of the code check exists with another structure' "$T/kcadm-drift.out" \
+    && grep -q 'have: .*deny-access-authenticator","DISABLED"' "$T/kcadm-drift.out"; then
+    ok "kcadm script stops at a hand-made change of the code check's flow"
+else
+    T_OUT=$T/kcadm-drift.out fail "kcadm script stops at a hand-made change of the code check's flow"
+fi
+check "kcadm script --rebuild" kcadm_run --rebuild
+if grep -q '^change: rebuild direct grant flow fastrdp-otp-check' "$T_OUT"; then
+    ok "kcadm script --rebuild restores the code check's flow"
+else
+    fail "kcadm script --rebuild restores the code check's flow"
+fi
+check "codes work after the rebuild" codes_work
+fixture set-otp-client fullScopeAllowed true
+if kcadm_run --check >"$T/kcadm-unsafe.out" 2>&1; then rc=0; else rc=1; fi
+fixture set-otp-client fullScopeAllowed false
+if [ "$rc" = 1 ] && grep -q 'must be confidential, direct grants only.*fullScopeAllowed=true' "$T/kcadm-unsafe.out"; then
+    ok "kcadm script refuses an unsafe code check client"
+else
+    T_OUT=$T/kcadm-unsafe.out fail "kcadm script refuses an unsafe code check client"
+fi
 finish

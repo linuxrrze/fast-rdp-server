@@ -92,7 +92,9 @@ How it works:
   `--rebuild` deletes the flow's steps and builds them again, which is what the Ansible
   script does. A built-in flow of that name is always refused.
 - Options: `--flow`, `--acr`, `--loa`, `--profile`, `--policy`, `--second-factors`
-  (comma list, e.g. add a privacyIDEA authenticator id) and `--mediation`. Hardware-only
+  (comma list, e.g. add a privacyIDEA authenticator id) and `--mediation`;
+  `--otp-client CLIENT_ID` (with `--otp-flow`, `--otp-amr`) also sets up the code check of
+  `code_or_web` ([below](#code-in-the-rdp-window-code_or_web)). Hardware-only
   AAGUID lists are not supported; use Method 1 for those.
 - `KCADM_CONFIG` selects a different kcadm session file. Use `KCADM_OPTS` for extra
   options, e.g. `--truststore`. A run takes about 40 s, because each kcadm call starts
@@ -289,9 +291,21 @@ settings name the client: `"otp_check_client_id": "fastrdp-otp-check"`. It refus
 unsafe client, reports step 5 as warnings, and compares the flow and the mapper exactly
 on every run: a step that was disabled, removed or reconfigured by hand is a warning,
 and the flow is rebuilt (with `"check": true` only reported). [tested: Keycloak 26.8.1,
-`make test-keycloak`] Methods 2–5 do not cover it; follow the steps above
-[steps by hand not tested in the console; the result is what Method 1 creates through the
-same REST API; afterwards run Method 1 with `"check": true`: it must report no changes].
+`make test-keycloak`]
+
+Method 2 does steps 2–4 with `--otp-client fastrdp-otp-check` (options `--otp-flow`,
+`--otp-amr`), the same objects with the same names and configs: afterwards Method 1 with
+`"check": true` reports no changes. It refuses an unsafe client and prints step 5 as
+warnings, like Method 1. One difference: a flow `fastrdp-otp-check` that was changed by
+hand stops it (current and wanted steps are printed) until you rerun it with
+`--rebuild`, as for `fastrdp-mfa`; Method 1 rebuilds it at once with a warning.
+[tested: Keycloak 26.8.1, `make test-keycloak`: built after the role's objects were
+removed, role check mode `changed=0`, codes work, idempotent, a disabled Deny step
+stops it, `--rebuild` restores it, an unsafe client is refused]
+
+Methods 3–5 do not cover it; follow the steps above [steps by hand not tested in the
+console; the result is what Methods 1 and 2 create through the same REST API; afterwards
+run Method 1 with `"check": true`: it must report no changes].
 
 ## Files
 
