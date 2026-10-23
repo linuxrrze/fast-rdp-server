@@ -65,6 +65,10 @@ ROLE_DEFAULTS = {
     "fastrdp_keycloak_admin_realm": "master",
     "fastrdp_keycloak_admin_client_id": "admin-cli",
     "fastrdp_keycloak_admin_user": "",
+    "fastrdp_mfa_keycloak_issuer": "{{ fastrdp_web_oidc_issuer | default('') }}",
+    "fastrdp_mfa_keycloak_client_id": "fastrdp-otp-check",
+    "fastrdp_mfa_keycloak_client_secret": "{{ vault_fastrdp_mfa_keycloak_client_secret | default('') }}",
+    "fastrdp_mfa_keycloak_ca_src": "{{ fastrdp_web_oidc_ca_src | default('') }}",
     "fastrdp_proxy_broker_timeout": 180,
 }
 # The broker's [broker] session_start_timeout (config.py, not rendered): after a web
@@ -98,8 +102,8 @@ VARIABLES = [
     ("front-end", "fastrdp_front_key_src", "", "PEM private key on this machine"),
     ("front-end", "fastrdp_allow_tls_logins", True,
      "accept clients without NLA (password, plus OTP, typed into one field)"),
-    ("MFA", "fastrdp_mfa_mode", "none", "second factor of RDP logins: none | web (Keycloak) | push | otp | otp_or_push "
-     "(privacyIDEA) | push_or_web (both) (docs/auth-matrix.md)"),
+    ("MFA", "fastrdp_mfa_mode", "none", "second factor of RDP logins: none | web | code_or_web (Keycloak) | push | otp "
+     "| otp_or_push (privacyIDEA) | push_or_web (both) (docs/auth-matrix.md)"),
     ("MFA", "fastrdp_privacyidea_url", "", "privacyIDEA base URL"),
     ("MFA", "fastrdp_privacyidea_realm", "", "privacyIDEA realm (\"\" = its default realm)"),
     ("MFA", "fastrdp_privacyidea_ca_src", "", "CA of privacyIDEA, on this machine (\"\" = system trust store)"),
@@ -115,6 +119,13 @@ VARIABLES = [
     ("MFA", "fastrdp_mfa_web_approval_max_auth_age", 30, "the approving sign-in may be at most this many seconds older"),
     ("MFA", "fastrdp_mfa_web_approval_single_pending", True,
      "no approval while a user has two or more pending logins"),
+    ("MFA", "fastrdp_mfa_keycloak_issuer", ROLE_DEFAULTS["fastrdp_mfa_keycloak_issuer"],
+     "code_or_web: Keycloak realm URL of the code check"),
+    ("MFA", "fastrdp_mfa_keycloak_client_id", "fastrdp-otp-check",
+     "code_or_web: confidential client of the code check (direct grant, no password); its secret is in vault.yml"),
+    ("MFA", "fastrdp_mfa_keycloak_client_secret", ROLE_DEFAULTS["fastrdp_mfa_keycloak_client_secret"], "from vault.yml"),
+    ("MFA", "fastrdp_mfa_keycloak_ca_src", ROLE_DEFAULTS["fastrdp_mfa_keycloak_ca_src"],
+     "code_or_web: CA of that Keycloak, on this machine (\"\" = system trust store)"),
     ("MFA", "fastrdp_proxy_broker_timeout", 180,
      "seconds the proxy waits for the broker: web approval plus the session start (90 s)"),
     ("desktops", "fastrdp_desktops", ["xfce"],
@@ -155,6 +166,8 @@ VAULT_KEYS = {
     # read by the web_gateway role defaults (fastrdp_keycloak_admin_client_secret / _password)
     "keycloak_admin_client_secret": "vault_fastrdp_keycloak_admin_client_secret",
     "keycloak_admin_password": "vault_fastrdp_keycloak_admin_password",
+    # read by the roles/common default fastrdp_mfa_keycloak_client_secret
+    "mfa_keycloak_client_secret": "vault_fastrdp_mfa_keycloak_client_secret",
 }
 SECRET_ENV = {
     "join_password": "FASTRDP_JOIN_PASSWORD",
@@ -162,6 +175,7 @@ SECRET_ENV = {
     "web_oidc_client_secret": "FASTRDP_WEB_OIDC_CLIENT_SECRET",
     "keycloak_admin_client_secret": "FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET",
     "keycloak_admin_password": "FASTRDP_KEYCLOAK_ADMIN_PASSWORD",
+    "mfa_keycloak_client_secret": "FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET",
 }
 
 
@@ -385,6 +399,17 @@ def v_keycloak_name(what):
     return check
 
 
+# Same shape as roles/common and the broker (config.py KEYCLOAK_ISSUER), https only here
+KEYCLOAK_ISSUER_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[!-~]*)?/realms/[^/\s]+\Z")
+
+
+def v_keycloak_issuer(value, a=None):
+    v = v_https_url(value, a)
+    if not KEYCLOAK_ISSUER_RE.match(v):
+        raise SetupError("expected a Keycloak realm URL like https://keycloak.example.com/realms/main")
+    return v
+
+
 def v_keycloak_admin_user(value, a=None):
     v = v_user(value, a)
     if not v:
@@ -483,7 +508,18 @@ def _pi(a):
 
 
 def _web_approval(a):
-    return a.get("mfa_mode", "none") in ("web", "push_or_web")
+    """Modes with the approval page (code_or_web: the passkey way next to the code)."""
+    return a.get("mfa_mode", "none") in ("web", "push_or_web", "code_or_web")
+
+
+def _code(a):
+    """code_or_web: the broker checks codes typed on the waiting screen at Keycloak."""
+    return a.get("mfa_mode") == "code_or_web"
+
+
+def _code_own_realm(a):
+    """code_or_web with a Keycloak realm other than the web gateway's."""
+    return _code(a) and a.get("mfa_keycloak_issuer", a.get("web_oidc_issuer")) != a.get("web_oidc_issuer")
 
 
 def _keycloak_admin(a):
@@ -504,10 +540,23 @@ KEYCLOAK_MFA_WARNING = (
     "otherwise every web sign-in is refused.")
 
 
+CODE_CHECK_FLOW_WARNING = (
+    "Set up the code check's direct grant flow, its amr mapper and the flow binding of the client "
+    "by hand (docs/examples/keycloak-mfa/README.md#code-in-the-rdp-window-code_or_web).")
+
+
+def _code_flow_by_hand(a):
+    """The role does not set up the code check's flow: off, or another realm than the webgate's."""
+    return _code(a) and (not a.get("web_passkeys") or _code_own_realm(a))
+
+
 def _warn_no_keycloak_mfa(a):
+    notes = []
     if _web(a) and not a.get("web_passkeys"):
-        return "  NOTE: " + KEYCLOAK_MFA_WARNING
-    return None
+        notes.append("  NOTE: " + KEYCLOAK_MFA_WARNING)
+    if _code_flow_by_hand(a):
+        notes.append("  NOTE: " + CODE_CHECK_FLOW_WARNING)
+    return "\n".join(notes) or None
 
 
 def _audio(a):
@@ -578,9 +627,9 @@ QUESTIONS = [
            "FreeRDP /microphone, the browser's permission on the web path). n: the PipeWire xrdp\n"
            "module is loaded speaker-only and the web path does not offer the microphone. A default,\n"
            "not a policy: users can load the module themselves, GNOME has no switch (docs/audio.md)."),
-    Q("mfa_mode", "Second factor for RDP logins: none / web (Keycloak) / push / otp / otp_or_push "
+    Q("mfa_mode", "Second factor for RDP logins: none / web / code_or_web (Keycloak) / push / otp / otp_or_push "
       "(privacyIDEA) / push_or_web (both)",
-      v_choice("none", "push", "otp", "otp_or_push", "web", "push_or_web"), "none",
+      v_choice("none", "push", "otp", "otp_or_push", "web", "push_or_web", "code_or_web"), "none",
       help="Which system provides the second factor (MFA) of RDP logins (mstsc, FreeRDP, ...)?\n"
            "The RDP client cannot ask for it, so the login waits while the user confirms elsewhere.\n"
            "\n"
@@ -591,6 +640,11 @@ QUESTIONS = [
            "               the waiting screen), signs in at Keycloak with MFA and clicks Approve.\n"
            "               Needs browser access (asked below) and Keycloak enforcing MFA for\n"
            "               acr=mfa (docs/web-access.md#keycloak-setup).\n"
+           "  code_or_web  the user types the code from the authenticator app into the RDP window\n"
+           "               (checked by Keycloak, no password again), or approves on the approval\n"
+           "               page with a passkey (QR code). Needs browser access, the waiting screen\n"
+           "               (on by default) and a Keycloak client for the code check (asked below;\n"
+           "               docs/auth-matrix.md#code-on-the-waiting-screen).\n"
            "\n"
            "  privacyIDEA (its app or tokens):\n"
            "  push         the user approves a push notification in the privacyIDEA app\n"
@@ -646,13 +700,26 @@ QUESTIONS = [
       help="Needed for clients that cannot reach a KDC and for MFA mode otp. NLA-only is stricter; "
            "browser access then still uses TLS, from loopback (guacd) only."),
     Q("web_enabled", "Browser access via Keycloak/OIDC + Guacamole? (y/n)", v_web_enabled, _web_approval,
-      help="Needed for MFA modes web and push_or_web (the approval page is on the web gateway)."),
+      help="Needed for MFA modes web, push_or_web and code_or_web (the approval page is on the web gateway)."),
     Q("web_oidc_issuer", "OIDC issuer URL (e.g. https://keycloak.example.com/realms/main)", v_https_url,
       when=_web),
     Q("web_oidc_client_id", "OIDC client id", _str, "fastrdp-web", when=_web),
     Q("web_oidc_client_secret", "OIDC client secret (stored in the vault)", v_secret, when=_web, secret=True),
     Q("web_oidc_ca", "CA certificate of the IdP on this machine (empty = system trust store)",
       v_file(True), "", when=_web),
+    Q("mfa_keycloak_issuer", "Keycloak realm URL for the code check", v_keycloak_issuer,
+      lambda a: a.get("web_oidc_issuer"), when=_code, ask=_is_prod,
+      help="code_or_web: the realm where users have their authenticator app (TOTP). Normally the\n"
+           "web gateway's realm (the default); Ansible sets up the code check's flow only there."),
+    Q("mfa_keycloak_ca", "CA certificate of that Keycloak on this machine (empty = system trust store)",
+      v_file(True), "", when=_code_own_realm),
+    Q("mfa_keycloak_client_id", "Client id of the code check", v_keycloak_name("client id"), "fastrdp-otp-check",
+      when=_code,
+      help="A confidential client of its own: direct grants only, its flow asks for the username and\n"
+           "the code, no password. Create it from docs/examples/keycloak-fastrdp-otp-check-client.json\n"
+           "(Clients -> Import client) and copy its secret (Credentials)."),
+    Q("mfa_keycloak_client_secret", "Secret of the code check's client (stored in the vault)", v_secret,
+      when=_code, secret=True),
     Q("web_passkeys", "Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n)", _bool, False,
       when=_web, warn=_warn_no_keycloak_mfa,
       help="The web gateway accepts only sign-ins that Keycloak marks as MFA (acr=mfa,\n"
@@ -664,6 +731,8 @@ QUESTIONS = [
            "     forced flow fastrdp-mfa for acr=mfa (passkey, or password + OTP/security key),\n"
            "     passkey policy, client policy and ACR map. Recommended when you may administer the\n"
            "     realm; needs an admin login (next questions). Changes realm-wide settings.\n"
+           "     With code_or_web it also sets up the code check's flow (username + code, no\n"
+           "     password) in the web gateway's realm.\n"
            "  n  you configure a step-up flow in Keycloak yourself (docs/web-access.md#keycloak-setup).\n"
            "Either way users need a second factor (passkey, security key or authenticator app)\n"
            "registered in Keycloak."),
@@ -917,6 +986,15 @@ def variables_for(a):
         # the proxy's wait covers the approval and the session start after it
         v["fastrdp_proxy_broker_timeout"] = max(ROLE_DEFAULTS["fastrdp_proxy_broker_timeout"],
                                                 timeout + SESSION_START_TIMEOUT)
+    if _code(a):
+        issuer = a.get("mfa_keycloak_issuer", a.get("web_oidc_issuer"))
+        # the web gateway's realm: keep the role default, which follows fastrdp_web_oidc_issuer
+        v["fastrdp_mfa_keycloak_issuer"] = (ROLE_DEFAULTS["fastrdp_mfa_keycloak_issuer"]
+                                            if issuer == a.get("web_oidc_issuer") else issuer)
+        v["fastrdp_mfa_keycloak_client_id"] = a["mfa_keycloak_client_id"]
+        v["fastrdp_mfa_keycloak_client_secret"] = ROLE_DEFAULTS["fastrdp_mfa_keycloak_client_secret"]
+        v["fastrdp_mfa_keycloak_ca_src"] = (a.get("mfa_keycloak_ca", "") if _code_own_realm(a)
+                                            else ROLE_DEFAULTS["fastrdp_mfa_keycloak_ca_src"])
     if a["install_method"] == "apt":
         v["fastrdp_apt_channel"] = a["apt_channel"]
         v["fastrdp_apt_key_checksum"] = a.get("apt_key_checksum", "")
@@ -1144,6 +1222,16 @@ def next_steps(a, inv_dir, vault_mode, password_file):
         lines += ["", "Keycloak: the web gateway accepts only sign-ins that Keycloak marks as MFA (acr=mfa).",
                   "  " + KEYCLOAK_MFA_WARNING,
                   "  Or answer web_passkeys=y: Ansible then configures it (incl. passkeys)."]
+    if _code(a):
+        lines += ["", "Keycloak, code check (code_or_web; docs/auth-matrix.md#code-on-the-waiting-screen):",
+                  f"  - create the client {a['mfa_keycloak_client_id']} from "
+                  "docs/examples/keycloak-fastrdp-otp-check-client.json",
+                  "    (Clients -> Import client); its secret is the one stored in the vault;",
+                  "  - Realm settings -> Security defenses: brute force detection on; Authentication ->",
+                  "    Policies -> OTP Policy: reusable token off (the default);"]
+        if _code_flow_by_hand(a):
+            lines.append("  - " + CODE_CHECK_FLOW_WARNING[0].lower() + CODE_CHECK_FLOW_WARNING[1:-1] + ";")
+        lines.append("  - users need TOTP in Keycloak for the code, or a passkey for the approval page.")
     if vault_mode == "plaintext":
         lines += ["", f"WARNING: {inv_dir}/group_vars/all/vault.yml is NOT encrypted. Run:",
                   f"  ansible-vault encrypt {inv_dir}/group_vars/all/vault.yml"]

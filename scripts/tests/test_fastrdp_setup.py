@@ -669,6 +669,105 @@ class TestMfaAndAudioOptions(SetupTestCase):
         self.assertIn("Let Ansible configure Keycloak's MFA flow (incl. passkeys)? (y/n) [n]: ", text)
         self.assertIn("  NOTE: Make sure Keycloak enforces MFA for acr=mfa", text)
 
+    CODE_ENV = dict(ENV, FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET="otp-Secret-7")
+
+    def test_code_or_web(self):
+        # the web gateway's realm, flow by hand: only the mode (and browser access) is written
+        inv, out = self.generate(dict(LAB, mfa_mode="code_or_web", **self.WEB), "--force", env=self.CODE_ENV)
+        text = (inv / "group_vars/all/main.yml").read_text()
+        main = yaml.safe_load(text)
+        self.assertEqual(main["fastrdp_mfa_mode"], "code_or_web")
+        self.assertIs(main["fastrdp_web_enabled"], True)                # default with the approval page
+        for k in ("fastrdp_mfa_keycloak_issuer", "fastrdp_mfa_keycloak_client_id",
+                  "fastrdp_mfa_keycloak_client_secret", "fastrdp_mfa_keycloak_ca_src", "fastrdp_privacyidea_url"):
+            self.assertNotIn(k, main)                                   # role defaults
+        self.assertIn('vault_fastrdp_mfa_keycloak_client_secret: "otp-Secret-7"', self.vault(inv))
+        self.assertNotIn("otp-Secret-7", text + (inv / "setup-answers.json").read_text() + out)
+        for fragment in ("create the client fastrdp-otp-check from docs/examples/keycloak-fastrdp-otp-check-client.json",
+                         "brute force detection on", "reusable token off",
+                         "set up the code check's direct grant flow, its amr mapper and the flow binding of the "
+                         "client by hand (docs/examples/keycloak-mfa/README.md#code-in-the-rdp-window-code_or_web);",
+                         "users need TOTP in Keycloak for the code, or a passkey for the approval page."):
+            self.assertIn(fragment, out)
+        # web_passkeys: the role sets up the flow in the web gateway's realm
+        inv, out = self.generate(dict(LAB, mfa_mode="code_or_web", web_passkeys=True, keycloak_admin_client_id="adm",
+                                      mfa_keycloak_client_id="otp", **self.WEB), "--force",
+                                 env=dict(self.CODE_ENV, FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET="k"))
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertEqual(main["fastrdp_mfa_keycloak_client_id"], "otp")
+        self.assertNotIn("fastrdp_mfa_keycloak_issuer", main)
+        self.assertIn("create the client otp from", out)
+        self.assertNotIn("by hand", out)
+        # another realm (production asks): issuer and its CA written, flow by hand anyway
+        inv, out = self.generate(self.production(mfa_mode="code_or_web", web_passkeys=True,
+                                                 keycloak_admin_client_id="adm",
+                                                 mfa_keycloak_issuer="https://otp.corp.example.com/realms/otp/",
+                                                 mfa_keycloak_ca=str(self.ca)), "--force",
+                                 env=dict(self.CODE_ENV, FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET="k"))
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertEqual(main["fastrdp_mfa_keycloak_issuer"], "https://otp.corp.example.com/realms/otp")
+        self.assertEqual(main["fastrdp_mfa_keycloak_ca_src"], str(self.ca))
+        self.assertNotIn("fastrdp_privacyidea_url", main)
+        self.assertIn("flow binding of the client by hand", out)
+        # the approval wait applies (it bounds the code checks too)
+        main = self.main(dict(LAB, mfa_mode="code_or_web", mfa_web_approval_timeout=300,
+                              mfa_keycloak_client_secret="s", **self.WEB))
+        self.assertEqual(main["fastrdp_proxy_broker_timeout"], 300 + setup.SESSION_START_TIMEOUT)
+
+    def test_code_or_web_rejections(self):
+        code = dict(LAB, mfa_mode="code_or_web", **self.WEB)
+        self.assert_rejected(code, "mfa_keycloak_client_secret: missing answer (or environment variable "
+                                   "FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET)")
+        self.assert_rejected(dict(code, web_enabled=False, mfa_keycloak_client_secret="s"),
+                             "web_enabled: MFA mode 'code_or_web' needs browser access")
+        self.assert_rejected(dict(code, mfa_keycloak_client_secret="s", mfa_keycloak_client_id="a b"),
+                             "a client id is needed")
+        for issuer, fragment in (("http://kc.example.com/realms/r", "use https://"),
+                                 ("https://kc.example.com/auth", "expected a Keycloak realm URL"),
+                                 ("https://kc.example.com/realms/r/extra", "expected a Keycloak realm URL")):
+            with self.subTest(issuer=issuer):
+                self.assert_rejected(dict(code, mfa_keycloak_client_secret="s", mfa_keycloak_issuer=issuer),
+                                     fragment)
+
+    def test_code_or_web_questions(self):
+        qs = {q.key: q for q in setup.QUESTIONS}
+        self.assertIn("code_or_web", qs["mfa_mode"].prompt)
+        self.assertIn("code_or_web  the user types the code from the authenticator app into the RDP window",
+                      qs["mfa_mode"].help)
+        code = {"mfa_mode": "code_or_web", "web_enabled": True, "web_oidc_issuer": "https://kc/realms/a"}
+        for key in ("mfa_keycloak_issuer", "mfa_keycloak_client_id", "mfa_keycloak_client_secret",
+                    "mfa_web_approval_timeout"):
+            self.assertTrue(qs[key].when(code), key)
+            self.assertFalse(qs[key].when({"mfa_mode": "push_or_web"}) and key != "mfa_web_approval_timeout", key)
+        self.assertTrue(qs["web_enabled"].default_for(code))
+        self.assertEqual(qs["mfa_keycloak_issuer"].default_for(code), "https://kc/realms/a")
+        self.assertFalse(qs["mfa_keycloak_issuer"].ask({"profile": "lab"}))
+        self.assertTrue(qs["mfa_keycloak_issuer"].ask({"profile": "production"}))
+        self.assertFalse(qs["mfa_keycloak_ca"].when(code))
+        self.assertTrue(qs["mfa_keycloak_ca"].when(dict(code, mfa_keycloak_issuer="https://kc/realms/b")))
+        self.assertTrue(qs["mfa_keycloak_client_secret"].secret)
+        self.assertNotIn("mfa_keycloak_client_secret", setup.REMEMBERED_KEYS)
+        self.assertIn("code check's direct grant flow", qs["web_passkeys"].warn(dict(code, web_passkeys=False)))
+        self.assertIsNone(qs["web_passkeys"].warn(dict(code, web_passkeys=True)))
+        self.assertIn("by hand", qs["web_passkeys"].warn(dict(code, web_passkeys=True,
+                                                               mfa_keycloak_issuer="https://kc/realms/b")))
+
+    def test_keycloak_issuer_rule_matches_roles_common(self):
+        # the assistant's issuer shape is the role's, minus plain http on loopback
+        checks = (ROLES / "common/tasks/main.yml").read_text()
+        rule = re.search(r"fastrdp_mfa_keycloak_issuer \| string\s+is match\('([^']+)'\)", checks).group(1)
+        for issuer in ("https://kc.example.com/realms/r", "https://kc.example.com:8443/auth/realms/r-1",
+                       "https://kc.example.com/realms/r/", "https://kc.example.com/realms/r/x",
+                       "https://kc.example.com/r", "https://kc_x.example.com/realms/r"):
+            with self.subTest(issuer=issuer):
+                role_ok = bool(re.match(rule, issuer))
+                try:
+                    setup.v_keycloak_issuer(issuer)
+                    ours = True
+                except setup.SetupError:
+                    ours = False
+                self.assertEqual(ours, role_ok)
+
     def test_kdc_evidence(self):
         pi = {"mfa_mode": "push", "privacyidea_url": "https://pi.lab.example.com"}
         main = self.main(dict(LAB, mfa_kdc_evidence_as_mfa="sid:S-1-18-4, sid:S-1-5-21-1-2-3-1300 sid:S-1-18-4",

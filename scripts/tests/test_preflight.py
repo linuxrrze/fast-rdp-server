@@ -486,8 +486,9 @@ class TestPreflightKdcEvidenceResult(unittest.TestCase):
 
 class StubDiscovery(BaseHTTPRequestHandler):
     """/realms/<realm>/.well-known/openid-configuration with acr_values_supported per realm
-    (None: HTTP 500)."""
+    (None: HTTP 500); realms in no_token have no token_endpoint."""
     acr = {}
+    no_token = set()
 
     def log_message(self, *a):
         pass
@@ -496,7 +497,10 @@ class StubDiscovery(BaseHTTPRequestHandler):
         realm = self.path.split("/")[2]
         values = self.acr.get(realm)
         issuer = f"http://127.0.0.1:{self.server.server_port}/realms/{realm}"
-        body = b"" if values is None else json.dumps({"issuer": issuer, "acr_values_supported": values}).encode()
+        doc = {"issuer": issuer, "acr_values_supported": values}
+        if realm not in self.no_token:
+            doc["token_endpoint"] = issuer + "/protocol/openid-connect/token"
+        body = b"" if values is None else json.dumps(doc).encode()
         self.send_response(500 if values is None else 200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -558,6 +562,61 @@ class TestPreflightKeycloakMfa(unittest.TestCase):
             self.assertIn("the deployment configures the MFA flow for acr=mfa", r[name]["detail"])
         self.assertEqual(r["nocreds"]["status"], "FAIL", r["nocreds"])
         self.assertIn("needs Keycloak admin credentials", r["nocreds"]["detail"])
+
+
+@unittest.skipIf(yaml is None or not shutil.which("ansible-playbook"), "PyYAML or ansible-core not installed")
+class TestPreflightCodeCheck(unittest.TestCase):
+    """'MFA code check (Keycloak)' for code_or_web: discovery of the code check's realm, the
+    client secret, the waiting screen, and whether the deployment sets up the flow."""
+
+    TASKS = ("Probe the code check's Keycloak realm from the host", "Result - MFA code check (Keycloak)")
+    BASE = TestPreflightKdcEvidenceResult.BASE
+    run_play = TestPreflightKdcEvidenceResult.run_play
+
+    def test_scenarios(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), StubDiscovery)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        StubDiscovery.acr = {"web": ["0", "1"], "other": ["0", "1"], "notoken": ["0", "1"], "broken": None}
+        StubDiscovery.no_token = {"notoken"}
+        self.addCleanup(setattr, StubDiscovery, "no_token", set())
+        base = f"http://127.0.0.1:{srv.server_port}/realms/"
+
+        def code(**kw):
+            hv = {"fastrdp_web_enabled": True, "fastrdp_mfa_mode": "code_or_web",
+                  "fastrdp_web_oidc_issuer": base + "web", "fastrdp_web_passkeys": True,
+                  "vault_fastrdp_mfa_keycloak_client_secret": "s"}
+            hv.update(kw)
+            return ({k: v for k, v in hv.items() if v is not None}, {})
+        r = self.run_play({
+            "ok": code(),
+            "byhand": code(fastrdp_web_passkeys=False),
+            "other": code(fastrdp_mfa_keycloak_issuer=base + "other/"),
+            "broken": code(fastrdp_mfa_keycloak_issuer=base + "broken"),
+            "notoken": code(fastrdp_mfa_keycloak_issuer=base + "notoken"),
+            "nosecret": code(vault_fastrdp_mfa_keycloak_client_secret=None),
+            "noscreen": code(fastrdp_proxy_waiting_screen=False, fastrdp_mfa_keycloak_ca_src="/nonexistent/ca.pem"),
+        })
+        for name, res in r.items():
+            self.assertEqual(res["check"], "MFA code check (Keycloak)", name)
+        self.assertEqual(r["ok"]["status"], "PASS", r["ok"])
+        self.assertEqual(r["ok"]["detail"], base + "web discovery ok; client fastrdp-otp-check: the deployment "
+                         "sets up its direct grant flow and checks the client")
+        self.assertEqual(r["byhand"]["status"], "WARN", r["byhand"])
+        self.assertIn("by hand (fastrdp_web_passkeys is false)", r["byhand"]["detail"])
+        self.assertEqual(r["other"]["status"], "WARN", r["other"])
+        self.assertIn(base + "other discovery ok", r["other"]["detail"])
+        self.assertIn("covers only the web gateway realm", r["other"]["detail"])
+        self.assertEqual(r["broken"]["status"], "FAIL", r["broken"])
+        self.assertIn("discovery answered 500", r["broken"]["detail"])
+        self.assertEqual(r["notoken"]["status"], "FAIL", r["notoken"])
+        self.assertIn("discovery has no token_endpoint", r["notoken"]["detail"])
+        self.assertEqual(r["nosecret"]["status"], "FAIL", r["nosecret"])
+        self.assertIn("client secret of fastrdp-otp-check empty", r["nosecret"]["detail"])
+        self.assertEqual(r["noscreen"]["status"], "FAIL", r["noscreen"])
+        self.assertIn("fastrdp_proxy_waiting_screen is false", r["noscreen"]["detail"])
+        self.assertIn("CA file /nonexistent/ca.pem not found", r["noscreen"]["detail"])
 
 
 if __name__ == "__main__":

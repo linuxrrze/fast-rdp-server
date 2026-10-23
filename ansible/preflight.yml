@@ -65,6 +65,13 @@
     preflight_keycloak_admin_user: "{{ fastrdp_keycloak_admin_user | default('') }}"
     preflight_keycloak_admin_password: >-
       {{ fastrdp_keycloak_admin_password | default(vault_fastrdp_keycloak_admin_password | default('')) }}
+    # fastrdp_mfa_mode code_or_web: the broker checks codes at this realm with a client of its own
+    preflight_code_issuer: "{{ fastrdp_mfa_keycloak_issuer | default(preflight_web_issuer) | regex_replace('/+$', '') }}"
+    preflight_code_ca_src: "{{ fastrdp_mfa_keycloak_ca_src | default(preflight_web_ca_src) }}"
+    preflight_code_client: "{{ fastrdp_mfa_keycloak_client_id | default(preflight_role_defaults.fastrdp_mfa_keycloak_client_id) }}"
+    preflight_code_secret: >-
+      {{ fastrdp_mfa_keycloak_client_secret | default(vault_fastrdp_mfa_keycloak_client_secret | default('')) }}
+    preflight_waiting_screen: "{{ fastrdp_proxy_waiting_screen | default(preflight_role_defaults.fastrdp_proxy_waiting_screen) | bool }}"
     preflight_kdcproxy: "{{ fastrdp_web_kdcproxy | default(preflight_role_defaults.fastrdp_web_kdcproxy) | bool }}"
     preflight_kdcproxy_kdcs: "{{ fastrdp_web_kdcproxy_kdcs | default(preflight_role_defaults.fastrdp_web_kdcproxy_kdcs) }}"
     preflight_kdcproxy_kpasswd: "{{ fastrdp_web_kdcproxy_kpasswd | default(preflight_role_defaults.fastrdp_web_kdcproxy_kpasswd) | bool }}"
@@ -789,6 +796,56 @@
                     ~ 'or fastrdp_keycloak_admin_user + vault_fastrdp_keycloak_admin_password), or a level-2 (MFA) step '
                     ~ 'for acr=mfa in Keycloak (docs/web-access.md#keycloak-setup)'}] }}
       when: preflight_web_enabled
+
+    # code_or_web: the broker posts the code to the realm's token endpoint (direct grant of
+    # its own client). Only the discovery document is readable without credentials; the
+    # client and its flow are checked by the web_gateway role (fastrdp_web_passkeys).
+    - name: Probe the code check's Keycloak realm from the host
+      ansible.builtin.uri:
+        url: "{{ preflight_code_issuer }}/.well-known/openid-configuration"
+        method: GET
+        validate_certs: "{{ preflight_code_ca_src | length == 0 }}"
+        return_content: true
+        timeout: 10
+      register: preflight_code_oidc
+      failed_when: false
+      when: preflight_mfa_mode == 'code_or_web'
+
+    - name: Result - MFA code check (Keycloak)
+      vars:
+        discovery: "{{ preflight_code_oidc.json | default({}) if preflight_code_oidc.status | default(-1) == 200 else {} }}"
+        issuer: "{{ discovery.issuer | default('') }}"
+        problems: >-
+          {{ (['discovery answered ' ~ (preflight_code_oidc.status | default(-1)) ~ ' '
+               ~ (preflight_code_oidc.msg | default('') | truncate(80))]
+              if preflight_code_oidc.status | default(-1) != 200 else [])
+             + (['issuer in discovery is ' ~ issuer ~ ', expected ' ~ preflight_code_issuer]
+                if preflight_code_oidc.status | default(-1) == 200 and issuer != preflight_code_issuer else [])
+             + (['discovery has no token_endpoint']
+                if preflight_code_oidc.status | default(-1) == 200 and not discovery.token_endpoint | default('') else [])
+             + (['discovery does not offer the password grant (direct grant)']
+                if 'password' not in discovery.grant_types_supported | default(['password']) else [])
+             + (['client secret of ' ~ preflight_code_client ~ ' empty (vault_fastrdp_mfa_keycloak_client_secret; vault loaded?)']
+                if not preflight_code_secret else [])
+             + (['CA file ' ~ preflight_code_ca_src ~ ' not found on the admin machine']
+                if preflight_code_ca_src and preflight_code_ca_src is not file else [])
+             + (['fastrdp_proxy_waiting_screen is false: the code field is on the waiting screen']
+                if not preflight_waiting_screen else []) }}
+        by_hand: "{{ not preflight_web_passkeys or preflight_code_issuer != preflight_web_issuer }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'MFA code check (Keycloak)',
+             'status': 'FAIL' if problems else 'WARN' if by_hand else 'PASS',
+             'detail': problems | join('; ') if problems
+                       else preflight_code_issuer ~ ' discovery ok; client ' ~ preflight_code_client ~ ': '
+                            ~ ('set up its direct grant flow, amr mapper and flow binding by hand (fastrdp_web_passkeys '
+                               ~ ('is false' if not preflight_web_passkeys else 'covers only the web gateway realm') ~ ')'
+                               if by_hand else 'the deployment sets up its direct grant flow and checks the client'),
+             'fix': 'fastrdp_mfa_keycloak_issuer must be the realm URL exactly as Keycloak reports it; import '
+                    ~ 'docs/examples/keycloak-fastrdp-otp-check-client.json and store its secret; flow by hand: '
+                    ~ 'docs/examples/keycloak-mfa/README.md#code-in-the-rdp-window-code_or_web '
+                    ~ '(docs/auth-matrix.md#code-on-the-waiting-screen)'}] }}
+      when: preflight_mfa_mode == 'code_or_web'
 
     # ------------------------------------------------------------------ KDC proxy
     # fastrdp_web_kdcproxy: the web gateway forwards MS-KKDCP requests to the realm's KDCs

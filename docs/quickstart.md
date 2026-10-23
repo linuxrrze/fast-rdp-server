@@ -59,14 +59,14 @@ Desktops (comma-separated) [xfce]:
 Default desktop [xfce]:
 GPU: auto / nvidia / mesa (Intel, AMD) / none [auto]:
 Sound in sessions? (y/n) [y]:
-Second factor for RDP logins: none / web (Keycloak) / push / otp / otp_or_push (privacyIDEA) / push_or_web (both) [none]:
+Second factor for RDP logins: none / web / code_or_web (Keycloak) / push / otp / otp_or_push (privacyIDEA) / push_or_web (both) [none]:
 Browser access via Keycloak/OIDC + Guacamole? (y/n) [n]:
 Install method: apt (packages, recommended) / build (compile on the host) [build]:
 RDP certificate: self-signed (lab) / provided (PEM files) [self-signed]:
 New ansible-vault password for vault.yml:
 ```
 
-With browser access (`y`, the default for MFA modes `web` and `push_or_web`) the web
+With browser access (`y`, the default for MFA modes `web`, `push_or_web` and `code_or_web`) the web
 questions follow. Keycloak must mark the sign-in as MFA (`acr=mfa`): the client's ACR map
 alone is not enough, Keycloak needs a level-2 step for it. The assistant explains this and
 offers to let Ansible configure it (`fastrdp_web_passkeys`, [web-access.md](web-access.md#passkeys-through-ansible-opt-in)):
@@ -87,13 +87,32 @@ Secret of the service-account client (stored in the vault):
 `n` keeps Keycloak as it is and prints: *Make sure Keycloak enforces MFA for acr=mfa (a
 level-2 step, docs/web-access.md#keycloak-setup), otherwise every web sign-in is refused.*
 
+With MFA mode `code_or_web` (the code from the authenticator app typed into the RDP
+window, checked by Keycloak; passkeys on the approval page) two questions follow the
+IdP's CA. Production first asks for the realm (default: the web gateway's) and, for
+another realm, its CA:
+
+```
+Keycloak realm URL for the code check [https://sso.lab.example.com/realms/lab]:   (production)
+Client id of the code check [fastrdp-otp-check]:
+Secret of the code check's client (stored in the vault):
+```
+
+The client is created by hand from
+`docs/examples/keycloak-fastrdp-otp-check-client.json`; the closing notes say so, and
+remind of brute-force detection and single-use OTP codes in the realm. With
+`web_passkeys` = y the role also sets up the client's direct grant flow (username +
+code, no password) in the web gateway's realm; otherwise, or for another realm, the
+notes point to the steps by hand
+([keycloak-mfa/README.md](examples/keycloak-mfa/README.md#code-in-the-rdp-window-code_or_web)).
+
 It writes `ansible/inventories/mylab/`:
 
 | File | Contents |
 |---|---|
 | `hosts.yml` | the host(s) in group `rdp_servers`, SSH user |
 | `group_vars/all/main.yml` | only the variables the roles need without a default, plus the ones that differ from the role defaults; each with a comment |
-| `group_vars/all/vault.yml` | the secrets (join password, privacyIDEA service password, OIDC client secret, Keycloak admin secret), encrypted with `ansible-vault` |
+| `group_vars/all/vault.yml` | the secrets (join password, privacyIDEA service password, OIDC client secret, Keycloak admin secret, the code check's client secret), encrypted with `ansible-vault` |
 | `setup-answers.json` | your answers without secrets; `scripts/fastrdp-setup --answers .../setup-answers.json --force` regenerates the inventory |
 
 At the end it prints the next commands with your inventory filled in.
@@ -136,6 +155,7 @@ WARN  RDP certificate: self-signed certificate will be generated (lab only: clie
 | MFA from KDC evidence | `fastrdp_mfa_kdc_evidence_as_mfa`: items well-formed, realm set, `fastrdp-freerdp3` ≥ 3.32.2-4 installed or available (`build`: patch 0005 in the checkout); Samba/Microsoft AD caveats for `sid:S-1-18-3` (INFO when unused) |
 | web / OIDC | issuer discovery answers and reports the same issuer; client secret set |
 | Keycloak MFA for acr=mfa | `fastrdp_web_passkeys: true`: admin credentials set (FAIL without). Otherwise the discovery document's `acr_values_supported`: WARN unless it lists `mfa` or a level ≥ 2 (Keycloak shows only the realm's ACR map and the levels of the realm's browser flow; the client's ACR map and client policies are not visible, so a WARN may be a false alarm) |
+| MFA code check (Keycloak) | `code_or_web`: the code check's realm answers discovery from the host with the same issuer and a token endpoint; client secret set; CA file present; waiting screen on. WARN when the flow is to be set up by hand (`fastrdp_web_passkeys` off, or another realm than the web gateway's) |
 | install method | `apt`: repository suite and key reachable from the host |
 | RDP certificate | provided: valid, not expiring within 30 days, SAN contains the FQDN, key matches |
 
@@ -248,6 +268,7 @@ Which mode to choose for the second factor of RDP logins:
 | **privacyIDEA** | `push` | the push in the privacyIDEA app |
 | privacyIDEA, code typed with the password | `otp` (TLS logins only), `otp_or_push` | appending the code to the password |
 | both, whichever answers first | `push_or_web` | the push, or the approval page |
+| **Keycloak**, code in the RDP window or passkey | `code_or_web` | typing the authenticator code on the waiting screen, or approving on the approval page with a passkey |
 
 Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice.
 
@@ -264,6 +285,13 @@ Browser logins (Guacamole) always use Keycloak's MFA, independent of this choice
       ([auth-matrix.md](auth-matrix.md#web-approval)). The RDP window shows the URL, the
       login's code and a QR code for the phone (the waiting screen, on by default:
       `fastrdp_proxy_waiting_screen`).
+- [ ] Mode `code_or_web` ([auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)):
+      as `web`, plus a confidential Keycloak client for the code check (sample
+      `docs/examples/keycloak-fastrdp-otp-check-client.json`, its secret in the vault),
+      its direct grant flow (`web_passkeys` = y sets it up in the web gateway's realm),
+      brute-force detection on and OTP codes single-use in the realm (P). Needs the
+      waiting screen; real RDP clients are still to be validated
+      ([lab-waiting-screen-input.md](lab-waiting-screen-input.md)).
 - [ ] KDC evidence (`fastrdp_mfa_kdc_evidence_as_mfa`, default none): Kerberos NLA logins
       whose ticket shows smart card/passkey pre-authentication skip the second factor.
       FreeIPA: `ind:pkinit`, `ind:passkey`; Microsoft AD: `sid:S-1-18-4` (Windows Hello for
@@ -358,6 +386,7 @@ on missing or invalid answers instead of asking.
 ```sh
 export FASTRDP_JOIN_PASSWORD=... FASTRDP_PRIVACYIDEA_SERVICE_PASSWORD=... FASTRDP_WEB_OIDC_CLIENT_SECRET=...
 export FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET=...      # web_passkeys (or FASTRDP_KEYCLOAK_ADMIN_PASSWORD)
+export FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET=...        # mfa_mode code_or_web
 scripts/fastrdp-setup --non-interactive --answers corp.json --vault-password-file ~/.fastrdp-vault
 scripts/fastrdp-setup --help            # all answer keys
 ```
