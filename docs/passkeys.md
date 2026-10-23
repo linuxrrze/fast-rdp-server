@@ -138,7 +138,7 @@ Authentication Flow"). Step-up LoA sub-flows do not fit passkeys:
    |---|---|
    | User verification requirement | `required` |
    | Discoverable credential | `required` |
-   | Attestation conveyance | `none` (all passkeys) or `direct` (hardware only, see below) |
+   | Attestation conveyance | the realm's own setting (all passkeys), or `direct` (hardware only, see below) |
    | Enable Passkeys (realm *Login* tab) | on; mediation `conditional` |
 
    Enable the required action **WebAuthn Register Passwordless**.
@@ -237,9 +237,12 @@ What is safe and what is not:
 Before and after a change by hand, compare the policy:
 `kcadm.sh get realms/REALM | jq 'with_entries(select(.key|startswith("webAuthnPolicyPasswordless")))'`.
 
-Both fastrdp scripts set attestation and acceptable AAGUIDs themselves (attestation
-`none` and an empty list, or `direct` and the configured list in hardware-only mode). An
-AAGUID list set by hand is therefore replaced on their next run (see
+Attestation and acceptable AAGUIDs: `fastrdp_keycloak_passkeys.py` sets them only in
+hardware-only mode (`direct` and exactly the configured list; its change message names the
+AAGUIDs it adds and removes); otherwise it leaves both as the realm has them.
+`fastrdp-mfa-kcadm.sh` never touches them. An AAGUID list set by hand therefore survives
+both [tested, 26.8.1: `make test-keycloak`]. Switching hardware-only off does not clear
+the list either (see
 [Hardware-only policy](#hardware-only-policy-attestation-aaguids-verified--docs)).
 
 Without Ansible, [examples/keycloak-mfa/](examples/keycloak-mfa/README.md) has recipe A
@@ -316,13 +319,17 @@ and then passes fastrdp's `acr=mfa`. Where that is possible:
 Registration as a required action **at the fastrdp sign-in** is not a gap: it runs only
 after the full `fastrdp-mfa` flow.
 
-**Close it** (neither Ansible nor `fastrdp-mfa-kcadm.sh` does this; see
-[backlog.md](backlog.md#web-approval) W4):
+**Close it:**
 
-1. **Account console: browser flow override `fastrdp-mfa`.** Admin console: *Clients →
-   account-console → Advanced → Authentication flow overrides → Browser Flow* =
-   `fastrdp-mfa` → *Save*. Or with kcadm (the override takes the flow's **id**, not its
-   alias):
+1. **Account console: browser flow override `fastrdp-mfa`.** Opt-in, automated:
+   `fastrdp_keycloak_account_console_mfa: true` (Ansible, with `fastrdp_web_passkeys:
+   true`; `scripts/fastrdp-setup` asks for it) or `fastrdp-mfa-kcadm.sh --account-console`.
+   Both set the override by the flow's id and keep the client's other overrides; check
+   mode lists it. With the option off, every run warns while the account console signs
+   in with another flow ("enrolment gap: client account-console signs in with ..."); an
+   override is never removed. By hand: admin console *Clients → account-console →
+   Advanced → Authentication flow overrides → Browser Flow* = `fastrdp-mfa` → *Save*. Or
+   with kcadm (the override takes the flow's **id**, not its alias):
 
    ```sh
    FLOW_ID=$(kcadm.sh get authentication/flows -r REALM | jq -r '.[] | select(.alias == "fastrdp-mfa") | .id')
@@ -332,9 +339,11 @@ after the full `fastrdp-mfa` flow.
    ```
 
    Then the account console needs a passkey, or password + second factor, before anyone
-   can add or remove a credential. [verified: source, `AuthenticationFlowResolver`: a
-   client's browser override wins over the realm's browser flow; the commands and the
-   console path were not run here.] Consequences:
+   can add or remove a credential. [tested, 26.8.1, `make test-keycloak` through the role
+   and `--account-console`: before, carol's password alone opened the account console;
+   with the override she is refused, alice's password alone stops at the OTP step and
+   her passkey signs her in. The kcadm commands above and the console path were not run
+   here.] Consequences:
    - users sign in to the account console again on each visit (no *Cookie* step);
    - users **without** any second factor can no longer use the account console at all,
      so they cannot enrol their first factor there (below);
@@ -401,13 +410,17 @@ Use this if you prefer `amr`, or your IdP emits RFC 8176 values natively.
     from *Show data…* on a test registration.
   - The list is only checked at **registration**. Credentials registered before the
     policy change stay valid, so delete them.
-  - Keep the list in the inventory (`fastrdp_web_passkeys_aaguids`), not only in the
-    realm: `fastrdp_keycloak_passkeys.py` writes exactly its own value (an empty list
-    without hardware-only) and `fastrdp-mfa-kcadm.sh` always writes an empty list, so a
-    list set by hand in the admin console is removed on their next run [verified: code;
-    backlog W3]. Change the list by hand only in the ways the
+  - With `fastrdp_web_passkeys_hardware_only: true` the inventory list wins: the script
+    writes exactly `fastrdp_web_passkeys_aaguids` and names the AAGUIDs it adds to and
+    removes from the realm's list (also in check mode). Without hardware-only it leaves
+    attestation and the list as the realm has them, and `fastrdp-mfa-kcadm.sh` never
+    touches them, so a list set by hand in the admin console survives [tested, 26.8.1].
+  - Switching hardware-only **off** leaves attestation `direct` and the list in the realm
+    (up to v0.7.4 the script reset them to `none` and an empty list). To allow every
+    passkey again, clear them by hand in one of the ways the
     [policy warning](#warning-a-policy-update-replaces-the-whole-passwordless-policy)
-    calls safe.
+    calls safe, e.g.
+    `kcadm.sh update realms/REALM -s webAuthnPolicyPasswordlessAttestationConveyancePreference=none -s 'webAuthnPolicyPasswordlessAcceptableAaguids=[]'`.
 - **Policy scope:** apply this to the passwordless policy (passkeys = hardware only)
   and/or the 2FA policy. Note that Windows Hello attestation depends on the TPM.
 - **privacyIDEA:**
@@ -664,8 +677,8 @@ A YubiKey 5 can do both at once (separate applets, separate PINs).
 - **Registration is the weak point.** A user who signs in with a password only can
   enrol a passkey or an OTP device (account console, required action, `kc_action` of any
   client) and then passes `acr=mfa`. Close it with the browser flow override
-  `fastrdp-mfa` on `account-console` (a manual step, not done by Ansible) and a
-  controlled first enrolment: [Close the enrolment gap](#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).
+  `fastrdp-mfa` on `account-console` (opt-in: `fastrdp_keycloak_account_console_mfa`,
+  or `fastrdp-mfa-kcadm.sh --account-console`) and a controlled first enrolment: [Close the enrolment gap](#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).
   - registering as a required action at the fastrdp login runs only after the full
     `fastrdp-mfa` flow;
   - pre-register;
@@ -692,7 +705,8 @@ A YubiKey 5 can do both at once (separate applets, separate PINs).
    per realm).
 4. Users: register a passkey (YubiKey, Windows Hello, phone, Bitwarden/KeePassXC) via
    *Account Console → Signing in*; tell them about the RDP limits below. Set the account
-   console's browser flow override to `fastrdp-mfa` first (manual step,
+   console's browser flow override to `fastrdp-mfa` first
+   (`fastrdp_keycloak_account_console_mfa: true`,
    [enrolment gap](#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)).
 
 #### Stage 1 results (Keycloak 26.8.1)
@@ -701,8 +715,10 @@ A YubiKey 5 can do both at once (separate applets, separate PINs).
 Keycloak 26.8.1 in dev mode, applies the role's Keycloak tasks with
 `ansible-playbook`, then drives headless Chromium with a CDP virtual authenticator
 (CTAP 2.1, resident keys, user verification) against the **real webgate code**
-(config parser, OIDC provider, HTTP handler; a fake broker answers the desktop list).
-Result on 2026-10-22: 25 passed, 0 failed.
+(config parser, OIDC provider, HTTP handler; a fake broker answers the desktop list
+and holds pending RDP logins in the broker's own `mfa.WebApprovals`).
+Result on 2026-10-22: 25 passed, 0 failed; on 2026-10-23, with the code check, the
+approval page, the account console and the AAGUID cases: 100 passed, 0 failed.
 
 | Case | Result |
 |---|---|
@@ -720,6 +736,11 @@ Result on 2026-10-22: 25 passed, 0 failed.
 | Control: flow *with* Cookie + the same password-only session → still asked again (LoA step-up check) | ✔ |
 | Hardware-only (attestation `direct` + AAGUID list): virtual authenticator's registration refused (`invalid cert path`, attestation not trusted) | ✔ |
 | Hardware-only: a passkey registered **before** still logs in (the list applies at registration only) | ✔ (documented caveat) |
+| Hardware-only switched off: attestation `direct` and the AAGUID list stay (cleared by hand afterwards); a list set by hand survives realm updates by the role and the kcadm script | ✔ |
+| `/web/approve`: an existing Keycloak session does not count (asked again); passkey and password + TOTP approve; password only reaches no approval; an earlier session's ID token fails the `auth_time` check | ✔ |
+| `/web/approve?login=<id>`: survives the Keycloak round trip, approves that login only while another waits (warning shown); Deny works, also with a stale sign-in | ✔ |
+| `/web/approve` with a sign-in older than the login: "Sign in again to approve" instead of Approve; the login-bound page signs in afresh and returns without a loop | ✔ |
+| Account console: password alone signs in by default (the enrolment gap); with `fastrdp_keycloak_account_console_mfa` password-only users are refused and a passkey works; role and kcadm `--account-console` set the same override | ✔ |
 
 Observations:
 - Without the AMR mapper the ID tokens carry no `amr`; `acr` alone decides.

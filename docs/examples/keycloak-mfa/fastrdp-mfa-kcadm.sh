@@ -6,8 +6,10 @@
 # ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py (fastrdp_web_passkeys: true):
 #
 #   1. realm: WebAuthn *passwordless* policy (user verification required, discoverable
-#      credential required, passkeys enabled, mediation, attestation none, no AAGUID list)
-#      and the required action webauthn-register-passwordless (enabled);
+#      credential required, passkeys enabled, mediation) and the required action
+#      webauthn-register-passwordless (enabled). Attestation and the acceptable AAGUIDs are
+#      never touched: an allow-list set in the realm stays (no hardware-only mode here; the
+#      Ansible script sets them only with hardware_only);
 #   2. top-level flow fastrdp-mfa (no Cookie step):
 #        Username Form                                   REQUIRED
 #        Password Form                                   REQUIRED
@@ -40,7 +42,12 @@
 #      unless it is confidential, allows direct grants only (no browser flow, implicit
 #      flow, service account, device or CIBA grant), has full scope off, no standard token
 #      exchange and no audience mapper. It warns when the realm lets an OTP code be used
-#      twice or has brute-force detection off.
+#      twice or has brute-force detection off;
+#   6. only with --account-console: the browser flow override of the client account-console
+#      (other overrides kept) = flow fastrdp-mfa, so enrolling a passkey or OTP app in the
+#      account console needs MFA (docs/passkeys.md, "Close the enrolment gap"). Without it
+#      the script warns while the account console signs in with another flow. It never
+#      removes an override.
 #
 # Idempotent: pieces that already match are skipped. A flow (fastrdp-mfa, or the code
 # check's flow) that exists with a different structure is NOT touched unless --rebuild is
@@ -78,6 +85,9 @@
 #   --otp-flow ALIAS         the code check's direct grant flow (default fastrdp-otp-check)
 #   --otp-amr VALUE          amr value of the OTP step (default otp; = the broker's
 #                            [mfa.keycloak] required_amr)
+#   --account-console        the account console signs in through flow ALIAS too (closes
+#                            the enrolment gap; users without a second factor then cannot
+#                            use the account console)
 #   --check                  list the changes, write nothing (exit 0; "no changes" when done)
 #   --rebuild                rebuild flow ALIAS (or the code check's flow) when it exists
 #                            with another structure
@@ -90,7 +100,7 @@ set -euo pipefail
 KCADM=${KCADM:-kcadm.sh}
 REALM="" CLIENT_ID="" FLOW=fastrdp-mfa ACR=mfa LOA=2 PROFILE=fastrdp-mfa-flow POLICY=fastrdp-mfa
 FACTORS=auth-otp-form,webauthn-authenticator MEDIATION=conditional CHECK=0 REBUILD=0
-OTP_CLIENT="" OTP_FLOW=fastrdp-otp-check OTP_AMR=otp
+OTP_CLIENT="" OTP_FLOW=fastrdp-otp-check OTP_AMR=otp ACCOUNT_CONSOLE=0
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 usage() { sed -n '/^# Options:/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
@@ -108,6 +118,7 @@ while [ $# -gt 0 ]; do
         --otp-client) OTP_CLIENT=$2; shift 2 ;;
         --otp-flow) OTP_FLOW=$2; shift 2 ;;
         --otp-amr) OTP_AMR=$2; shift 2 ;;
+        --account-console) ACCOUNT_CONSOLE=1; shift ;;
         --check) CHECK=1; shift ;;
         --rebuild) REBUILD=1; shift ;;
         -h|--help) usage ;;
@@ -168,9 +179,7 @@ WANTED_REALM=$(jq -nc --arg m "$MEDIATION" '{
     webAuthnPolicyPasswordlessUserVerificationRequirement: "required",
     webAuthnPolicyPasswordlessResidentKey: "required",
     webAuthnPolicyPasswordlessPasskeysEnabled: true,
-    webAuthnPolicyPasswordlessMediation: $m,
-    webAuthnPolicyPasswordlessAttestationConveyancePreference: "none",
-    webAuthnPolicyPasswordlessAcceptableAaguids: []}')
+    webAuthnPolicyPasswordlessMediation: $m}')
 REALM_DIFF=$(jq -c --argjson w "$WANTED_REALM" '. as $c | $w | with_entries(select($c[.key] != .value))' <<<"$REALM_JSON")
 if [ "$REALM_DIFF" = "{}" ]; then
     ok "realm WebAuthn passwordless policy"
@@ -437,6 +446,27 @@ if [ -n "$OTP_CLIENT" ]; then
     fi
     if [ "$(jq -r '.bruteForceProtected // false' <<<"$REALM_JSON")" != true ]; then
         echo "warning: realm: brute-force detection is off; wrong codes of the code check are then limited only by the broker ([mfa] code_attempts, code_user_failures)" >&2
+    fi
+fi
+
+# ------------------------------------------------------------------ 6. account console (--account-console)
+AC_JSON=$(kget clients -q clientId=account-console | jq -c '.[0] // empty')
+if [ -z "$AC_JSON" ]; then
+    [ "$ACCOUNT_CONSOLE" != 1 ] || echo "warning: client account-console not found in realm '$REALM': no account console, nothing to override" >&2
+else
+    FLOWS=$(kget authentication/flows)
+    MFA_FLOW_ID=$(jq -r --arg a "$FLOW" '.[] | select(.alias == $a) | .id' <<<"$FLOWS")
+    AC_FLOW_ID=$(jq -r '.authenticationFlowBindingOverrides.browser // ""' <<<"$AC_JSON")
+    AC_NOW=$(jq -r --arg i "$AC_FLOW_ID" '([.[] | select($i != "" and .id == $i) | "flow " + .alias] | first)
+                                          // "the realm'"'"'s browser flow"' <<<"$FLOWS")
+    if [ -n "$MFA_FLOW_ID" ] && [ "$AC_FLOW_ID" = "$MFA_FLOW_ID" ]; then
+        ok "client account-console: browser flow $FLOW"
+    elif [ "$ACCOUNT_CONSOLE" != 1 ]; then
+        echo "warning: enrolment gap: client account-console signs in with $AC_NOW, not $FLOW; whoever has a user's password may enrol a passkey or OTP app there and then pass acr=mfa (docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa). Rerun with --account-console, or make sure that flow needs MFA" >&2
+    elif change "client account-console: browser flow $FLOW (was $AC_NOW)"; then
+        [ -n "$MFA_FLOW_ID" ] || die "flow '$FLOW' not found for the account console's override"
+        jq -c --arg f "$MFA_FLOW_ID" '.authenticationFlowBindingOverrides = ((.authenticationFlowBindingOverrides // {}) + {browser: $f})' \
+            <<<"$AC_JSON" | kc update "clients/$(jq -r .id <<<"$AC_JSON")" -n -f -
     fi
 fi
 

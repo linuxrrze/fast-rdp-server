@@ -44,6 +44,9 @@ realm: "$(env:KC_REALM)"
 #    its default. Keep RpEntityName at your realm's current value (default "keycloak") and
 #    copy any other customised webAuthnPolicyPasswordless* settings (RpId, signature
 #    algorithms, extra origins, ...) here. Mediation is then reset too: set it again (above).
+#    Attestation and the AAGUID list are this file's like every other field (this method
+#    replaces the policy): put an allow-list you keep in the realm here. Methods 1 and 2
+#    leave both alone unless hardware-only is on.
 webAuthnPolicyPasswordlessRpEntityName: keycloak
 webAuthnPolicyPasswordlessUserVerificationRequirement: required
 webAuthnPolicyPasswordlessPasskeysEnabled: true

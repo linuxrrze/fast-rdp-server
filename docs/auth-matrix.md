@@ -303,7 +303,9 @@ started (both on this host's clock): if a sign-in made after the login is still 
 for the broker (the IdP's clock differs), the page shows the link and a hint about the
 clocks instead of redirecting again, so it never loops. The broker's `approval_stale`
 refusal stays as the safety net. [tested: unit tests, `test_approve.py`,
-`test_web_approval.py`; not against a real Keycloak (backlog W2)]
+`test_web_approval.py`; against Keycloak 26.8.1 (`make test-keycloak`): the list's link,
+the login-bound redirect without a loop, Deny with a stale sign-in; the clock-skew case
+in unit tests only]
 
 #### Login-bound link (QR code)
 

@@ -20,7 +20,7 @@
     quiet: true
   run_once: true
 
-- name: Configure Keycloak (WebAuthn passwordless policy, MFA flow, client policy, ACR map, code check)
+- name: Configure Keycloak (WebAuthn passwordless policy, MFA flow, client policy, ACR map, account console, code check)
   ansible.builtin.command:
     argv: [python3, "{{ role_path }}/files/fastrdp_keycloak_passkeys.py"]
     stdin: "{{ settings | to_json }}"
@@ -51,6 +51,7 @@
                   == fastrdp_web_oidc_issuer | regex_replace('/+$', '')
            else '' }}
       otp_check_amr: "{{ fastrdp_mfa_keycloak_required_amr }}"
+      account_console_mfa: "{{ fastrdp_keycloak_account_console_mfa | bool }}"
       check: "{{ ansible_check_mode }}"
   delegate_to: localhost
   run_once: true
@@ -74,7 +75,7 @@
     quiet: false
   run_once: true
 
-- name: Keycloak warnings (code check)
+- name: Keycloak warnings (enrolment gap, code check)
   vars:
     out: "{{ fastrdp_keycloak_passkeys.stdout | default('') }}"
     result: "{{ out | from_json if out is match('^\\{') else {} }}"

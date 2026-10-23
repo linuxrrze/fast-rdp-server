@@ -93,8 +93,18 @@ fastrdp_web_passkeys_mediation: conditional   # conditional (autofill) | optiona
 # Bitwarden, KeePassXC) are then refused at registration. Also import the vendors'
 # attestation roots into Keycloak's truststore (server option truststore-paths), and
 # delete passkeys registered earlier: the list is only checked at registration.
+# Without hardware-only the role leaves attestation and the AAGUID list as the realm has
+# them (an allow-list set in the admin console is kept); switching hardware-only off does
+# not clear the list (docs/passkeys.md#hardware-only-policy-attestation-aaguids-verified--docs).
 fastrdp_web_passkeys_hardware_only: false
 fastrdp_web_passkeys_aaguids: []
+# Close the enrolment gap (docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa):
+# the account console (client account-console) signs in through fastrdp_keycloak_mfa_flow
+# too, so enrolling a passkey or OTP app there needs a passkey or password + second factor.
+# Opt-in: users without any second factor then cannot use the account console (enrol their
+# first factor another way). Off: each run warns while the gap is open; an override set
+# earlier is never removed.
+fastrdp_keycloak_account_console_mfa: false
 
 # ---------------------------------------------------------------- KDC proxy (MS-KKDCP)
 # Opt-in: python3-kdcproxy under gunicorn (unprivileged, systemd socket on

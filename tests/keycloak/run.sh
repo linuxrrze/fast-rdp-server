@@ -13,14 +13,20 @@
 #      merge checks, and a Cookie step injected into the flow is removed again;
 #   4. e2e.py: headless Chromium with a CDP virtual authenticator against the real
 #      fastrdp-webgate code (passkey, password + TOTP, password only, SSO pitfall,
-#      hardware-only mode);
+#      hardware-only mode and the AAGUID list it leaves behind); the approval page
+#      /web/approve with pending logins in the broker's WebApprovals (fresh sign-in despite
+#      an SSO session, passkey, password + TOTP, password only, old auth_time, login-bound
+#      link, Deny, a sign-in too old for the login); the account console before and with
+#      fastrdp_keycloak_account_console_mfa;
 #   5. the broker's code check ([mfa] mode code_or_web): the role sets up the direct grant
 #      flow of the sample client fastrdp-otp-check, otp_check.py checks codes with
 #      keycloak_otp.py (right, wrong, no OTP credential, other client, replay);
 #   6. docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh --otp-client (Method 2, kcadm.sh of
 #      that Keycloak): finds the role's result unchanged, builds the code check again after
 #      it was removed (the role's check mode then reports nothing), codes work, a hand-made
-#      change stops it until --rebuild, an unsafe client is refused.
+#      change stops it until --rebuild, an unsafe client is refused; an AAGUID list set by
+#      hand survives it and the role; without --account-console it warns about the
+#      enrolment gap, with it it sets the same override as the role.
 #
 # Manual (heavy: JDK + Keycloak + Chromium, ~2 min). Needs python3 >= 3.11,
 # python3-cryptography, ansible-playbook, curl, and:
@@ -169,12 +175,14 @@ fi
 # ------------------------------------------------------------------ browser + webgate
 cat >"$T/apply-mode.sh" <<EOF
 #!/bin/sh
-# e2e.py: re-apply the role with hardware-only on (hardware-only) or off (default)
+# e2e.py: re-apply the role with hardware-only on (hardware-only), the account console's
+# flow override on (account-console), or neither (default)
 cd "$REPO/ansible" || exit 1
 python3 - "\$1" "$T/vars.json" <<'PY'
 import json, sys
 v = json.load(open(sys.argv[2]))
 v["fastrdp_web_passkeys_hardware_only"] = sys.argv[1] == "hardware-only"
+v["fastrdp_keycloak_account_console_mfa"] = sys.argv[1] == "account-console"
 json.dump(v, open(sys.argv[2], "w"))
 PY
 exec ansible-playbook -i localhost, -c local "$HERE/apply.yml" -e "@$T/vars.json"
@@ -293,5 +301,52 @@ if [ "$rc" = 1 ] && grep -q 'must be confidential, direct grants only.*fullScope
     ok "kcadm script refuses an unsafe code check client"
 else
     T_OUT=$T/kcadm-unsafe.out fail "kcadm script refuses an unsafe code check client"
+fi
+# W3: an AAGUID allow-list set by hand survives the kcadm script and the role
+AAGUID=ee882879-721c-4913-9775-3dfcce97072a
+fixture set-aaguids "$AAGUID" optional     # another mediation: the script must update the realm
+check "kcadm script with an AAGUID list set by hand" kcadm_run
+if grep -q '^change: realm WebAuthn passwordless policy: webAuthnPolicyPasswordlessMediation$' "$T_OUT"; then
+    ok "kcadm script updates the realm without touching attestation or AAGUIDs"
+else
+    fail "kcadm script updates the realm without touching attestation or AAGUIDs"
+fi
+has_aaguid() { state | grep -q "\"webAuthnPolicyPasswordlessAcceptableAaguids\": \[\"$AAGUID\"\]"; }
+if has_aaguid; then ok "AAGUID allow-list set by hand kept by the kcadm script (W3)"
+else fail "AAGUID allow-list set by hand kept by the kcadm script"; fi
+fixture set-aaguids "$AAGUID" optional
+check "role run with an AAGUID list set by hand" apply_otp
+if grep -q 'changed: realm WebAuthn passwordless policy: webAuthnPolicyPasswordlessMediation' "$T_OUT" && has_aaguid; then
+    ok "AAGUID allow-list set by hand kept by the role's realm update (W3)"
+else
+    fail "AAGUID allow-list set by hand kept by the role's realm update"
+fi
+fixture set-aaguids ""
+# W4: the account console's flow override (e2e.py set it through the role)
+fixture drop-account-console
+if kcadm_run --check >"$T/kcadm-ac.out" 2>&1 && grep -q '^warning: enrolment gap: client account-console' "$T/kcadm-ac.out" \
+    && grep -q '^no changes:' "$T/kcadm-ac.out"; then
+    ok "kcadm script without --account-console: warns about the enrolment gap, changes nothing"
+else
+    T_OUT=$T/kcadm-ac.out fail "kcadm script without --account-console warns about the enrolment gap"
+fi
+check "kcadm script --account-console --check" kcadm_run --account-console --check
+if grep -q "would change: client account-console: browser flow fastrdp-mfa (was the realm's browser flow)" "$T_OUT"; then
+    ok "kcadm script --account-console --check lists the override"
+else
+    fail "kcadm script --account-console --check lists the override"
+fi
+check "kcadm script --account-console" kcadm_run --account-console
+python3 - "$T/otp-vars.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1]))
+v["fastrdp_keycloak_account_console_mfa"] = True
+json.dump(v, open(sys.argv[1], "w"))
+PY
+check "role's check mode after kcadm --account-console" apply_otp --check
+if [ "$(changed)" = changed=0 ] && ! grep -q 'enrolment gap: client account-console' "$T_OUT"; then
+    ok "kcadm script's account console override equals the role's (changed=0, no gap warning)"
+else
+    fail "kcadm script's account console override equals the role's ($(changed))"
 fi
 finish

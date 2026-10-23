@@ -10,8 +10,10 @@ written; "changes" lists what would change.
 
 What it manages, and nothing else:
   1. realm: WebAuthn *passwordless* policy (UV required, discoverable credential
-     required, passkeys enabled, mediation), attestation + acceptable AAGUIDs
-     (hardware-only mode), required action webauthn-register-passwordless enabled;
+     required, passkeys enabled, mediation), required action webauthn-register-passwordless
+     enabled. Attestation and acceptable AAGUIDs only in hardware-only mode (attestation
+     direct, exactly the "aaguids" list; the change names the AAGUIDs it adds and removes);
+     otherwise both stay as the realm has them (an allow-list set by hand survives);
   2. the authentication flow <flow_alias> (default fastrdp-mfa), WITHOUT a Cookie step:
        Username Form, Password Form (skipped after a passkey), and a conditional
        sub-flow "second factor unless a passkey was used". The flow is rebuilt when
@@ -32,13 +34,16 @@ What it manages, and nothing else:
      script refuses it unless it is confidential, allows direct grants only (no browser
      flow, implicit flow, service account, device or CIBA grant, standard token
      exchange), has full scope off and no audience mapper. It warns ("warnings") when
-     the realm lets an OTP code be used twice or has brute-force detection off.
+     the realm lets an OTP code be used twice or has brute-force detection off;
+  6. only with "account_console_mfa": the browser flow override of the client
+     account-console (its other overrides kept) set to the id of <flow_alias>, so that
+     enrolling a passkey or OTP app there needs MFA too (docs/passkeys.md "Close the
+     enrolment gap"). Without it a "warnings" entry names the open gap while the account
+     console signs in with another flow; an override is never removed.
 
-Not managed (manual, docs/passkeys.md "Close the enrolment gap"): the browser flow
-override of the client account-console. The realm update sends all current
-webAuthnPolicyPasswordless* fields because Keycloak resets the ones missing from the
-request; the AAGUID list is ours, though (empty unless hardware_only), so a list set by
-hand in the realm is replaced (docs/backlog.md W3).
+The realm update sends all current webAuthnPolicyPasswordless* fields because Keycloak
+resets the ones missing from the request (docs/passkeys.md, "a policy update replaces the
+whole passwordless policy").
 
 Standard library only; runs on the Ansible controller (or anywhere with Python 3.11+).
 """
@@ -79,13 +84,14 @@ def settings(raw: dict) -> dict:
         "mediation": "conditional",
         "hardware_only": False, "aaguids": [],
         "otp_check_client_id": "", "otp_check_flow_alias": "fastrdp-otp-check", "otp_check_amr": "otp",
+        "account_console_mfa": False,
         "check": False,
     }
     unknown = set(raw) - set(s)
     if unknown:
         raise KeycloakError(f"unknown settings: {', '.join(sorted(unknown))}")
     s.update(raw)
-    for key in ("verify_tls", "hardware_only", "check"):  # Ansible may template them as strings
+    for key in ("verify_tls", "hardware_only", "account_console_mfa", "check"):  # Ansible may template them as strings
         if isinstance(s[key], str):
             if s[key].lower() not in ("true", "false"):
                 raise KeycloakError(f"{key} must be true or false")
@@ -188,17 +194,32 @@ def q(part: str) -> str:
 
 
 # ------------------------------------------------------------------ desired state
+AAGUIDS_FIELD = "webAuthnPolicyPasswordlessAcceptableAaguids"
+
+
 def realm_wanted(s: dict) -> dict:
-    return {
+    wanted = {
         "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
         "webAuthnPolicyPasswordlessResidentKey": "required",
         "webAuthnPolicyPasswordlessPasskeysEnabled": True,
         "webAuthnPolicyPasswordlessMediation": s["mediation"],
-        # direct: registrations without a verifiable attestation are refused; the
-        # allow-list disables self-attestation. none: every passkey provider is accepted.
-        "webAuthnPolicyPasswordlessAttestationConveyancePreference": "direct" if s["hardware_only"] else "none",
-        "webAuthnPolicyPasswordlessAcceptableAaguids": s["aaguids"] if s["hardware_only"] else [],
     }
+    if s["hardware_only"]:
+        # direct: registrations without a verifiable attestation are refused; the
+        # allow-list disables self-attestation. Without hardware-only both fields stay as
+        # the realm has them (a list an admin set by hand is kept).
+        wanted["webAuthnPolicyPasswordlessAttestationConveyancePreference"] = "direct"
+        wanted[AAGUIDS_FIELD] = s["aaguids"]
+    return wanted
+
+
+def aaguid_change(cur: list | None, want: list) -> str:
+    """The AAGUIDs a hardware-only update adds to and removes from the realm's list."""
+    have = [str(a).lower() for a in cur or []]
+    added = [a for a in want if a not in have]
+    removed = [a for a in have if a not in want]
+    parts = ([f"adds {', '.join(added)}"] if added else []) + ([f"removes {', '.join(removed)}"] if removed else [])
+    return f" (AAGUIDs: {'; '.join(parts)})" if parts else ""
 
 
 def sub_aliases(s: dict) -> tuple[str, str]:
@@ -299,7 +320,8 @@ class Run:
     def realm(self) -> None:
         cur = self.api.call("GET", "")
         diff = {k: v for k, v in realm_wanted(self.s).items() if cur.get(k) != v}
-        if diff and self.change("realm WebAuthn passwordless policy: " + ", ".join(sorted(diff))):
+        note = aaguid_change(cur.get(AAGUIDS_FIELD), diff[AAGUIDS_FIELD]) if AAGUIDS_FIELD in diff else ""
+        if diff and self.change("realm WebAuthn passwordless policy: " + ", ".join(sorted(diff)) + note):
             # Keycloak rebuilds the whole policy from the representation (missing fields
             # fall back to defaults): send all passwordless fields, ours changed.
             body = {k: v for k, v in cur.items() if k.startswith("webAuthnPolicyPasswordless")}
@@ -436,6 +458,41 @@ class Run:
             attrs["acr.loa.map"] = json.dumps(loa_map, separators=(",", ":"))
             self.api.call("PUT", f"/clients/{q(client['id'])}", {**client, "attributes": attrs})
 
+    # -------------------------------------------------------------- account console
+    def account_console(self) -> None:
+        """The enrolment gap (docs/passkeys.md): with account_console_mfa the client
+        account-console signs in through <flow_alias> (browser flow override, by flow id;
+        other overrides kept). Without it, a warning while the gap is open. Never removes
+        an override."""
+        s, alias = self.s, self.s["flow_alias"]
+        found = self.api.call("GET", "/clients?clientId=account-console")
+        if not found:
+            if s["account_console_mfa"]:
+                self.warnings.append(f"client account-console not found in realm {s['realm']!r}: "
+                                     "no account console, nothing to override")
+            return
+        client = found[0]
+        flows = {f["id"]: f.get("alias") for f in self.api.call("GET", "/authentication/flows")}
+        flow_id = next((i for i, a in flows.items() if a == alias), None)
+        overrides = dict(client.get("authenticationFlowBindingOverrides") or {})
+        current = overrides.get("browser") or ""
+        if flow_id is not None and current == flow_id:
+            return
+        now = f"flow {flows[current]}" if current in flows else "the realm's browser flow"
+        if not s["account_console_mfa"]:
+            self.warnings.append(
+                f"enrolment gap: client account-console signs in with {now}, not {alias}; whoever has a "
+                "user's password may enrol a passkey or OTP app there and then pass acr=mfa "
+                "(docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa). Set "
+                "fastrdp_keycloak_account_console_mfa: true, or make sure that flow needs MFA")
+            return
+        if self.change(f"client account-console: browser flow {alias} (was {now})"):
+            if flow_id is None:
+                raise KeycloakError(f"flow {alias!r} not found for the account console's override")
+            overrides["browser"] = flow_id
+            self.api.call("PUT", f"/clients/{q(client['id'])}",
+                          {**client, "authenticationFlowBindingOverrides": overrides})
+
     # -------------------------------------------------------------- code check
     def otp_check(self) -> None:
         """Direct grant flow of the broker's code check and its binding (settings
@@ -552,6 +609,7 @@ def main() -> int:
         run.flow()
         run.client_policies()
         run.client_acr_map()
+        run.account_console()
         if s["otp_check_client_id"]:
             run.otp_check()
     except (KeycloakError, ValueError) as exc:

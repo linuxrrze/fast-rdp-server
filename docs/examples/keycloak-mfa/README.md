@@ -5,7 +5,7 @@ fastrdp's web gateway asks Keycloak for `acr_values=mfa` and accepts only ID tok
 
 1. the WebAuthn **passwordless** policy for passkeys (user verification required,
    discoverable credential required, passkeys enabled, mediation `conditional`,
-   attestation `none`, no AAGUID list) and the required action
+   attestation and AAGUID list as the realm has them) and the required action
    *Webauthn Register Passwordless* enabled;
 2. the top-level flow **`fastrdp-mfa`** (no *Cookie* step):
 
@@ -25,10 +25,10 @@ fastrdp's web gateway asks Keycloak for `acr_values=mfa` and accepts only ID tok
 4. on the webgate's OIDC client: ACR-to-LoA map entry `mfa` → `2`.
 
 `ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py` (Ansible:
-`fastrdp_web_passkeys: true`) creates exactly this. None of the methods, Ansible included,
-sets the account console's flow override: do that by hand afterwards
-([Close the enrolment gap](#after-every-method-close-the-enrolment-gap)). All methods below produce the same
-result. Each was checked against Keycloak 26.8.1: afterwards that script, run with
+`fastrdp_web_passkeys: true`) creates exactly this. The account console's flow override
+is opt-in: Methods 1 and 2 set it with `"account_console_mfa": true` or `--account-console`,
+the others by hand ([Close the enrolment gap](#after-every-method-close-the-enrolment-gap)).
+All methods below produce the same result. Each was checked against Keycloak 26.8.1: afterwards that script, run with
 `"check": true`, reported `{"changed": false, "changes": []}`.
 
 Placeholders: `KEYCLOAK_HOST`, `REALM`, `CLIENT_ID` (the webgate's `clientId`),
@@ -85,8 +85,8 @@ How it works:
 - When it updates the realm, it sends all `webAuthnPolicyPasswordless*` fields, with its
   own values changed. Keycloak rebuilds the whole policy from such a request
   ([warning](../../passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy)).
-  Its own values include attestation `none` and an **empty** AAGUID list: an allow-list
-  set in the realm is removed.
+  Attestation and the acceptable AAGUIDs are not among its values: an allow-list set in
+  the realm stays [tested, 26.8.1].
 - It skips every piece that is already correct. If a flow `fastrdp-mfa` exists with a
   different structure, the script prints the current and wanted steps and stops.
   `--rebuild` deletes the flow's steps and builds them again, which is what the Ansible
@@ -94,7 +94,9 @@ How it works:
 - Options: `--flow`, `--acr`, `--loa`, `--profile`, `--policy`, `--second-factors`
   (comma list, e.g. add a privacyIDEA authenticator id) and `--mediation`;
   `--otp-client CLIENT_ID` (with `--otp-flow`, `--otp-amr`) also sets up the code check of
-  `code_or_web` ([below](#code-in-the-rdp-window-code_or_web)). Hardware-only
+  `code_or_web` ([below](#code-in-the-rdp-window-code_or_web)); `--account-console`
+  points the account console at the flow
+  ([enrolment gap](#after-every-method-close-the-enrolment-gap)). Hardware-only
   AAGUID lists are not supported; use Method 1 for those.
 - `KCADM_CONFIG` selects a different kcadm session file. Use `KCADM_OPTS` for extra
   options, e.g. `--truststore`. A run takes about 40 s, because each kcadm call starts
@@ -108,8 +110,8 @@ as already configured.
 
 1. **Authentication → Policies → Webauthn Passwordless Policy**: set *User verification
    requirement* = Required, *Discoverable credential* = Required, *Enable Passkeys* = on,
-   *Passkey Mediation* = Conditional, *Attestation conveyance preference* = None,
-   *Acceptable AAGUIDs* empty → Save. (Whether this form sends the whole policy was not
+   *Passkey Mediation* = Conditional; leave *Attestation conveyance preference* and
+   *Acceptable AAGUIDs* as they are (None and empty allow every passkey) → Save. (Whether this form sends the whole policy was not
    checked; compare `kcadm.sh get realms/REALM` before and after, see the
    [warning](../../passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy).)
 2. **Authentication → Required actions**: *Webauthn Register Passwordless* enabled
@@ -200,11 +202,14 @@ only the listed actions, plus `delete_account`.
 
 ## After every method: close the enrolment gap
 
-Not done by any method above, nor by Ansible. As long as the account console signs in
-with the realm's normal browser flow, anyone with a user's password can enrol their own
-passkey or OTP app there and then passes `acr=mfa`. Make the account console use
-`fastrdp-mfa` too:
+Opt-in, because users without any second factor then cannot use the account console. As
+long as the account console signs in with the realm's normal browser flow, anyone with a
+user's password can enrol their own passkey or OTP app there and then passes `acr=mfa`.
+Make the account console use `fastrdp-mfa` too:
 
+- Method 1 / Ansible: `"account_console_mfa": true` (`fastrdp_keycloak_account_console_mfa:
+  true`); Method 2: `--account-console`. Without it both warn on every run while the gap
+  is open; neither ever removes the override;
 - admin console: *Clients → account-console → Advanced → Authentication flow overrides →
   Browser Flow* = `fastrdp-mfa` → *Save*;
 - or kcadm (the override takes the flow's id):
@@ -215,8 +220,9 @@ passkey or OTP app there and then passes `acr=mfa`. Make the account console use
   kcadm.sh update clients/$ACC_ID -r REALM -s "authenticationFlowBindingOverrides.browser=$FLOW_ID"
   ```
 
-Not tested here (Keycloak source: a client's browser override wins over the realm's
-browser flow). Users then sign in to the account console with a passkey or password +
+Tested through Methods 1 and 2 against Keycloak 26.8.1 (`make test-keycloak`: password
+alone refused, passkey accepted); the console path and the kcadm commands above were not
+run. Users then sign in to the account console with a passkey or password +
 second factor each time, and users without any second factor cannot use it. Other
 enrolment paths (required actions, `kc_action` from other clients), the first factor for
 password-only users and the method-specific caveats:

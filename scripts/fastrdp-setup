@@ -65,6 +65,7 @@ ROLE_DEFAULTS = {
     "fastrdp_keycloak_admin_realm": "master",
     "fastrdp_keycloak_admin_client_id": "admin-cli",
     "fastrdp_keycloak_admin_user": "",
+    "fastrdp_keycloak_account_console_mfa": False,
     "fastrdp_mfa_keycloak_issuer": "{{ fastrdp_web_oidc_issuer | default('') }}",
     "fastrdp_mfa_keycloak_client_id": "fastrdp-otp-check",
     "fastrdp_mfa_keycloak_client_secret": "{{ vault_fastrdp_mfa_keycloak_client_secret | default('') }}",
@@ -148,6 +149,8 @@ VARIABLES = [
      "Keycloak service-account client (manage-realm, manage-clients); its secret is in vault.yml"),
     ("web", "fastrdp_keycloak_admin_user", "",
      "Keycloak admin user (password grant via admin-cli); its password is in vault.yml"),
+    ("web", "fastrdp_keycloak_account_console_mfa", False,
+     "the account console signs in with the MFA flow too (closes the enrolment gap, docs/passkeys.md)"),
     ("performance", "fastrdp_gpu", "auto", "auto | nvidia | mesa | none"),
     ("performance", "fastrdp_x264_threads", 2, "x264 threads per xrdp session"),
     ("performance", "fastrdp_backend_port_range", [33900, 34899], "loopback ports for back-end sessions"),
@@ -750,6 +753,16 @@ QUESTIONS = [
     Q("keycloak_admin_user", "Keycloak admin user", v_keycloak_admin_user, when=_keycloak_admin_user),
     Q("keycloak_admin_password", "Password of the Keycloak admin user (stored in the vault)", v_secret,
       when=_keycloak_admin_user, secret=True),
+    Q("keycloak_account_console_mfa", "Account console needs MFA too (closes the enrolment gap)? (y/n)", _bool,
+      False, when=_keycloak_admin,
+      help="In Keycloak's account console users enrol passkeys and authenticator apps. It signs in\n"
+           "with the realm's normal browser flow, often a password alone: whoever has a user's\n"
+           "password could enrol their own passkey or OTP app there and then pass acr=mfa.\n"
+           "  y  Ansible points the account console at the MFA flow (fastrdp-mfa): enrolling needs a\n"
+           "     passkey, or password + second factor. Users without any second factor can then no\n"
+           "     longer use the account console: enrol their first factor another way (admin,\n"
+           "     docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).\n"
+           "  n  nothing changes; each Ansible run warns while the gap is open."),
     Q("web_public_url", "Public web URL", v_web_url, "https://{{ fastrdp_fqdn }}", when=_web,
       ask=lambda a: False),
     Q("install_method", "Install method: apt (packages, recommended) / build (compile on the host)",
@@ -1010,6 +1023,7 @@ def variables_for(a):
             v["fastrdp_keycloak_admin_client_id"] = a["keycloak_admin_client_id"]
         else:
             v["fastrdp_keycloak_admin_user"] = a["keycloak_admin_user"]
+        v["fastrdp_keycloak_account_console_mfa"] = bool(a.get("keycloak_account_console_mfa", False))
     return v
 
 
@@ -1222,6 +1236,11 @@ def next_steps(a, inv_dir, vault_mode, password_file):
         lines += ["", "Keycloak: the web gateway accepts only sign-ins that Keycloak marks as MFA (acr=mfa).",
                   "  " + KEYCLOAK_MFA_WARNING,
                   "  Or answer web_passkeys=y: Ansible then configures it (incl. passkeys)."]
+    if _web(a) and not (_keycloak_admin(a) and a.get("keycloak_account_console_mfa")):
+        lines += ["", "Keycloak, enrolment gap: the account console accepts the realm's normal sign-in, so",
+                  "  whoever has a user's password may enrol a passkey or OTP app there. Point the client",
+                  "  account-console at the MFA flow (docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)"
+                  + (", or answer keycloak_account_console_mfa=y." if _keycloak_admin(a) else ".")]
     if _code(a):
         lines += ["", "Keycloak, code check (code_or_web; docs/auth-matrix.md#code-on-the-waiting-screen):",
                   f"  - create the client {a['mfa_keycloak_client_id']} from "

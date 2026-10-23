@@ -128,34 +128,40 @@ default `false` Keycloak is never contacted.
 | `fastrdp_keycloak_mfa_flow`, `_acr`, `_loa` | `fastrdp-mfa`, `mfa`, `2` | forced flow, ACR value (must be in `fastrdp_web_required_acr`), level |
 | `fastrdp_keycloak_second_factors` | `[auth-otp-form, webauthn-authenticator]` | alternatives after a password (add the privacyIDEA provider's id) |
 | `fastrdp_web_passkeys_mediation` | `conditional` | passkey autofill |
-| `fastrdp_web_passkeys_hardware_only`, `fastrdp_web_passkeys_aaguids` | `false`, `[]` | attestation `direct` + AAGUID allow-list |
+| `fastrdp_web_passkeys_hardware_only`, `fastrdp_web_passkeys_aaguids` | `false`, `[]` | attestation `direct` + exactly this AAGUID allow-list; off: the realm's own attestation and list stay |
+| `fastrdp_keycloak_account_console_mfa` | `false` | the account console signs in through `fastrdp-mfa` too (closes the [enrolment gap](passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)); off: each run warns while the gap is open |
 
 What it writes, and nothing else:
 - the realm's WebAuthn **passwordless** policy (UV required, discoverable credential
-  required, passkeys enabled, mediation; attestation `none` or, hardware-only,
-  `direct` + AAGUIDs) and the required action *Webauthn Register Passwordless*;
+  required, passkeys enabled, mediation; with hardware-only also attestation `direct` +
+  the AAGUIDs) and the required action *Webauthn Register Passwordless*;
 - the flow `fastrdp-mfa` without a *Cookie* step (rebuilt when it differs, e.g. when
   someone added a Cookie step; a built-in flow of that name is refused);
 - client profile `fastrdp-mfa-flow` (`auth-flow-enforcer`) and policy `fastrdp-mfa`
   (`acr-condition: mfa`). Keycloak's PUT replaces all client profiles/policies, so the
   role reads, merges and writes back: other profiles and policies stay;
-- the client's ACR-to-LoA map entry `mfa → 2`, other entries kept.
+- the client's ACR-to-LoA map entry `mfa → 2`, other entries kept;
+- with `fastrdp_keycloak_account_console_mfa: true`, the browser flow override of the
+  client `account-console` (the flow's id; other overrides kept).
 
 The passwordless policy update is a merge: the script reads the realm and sends **all**
 current `webAuthnPolicyPasswordless*` fields with only its own changed, because Keycloak
 resets every passwordless field missing from such a request to its default
 ([warning](passkeys.md#warning-a-policy-update-replaces-the-whole-passwordless-policy)).
 RP name, RP ID, signature algorithms and extra origins therefore stay. Attestation and
-the AAGUID list are the script's own fields: without hardware-only it sets `none` and an
-empty list, so an AAGUID list set by hand in the realm is removed (keep it in
-`fastrdp_web_passkeys_aaguids` instead).
+the AAGUID list are touched only in hardware-only mode (the change names the AAGUIDs
+added and removed); otherwise an allow-list set by hand in the realm stays. Switching
+hardware-only off does not clear the list; clear it by hand
+([how](passkeys.md#hardware-only-policy-attestation-aaguids-verified--docs)).
 
-**One manual step left: the account console.** The role does not touch the client
-`account-console`. As long as it signs in with the realm's normal browser flow, anyone
-with a user's password can enrol their own passkey or OTP app there and then passes
-`acr=mfa`. Set *Clients → account-console → Advanced → Authentication flow overrides →
-Browser Flow* = `fastrdp-mfa` (kcadm commands, consequences and the other enrolment
-paths: [passkeys.md](passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)).
+**The account console (opt-in).** As long as the client `account-console` signs in with
+the realm's normal browser flow, anyone with a user's password can enrol their own passkey
+or OTP app there and then passes `acr=mfa`. `fastrdp_keycloak_account_console_mfa: true`
+points it at `fastrdp-mfa`; users without any second factor can then no longer use the
+account console, so enrol their first factor another way. With the option off the role
+changes nothing there and warns on every run while the gap is open (consequences, the
+manual way and the other enrolment paths:
+[passkeys.md](passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa)).
 Realms whose users sign in with a password **or** a passkey: what changes and what users
 see is in [passkeys.md](passkeys.md#realms-where-users-sign-in-with-a-password-or-a-passkey).
 

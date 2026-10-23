@@ -11,7 +11,10 @@ Creates realm REALM with
   - carol: password only;
   - a non-default passwordless RP entity name, which the role must keep;
   - otp-client: the code check's client ([mfa] mode code_or_web) from its sample;
-    drop-otp-check, set-otp-deny, set-otp-client: changes for the kcadm script's test.
+    drop-otp-check, set-otp-deny, set-otp-client: changes for the kcadm script's test;
+  - drop-account-console (the account console's flow override removed) and set-aaguids
+    (an AAGUID allow-list set "by hand"): for the kcadm script's account console and
+    allow-list checks.
 check-sample imports the sample client unchanged into a realm of its own and compares
 what Keycloak stores with the file (no field dropped or rewritten).
 Standard library only.
@@ -28,7 +31,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from pathlib import Path
 
 SAMPLE = Path(__file__).resolve().parents[2] / "docs" / "examples" / "keycloak-fastrdp-web-client.json"
@@ -200,6 +202,27 @@ def set_otp_client(base: str, admin_user: str, admin_password: str, field: str, 
     a.call("PUT", f"/realms/{REALM}/clients/{client['id']}", {**client, field: json.loads(value)})
 
 
+def drop_account_console(base: str, admin_user: str, admin_password: str) -> None:
+    """Remove the account console's browser flow override (an empty value removes it)."""
+    a = Admin(base, admin_user, admin_password)
+    client = a.call("GET", f"/realms/{REALM}/clients?clientId=account-console")[0]
+    a.call("PUT", f"/realms/{REALM}/clients/{client['id']}",
+           {**client, "authenticationFlowBindingOverrides": {"browser": ""}})
+
+
+def set_aaguids(base: str, admin_user: str, admin_password: str, aaguids: str, mediation: str = "") -> None:
+    """An allow-list set by hand (comma list; "" = none), all passwordless fields sent.
+    `mediation`: also another passkey mediation, so that the next setup run must update
+    the realm (and send the list along)."""
+    a = Admin(base, admin_user, admin_password)
+    realm = a.call("GET", f"/realms/{REALM}")
+    policy = {k: v for k, v in realm.items() if k.startswith("webAuthnPolicyPasswordless")}
+    policy["webAuthnPolicyPasswordlessAcceptableAaguids"] = [x for x in aaguids.split(",") if x]
+    if mediation:
+        policy["webAuthnPolicyPasswordlessMediation"] = mediation
+    a.call("PUT", f"/realms/{REALM}", policy)
+
+
 def state(base: str, admin_user: str, admin_password: str) -> dict:
     """What run.sh checks after the role: merged lists, kept settings."""
     a = Admin(base, admin_user, admin_password)
@@ -262,6 +285,10 @@ def main(argv: list[str]) -> int:
         set_otp_deny(base, argv[3], argv[4], argv[5])
     elif cmd == "set-otp-client":
         set_otp_client(base, argv[3], argv[4], argv[5], argv[6])
+    elif cmd == "drop-account-console":
+        drop_account_console(base, argv[3], argv[4])
+    elif cmd == "set-aaguids":
+        set_aaguids(base, argv[3], argv[4], argv[5], argv[6] if len(argv) > 6 else "")
     elif cmd == "totp":
         print(totp())
     else:

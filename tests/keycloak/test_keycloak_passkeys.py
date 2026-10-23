@@ -3,8 +3,9 @@
 """Offline tests of ansible/roles/web_gateway/files/fastrdp_keycloak_passkeys.py (no
 Keycloak needed; run.sh tests it against a real one): settings validation, the
 read-merge-write of client profiles/policies and the ACR map, the realm update keeping
-other passwordless fields, check mode, flow drift detection, and the code check's direct
-grant flow and client checks ([mfa] mode code_or_web)."""
+other passwordless fields and the realm's attestation/AAGUIDs (hardware-only aside), check
+mode, flow drift detection, the account console's flow override, and the code check's
+direct grant flow and client checks ([mfa] mode code_or_web)."""
 
 import copy
 import importlib.util
@@ -131,7 +132,9 @@ class Merge(unittest.TestCase):
         self.assertEqual(json.loads(api.client["attributes"]["acr.loa.map"]), {"gold": 3, "mfa": 2})
         self.assertEqual(api.client["attributes"]["x"], "y")
         self.assertEqual(api.realm["webAuthnPolicyPasswordlessPasskeysEnabled"], True)
-        self.assertEqual(api.realm["webAuthnPolicyPasswordlessAttestationConveyancePreference"], "none")
+        # attestation and AAGUIDs are the realm's own without hardware-only (W3)
+        self.assertNotIn("webAuthnPolicyPasswordlessAttestationConveyancePreference", api.realm)
+        self.assertNotIn("webAuthnPolicyPasswordlessAcceptableAaguids", api.realm)
         # Keycloak rebuilds the passwordless policy from the representation: the PUT
         # carries the unmanaged passwordless fields too, and nothing outside them
         realm_put = next(b for m, p, b in api.writes if p == "")
@@ -164,9 +167,37 @@ class Merge(unittest.TestCase):
         self.assertEqual(api.realm["webAuthnPolicyPasswordlessAttestationConveyancePreference"], "direct")
         self.assertEqual(api.realm["webAuthnPolicyPasswordlessAcceptableAaguids"],
                          ["cb69481e-8ff7-4039-93ec-0a2729a154a8"])
-        changes = run(api)   # switched off again: back to "none" and no allow-list
-        self.assertIn("AttestationConveyancePreference", changes[0])
-        self.assertEqual(api.realm["webAuthnPolicyPasswordlessAcceptableAaguids"], [])
+        # switched off again: attestation and the list stay as they are (cleared by hand only)
+        self.assertEqual(run(api), [])
+        self.assertEqual(api.realm["webAuthnPolicyPasswordlessAttestationConveyancePreference"], "direct")
+        self.assertEqual(api.realm["webAuthnPolicyPasswordlessAcceptableAaguids"],
+                         ["cb69481e-8ff7-4039-93ec-0a2729a154a8"])
+
+    def test_realm_allow_list_kept_without_hardware_only(self):
+        """W3: an allow-list and attestation an admin set in the realm survive a run."""
+        api = FakeApi()
+        api.realm.update(webAuthnPolicyPasswordlessAttestationConveyancePreference="indirect",
+                         webAuthnPolicyPasswordlessAcceptableAaguids=["ee882879-721c-4913-9775-3dfcce97072a"])
+        changes = run(api)
+        self.assertTrue(changes[0].startswith("realm WebAuthn passwordless policy: "), changes)
+        self.assertNotIn("Aaguids", changes[0])
+        self.assertNotIn("Attestation", changes[0])
+        realm_put = next(b for m, p, b in api.writes if p == "")
+        self.assertEqual(realm_put["webAuthnPolicyPasswordlessAcceptableAaguids"],
+                         ["ee882879-721c-4913-9775-3dfcce97072a"])
+        self.assertEqual(api.realm["webAuthnPolicyPasswordlessAttestationConveyancePreference"], "indirect")
+
+    def test_hardware_only_names_the_aaguids_it_changes(self):
+        api = FakeApi()
+        api.realm["webAuthnPolicyPasswordlessAcceptableAaguids"] = ["EE882879-721C-4913-9775-3DFCCE97072A",
+                                                                     "cb69481e-8ff7-4039-93ec-0a2729a154a8"]
+        changes = run(api, check=True, hardware_only=True,
+                      aaguids=["cb69481e-8ff7-4039-93ec-0a2729a154a8", "2fc0579f-8113-47ea-b116-bb5a8db9202a"])
+        self.assertIn("(AAGUIDs: adds 2fc0579f-8113-47ea-b116-bb5a8db9202a; "
+                      "removes ee882879-721c-4913-9775-3dfcce97072a)", changes[0])
+        self.assertEqual(api.writes, [])
+        self.assertEqual(kp.aaguid_change(["CB69481E-8FF7-4039-93EC-0A2729A154A8"],
+                                          ["cb69481e-8ff7-4039-93ec-0a2729a154a8"]), "")
 
     def test_missing_client(self):
         api = FakeApi()
@@ -231,6 +262,87 @@ class Flow(unittest.TestCase):
         self.assertIn((1, "exec", "conditional-credential", "REQUIRED",
                        {"credentials": "webauthn-passwordless", "included": "false"}), rows)
         self.assertEqual([r[2] for r in rows if r[0] == 2], ["auth-otp-form", "privacyidea-authenticator"])
+
+
+class AccountConsoleApi:
+    """Client account-console and the flows, for Run.account_console."""
+
+    def __init__(self, overrides=None, present=True):
+        self.flows = [{"alias": "browser", "builtIn": True, "id": "f-browser"},
+                      {"alias": "fastrdp-mfa", "builtIn": False, "id": "f-mfa"}]
+        self.client = {"id": "a1", "clientId": "account-console", "publicClient": True,
+                       "authenticationFlowBindingOverrides": dict(overrides or {})}
+        self.present = present
+        self.writes: list[tuple[str, str, object]] = []
+
+    def call(self, method, path, body=None):
+        if method != "GET":
+            self.writes.append((method, path, copy.deepcopy(body)))
+        if path == "/clients?clientId=account-console":
+            return [copy.deepcopy(self.client)] if self.present else []
+        if path == "/authentication/flows":
+            return copy.deepcopy(self.flows)
+        if path == "/clients/a1" and method == "PUT":
+            self.client = body
+            return None
+        raise AssertionError(f"unexpected {method} {path}")
+
+
+class AccountConsole(unittest.TestCase):
+    """W4: the browser flow override of account-console (the enrolment gap)."""
+
+    def run_ac(self, api, **over):
+        r = kp.Run(api, kp.settings({**BASE, **over}))
+        r.account_console()
+        return r
+
+    def test_off_warns_and_writes_nothing(self):
+        api = AccountConsoleApi()
+        r = self.run_ac(api)
+        self.assertEqual(r.changes, [])
+        self.assertEqual(api.writes, [])
+        self.assertIn("enrolment gap: client account-console signs in with the realm's browser flow", r.warnings[0])
+        self.assertIn("fastrdp_keycloak_account_console_mfa: true", r.warnings[0])
+        api = AccountConsoleApi({"browser": "f-browser"})
+        self.assertIn("signs in with flow browser, not fastrdp-mfa", self.run_ac(api).warnings[0])
+
+    def test_off_with_the_override_set_is_quiet_and_kept(self):
+        api = AccountConsoleApi({"browser": "f-mfa"})
+        r = self.run_ac(api)
+        self.assertEqual((r.changes, r.warnings, api.writes), ([], [], []))
+
+    def test_on_sets_the_override_by_id_keeping_others(self):
+        api = AccountConsoleApi({"direct_grant": "f-other"})
+        r = self.run_ac(api, account_console_mfa="true")
+        self.assertEqual(r.changes, ["client account-console: browser flow fastrdp-mfa (was the realm's browser flow)"])
+        self.assertEqual(r.warnings, [])
+        self.assertEqual(api.client["authenticationFlowBindingOverrides"], {"direct_grant": "f-other", "browser": "f-mfa"})
+        self.assertTrue(api.client["publicClient"])   # the rest of the client as it was
+        api.writes.clear()
+        r = self.run_ac(api, account_console_mfa=True)
+        self.assertEqual((r.changes, api.writes), ([], []))
+
+    def test_on_replaces_another_flow_and_check_mode_writes_nothing(self):
+        api = AccountConsoleApi({"browser": "f-browser"})
+        r = self.run_ac(api, account_console_mfa=True, check=True)
+        self.assertEqual(r.changes, ["client account-console: browser flow fastrdp-mfa (was flow browser)"])
+        self.assertEqual(api.writes, [])
+        api.flows = api.flows[:1]   # fastrdp-mfa not created yet (check mode of a first run)
+        r = self.run_ac(api, account_console_mfa=True, check=True)
+        self.assertEqual(len(r.changes), 1)
+        self.assertEqual(api.writes, [])
+
+    def test_missing_account_console(self):
+        r = self.run_ac(AccountConsoleApi(present=False))
+        self.assertEqual((r.changes, r.warnings), ([], []))
+        r = self.run_ac(AccountConsoleApi(present=False), account_console_mfa=True)
+        self.assertEqual(r.changes, [])
+        self.assertIn("account-console not found", r.warnings[0])
+
+    def test_settings(self):
+        self.assertFalse(kp.settings(dict(BASE))["account_console_mfa"])
+        with self.assertRaises(kp.KeycloakError):
+            kp.settings({**BASE, "account_console_mfa": "maybe"})
 
 
 class OtpCheckApi:

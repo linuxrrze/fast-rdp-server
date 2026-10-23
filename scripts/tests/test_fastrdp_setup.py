@@ -616,6 +616,28 @@ class TestMfaAndAudioOptions(SetupTestCase):
         self.assertNotIn("fastrdp_web_passkeys", main)
         self.assertNotIn("fastrdp_keycloak_admin_user", main)
 
+    def test_keycloak_account_console(self):
+        # W4: opt-in, asked only when Ansible configures Keycloak; the closing notes name the gap
+        inv, out = self.generate(dict(LAB, mfa_mode="web", web_passkeys=True, keycloak_admin_auth="user",
+                                      keycloak_admin_user="kcadmin", keycloak_admin_password="pw",
+                                      keycloak_account_console_mfa="y", **self.WEB), "--force", env=self.ENV)
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertIs(main["fastrdp_keycloak_account_console_mfa"], True)
+        self.assertNotIn("Keycloak, enrolment gap", out)
+        inv, out = self.generate(dict(LAB, mfa_mode="web", web_passkeys=True, keycloak_admin_auth="user",
+                                      keycloak_admin_user="kcadmin", keycloak_admin_password="pw", **self.WEB),
+                                 "--force", env=self.ENV)
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertNotIn("fastrdp_keycloak_account_console_mfa", main)   # role default false
+        self.assertIn("Keycloak, enrolment gap", out)
+        self.assertIn("or answer keycloak_account_console_mfa=y.", out)
+        # without web_passkeys the question is not asked, the note points at the manual step
+        inv, out = self.generate(dict(LAB, mfa_mode="web", keycloak_account_console_mfa="y", **self.WEB),
+                                 "--force", env=self.ENV)
+        main = yaml.safe_load((inv / "group_vars/all/main.yml").read_text())
+        self.assertNotIn("fastrdp_keycloak_account_console_mfa", main)
+        self.assertIn("account-console at the MFA flow (docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).", out)
+
     def test_keycloak_mfa_rejections(self):
         web = dict(LAB, mfa_mode="web", web_passkeys=True, **self.WEB)
         self.assert_rejected(dict(web, keycloak_admin_client_id="fastrdp-admin"),
