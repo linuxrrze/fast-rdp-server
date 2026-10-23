@@ -125,8 +125,10 @@ The `~<distro>` suffix makes the two distro builds distinct files in one pool,
 and sorts below anything else, so on every distro `stable < testing of the same
 base < next release`. Only release tags `v<major>.<minor>[.<patch>]` are
 published; pre-release tags are rejected (they would sort above the release).
-After tagging, bump `debian/changelog` to the next version so testing builds
-carry it.
+The `debian/changelog` version always matches git: the release commit adds the
+entry and the tag `v<version>` names the same version. It is not bumped ahead
+after tagging, so testing builds carry the last release's version plus
+`+git<time>.<sha>`, which sorts above that release's stable build.
 
 ## Building locally
 
