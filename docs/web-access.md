@@ -24,7 +24,9 @@ browser ──https──▶ nginx :443
 - With OIDC, Guacamole never sees a password. Kerberos NLA is impossible from guacd,
   so it connects with TLS and a **one-time web token** instead.
 - The broker only accepts a web token:
-  - if it was issued to the **webgate's uid** (`[web] gateway_user`);
+  - if it was issued to the **webgate's uid** (`[web] gateway_user`); while that
+    account does not exist the broker refuses the webgate's operations to every uid,
+    logs an error and keeps serving RDP logins ([troubleshooting](backends/web.md#troubleshooting));
   - for the **same user**, **once**, within **60 s**;
   - on a login arriving from **guacd's address** (`allowed_clients`, loopback).
 - Without TLS logins for RDP clients (`fastrdp_allow_tls_logins: false`) the proxy

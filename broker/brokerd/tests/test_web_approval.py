@@ -208,7 +208,7 @@ class WebApprovalTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(self.broker, "web_uid", os.getuid() + 1):
             self.assertEqual(await self.pending_op(), not_permitted)
             self.assertEqual(await self.decide(rid), not_permitted)
-        with mock.patch.object(self.broker, "web_uid", None):      # [web] disabled
+        with mock.patch.object(self.cfg.web, "enabled", False):  # [web] disabled
             self.assertEqual(await self.decide(rid), not_permitted)
         self.assertFalse(login.done())
         await self.decide(rid, approve=False)

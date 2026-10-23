@@ -182,7 +182,7 @@ class MfaEventsOpTests(_ApprovalHarness, unittest.IsolatedAsyncioTestCase):
         not_permitted = {"ok": False, "error": "not permitted", "reason": "denied"}
         with mock.patch.object(self.broker, "web_uid", os.getuid() + 1):
             self.assertEqual(await self.events_op(), not_permitted)
-        with mock.patch.object(self.broker, "web_uid", None):       # [web] disabled
+        with mock.patch.object(self.cfg.web, "enabled", False):  # [web] disabled
             self.assertEqual(await self.events_op(), not_permitted)
         self.assertIsNone(self.broker.mfa.approvals.events.last_poll)   # never counted as a poll
         self.assertNotIn("approval notifications", "\n".join(tickets.format_status(await self.broker.status())))

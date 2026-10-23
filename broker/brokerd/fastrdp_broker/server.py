@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import pwd
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Callable
@@ -35,6 +36,9 @@ Progress = Callable[[dict], None]
 AskDesktop = Callable[[dict, float], Awaitable[tuple[bool, str | None]]]
 # The broker waits this much longer than the picker's countdown for the answer.
 PICKER_GRACE = 5
+# A missing [web] gateway_user (fastrdp-webgate installed later) is looked up again at most
+# this often (seconds); until it exists, the webgate's operations are refused.
+WEB_UID_RETRY = 30
 
 
 class Denied(Exception):
@@ -55,9 +59,22 @@ class Broker:
         self.tokens = TokenStore(cfg.broker.token_ttl)
         # One-time tokens for browser logins (fastrdp-webgate -> Guacamole -> proxy).
         self.web_tokens = TokenStore(cfg.web.token_ttl, WEB_TOKEN_PREFIX)
-        self.web_uid = None
-        if cfg.web.enabled:
-            self.web_uid = pwd.getpwnam(cfg.web.gateway_user).pw_uid
+        # uid of [web] gateway_user, the only peer of the webgate's operations (web_gateway_uid)
+        self.web_uid: int | None = None
+        self.web_uid_missing_since: float | None = None  # monotonic time of the last failed lookup
+        if cfg.web.enabled and self.web_gateway_uid() is None:
+            # Not fatal: RDP logins do not need the webgate.
+            log.error("[web] gateway_user %r does not exist: web logins, the desktop chooser and the "
+                      "approval page are refused until it does (looked up again every %ds); RDP logins "
+                      "are not affected. Install fastrdp-webgate (creates %s), re-run the deployment, or "
+                      "set [web] gateway_user to the webgate's account", cfg.web.gateway_user,
+                      WEB_UID_RETRY, cfg.web.gateway_user)
+            if cfg.mfa.mode == "web":
+                log.error("[mfa] web: RDP logins that owe a second factor are refused while the "
+                          "webgate's account is missing (nobody can approve them)")
+            elif cfg.mfa.mode == "push_or_web":
+                log.warning("[mfa] push_or_web: only push can approve RDP logins while the webgate's "
+                            "account is missing")
         self.mfa = SecondFactor(cfg.mfa)
         # Texts for the proxy's waiting screen (ui.py)
         self.waiting = WaitingTexts(cfg.ui)
@@ -100,6 +117,34 @@ class Broker:
         # Reads of users' home directories run here, never in the event loop and never in
         # the default executor (PAM checks): a hung NFS mount may block a thread forever.
         self.home_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fastrdp-home")
+
+    # ------------------------------------------------------------------ web
+    def web_gateway_uid(self) -> int | None:
+        """uid of [web] gateway_user; None while [web] is disabled or the account does not
+        exist. Once found it is kept; a missing account is looked up again at most every
+        WEB_UID_RETRY seconds, so a webgate installed later is picked up without a restart."""
+        if not self.cfg.web.enabled:
+            return None
+        if self.web_uid is not None:
+            return self.web_uid
+        now = time.monotonic()
+        if self.web_uid_missing_since is not None and now - self.web_uid_missing_since < WEB_UID_RETRY:
+            return None
+        try:
+            uid = pwd.getpwnam(self.cfg.web.gateway_user).pw_uid
+        except KeyError:
+            self.web_uid_missing_since = now
+            return None
+        if self.web_uid_missing_since is not None:
+            log.info("[web] gateway_user %r now exists (uid %d): web gateway operations enabled",
+                     self.cfg.web.gateway_user, uid)
+        self.web_uid = uid
+        return uid
+
+    def from_webgate(self, uid: int) -> bool:
+        """Peer `uid` is the webgate's. Never true while its account is unknown."""
+        web_uid = self.web_gateway_uid()
+        return web_uid is not None and uid == web_uid
 
     # ---------------------------------------------------------------- desktop
     async def read_desktop_pref(self, user: LocalUser) -> str | None:
@@ -444,6 +489,10 @@ class Broker:
                     # privacyIDEA knows directory users by their short name, also
                     # with fully qualified SSSD names ('alice@example.com' -> 'alice').
                     mfa_user = identity.short_name(user.name, self.cfg.auth)
+                    if self.cfg.mfa.mode == "web" and self.web_gateway_uid() is None:
+                        # Fail now instead of waiting web_approval_timeout for nobody.
+                        raise MfaDenied(f"web approval unavailable: [web] gateway_user "
+                                        f"{self.cfg.web.gateway_user!r} does not exist")
                     # Web approval: the webgate names the local account (mfa_pending).
                     factor = await self.mfa.verify(mfa_user, otp, password, account=user.name,
                                                    method=str_field(msg, "method", required=True),
@@ -825,17 +874,17 @@ class Broker:
                         user = self.active.pop(str(msg.get("session_id")), None)
                         log.info("session end %s user=%s", msg.get("session_id"), user)
                         reply = {"ok": True}
-                    elif op == "web_token" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "web_token" and self.from_webgate(uid):
                         reply = await self.issue_web_token(msg)
-                    elif op == "web_desktops" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "web_desktops" and self.from_webgate(uid):
                         reply = await self.web_desktops(msg)
-                    elif op == "web_set_desktop" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "web_set_desktop" and self.from_webgate(uid):
                         reply = await self.web_set_desktop(msg)
-                    elif op == "mfa_pending" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "mfa_pending" and self.from_webgate(uid):
                         reply = self.mfa_pending(msg)
-                    elif op == "mfa_decide" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "mfa_decide" and self.from_webgate(uid):
                         reply = self.mfa_decide(msg)
-                    elif op == "mfa_events" and self.web_uid is not None and uid == self.web_uid:
+                    elif op == "mfa_events" and self.from_webgate(uid):
                         reply = await self.mfa_events(msg)
                     elif op == "status" and uid == 0:
                         reply = await self.status()
@@ -848,7 +897,11 @@ class Broker:
                     elif op == "desktop_pref" and uid == 0:
                         reply = await self.desktop_pref(msg)
                     else:
-                        log.warning("op %r not permitted for uid %d", op, uid)
+                        missing = (op.startswith(("web_", "mfa_")) and self.cfg.web.enabled
+                                   and self.web_uid is None)
+                        log.warning("op %r not permitted for uid %d%s", op, uid,
+                                    f" ([web] gateway_user {self.cfg.web.gateway_user!r} does not exist)"
+                                    if missing else "")
                         reply = {"ok": False, "error": "not permitted", "reason": "denied"}
                 except (Denied, IdentityError) as exc:
                     # The error text stays generic; `reason` lets the proxy pick the RDP

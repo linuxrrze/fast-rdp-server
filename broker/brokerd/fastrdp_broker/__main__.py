@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import logging
+import pwd
 import socket
 import sys
 from pathlib import Path
@@ -36,6 +37,15 @@ def daemon_main(argv: list[str] | None = None) -> int:
         logging.error("config: %s", exc)
         return 2
     if args.check:
+        # A warning only: the broker runs without the webgate's account (Broker.web_gateway_uid),
+        # and a deployment may install fastrdp-webgate after validating this config.
+        if cfg.web.enabled:
+            try:
+                pwd.getpwnam(cfg.web.gateway_user)
+            except KeyError:
+                logging.warning("[web] gateway_user %r does not exist (yet): the broker refuses the "
+                                "webgate's operations until it does; RDP logins are not affected",
+                                cfg.web.gateway_user)
         print("config ok")
         return 0
     if cfg.mfa.mode in config_mod.PRIVACYIDEA_MODES and not cfg.mfa.privacyidea.verify_tls:

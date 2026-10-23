@@ -156,6 +156,7 @@ Summary (details and residual risks in [web-access.md](../web-access.md)):
 | "Your account name cannot be used here." | username claim with a domain not in `fastrdp_web_strip_domains`, or invalid characters |
 | Guacamole shows a connection error | `journalctl -u fastrdp-guacd -u fastrdp-guacamole`; proxy: `journalctl -u fastrdp-proxy`; broker: `web token from unexpected client address`, `invalid or reused web token`, `web token presented but [web] is disabled` |
 | Certificate error in guacd | `/etc/fastrdp/front.fingerprint` vs. `openssl x509 -in /etc/fastrdp/front.crt -noout -fingerprint -sha256`; re-run the role after a certificate change |
+| Webgate gets "not permitted" from the broker; broker log `[web] gateway_user '_fastrdp-web' does not exist` | the webgate's account is missing (fastrdp-webgate not installed, or a different `[web] gateway_user`). The broker keeps serving RDP logins and refuses the webgate's operations (web logins, desktop chooser, approval page; with `[mfa] mode = "web"` RDP logins fail at once, `push_or_web` approves by push only). Install `fastrdp-webgate` or re-run the role: the broker looks the account up again every 30 s, no restart needed. `fastrdp-brokerd --check` only warns about it |
 | Webgate health | `curl -s http://127.0.0.1:8090/web/healthz` → `ok` |
 | Session itself fails | see the back-end page ([xrdp](xrdp.md#troubleshooting), [gnome](gnome.md#troubleshooting), [plasma](plasma.md#troubleshooting)) |
 
