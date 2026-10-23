@@ -1,7 +1,7 @@
 # Blog post draft: introducing fastrdp
 
 Draft for blog.linux-ng.de. **Not published yet.** The post exists in WordPress as a **draft, post 2493**
-(preview: `https://blog.linux-ng.de/?p=2493&preview=true`), with the six diagrams (media 2487–2492) and four
+(preview: `https://blog.linux-ng.de/?p=2493&preview=true`), with the six diagrams (media 2487, 2490, 2491, 2540–2542) and four
 screenshots (media 2500, 2501, 2534, 2535) uploaded. Updated on 2026-10-23 for release 0.7.1; the WordPress draft is the
 master copy of the wording, and the files here mirror it.
 
