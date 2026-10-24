@@ -1,3 +1,27 @@
+fast-rdp-server (0.7.5) unstable; urgency=medium
+
+  * Keycloak (fastrdp_web_passkeys): without
+    fastrdp_web_passkeys_hardware_only the role no longer sets attestation
+    "none" and an empty AAGUID list; the realm's own attestation and
+    allow-list stay (fastrdp-mfa-kcadm.sh never touches them). Switching
+    hardware-only off no longer clears the list: clear it by hand
+    (docs/passkeys.md, hardware-only policy) (backlog W3).
+  * Keycloak: opt-in fastrdp_keycloak_account_console_mfa
+    (fastrdp-mfa-kcadm.sh --account-console) points the account console at
+    the MFA flow, closing the enrolment gap; without it each run warns while
+    the gap is open; fastrdp-setup asks for it (backlog W4).
+  * Tests: the approval page /web/approve end to end against Keycloak
+    26.8.1 (backlog W2).
+  * Proxy module: one "front:" log line per connection with the client's
+    relevant settings (no secrets), logging of Save Session Info from the
+    back-end and of client data left unread during the wait; lab-only
+    switch fastrdp_proxy_waiting_screen_observe (proxy.ini
+    WaitingScreenObserve, default off) reads the client during the whole
+    wait and answers Refresh Rect / Suppress Output. For the mstsc
+    same-process reconnect investigation (backlog A5).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Sat, 24 Oct 2026 07:34:14 +0200
+
 fast-rdp-server (0.7.4) unstable; urgency=medium
 
   * Proxy: a client's Shutdown Request (mstsc's X in the connection bar)
