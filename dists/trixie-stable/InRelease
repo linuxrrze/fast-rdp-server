@@ -1,0 +1,29 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: trixie-stable
+Date: Sat, 24 Oct 2026 07:29:11 UTC
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Debian 13 (trixie), stable channel (release tags)
+MD5Sum:
+ e7927c5333ee5b3bc721b54fc06ec43d 10104 main/binary-amd64/Packages
+ 0fdc656761348159f033ecf9cad6daea 3735 main/binary-amd64/Packages.gz
+ bd003eb64e32c3c9ec3b1412294248fc 166 main/binary-amd64/Release
+SHA1:
+ 042d6c771be57a2cc8624d1bd9937e1a3dbd51ae 10104 main/binary-amd64/Packages
+ dbb1dc808dc31a25a761aed36e97461c6f02c62a 3735 main/binary-amd64/Packages.gz
+ 700db4f2a58b019b85b5693551b011bc4e04e78a 166 main/binary-amd64/Release
+SHA256:
+ e135586ead3293d92dae35432e329b89a65bfac4d2798a136c6090204e777a00 10104 main/binary-amd64/Packages
+ 8ae49e7d4d39c1e28b23cbc4b6bedddfef26c9a5b4c9c9a90eb108932565303a 3735 main/binary-amd64/Packages.gz
+ 60d1314ced441b5c3bfafeb35121dec489de3dceeb2d71df366bb10d3bab197c 166 main/binary-amd64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTSJs+cPXcbvoZ0bYj3kwvNp/ZC3QUCatxeRwAKCRD3kwvNp/ZC
+3YPYAP0ZSUiJ1LIuJDVjaeqBRQGBVdgGVJwL2vA/8Yo9V8Mg2wD/fz1rDTxcW2F6
+f2NfYDKVQ4FDefkQloBw4H0YMe8diQg=
+=ipxi
+-----END PGP SIGNATURE-----

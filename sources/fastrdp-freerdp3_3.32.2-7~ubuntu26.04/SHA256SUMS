@@ -1,0 +1,12 @@
+cd9bc204a836f1da364bf581138978b98c9ed22400e9eb7477d8541475b4374b  ./fastrdp-freerdp3_3.32.2-7~ubuntu26.04.source.tar.xz
+ab7be171cc8006e5abf3fd8e989e764c7c195def85224dec6b63b294854fcf50  ./patches/freerdp/0001-core-scard-do-not-truncate-PKCS-11-slot-id.patch
+24a21e6a90153ae0e2b8b16fbcb5823322e9741d150381a9a5c8c3aa52c5b397  ./patches/freerdp/0002-core-nego-answer-an-unsupported-Remote-Credential-Guard-request.patch
+e6362c179e97775fd8669d6e404fdc6570f87fe494517b20b453be50201c9bab  ./patches/freerdp/0003-core-nla-accept-TSRemoteGuardCreds-without-supplementalCreds.patch
+ce298434795e4e4d933379dc99c7de64f80c1cad1cf468d013c92d8e0f9969d4  ./patches/freerdp/0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch
+19f899d6c2fcde173880052e1e6eed6980cccee71cf28c9c6f935e7dbdabff1d  ./patches/freerdp/0005-winpr-kerberos-acceptor-keep-the-KDC-evidence-from-the-ticket.patch
+9a64143c832ae13a8ecfa4bc7bf3fb71a0983832b72087b79cbb418f9b52e42f  ./patches/freerdp/0006-server-proxy-drop-Server-Status-Info-PDUs-the-client-did-not-announce.patch
+4ba8dab54a95c82aae4285c36fafcfef9cad226cb8d9a23f3d6f2df848bbddfd  ./patches/freerdp/0007-core-peer-input-during-PostConnect-no-second-PostConnect.patch
+50dfcbfd6558e43546179328814735d74ba1667b6b24d2982a73c941d4bad805  ./patches/freerdp/0008-core-peer-deny-a-client-s-Shutdown-Request-once-the-session-runs.patch
+81ad80b4a5a0216aea678cbe82734d9e444a5ec11a6d6294c1d13f5d98445b19  ./patches/freerdp/0009-winpr-wlog-make-WITH_SYSTEMD-reach-config.h-journald-appender.patch
+7d6ad40e3bfae444e0ee8c7fd153ad25461fc79331d4e140e6e671077be9b93d  ./patches/freerdp/series
+e95a505c0057e4d06a3b120477c421028769deba4db9c639ef3465d050f0955c  ./upstream/freerdp-3.32.2.tar.gz

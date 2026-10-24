@@ -1,0 +1,37 @@
+From fee3313b5494f1cd4cc22c37a320237048684a91 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Mon, 19 Oct 2026 19:44:31 +0200
+Subject: [PATCH] [core,scard] do not truncate PKCS#11 slot id in pkinit args
+
+build_pkinit_args() printed the slot id with PRIu16 after a cast to
+UINT16. SmartcardCertInfo::slotId is a UINT32 (filled from the WinPR
+NCRYPT_WINPR_SLOTID property), and PKCS#11 modules such as SoftHSM2
+use 32 bit slot ids (e.g. 0x47c3da5d). The truncated id ("slotid=55901")
+matches no slot, MIT PKINIT reports "PKCS#11 module has no matching
+tokens" and smartcard logon fails.
+
+Print the full value with PRIu32.
+---
+ libfreerdp/core/smartcardlogon.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/libfreerdp/core/smartcardlogon.c b/libfreerdp/core/smartcardlogon.c
+index 70a1731..67fb46f 100644
+--- a/libfreerdp/core/smartcardlogon.c
++++ b/libfreerdp/core/smartcardlogon.c
+@@ -271,11 +271,11 @@ static BOOL build_pkinit_args(NCRYPT_PROV_HANDLE provider, SmartcardCertInfo* sc
+ 
+ 	if (certId && *certId)
+ 		return (winpr_asprintf(&scCert->pkinitArgs, &size,
+-		                       "PKCS11:module_name=%s:slotid=%" PRIu16 ":certid=%s", pkModule,
+-		                       (UINT16)scCert->slotId, certId) > 0);
++		                       "PKCS11:module_name=%s:slotid=%" PRIu32 ":certid=%s", pkModule,
++		                       scCert->slotId, certId) > 0);
+ 
+-	return (winpr_asprintf(&scCert->pkinitArgs, &size, "PKCS11:module_name=%s:slotid=%" PRIu16,
+-	                       pkModule, (UINT16)scCert->slotId) > 0);
++	return (winpr_asprintf(&scCert->pkinitArgs, &size, "PKCS11:module_name=%s:slotid=%" PRIu32,
++	                       pkModule, scCert->slotId) > 0);
+ }
+ #endif /* _WIN32 */
+ 

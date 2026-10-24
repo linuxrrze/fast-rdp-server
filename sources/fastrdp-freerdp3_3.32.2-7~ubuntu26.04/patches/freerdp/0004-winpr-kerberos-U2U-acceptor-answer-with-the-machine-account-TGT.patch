@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Wed, 21 Oct 2026 22:30:00 +0200
+Subject: [PATCH] [winpr,kerberos] U2U acceptor: answer with the TGT of the
+ machine account
+
+Windows clients do Kerberos user-to-user under CredSSP: CredSSP calls
+InitializeSecurityContext with ISC_REQ_USE_SESSION_KEY, so mstsc's
+first token is a KERB-TGT-REQUEST for TERMSRV/<host> (GSS OID
+1.2.840.113554.1.2.2.3, TOK_ID 04 00). The acceptor must answer with a
+TGT, and the KDC issues the user-to-user ticket only when the client of
+that TGT is the account that owns the requested service name (MIT:
+check_tgs_u2u() "2ND_TKT_MISMATCH"; Active Directory: the account the
+SPN maps to).
+
+retrieveSomeTgt() asked the KDC for a TGT of TERMSRV/<host> itself and,
+with MIT krb5, of "<host>$" built from the second name component (the
+FQDN, so "fastrdp-server.example.com$"). In Active Directory
+TERMSRV/<host> is a service principal name of the machine account
+<NAME>$ (sAMAccountName, usually the upper-case short host name): the
+KDC refuses it as an AS client ("Client not found in Kerberos
+database") and no account is called "<fqdn>$". So U2U always failed,
+Negotiate dropped Kerberos and every Windows client fell back to NTLM.
+
+Look for a machine account entry (one name component ending in '$') in
+the acceptor's keytab, in the realm of the service, and get its TGT
+first; the keys are the same as those of the TERMSRV entries, since AD
+keeps one key set per account. Keep trying the service principal
+itself, which works where it is a principal of its own (MIT, FreeIPA).
+When neither works, say what the keytab is missing.
+---
+ winpr/libwinpr/sspi/Kerberos/kerberos.c | 91 +++++++++++++++++++++----------
+ 1 file changed, 68 insertions(+), 23 deletions(-)
+
+diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+--- a/winpr/libwinpr/sspi/Kerberos/kerberos.c
++++ b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+@@ -1472,6 +1472,43 @@
+ 	return ret;
+ }
+ 
++/* The keytab entry of an Active Directory machine account (one name component ending in
++ * '$', e.g. HOST$@REALM) in the realm of target, if there is one. */
++WINPR_ATTR_NODISCARD
++static BOOL findMachineAccount(KRB_CREDENTIALS* credentials, krb5_const_principal target,
++                               krb5_principal* machine)
++{
++	BOOL found = FALSE;
++	krb5_kt_cursor cur = WINPR_C_ARRAY_INIT;
++	krb5_keytab_entry entry = WINPR_C_ARRAY_INIT;
++
++	if (krb_log_exec(krb5_kt_start_seq_get, credentials->ctx, credentials->keytab, &cur))
++		return FALSE;
++
++	while (!found && krb5_kt_next_entry(credentials->ctx, credentials->keytab, &entry, &cur) == 0)
++	{
++		char* name = nullptr;
++		if (krb5_realm_compare(credentials->ctx, target, entry.principal) &&
++		    krb5_unparse_name_flags(credentials->ctx, entry.principal,
++		                            KRB5_PRINCIPAL_UNPARSE_NO_REALM, &name) == 0)
++		{
++			const size_t len = strlen(name);
++			if ((len > 1) && (name[len - 1] == '$') && !strchr(name, '/'))
++				found = krb5_copy_principal(credentials->ctx, entry.principal, machine) == 0;
++#if defined(WITH_KRB5_HEIMDAL)
++			free(name);
++#else
++			krb5_free_unparsed_name(credentials->ctx, name);
++#endif
++		}
++		(void)krb5glue_free_keytab_entry_contents(credentials->ctx, &entry);
++		memset(&entry, 0, sizeof(entry));
++	}
++
++	(void)krb5_kt_end_seq_get(credentials->ctx, credentials->keytab, &cur);
++	return found;
++}
++
+ WINPR_ATTR_NODISCARD
+ static BOOL retrieveSomeTgt(KRB_CREDENTIALS* credentials, const char* target, krb5_creds* creds)
+ {
+@@ -1511,35 +1548,43 @@
+ #endif
+ 
+ 	/*
+-	 * First try with the account service. We were requested with something like
+-	 * TERMSRV/<host>@<realm>, let's see if we have that in our keytab and if we're able
+-	 * to retrieve a TGT with that entry
+-	 *
++	 * The KDC only issues the user-to-user ticket when the client of this TGT is the
++	 * account that owns the requested service name. In Active Directory TERMSRV/<host> is
++	 * a service principal name of the machine account <NAME>$, and the KDC refuses it as
++	 * an AS client ("Client not found in Kerberos database"), so take the machine
++	 * account's TGT when its keys are in the keytab (with AD they are the same keys as the
++	 * TERMSRV ones). Without one, try the service principal itself, which works where it
++	 * is a principal of its own (MIT, FreeIPA).
+ 	 */
++	{
++		krb5_principal machine = nullptr;
++		if (findMachineAccount(credentials, target_princ, &machine))
++		{
++			const BOOL ok = retrieveTgtForPrincipal(credentials, machine, creds);
++			krb5_free_principal(credentials->ctx, machine);
++			if (ok)
++				goto out;
++		}
++	}
++
+ 	if (retrieveTgtForPrincipal(credentials, target_princ, creds))
+ 		goto out;
+ 
+-	ret = FALSE;
+-
+-#if defined(WITH_KRB5_MIT)
+-	/*
+-	 * if it's not working let's try with <host>$@<REALM> (note the dollar)
+-	 */
+ 	{
+-		char hostDollar[300] = WINPR_C_ARRAY_INIT;
+-		if (target_princ->length < 2)
+-			goto out;
+-
+-		(void)snprintf(hostDollar, sizeof(hostDollar) - 1, "%s$@%s", target_princ->data[1].data,
+-		               target_princ->realm.data);
+-		krb5_free_principal(credentials->ctx, target_princ);
+-
+-		rv = krb_log_exec(krb5_parse_name_flags, credentials->ctx, hostDollar, 0, &target_princ);
+-		if (rv)
+-			return FALSE;
+-	}
+-	ret = retrieveTgtForPrincipal(credentials, target_princ, creds);
++		char* name = nullptr;
++		if (krb5_unparse_name(credentials->ctx, target_princ, &name) != 0)
++			name = nullptr;
++		WLog_WARN(TAG,
++		          "Kerberos user-to-user: no TGT for %s: the keytab needs the keys of the account "
++		          "that owns this service name (Active Directory: the machine account <NAME>$)",
++		          name ? name : target);
++#if defined(WITH_KRB5_HEIMDAL)
++		free(name);
++#else
++		krb5_free_unparsed_name(credentials->ctx, name);
+ #endif
++	}
++	ret = FALSE;
+ 
+ out:
+ 	if (default_realm)

@@ -1,0 +1,29 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: resolute-stable
+Date: Sat, 24 Oct 2026 07:29:11 UTC
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Ubuntu 26.04 (resolute), stable channel (release tags)
+MD5Sum:
+ e6c3d4c4302ab0b1679d27e06f763998 10191 main/binary-amd64/Packages
+ 130153118f7e84d1a2ee4e8cbaef49ba 3741 main/binary-amd64/Packages.gz
+ c608cc7890682e8ac50607a021c20260 171 main/binary-amd64/Release
+SHA1:
+ 8dcb8c3e3e6ceb8530cba518d75bef364e502803 10191 main/binary-amd64/Packages
+ 82feefec78469aa3a531f69abf4788f5cbd6dfe8 3741 main/binary-amd64/Packages.gz
+ e02c1257de8a57f1c4d9e73f2341b86f950e0280 171 main/binary-amd64/Release
+SHA256:
+ d8cddac993aa3725b166644f3436a31aa6fcd8a19869065887602bd270f3dc62 10191 main/binary-amd64/Packages
+ f670cc9ad2d7dfdc462705974f8bff34d8a82797c9e29bafb0d96357a068853a 3741 main/binary-amd64/Packages.gz
+ 963f72bcfa62cba0ad1624c32af541765b45f1f4ae9166e182dd6e51cbf5eb7c 171 main/binary-amd64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQTSJs+cPXcbvoZ0bYj3kwvNp/ZC3QUCatxeRwAKCRD3kwvNp/ZC
+3VqMAQDcqE6iyQ04ukC2SHaJ+hKAxzwdLWYnbyaBXGaj9WGz4QEAtphrH3AgZCsb
+CxsKfetjHiwNfz/JpKsQyWEuWux6dAY=
+=TGmp
+-----END PGP SIGNATURE-----
