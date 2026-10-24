@@ -189,6 +189,9 @@ class Broker:
         hinted = identity.hinted_desktop(self.cfg, user, hint)
         if hinted:
             return hinted, "hint"
+        if hint and hint.strip():
+            log.info("%s: desktop %r named by the client is not available or not allowed; ignored",
+                     user.name, hint.strip()[:64])
         web_pref, allowed = self.web_desktop_pref(user)
         if web_pref and allowed:
             return web_pref, "web_pref"
@@ -196,6 +199,9 @@ class Broker:
             log.info("%s: desktop %s chosen on the web gateway is not allowed (any more); ignored",
                      user.name, web_pref)
         pref = await self.read_desktop_pref(user)
+        if pref and not identity.desktop_allowed(self.cfg, pref, user):
+            log.info("%s: desktop %r from ~/.config/fastrdp/desktop is not available or not allowed; "
+                     "ignored", user.name, pref)
         name, source, _ = identity.desktop_choice(self.cfg, user, None, pref=pref)
         return name, source
 
@@ -205,13 +211,20 @@ class Broker:
         running = {}
         for name, backend in self.backends.items():
             session = self.state.get(user.name, name)
-            if session is None or session.desktop not in self.cfg.desktops:
-                continue
             try:
+                if session is None or session.desktop not in self.cfg.desktops:
+                    # a session the broker has no (usable) record of: xrdp can still find it
+                    # in logind (field report 2026-10-24: a running Xfce session the picker
+                    # did not mark)
+                    untracked = getattr(backend, "untracked_desktop", None)
+                    desktop = await asyncio.wait_for(untracked(user), 5) if untracked else None
+                    if desktop:
+                        running[name] = desktop
+                    continue
                 if await asyncio.wait_for(backend.alive(session), 5):
                     running[name] = session.desktop
             except Exception as exc:  # noqa: BLE001 - only a hint for the picker
-                log.debug("%s: %s session state unknown: %s", user.name, name, exc)
+                log.info("%s: %s session state unknown: %s", user.name, name, str(exc) or type(exc).__name__)
         return running
 
     async def pick_desktop(self, user: LocalUser, msg: dict, chosen: str, source: str, lang: str,
@@ -224,11 +237,13 @@ class Broker:
         mode = self.cfg.broker.desktop_picker
         if mode == "never":
             return chosen
-        if str_field(msg, "desktop_hint") is not None:
-            log.debug("%s: no desktop picker: the client named a desktop", user.name)
+        hint = str_field(msg, "desktop_hint")
+        if hint is not None:
+            log.info("%s: no desktop picker: the client named a desktop (%r)", user.name, hint[:64])
             return chosen
         allowed = [d for d in self.cfg.desktops.values() if identity.desktop_allowed(self.cfg, d.name, user)]
         if len(allowed) < 2:
+            log.info("%s: no desktop picker: %s is the only desktop this user may use", user.name, chosen)
             return chosen
         if mode == "if_multiple" and source not in ("group_default", "default"):
             log.info("%s: no desktop picker: %s chosen before (%s)", user.name, chosen, source)

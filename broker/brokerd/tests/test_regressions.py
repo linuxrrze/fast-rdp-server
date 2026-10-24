@@ -82,6 +82,33 @@ class XrdpSessionTests(unittest.TestCase):
         self.assertEqual(terminated, [("loginctl", "terminate-session", "3")])
         self.assertIsNone(self.state.get(self.user.name, "xrdp"))
 
+    def test_untracked_xrdp_session_found(self):
+        # Field report 2026-10-24: a running Xfce session the picker did not mark. Without a
+        # record the session is found in logind and its desktop in the choice startwm.sh read.
+        desktop = self.xrdp_desktops()[0]
+        xsession = self.cfg.desktops[desktop].xsession
+        ddir = os.path.join(self.cfg.broker.runtime_dir, "desktop")
+        os.makedirs(ddir)
+        with open(os.path.join(ddir, self.user.name), "w") as fh:
+            fh.write(xsession + "\n")
+        running = FakeLoginctl({"40": (self.user.name, "xrdp-sesman", "online")})
+        with mock.patch.object(sysutil, "run", running.run):
+            self.assertEqual(asyncio.run(self.backend.untracked_desktop(self.user)), desktop)
+        self.assertEqual(self.state.get(self.user.name, "xrdp").desktop, desktop)
+        # no xrdp session (only SSH): nothing, no record
+        self.state.drop(self.user.name, "xrdp")
+        ssh = FakeLoginctl({"4": (self.user.name, "sshd", "active")})
+        with mock.patch.object(sysutil, "run", ssh.run):
+            self.assertIsNone(asyncio.run(self.backend.untracked_desktop(self.user)))
+        # a session whose desktop the broker cannot tell: not guessed
+        with open(os.path.join(ddir, self.user.name), "w") as fh:
+            fh.write("unknown-session\n")
+        with mock.patch.object(sysutil, "run", running.run), \
+                self.assertLogs("fastrdp.xrdp", "INFO") as logs:
+            self.assertIsNone(asyncio.run(self.backend.untracked_desktop(self.user)))
+        self.assertIn("no record of; its desktop is unknown", logs.output[0])
+        self.assertIsNone(self.state.get(self.user.name, "xrdp"))
+
     def test_reconnect_keeps_running_desktop(self):
         # Bug: every login overwrote the recorded desktop although xrdp reconnects to
         # the desktop that is already running.

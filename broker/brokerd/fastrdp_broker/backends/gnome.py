@@ -24,6 +24,8 @@ from ..state import Session
 from .base import Backend, BackendError, LoginRequest, Target
 
 GRD_USER_UNIT = "gnome-remote-desktop-headless.service"
+# logind session types GDM counts as an open graphical session of the user
+GRAPHICAL_TYPES = ("x11", "wayland", "mir")
 RDP_USER = "fastrdp"
 
 
@@ -39,6 +41,22 @@ class GnomeBackend(Backend):
             and await sysutil.unit_active(self.unit(user))
             and netcheck.listener_uids(session.port) == {user.uid}
         )
+
+    async def _refuse_beside_other_graphical_session(self, user: LocalUser) -> None:
+        """GDM refuses a headless session while the user has another open graphical one
+        ("There's already an opened session for user ..."; field report 2026-10-24: an
+        xrdp/X11 session, logind type x11, service xrdp-sesman). Say so before starting
+        instead of letting the unit fail five times."""
+        others = [p for p in await sysutil.user_sessions(user.name)
+                  if p.get("Type") in GRAPHICAL_TYPES and p.get("Class", "user") == "user"
+                  and p.get("State") != "closing"]
+        if others:
+            names = ", ".join(f"{p['Id']} ({p.get('Type')}, {p.get('Service') or 'unknown service'})"
+                              for p in others)
+            raise BackendError(
+                f"GNOME session for {user.name} cannot start while the user has another graphical "
+                f"session: logind session {names}; log out of it first (an xrdp/X11 desktop: log out "
+                f"there or `fastrdpctl logout {user.name}`)")
 
     async def ensure(self, req: LoginRequest) -> Target:
         user = req.user
@@ -76,13 +94,16 @@ class GnomeBackend(Backend):
                 # Session alive but g-r-d gone or on another port: restart only g-r-d.
                 await sysutil.run_as_user(user, "systemctl", "--user", "restart", GRD_USER_UNIT)
             else:
+                await self._refuse_beside_other_graphical_session(user)
+                await sysutil.reset_failed(self.unit(user))
                 await sysutil.start_unit(self.unit(user))
             session = Session(
                 user=user.name, backend=self.name, desktop=req.desktop.name,
                 port=port, rdp_user=RDP_USER, rdp_password=secret,
             )
             self.state.put(session)
-            await sysutil.wait_for_listener(port, user.uid, self.cfg.broker.session_start_timeout)
+            await sysutil.wait_for_listener(port, user.uid, self.cfg.broker.session_start_timeout,
+                                            unit=self.unit(user))
         except sysutil.CommandError as exc:
             raise BackendError(f"GNOME session for {user.name}: {exc}") from None
         return self.target_for(session)

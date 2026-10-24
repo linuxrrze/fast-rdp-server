@@ -173,6 +173,9 @@ E2E_KEEP_S=7 E2E_REFRESH_AT_MS=1500 E2E_SUPPRESS_AT_MS=2700 timeout 30 ./client 
 # Proxy G reads nobody's input during the wait (waiting screen off): keys typed then stay
 # unread, which the module reports at the end of the wait
 E2E_KEEP_S=5 E2E_EARLY_KEYS=1,2,3 timeout 30 ./client 127.0.0.1 23396 oldbroker good "" > unread.out 2>&1 || true
+# Field report (A3/A5): the desktop picker with WaitingScreenObserve on (proxy F). Both read
+# the client during the wait; the picker must show, take the key and hand the input back
+E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23395 pickerobserve good "" > pickerobserve.out 2>&1 || true
 # Desktop picker (proxy E): the fake broker prompts 1.5 s after the login (the MFA wait),
 # the clients answer 2.5 s after connecting, in parallel. Keys typed before the prompt and
 # a key released that went down before it do not count.
@@ -226,8 +229,9 @@ expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not an
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 25 logins reach proxy B: 24 through proxy A and the unread-keys login through proxy G
-expect "back-end received the token, not the password" 'len(lb) == 25 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# 26 logins reach proxy B: 24 through proxy A, the unread-keys login through proxy G and
+# the picker login through proxy F
+expect "back-end received the token, not the password" 'len(lb) == 26 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -265,8 +269,8 @@ expect "picker: client gone during the picker: broker connection closed" \
 expect "picker: channel data below the cap passed on, the choice counts" 'chose("pickerchan") == "gnome"'
 expect "picker: channel data above the cap: login abandoned, broker connection closed" \
     'pc["pickerflood"]["closed"] and pc["pickerflood"].get("line") is None'
-expect "picker: chosen logins reached the back-end, the abandoned one not" \
-    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff"])'
+expect "picker: chosen logins reached the back-end, the abandoned one not (pickerobserve: proxy F)" \
+    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff", "pickerobserve"])'
 expect "Shutdown Request during the session: session end reported, back-end connection closed" \
     'hold(a)[0]["closed"] is False and hold(b)[0]["closed"] and hold(b)[0]["waited"] < 2.9 and any(r["op"] == "end" and r["session_id"] in sid("holdsession") for r in a)'
 expect "Shutdown Request during the picker: login abandoned, broker connection closed" \
@@ -389,6 +393,18 @@ logged "WaitingScreenObserve: Refresh Rect logged" proxy-f.log "client Refresh R
 logged "WaitingScreenObserve: Suppress Output logged" proxy-f.log "client Suppress Output #1: allowDisplayUpdates 0"
 logged "WaitingScreenObserve: counts at the end of the wait" proxy-f.log "waiting screen: 1 Refresh Rect, 2 Suppress Output PDU(s) from the client"
 logged "unread client data during a wait reported" proxy-g.log "bytes during the wait that were not read"
+if python3 - <<'PY'
+import json, sys
+f = [json.loads(l) for l in open("f.log")]
+b = [json.loads(l) for l in open("b.log")]
+pc = [r for r in f if r.get("op") == "pickerchoice" and r["user"] == "pickerobserve"]
+ok = (len(pc) == 1 and pc[0].get("asked") and pc[0].get("line") == {"op": "choice", "desktop": "gnome"}
+      and any(r["op"] == "login" and r["user"] == "pickerobserve" for r in b))
+sys.exit(0 if ok else 1)
+PY
+then echo "ok   WaitingScreenObserve with the desktop picker: picker shown, key 2 chosen, session reached the back-end"
+else echo "FAIL WaitingScreenObserve with the desktop picker ($(grep -h pickerobserve f.log | tr '\n' ' '))"; fail=1; fi
+logged "WaitingScreenObserve with the desktop picker: picker drawn" proxy-f.log "desktop picker: 3 desktops"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

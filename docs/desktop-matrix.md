@@ -87,7 +87,11 @@ allowed desktops:           xfce, gnome, plasma
 allowed ones.
 
 A user can have one running session per back-end. Switching from `xfce` to `gnome`
-starts a second session; the X11 one keeps running until logout or timeout.
+starts a second session; the X11 one keeps running until logout or timeout. Exception
+seen in the field (2026-10-24, GDM on Ubuntu 26.04): GDM refused the headless GNOME session
+with "There's already an opened session for user …" while it counted another session of
+the user as graphical, probably the running X11 one [inferred, not confirmed]; the login
+then fails with that message ([backends/gnome.md](backends/gnome.md#troubleshooting)).
 
 ### Desktop picker in the RDP window
 
@@ -132,6 +136,11 @@ In every mode the picker is left out
   into it; the role checks refuse the combination) and with an older `fastrdp-freerdp3` (before
   3.32.2-6, `patches/freerdp/0007`): the proxy then does not offer the picker and the
   order above decides.
+
+The broker logs why it left the picker out (`no desktop picker: the client named a
+desktop (…)`, `… is the only desktop this user may use`, `… chosen before`, `…
+reconnecting to the running … session`), and when it ignores a client hint or a
+`~/.config/fastrdp/desktop` entry that names a desktop the user may not use.
 
 So with the picker the order is: client hint > picker choice > stored choice > home file
 > group default > default, where the picker preselects what the order without it would

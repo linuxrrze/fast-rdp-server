@@ -99,6 +99,9 @@ checked in this repository.
   broker has no idle or disconnect timeout for GNOME.
 - What happens to a second, concurrent connection of the same user: g-r-d
   upstream behaviour, not tested.
+- If the session unit fails (systemd gives up after its restarts), the broker stops
+  waiting at once and names the unit's last message instead of waiting out
+  `session_start_timeout` (90 s); a failed unit is reset before the next start.
 
 ### Resize, multi-monitor, channels
 
@@ -268,6 +271,7 @@ Same mechanism for GNOME and Plasma (`Broker.session_tgt`, `fastrdp_broker/tgt.p
 | `backend error: GNOME session for USER: grdctl --headless rdp … (systemd-run as the user) failed (N): <first error lines>` | `grdctl` or `systemctl --user` failed as the user: `systemctl status user@$(id -u USER)`; `journalctl _UID=$(id -u USER)` |
 | `backend error: home directory H of USER does not exist (parent P missing: automount not set up?)` | the directory names a home path this host does not have: set up autofs (`fastrdp_autofs`) or use local homes (`fastrdp_sssd_override_homedir`), [nfs-kerberos-homes.md](../nfs-kerberos-homes.md#where-homes-are) |
 | `no listener on port P after 90s` | `systemctl status gnome-headless-session@USER`; `journalctl -u gnome-headless-session@USER`; `systemctl --user -M UID@ status gnome-remote-desktop-headless`; `sudo systemd-run --machine=UID@.host --user --wait --pipe grdctl --headless status` (same way the broker runs `grdctl`) |
+| `backend error: GNOME session for USER: gnome-headless-session@USER.service failed: Starting session failed: There's already an opened session for user USER (journalctl -u …)`; brokers up to 0.7.5 only log `no listener on port P after 90s` after 90 s | GDM refused the headless session because it counts another session of the user as an open graphical one: `loginctl list-sessions`, then `loginctl show-session ID -p Type -p Class -p Service -p State -p Remote` for each of the user's sessions (journal: `Gdm: Considering session 'ID'`). Field report 2026-10-24: after an X11/xrdp login of the same user [inferred: which session it was is not confirmed]. End that session (log out of it, or `fastrdpctl logout USER` for fastrdp's own sessions) and log in again. The broker now stops waiting as soon as systemd gives up on the unit and resets the unit's failed state before the next start |
 | `journalctl -u gnome-headless-session@USER`: `gdm-new-session: Failed: The connection is closed`, exit 70, 5 restarts | the system bus rejected the unit's uid before GDM saw anything (dbus-daemon and `DynamicUser`): check the drop-in is active (`systemctl cat gnome-headless-session@USER` shows `fastrdp.conf`, `User=gdm`); baseline: `sudo systemd-run --wait --pipe -p DynamicUser=yes busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetId` fails, with `-p User=gdm` it works |
 | `Starting session failed: Not authorized for action org.gnome.displaymanager.displayfactory.manage-user-displays` | polkit refused: `gdm-new-session` run outside its unit (e.g. by hand with `sudo -u gdm`), the caller not in group `gdm`, or polkit < 124 (no `subject.system_unit`) |
 | `port P is held by unexpected uid(s) [...]` | `ss -ltnp 'sport = :P'`: another user's process holds the port; next login picks another port |

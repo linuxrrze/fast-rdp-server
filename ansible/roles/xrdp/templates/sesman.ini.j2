@@ -8,6 +8,10 @@ ReconnectScript=reconnectwm.sh
 
 [Security]
 AllowRootLogin=false
+; Group of /run/xrdp/<uid> (mode 2750), where Xorg's and chansrv's sockets live: MUST be
+; xrdp.ini's runtime_group, or xrdp (which drops to user xrdp) cannot reach the session
+; ("Error connecting to X server [Permission denied]" in xrdp.log, black window).
+SessionSockdirGroup=xrdp
 MaxLoginRetry=1
 ; Group checks happen in the broker (fastrdp_allow_groups) and in SSSD.
 AlwaysGroupCheck=false

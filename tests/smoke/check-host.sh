@@ -97,6 +97,12 @@ chk "pam_fastrdp_token installed"     bash -c "ls /usr/lib/*/security/pam_fastrd
 # build install method: /usr/local; apt (fastrdp-xrdp package): /usr
 XRDP_BIN=$(command -v /usr/local/sbin/xrdp /usr/sbin/xrdp | head -1)
 chk "xrdp built with x264"            bash -c "${XRDP_BIN:-xrdp} -v | grep -q -- --enable-x264"
+# xrdp drops to runtime_group and reaches Xorg in /run/xrdp/<uid> only through the group
+# sesman gives that directory (SessionSockdirGroup; unset = root): field report 2026-10-24
+RUNTIME_GROUP=$(ini_value /etc/xrdp/xrdp.ini Globals runtime_group)
+SOCKDIR_GROUP=$(ini_value /etc/xrdp/sesman.ini Security SessionSockdirGroup)
+chk "xrdp can reach its sessions (sesman.ini SessionSockdirGroup = xrdp.ini runtime_group '${RUNTIME_GROUP:-unset}')" \
+    test "${RUNTIME_GROUP:-}" = "${SOCKDIR_GROUP:-}"
 chk "broker config valid"             env PYTHONPATH=/usr/lib/fastrdp/python python3 -m fastrdp_broker --check
 chk "time in sync (Kerberos)"         bash -c "chronyc tracking | grep -q 'Leap status *: Normal'"
 

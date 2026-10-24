@@ -478,6 +478,35 @@ class SysutilTests(unittest.IsolatedAsyncioTestCase):
                 self.assertRaisesRegex(sysutil.CommandError, "no listener"):
             await sysutil.wait_for_listener(34000, 1500, 0)
 
+    async def test_wait_for_listener_stops_when_the_unit_failed(self):
+        unit = "gnome-headless-session@alice.service"
+        gdm = "Starting session failed: There's already an opened session for user alice"
+        with mock.patch("fastrdp_broker.netcheck.listener_uids", return_value=set()), \
+                mock.patch.object(sysutil, "UNIT_CHECK_INTERVAL", 0), \
+                mock.patch.object(sysutil, "unit_failed", mock.AsyncMock(return_value=True)), \
+                mock.patch.object(sysutil, "unit_last_message", mock.AsyncMock(return_value=gdm)):
+            start = time.monotonic()
+            with self.assertRaisesRegex(sysutil.CommandError,
+                                        f"{unit} failed: {gdm} \\(journalctl -u {unit}\\)"):
+                await sysutil.wait_for_listener(34000, 1500, 30, unit=unit)
+            self.assertLess(time.monotonic() - start, 5)
+        # a unit that is still starting: the wait goes on until the timeout
+        with mock.patch("fastrdp_broker.netcheck.listener_uids", return_value=set()), \
+                mock.patch.object(sysutil, "UNIT_CHECK_INTERVAL", 0), \
+                mock.patch.object(sysutil, "unit_failed", mock.AsyncMock(return_value=False)), \
+                self.assertRaisesRegex(sysutil.CommandError, "no listener"):
+            await sysutil.wait_for_listener(34000, 1500, 0.6, unit=unit)
+
+    async def test_unit_last_message(self):
+        out = "first line\nStarting session failed: \x1b[31mboom\x07" + "x" * 300 + "\n"
+        with mock.patch.object(sysutil, "run", mock.AsyncMock(return_value=sysutil.Result(0, out, ""))) as run:
+            msg = await sysutil.unit_last_message("u.service")
+        self.assertTrue(msg.startswith("Starting session failed: ?[31mboom?xxx"))
+        self.assertEqual(len(msg), 200)
+        self.assertIn("_SYSTEMD_UNIT=u.service", run.await_args.args)
+        with mock.patch.object(sysutil, "run", mock.AsyncMock(side_effect=FileNotFoundError)):
+            self.assertEqual(await sysutil.unit_last_message("u.service"), "")
+
     def test_valid_user_file(self):
         with tempfile.TemporaryDirectory() as d:
             u = LocalUser(ME.pw_name, ME.pw_uid, ME.pw_gid, d, frozenset())
@@ -647,6 +676,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             "run_as_user": mock.AsyncMock(),
             "unit_active": mock.AsyncMock(return_value=unit_active),
             "start_unit": mock.AsyncMock(),
+            "reset_failed": mock.AsyncMock(),
+            "user_sessions": mock.AsyncMock(return_value=[]),
             "stop_unit": mock.AsyncMock(),
             "wait_for_listener": mock.AsyncMock(),
         }
@@ -661,6 +692,10 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             t = await b.ensure(self.req("gnome"))
         self.assertEqual((t.port, t.username, t.security), (41000, "fastrdp", "nla"))
         m["start_unit"].assert_awaited_with("gnome-headless-session@alice.service")
+        # a unit that failed before (start limit hit) would refuse the start at once
+        m["reset_failed"].assert_awaited_with("gnome-headless-session@alice.service")
+        # the wait ends as soon as the unit fails (field report: GDM refused the session)
+        self.assertEqual(m["wait_for_listener"].await_args.kwargs["unit"], "gnome-headless-session@alice.service")
         # g-r-d is enabled in $XDG_RUNTIME_DIR, not ~/.config/systemd/user: a user manager
         # started without NFS credentials cannot read unit links in the home.
         argvs = [c.args[1:] for c in m["run_as_user"].await_args_list]
@@ -671,6 +706,27 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(t.password, " ".join(str(a) for c in m["run_as_user"].await_args_list for a in c.args))
         self.assertEqual(self.state.reserved_ports, set())
         self.assertEqual(self.state.get("alice", "gnome").port, 41000)
+
+    async def test_gnome_refused_beside_another_graphical_session(self):
+        # Field report 2026-10-24: GDM refused the headless session while the user's xrdp
+        # Xfce session (logind type x11) ran; the broker waited 90 s for the port.
+        b = GnomeBackend(self.cfg, self.state, self.tokens)
+        m, p = self.gnome_mocks()
+        m["user_sessions"].return_value = [
+            {"Id": "41", "Type": "unspecified", "Class": "manager", "Service": "systemd-user", "State": "active"},
+            {"Id": "7", "Type": "tty", "Class": "user", "Service": "sshd", "State": "active"},
+            {"Id": "40", "Type": "x11", "Class": "user", "Service": "xrdp-sesman", "State": "online"},
+        ]
+        with p, self.assertRaisesRegex(BackendError, r"another graphical session: logind session 40 "
+                                                     r"\(x11, xrdp-sesman\); log out of it first"):
+            await b.ensure(self.req("gnome"))
+        m["start_unit"].assert_not_awaited()
+        self.assertEqual(self.state.reserved_ports, set())
+        # a closing one, SSH and the user manager do not count
+        m["user_sessions"].return_value[2]["State"] = "closing"
+        with p:
+            await b.ensure(self.req("gnome"))
+        m["start_unit"].assert_awaited()
 
     async def test_gnome_restarts_grd_in_live_session(self):
         b = GnomeBackend(self.cfg, self.state, self.tokens)

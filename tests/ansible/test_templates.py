@@ -163,6 +163,16 @@ class XrdpIni(unittest.TestCase):
         self.assertEqual(s["Sessions"]["MaxSessions"], "100")
         self.assertEqual(s["Sessions"]["DisconnectedTimeLimit"], "1800")  # minutes -> seconds
 
+    def test_session_sockets_reachable_by_xrdp(self):
+        # Field report 2026-10-24: xrdp.ini drops to runtime_group xrdp, sesman.ini had no
+        # SessionSockdirGroup (xrdp default: none), so xrdp got "Error connecting to X server
+        # [Permission denied]" on every X11 session (xrdp 0.10 sesman.ini.5: "MUST be the
+        # same as runtime_group in xrdp.ini").
+        x = ini("xrdp.ini")
+        s = ini("sesman.ini", strict=False)
+        self.assertEqual(s["Security"]["SessionSockdirGroup"], x["Globals"]["runtime_group"])
+        self.assertEqual(x["Globals"]["runtime_group"], "xrdp")
+
     def test_xorg_conf_glamor(self):
         text = (OUT / "xorg.conf").read_text()
         self.assertIn('Option "DRMDevice" "/dev/dri/renderD128"', text)

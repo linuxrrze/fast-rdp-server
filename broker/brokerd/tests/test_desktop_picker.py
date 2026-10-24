@@ -190,8 +190,21 @@ class PickerTests(_PickerHarness, unittest.IsolatedAsyncioTestCase):
         for name, desk in self.cfg.desktops.items():
             desk.groups = [] if name == "plasma" else ["admins"]
         self.cfg.default_desktop = "plasma"
-        progress, reply = await self.picker_login(...)
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            progress, reply = await self.picker_login(...)
         self.assertEqual((reply["desktop"], self.prompts(progress)), ("plasma", []))
+        # field report: the picker "never showed" without a word in the log
+        self.assertTrue(any("no desktop picker: plasma is the only desktop this user may use" in line
+                            for line in logs.output), logs.output)
+
+    async def test_skips_and_ignored_choices_logged(self):
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            _, reply = await self.picker_login(..., desktop_hint="fastrdp:nonexistent")
+        self.assertEqual(reply["desktop"], "xfce")
+        self.assertTrue(any("desktop 'fastrdp:nonexistent' named by the client is not available or not "
+                            "allowed; ignored" in line for line in logs.output), logs.output)
+        self.assertTrue(any("no desktop picker: the client named a desktop ('fastrdp:nonexistent')" in line
+                            for line in logs.output), logs.output)
 
     async def test_if_multiple(self):
         self.cfg.broker.desktop_picker = "if_multiple"
@@ -264,6 +277,21 @@ class PickerTests(_PickerHarness, unittest.IsolatedAsyncioTestCase):
         self.broker.backends["gnome"].alive = mock.AsyncMock(side_effect=OSError("boom"))
         progress, reply = await self.picker_login(None)
         self.assertEqual((self.prompts(progress)[0]["default"], reply["desktop"]), ("xfce", "xfce"))
+
+    async def test_running_xrdp_session_without_record(self):
+        # field report 2026-10-24: an Xfce session ran, the picker preselected gnome
+        self.broker.backends["xrdp"].untracked_desktop = mock.AsyncMock(return_value="mate")
+        progress, reply = await self.picker_login(None)
+        prompt = self.prompts(progress)[0]
+        labels = {o["name"]: (o["label"], o["running"]) for o in prompt["options"]}
+        self.assertEqual(labels["mate"], ("mate (running)", True))
+        self.assertEqual((prompt["default"], reply["desktop"]), ("mate", "mate"))
+        # a back-end that cannot tell is logged, not hidden
+        self.broker.backends["xrdp"].untracked_desktop = mock.AsyncMock(side_effect=TimeoutError())
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            await self.picker_login(None)
+        self.assertTrue(any("xrdp session state unknown: TimeoutError" in line for line in logs.output),
+                        logs.output)
 
     async def test_running_skip(self):
         self.cfg.broker.desktop_picker_when_running = "skip"

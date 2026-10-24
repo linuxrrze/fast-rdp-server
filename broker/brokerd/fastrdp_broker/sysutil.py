@@ -92,8 +92,47 @@ async def start_unit(unit: str) -> None:
     await run("systemctl", "start", "--no-block", unit)
 
 
+async def reset_failed(unit: str) -> None:
+    """Clear a unit's failed state and start limit: a session unit that failed before
+    (e.g. "Start request repeated too quickly") would refuse the next start at once."""
+    await run("systemctl", "reset-failed", unit, check=False)
+
+
+async def unit_failed(unit: str) -> bool:
+    return (await run("systemctl", "is-failed", "--quiet", unit, check=False)).rc == 0
+
+
+async def unit_last_message(unit: str) -> str:
+    """The last line the unit's own processes logged (not systemd's), printable and
+    short, for an error message; "" if there is none or journalctl is unavailable."""
+    try:
+        res = await run("journalctl", f"_SYSTEMD_UNIT={unit}", "-n", "1", "-o", "cat", "-q",
+                        "--no-pager", check=False, timeout=10)
+    except (CommandError, OSError):
+        return ""
+    line = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else ""
+    return "".join(c if c.isprintable() else "?" for c in line)[:200]
+
+
 async def stop_unit(unit: str) -> None:
     await run("systemctl", "stop", "--no-block", unit, check=False)
+
+
+async def user_sessions(user_name: str) -> list[dict[str, str]]:
+    """The user's logind sessions with their Id, Type, Class, Service and State
+    (loginctl; an empty list if loginctl fails)."""
+    res = await run("loginctl", "list-sessions", "--no-legend", check=False)
+    out = []
+    for line in res.stdout.splitlines():
+        cols = line.split()
+        if len(cols) < 3 or cols[2] != user_name:
+            continue
+        info = await run("loginctl", "show-session", cols[0], "-p", "Id", "-p", "Type", "-p", "Class",
+                         "-p", "Service", "-p", "State", check=False)
+        props = dict(kv.split("=", 1) for kv in info.stdout.splitlines() if "=" in kv)
+        props.setdefault("Id", cols[0])
+        out.append(props)
+    return out
 
 
 async def ensure_user_manager(user: LocalUser) -> None:
@@ -220,14 +259,27 @@ def cert_sha256(path: str) -> str:
     return hashlib.sha256(der).hexdigest()
 
 
-async def wait_for_listener(port: int, uid: int, timeout: float) -> None:
-    """Wait until `port` is listening on loopback and owned by `uid` only."""
+UNIT_CHECK_INTERVAL = 2.0  # seconds between unit state checks while waiting for a listener
+
+
+async def wait_for_listener(port: int, uid: int, timeout: float, unit: str | None = None) -> None:
+    """Wait until `port` is listening on loopback and owned by `uid` only. With `unit`
+    (the session's system unit), stop as soon as that unit has failed (systemd gave up
+    restarting it) instead of waiting out `timeout`; the error names the unit's last
+    message."""
     deadline = time.monotonic() + timeout
+    next_check = time.monotonic() + UNIT_CHECK_INTERVAL
     while time.monotonic() < deadline:
         uids = netcheck.listener_uids(port)
         if uids:
             if uids != {uid}:
                 raise CommandError(f"port {port} is held by unexpected uid(s) {sorted(uids)}")
             return
+        if unit and time.monotonic() >= next_check:
+            next_check = time.monotonic() + UNIT_CHECK_INTERVAL
+            if await unit_failed(unit):
+                last = await unit_last_message(unit)
+                raise CommandError(f"{unit} failed" + (f": {last}" if last else "")
+                                   + f" (journalctl -u {unit})")
         await asyncio.sleep(0.5)
     raise CommandError(f"no listener on port {port} after {timeout:.0f}s")

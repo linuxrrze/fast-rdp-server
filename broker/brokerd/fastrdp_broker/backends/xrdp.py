@@ -36,22 +36,34 @@ class XrdpBackend(Backend):
 
     async def live_sessions(self, user_name: str) -> list[str]:
         """logind session ids of the user's running xrdp sessions."""
-        res = await sysutil.run("loginctl", "list-sessions", "--no-legend", check=False)
-        ids = []
-        for line in res.stdout.splitlines():
-            cols = line.split()
-            if len(cols) < 3 or cols[2] != user_name:
-                continue
-            info = await sysutil.run(
-                "loginctl", "show-session", cols[0], "-p", "Service", "-p", "State", check=False
-            )
-            props = dict(kv.split("=", 1) for kv in info.stdout.splitlines() if "=" in kv)
-            if props.get("Service") == PAM_SERVICE and props.get("State") != "closing":
-                ids.append(cols[0])
-        return ids
+        return [p["Id"] for p in await sysutil.user_sessions(user_name)
+                if p.get("Service") == PAM_SERVICE and p.get("State") != "closing"]
 
     async def alive(self, session: Session) -> bool:
         return bool(await self.live_sessions(session.user))
+
+    async def untracked_desktop(self, user: LocalUser) -> str | None:
+        """The desktop of a running xrdp session the broker has no record of (a record
+        lost or never written), from the choice startwm.sh read
+        (/run/fastrdp/desktop/<user>); the record is written again so that the picker and
+        reconnects know it. None if no xrdp session runs or its desktop is unknown."""
+        if not await self.live_sessions(user.name):
+            return None
+        try:
+            with open(os.path.join(self.cfg.broker.runtime_dir, "desktop", user.name),
+                      encoding="utf-8") as fh:
+                xsession = fh.readline().strip()
+        except OSError:
+            xsession = ""
+        desktop = next((d.name for d in self.cfg.desktops.values()
+                        if d.backend == self.name and d.xsession and d.xsession == xsession), None)
+        if desktop is None:
+            log.info("%s: an xrdp session runs that the broker has no record of; its desktop is "
+                     "unknown", user.name)
+            return None
+        log.info("%s: running xrdp session (%s) had no record; recorded again", user.name, desktop)
+        self.state.put(Session(user=user.name, backend=self.name, desktop=desktop))
+        return desktop
 
     def _write_desktop_choice(self, user: LocalUser, xsession: str) -> None:
         ddir = os.path.join(self.cfg.broker.runtime_dir, "desktop")

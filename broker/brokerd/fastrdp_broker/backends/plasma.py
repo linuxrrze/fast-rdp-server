@@ -86,8 +86,10 @@ class PlasmaBackend(Backend):
         self.state.put(session)
         try:
             # A stale unit (e.g. KRdp crashed) is restarted with the new settings.
+            await sysutil.reset_failed(self.unit(user))
             await sysutil.run("systemctl", "restart", "--no-block", self.unit(user))
-            await sysutil.wait_for_listener(port, user.uid, self.cfg.broker.session_start_timeout)
+            await sysutil.wait_for_listener(port, user.uid, self.cfg.broker.session_start_timeout,
+                                            unit=self.unit(user))
         except sysutil.CommandError as exc:
             raise BackendError(f"Plasma session for {user.name}: {exc}") from None
         return self.target_for(session)
