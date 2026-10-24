@@ -1,3 +1,28 @@
+fast-rdp-server (0.7.6) unstable; urgency=medium
+
+  * xrdp: sesman.ini sets SessionSockdirGroup=xrdp. xrdp runs as
+    runtime_user/runtime_group xrdp, but sesman created /run/xrdp/<uid> with
+    group root, so on every host deployed by the role X11 desktops through
+    xrdp (Xfce, MATE, ...) failed with "Error connecting to X server
+    [Permission denied]" in xrdp.log and a window that stayed on
+    "connecting". An Ansible run fixes it, or add the line under [Security]
+    in /etc/xrdp/sesman.ini and restart xrdp-sesman. Sessions started before
+    keep their socket directory: fix its group (chgrp xrdp
+    /run/xrdp/<uid>) or end them (backlog A7).
+  * Broker, GNOME: refused at once while the user has another graphical
+    session (GDM does not start a headless session then), with a message
+    naming that session; a failed session unit ends the wait at once with
+    its last log line instead of after 90 s, and is reset before the next
+    start (also Plasma) (backlog A6).
+  * Broker: running xrdp sessions the broker lost track of are found again
+    through logind; an unknown xrdp session state and the reasons for
+    skipping the desktop picker are logged at INFO (backlog A6).
+  * Tests: proxy e2e covers the desktop picker with WaitingScreenObserve on;
+    template test and host smoke check compare SessionSockdirGroup with
+    runtime_group.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Sat, 24 Oct 2026 09:18:15 +0200
+
 fast-rdp-server (0.7.5) unstable; urgency=medium
 
   * Keycloak (fastrdp_web_passkeys): without
