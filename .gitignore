@@ -14,3 +14,6 @@ tests/perf/rdpbench/perfload
 ansible/inventories/*/
 !ansible/inventories/lab/
 ansible/inventories/.setup-last-answers.json*
+
+# Local debugging material (journals, client logs)
+debug/
