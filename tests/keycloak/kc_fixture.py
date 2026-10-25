@@ -22,16 +22,18 @@ Standard library only.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
+import importlib.util
 import json
-import struct
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location(
+    "fastrdp_lab_totp", Path(__file__).resolve().parents[1] / "lab" / "totp.py")
+_lab_totp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_lab_totp)
 
 SAMPLE = Path(__file__).resolve().parents[2] / "docs" / "examples" / "keycloak-fastrdp-web-client.json"
 SAMPLE_URL = "https://rdp1.lab.example.com"   # the sample's webgate public_url
@@ -47,10 +49,8 @@ OTHER_POLICY = "unrelated-policy"
 
 
 def totp(secret: str = TOTP_SECRET, at: float | None = None, step: int = 30) -> str:
-    counter = int((time.time() if at is None else at) // step)
-    mac = hmac.new(secret.encode(), struct.pack(">Q", counter), hashlib.sha1).digest()
-    off = mac[-1] & 0x0F
-    return f"{(struct.unpack('>I', mac[off:off + 4])[0] & 0x7FFFFFFF) % 1000000:06d}"
+    """HmacSHA1, 6 digits: the realm's OTP policy (tests/lab/totp.py has the RFC 6238 code)."""
+    return _lab_totp.totp(secret.encode(), at, period=step)
 
 
 class Admin:

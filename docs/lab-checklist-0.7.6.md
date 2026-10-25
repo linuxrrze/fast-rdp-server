@@ -18,6 +18,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
+- [ ] Automated Windows client (optional): set up as in
+      [lab-windows-mcp.md](lab-windows-mcp.md).
 - [ ] Logs: `journalctl -o short-precise -u fastrdp-proxy -u fastrdp-brokerd
       -u xrdp -u xrdp-sesman` per test, `/var/log/xrdp.log`; on Windows the event log
       *Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational*.

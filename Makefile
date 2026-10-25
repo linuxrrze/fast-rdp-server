@@ -3,9 +3,9 @@
 .PHONY: deb test-xrdp-encoder test-wlroots test test-all test-broker test-webgate test-pam test-gpu \
 	test-scripts test-publish test-ansible test-proxy-module test-e2e test-e2e-nla test-e2e-smartcard \
 	test-e2e-smartcard-softhsm check-krb5-spnego perf-tools perf-proxy lint lint-ci test-docs \
-	test-keycloak test-prototypes
+	test-keycloak test-prototypes test-lab
 
-test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototypes lint
+test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototypes test-lab lint
 
 # Everything that runs locally without root (missing tools: SKIP, or FAIL with
 # FASTRDP_TESTS_STRICT=1). Needs libpam0g-dev, libcjson-dev, python3-cryptography, ansible-core,
@@ -118,6 +118,11 @@ test-e2e-smartcard-softhsm:
 # Manual (JDK + Keycloak + Chromium): passkeys on the web path, Keycloak role + webgate.
 test-keycloak:   # CHROME=<chromium>, optional KEYCLOAK_HOME/JAVA_HOME; see tests/keycloak/run.sh
 	tests/keycloak/run.sh
+
+# LAB ONLY tools under tests/lab that have offline unit tests (totp.py: RFC 6238 vectors,
+# secret parsing, fresh-step logic); stdlib only.
+test-lab:
+	python3 -m unittest -v tests/lab/test_totp.py
 
 # Prototype (docs/webauthn-redirection.md): RDPEWA/CTAPHID codecs, stdlib only, not shipped.
 test-prototypes:
