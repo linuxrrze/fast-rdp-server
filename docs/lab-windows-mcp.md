@@ -18,7 +18,7 @@ Windows behaviour marked *(inferred)* has not been tested in this lab yet.
 ## 1. The box
 
 - **A VM** (KVM/libvirt or Hyper-V) with Windows 11 24H2 or later, and a second one with
-  Windows 10 22H2 for A5. Watch it through the VM console, not through RDP (§5).
+  Windows 10 22H2 for A5. Watch it through the VM console, not through RDP (§6).
 - A local **lab user without admin rights** who runs mstsc, Windows-MCP and the tests.
   Its password and the fastrdp lab users exist only in the lab.
 - The keyboard layouts the tests need (W5 I-tests: German, French AZERTY), added for the
@@ -83,7 +83,7 @@ enabled = false                    # no ownership gate, no takeover hooks beside
   --port 8000`. This creates the per-user task `windows-mcp-server` (at logon, RunLevel
   Limited) that runs `serve`, which reads `config.toml`. Logs are in
   `~\.windows-mcp\server.log`; check whether they record tool arguments before typing
-  codes (§6).
+  codes (§8).
 - **Task time limit:** the task's settings set no execution limit, and Task Scheduler's
   default is 72 h *(inferred)*. Lift it: `$s = New-ScheduledTaskSettingsSet
   -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;
@@ -96,8 +96,11 @@ enabled = false                    # no ownership gate, no takeover hooks beside
 
 ## 4. mstsc and the key helper
 
-Copy `tests/lab/windows/send-keys.ps1` and an `.rdp` file to `C:\fastrdp-lab\`
-(scp, or Windows-MCP's FileSystem tool). The `.rdp` file pins what the tests compare:
+Copy `tests/lab/windows/send-keys.ps1`, `tests/lab/windows/mstsc.ps1` and an `.rdp` file
+to `C:\fastrdp-lab\` (scp, or Windows-MCP's FileSystem tool), and let the lab user run
+local scripts: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (the orchestrator
+calls the scripts with `&`; files copied by scp carry no download mark). The `.rdp` file
+pins what the tests compare:
 
 ```
 full address:s:rdp1.lab.example.com
@@ -117,6 +120,9 @@ redirectclipboard:i:0
 - `redirectclipboard:i:0` keeps an accidental paste from reaching the session.
 - Credentials for NLA: `cmdkey /generic:TERMSRV/rdp1.lab.example.com /user:LAB\labuser1
   /pass:<password>`; start with `mstsc C:\fastrdp-lab\fastrdp.rdp`.
+- The fastrdp host's certificate must be trusted on the box (its CA in the lab user's
+  or the machine's Trusted Root store): an unattended run cannot answer mstsc's
+  certificate warning.
 
 `send-keys.ps1` sends keys in one explicit event type (header of the script for the
 details):
@@ -140,7 +146,48 @@ text for all three modes. The RDP client's event log (for A5):
 `Get-WinEvent -ListLog *RDPClient*`, then `Get-WinEvent -LogName '<that name>'
 -MaxEvents 50`. Note whether this works without admin rights.
 
-## 5. Watching the box
+## 5. Automated tests
+
+### A5 / F19: the X, then *Connect* in the same mstsc
+
+`tests/lab/a5_f19.py` runs lab test F19 ([lab-waiting-screen-input.md](lab-waiting-screen-input.md))
+unattended. Configuration: copy `tests/lab/a5-f19.example.toml` outside the repository and
+fill it in (MCP URL, auth key file, certificate fingerprint, the box's computer name as it
+appears in the proxy's `front: client "…"` line, ssh to the fastrdp host, the lab user and
+its TOTP seed file). Then:
+
+```sh
+tests/lab/a5_f19.py --config ~/lab/a5-f19.toml --out ~/lab/results/f19-win11-run1
+```
+
+What it does, connection by connection:
+
+| Step | Action | Checks |
+|---|---|---|
+| 1 | restarts mstsc (`/edit` the `.rdp` file), presses *Connect*, types the TOTP code, answers the picker (`picker_keys`) | panel, `code field shown`, code accepted, back-end connected, desktop drawn |
+| X | WM_CLOSE to the session window (the X), *OK* in mstsc's dialog | dialog text, window closed, mstsc's connection dialog back in the same process, no `disconnect provider ultimatum sent to peer`, broker `session end` |
+| 2 | *Connect* in the same mstsc | panel within `panel_limit` (1 s) of the session window; otherwise the run records the black time, waits for the proxy to give up and stops (backlog A5) |
+| X | as above | as above |
+| 3 | *Connect*, then the X while the panel waits | broker `login of session … abandoned` within 5 s, no code check |
+
+- Before every connection it clears the user's reconnect grace (`fastrdpctl
+  clear-grace`), so each login shows the waiting screen.
+- **Panel oracle:** `mstsc.ps1 -Action watch` samples the session window every 100 ms:
+  *black* (≥ 95 % black pixels), *panel* (the waiting screen's colour 0x1e1f24 around
+  its white card) or *other* (a desktop). The proxy journal decides the rest.
+- **Results** in `--out`: `summary.txt` (one line per check), `results.json` (also the
+  watch states, the differences between the `front:` lines of connections 1 and 2, and
+  each session's diagnostic lines), `journal.txt` (proxy and broker since the start),
+  `mstsc-events.json` (the RDP client's event log), screenshots.
+- **F19c:** the run reads `WaitingScreenObserve` from `/etc/fastrdp/proxy.ini`. Run it once
+  with `fastrdp_proxy_waiting_screen_observe: false` and once with `true` (role run and
+  proxy restart in between), into separate `--out` directories.
+- Exit status 0: all checks passed (warnings allowed); 1: a check failed; 2: set-up error
+  (configuration, MCP, ssh).
+- Not covered: the QR approval on connection 2 (approve on a phone by hand, or run the
+  approval page tests), F19b (logout).
+
+## 6. Watching the box
 
 Use the VM console. If you RDP into the box yourself, Windows stops rendering the
 session when your client is minimized, and locks the desktop when you disconnect
@@ -155,7 +202,7 @@ That outer RDP session goes to the Windows box, not to fastrdp. Do not point it 
 fastrdp host. The orchestrator filters the proxy journal by
 `front: client "<the box's name>"` anyway.
 
-## 6. The second factor
+## 7. The second factor
 
 The orchestrator computes the code for the waiting screen's code field
 (`code_or_web`) with `tests/lab/totp.py` (RFC 6238, stdlib only; header for all options)
@@ -177,7 +224,7 @@ code=$(tests/lab/totp.py --secret-file ~/lab-secrets/labuser1.totp \
 - Tests that are about the approval page (F-tests with QR or link) still approve there,
   e.g. with the CDP driver of `tests/keycloak/`; a code typed here covers W5 only.
 
-## 7. Secrets
+## 8. Secrets
 
 - The code typed by `send-keys.ps1` appears in the PowerShell tool's arguments, possibly
   in Windows-MCP's log, and on screenshots while the panel shows it. Use lab-only users

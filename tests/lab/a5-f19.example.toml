@@ -1,0 +1,36 @@
+# LAB ONLY: configuration of tests/lab/a5_f19.py (backlog A5, lab test F19).
+# Copy it outside the repository; secrets stay in files that only you can read.
+
+[mcp]
+url = "https://win11-lab.lab.example.com:8000/mcp/"
+auth_key_file = "~/lab-secrets/windows-mcp.key"        # Windows-MCP's auth_key
+# openssl x509 -noout -fingerprint -sha256 -in %USERPROFILE%\.windows-mcp\cert.pem
+cert_sha256 = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF"
+
+[windows]
+helper_dir = 'C:\fastrdp-lab'                  # mstsc.ps1, send-keys.ps1
+rdp_file = 'C:\fastrdp-lab\fastrdp.rdp'        # docs/lab-windows-mcp.md §4
+client_name = "WIN11-LAB"                      # the box's name in the proxy's "front: client" line
+# connect_button = '^(Connect|Verbinden)$'     # mstsc's Connect button (display language)
+# ok_button = '^OK$'                           # OK in mstsc's "disconnect?" dialog
+# key_mode = "Scancode"                        # how the code is typed: Scancode, VirtualKey, Unicode
+# shots_dir = 'C:\fastrdp-lab\shots'           # also keep PNGs of the session window on the box
+
+[server]
+ssh = "root@rdp1.lab.example.com"              # reads the journal, runs fastrdpctl clear-grace
+# sudo = true                                  # for a non-root ssh user (sudo -n)
+# proxy_unit = "fastrdp-proxy.service"
+# broker_unit = "fastrdp-brokerd.service"
+
+[user]
+name = "labuser1"                              # the account in rdp_file / cmdkey
+totp_secret_file = "~/lab-secrets/labuser1.totp"
+totp_state = "~/lab-secrets/labuser1.step"     # one code per time step (otpPolicyCodeReusable false)
+# algorithm = "SHA1"                           # digits = 6, period = 30: the realm's OTP policy
+# picker_keys = ["Enter"]                      # keys for the desktop picker, if it shows
+
+[timing]
+# panel_limit = 1.0                            # s from the session window to the panel (connection 2)
+# panel_timeout = 20                           # s until "no panel"
+# login_timeout = 60                           # s from the code to the back-end
+# close_timeout = 15                           # s for mstsc to close the session window

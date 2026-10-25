@@ -28,8 +28,9 @@
 # -Keys   named keys (see -List), combinations with + (Ctrl+Alt+End), or raw tokens:
 #         sc:0x1C, sc:0xE01C (E0 prefix = extended), vk:0x0D. Named keys and
 #         combinations use -Mode (not Unicode); raw tokens keep their own type.
-# -Process / -Title   the target: the main window of the newest process with that name
-#         (default mstsc), or the first visible window whose title matches the regex.
+# -Process / -Title / -Hwnd   the target: the main window of the newest process with that
+#         name (default mstsc), the first visible window whose title matches the regex, or
+#         a window handle (mstsc.ps1 -Action windows: the TscShellContainerClass window).
 #         It is brought to the foreground and checked before any key is sent.
 # -DelayMs (between keys, default 40) / -HoldMs (down to up, default 15).
 # Output: one summary line WITHOUT the characters (codes typed here must not reach the
@@ -53,6 +54,9 @@ param(
     [Parameter(ParameterSetName = 'Text')]
     [Parameter(ParameterSetName = 'Keys')]
     [string]$Title,
+    [Parameter(ParameterSetName = 'Text')]
+    [Parameter(ParameterSetName = 'Keys')]
+    [Alias('Hwnd')][long]$WindowHandle = 0,
     [Parameter(ParameterSetName = 'Text')]
     [Parameter(ParameterSetName = 'Keys')]
     [int]$DelayMs = 40,
@@ -138,7 +142,12 @@ function Fail([int]$code, [string]$msg) { Write-Error -ErrorAction Continue "sen
 
 # --- target window ---------------------------------------------------------------------
 $hwnd = [IntPtr]::Zero
-if ($Title) {
+$p = $null
+if ($WindowHandle -ne 0) {
+    $ownerPid = 0
+    [void][FastrdpLabInput]::GetWindowThreadProcessId([IntPtr]$WindowHandle, [ref]$ownerPid)
+    if ($ownerPid -ne 0) { $p = Get-Process -Id $ownerPid; $p | Add-Member -NotePropertyName TargetHwnd -NotePropertyValue ([IntPtr]$WindowHandle) }
+} elseif ($Title) {
     $p = Get-Process | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -match $Title } |
         Select-Object -First 1
 } else {
@@ -146,8 +155,10 @@ if ($Title) {
         Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Sort-Object StartTime -Descending |
         Select-Object -First 1
 }
-if ($p) { $hwnd = $p.MainWindowHandle }
-if ($hwnd -eq [IntPtr]::Zero) { Fail 2 "no window for $(if ($Title) { "title /$Title/" } else { "process $Process" })" }
+if ($p) { $hwnd = if ($WindowHandle -ne 0) { $p.TargetHwnd } else { $p.MainWindowHandle } }
+if ($hwnd -eq [IntPtr]::Zero) {
+    Fail 2 "no window for $(if ($WindowHandle -ne 0) { "handle $WindowHandle" } elseif ($Title) { "title /$Title/" } else { "process $Process" })"
+}
 if ([FastrdpLabInput]::GetForegroundWindow() -eq [IntPtr]::Zero) {
     Fail 3 'no foreground window: desktop locked or no input desktop (ssh session?)'
 }
