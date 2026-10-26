@@ -937,9 +937,24 @@ class LastAnswers:
             print(f"  (answers not remembered: {e})", file=sys.stderr)
 
 
-def resolve(given, interactive, env=os.environ, last=None, stream_in=None, stream_out=None):
+def confirm_inventory(q, a, existing, asks):
+    """Interactive, right after the name: an inventory of that name exists. Overwrite it
+    (the default: re-running the setup for the same host) or choose another name, so the
+    answer does not come only after all other questions. Sets a["_overwrite"]."""
+    while (path := existing(a["name"])) is not None:
+        ow = Q("overwrite", f"{path} exists. Overwrite its hosts.yml, group_vars/all/main.yml "
+                            "and vault.yml (other files stay)? (y/n)", _bool, True)
+        if ask_interactive(ow, a, **asks):
+            a["_overwrite"] = True
+            return
+        a["name"] = ask_interactive(q, a, default=None, **asks)
+
+
+def resolve(given, interactive, env=os.environ, last=None, stream_in=None, stream_out=None, existing=None):
     """Fill and validate all answers. given: dict from answers file / --set.
-    last: LastAnswers (interactive runs) for remembered defaults, saved after every answer."""
+    last: LastAnswers (interactive runs) for remembered defaults, saved after every answer.
+    existing: callable(name) -> the inventory directory if it exists, else None (interactive
+    runs without --force: confirm_inventory())."""
     asks = {"stream_in": stream_in or sys.stdin, "stream_out": stream_out or sys.stderr}
     unknown = set(given) - QUESTION_KEYS - EXTRA_KEYS
     if unknown:
@@ -979,6 +994,8 @@ def resolve(given, interactive, env=os.environ, last=None, stream_in=None, strea
                     hint = f" (or environment variable {SECRET_ENV[q.key]})" if q.key in SECRET_ENV else ""
                     raise SetupError(f"missing answer{hint}")
                 a[q.key] = q.validate(default, a)
+            if q.key == "name" and interactive and existing is not None:
+                confirm_inventory(q, a, existing, asks)
             if interactive and q.warn(a):
                 print(q.warn(a), file=asks["stream_out"])
             if last is not None:
@@ -1392,7 +1409,13 @@ def main(argv=None):
                 print(f"Defaults include your answers from the last run ({last.path}); "
                       "--fresh ignores them.", file=sys.stderr)
             print(file=sys.stderr)
-        a = resolve(given, interactive, last=last)
+        existing = None
+        if interactive and not args.force and not args.print_answers:
+            def existing(name):
+                inv = Path(args.output_dir) / name
+                return inv if inv.exists() else None
+        a = resolve(given, interactive, last=last, existing=existing)
+        force = args.force or a.pop("_overwrite", False)
         if args.print_answers:
             print(json.dumps(public_answers(a), indent=2))
             return 0
@@ -1417,7 +1440,7 @@ def main(argv=None):
                 plaintext_ok = _bool(ans or "n")
                 if not plaintext_ok:
                     raise SetupError("aborted: install ansible-core (ansible-vault) and re-run")
-        inv_dir, vault_mode = generate(a, args.output_dir, args.force, password_file, vault_password,
+        inv_dir, vault_mode = generate(a, args.output_dir, force, password_file, vault_password,
                                        plaintext_ok, vault_bin)
         print(next_steps(a, inv_dir, vault_mode, password_file))
         return 0

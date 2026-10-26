@@ -489,6 +489,27 @@ class TestValidation(SetupTestCase):
         self.assertEqual(rc, 2)
         self.assertIn("--force", err)
 
+    def test_existing_inventory_asked_at_once(self):
+        # interactive: right after the name, not after all other questions; Enter overwrites,
+        # n asks for another name
+        given = {k: v for k, v in setup.resolve(dict(LAB), False, env={}).items() if v is not None}
+        existing = lambda name: Path("/inv") / name if name == "rdp1" else None
+        out = io.StringIO()
+        a = setup.resolve(given, True, env={}, stream_in=io.StringIO("\n"), stream_out=out,
+                          existing=existing)
+        self.assertEqual((a["name"], a.get("_overwrite")), ("rdp1", True))
+        self.assertIn("/inv/rdp1 exists. Overwrite its hosts.yml, group_vars/all/main.yml and vault.yml "
+                      "(other files stay)? (y/n) [y]: ", out.getvalue())
+        a = setup.resolve(given, True, env={}, stream_in=io.StringIO("n\nrdp2\n"),
+                          stream_out=io.StringIO(), existing=existing)
+        self.assertEqual((a["name"], a.get("_overwrite")), ("rdp2", None))
+        # without an inventory of that name, or without the callable (--force): no question
+        a = setup.resolve(dict(given, name="rdp3"), True, env={}, stream_in=io.StringIO(""),
+                          stream_out=io.StringIO(), existing=existing)
+        self.assertEqual(a["name"], "rdp3")
+        a = setup.resolve(given, True, env={}, stream_in=io.StringIO(""), stream_out=io.StringIO())
+        self.assertNotIn("_overwrite", a)
+
     def test_relative_paths_become_absolute(self):
         cwd = os.getcwd()
         os.chdir(self.tmp)
@@ -980,6 +1001,18 @@ class TestRememberedAnswers(SetupTestCase):
         rc, _o, err = self.interactive([""] * 60, "--force")
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads((self.out / "mylab" / "setup-answers.json").read_text()), written)
+        # without --force: asked right after the name, not at the end; Enter overwrites
+        rc, _o, err = self.interactive([""] * 60)
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"{self.out / 'mylab'} exists. Overwrite its hosts.yml", err)
+        self.assertLess(err.index("exists. Overwrite"), err.index("SSH user on the host(s)"))
+        self.assertEqual(json.loads((self.out / "mylab" / "setup-answers.json").read_text()), written)
+        # n: another name, the existing inventory stays as it is
+        before = (self.out / "mylab" / "hosts.yml").stat().st_mtime_ns
+        rc, _o, err = self.interactive(["", "", "", "n", "otherlab"] + [""] * 60)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.out / "otherlab" / "setup-answers.json").exists())
+        self.assertEqual((self.out / "mylab" / "hosts.yml").stat().st_mtime_ns, before)
 
     def test_fresh_ignores_and_replaces(self):
         self.interactive(self.FIRST, interrupt=True)

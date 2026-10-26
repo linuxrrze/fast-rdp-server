@@ -117,6 +117,12 @@ It writes `ansible/inventories/mylab/`:
 
 At the end it prints the next commands with your inventory filled in.
 
+Run it again to change the configuration: it offers your last answers as defaults, and
+when the inventory name already exists it asks right after the name whether to overwrite
+it (Enter: yes; `hosts.yml`, `group_vars/all/main.yml`, `vault.yml` and
+`setup-answers.json` are replaced, other files in the directory stay) or to use another
+name. Non-interactive runs need `--force` for that.
+
 ### 2. Preflight (read-only)
 
 ```sh
