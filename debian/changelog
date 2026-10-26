@@ -1,3 +1,21 @@
+fast-rdp-server (0.7.8) unstable; urgency=medium
+
+  * Proxy module: lab-only switch fastrdp_proxy_waiting_screen_reactivate
+    (proxy.ini WaitingScreenReactivate, default off) runs a
+    deactivation-reactivation sequence with the client (Deactivate All,
+    Demand Active) before the waiting screen draws its first panel, an
+    experiment for mstsc's black window on a second Connect after a
+    session that used GFX (backlog A5; findings of the 2026-10-26 capture
+    in docs/a5-capture-2026-10-26.md).
+  * fastrdp-setup: asks right after the inventory name whether to
+    overwrite an existing inventory (Enter: yes) or asks for another
+    name, instead of failing at the end; --force skips the question.
+  * Lab tools: tests/lab/rdpcapture decrypts a capture with the proxy's
+    TLS key log and prints the RDP PDUs per connection.
+  * Tests: proxy e2e covers the reactivation before the waiting screen.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 26 Oct 2026 20:25:32 +0100
+
 fast-rdp-server (0.7.7) unstable; urgency=medium
 
   * Proxy module: lab-only switch fastrdp_proxy_tls_keylog (proxy.ini

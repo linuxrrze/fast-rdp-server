@@ -7,7 +7,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.7** (0.7.6 lacks only the TLS key log of A5),
+- [ ] Host on **fast-rdp-server 0.7.8** (0.7.7 lacks the reactivation switch of A5,
+      0.7.6 also the TLS key log),
       `fastrdp-freerdp3 3.32.2-7`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.
 - [ ] Inventory for the round: `fastrdp_desktop_picker: true`,
