@@ -50,6 +50,8 @@ test-proxy-module:
 	  build/test_code && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_inputtrace tests/proxy-module/test_inputtrace.c && \
 	  build/test_inputtrace && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_keylog tests/proxy-module/test_keylog.c && \
+	  build/test_keylog && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_frontdiag tests/proxy-module/test_frontdiag.c && \
 	  build/test_frontdiag)
 

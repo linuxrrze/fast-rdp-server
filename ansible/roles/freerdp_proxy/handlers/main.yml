@@ -4,3 +4,12 @@
     name: fastrdp-proxy.service
     state: restarted
     daemon_reload: true
+
+# After the restart (handlers run in this order): a connection accepted before it, while
+# the old proxy.ini still had TlsKeyLogFile, may have written the key log again.
+- name: Remove the TLS key log after the restart
+  ansible.builtin.file:
+    path: "{{ fastrdp_proxy_tls_keylog_file }}"
+    state: absent
+  when: not fastrdp_proxy_tls_keylog | bool
+  listen: Restart fastrdp-proxy

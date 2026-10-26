@@ -86,6 +86,11 @@ mkproxy e 23394 a.sock '127.0.0.0/8' deny StatusInfo=true
 # F reads the client during the whole wait (lab switch WaitingScreenObserve), G nobody does
 mkproxy f 23395 f.sock '127.0.0.0/8' deny WaitingScreenObserve=true
 mkproxy g 23396 f.sock '127.0.0.0/8' deny WaitingScreen=false
+# H writes the front's TLS secrets (lab switch TlsKeyLogFile, backlog A5); C names a
+# relative path, which costs the key log, not the login check
+mkproxy h 23397 a.sock '127.0.0.0/8' deny "WaitingScreen=false
+TlsKeyLogFile=$W/tls-keys.txt"
+sed -i 's/^AllowTlsFrom=.*/&\nTlsKeyLogFile=tls-keys-relative.txt/' c.ini
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -102,10 +107,12 @@ LD_PRELOAD="$W/shim.so" "$PROXY" d.ini > proxy-d.log 2>&1 &
 WLOG_FILTER="proxy.modules.fastrdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" e.ini > proxy-e.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" f.ini > proxy-f.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
+(umask 022 && LD_PRELOAD="$W/shim.so" exec "$PROXY" h.ini > proxy-h.log 2>&1) &
 for _ in $(seq 50); do grep -q ready a.out b.out f.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23395) 2>/dev/null &&
-    (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && break; sleep 0.2; done
+    (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23397) 2>/dev/null &&
+    break; sleep 0.2; done
 
 E2E_CLIENT_ADDRESS=203.0.113.7 timeout 20 ./client 127.0.0.1 23389 alice good fastrdp:gnome >/dev/null 2>&1 || true
 timeout 20 ./client 127.0.0.1 23389 mallory bad "" > mallory.out 2>&1 || true
@@ -137,6 +144,8 @@ E2E_CONNECTION_TYPE=2 timeout 20 ./client 127.0.0.1 23389 slowuser good "" >/dev
 E2E_REMOTE_GUARD=1 timeout 20 ./client 127.0.0.1 23389 rcguser good "" > rcg.out 2>&1 || true
 # TLS login from an address outside AllowTlsFrom: refused before the broker
 timeout 20 ./client 127.0.0.1 23392 outsider good "" > outsider.out 2>&1 || true
+# TLS key log (proxy H): one login that reaches the back-end (proxy B, also over TLS)
+timeout 20 ./client 127.0.0.1 23397 keyloguser good "" > keylog.out 2>&1 || true
 # The user closes the client while the broker waits for an MFA push (fake broker: 8 s).
 # The proxy must drop the broker request at once, not when the broker answers.
 E2E_GIVE_UP_S=1 timeout 20 ./client 127.0.0.1 23389 pushwait good "" > pushwait.out 2>&1 || true
@@ -243,15 +252,15 @@ sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 47'
+expect "front broker saw the expected logins"         'len(la) == 48'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 33 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G and
-# the picker login through proxy F
-expect "back-end received the token, not the password" 'len(lb) == 33 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# 34 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
+# picker login through proxy F and the key-log login through proxy H
+expect "back-end received the token, not the password" 'len(lb) == 34 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -435,6 +444,21 @@ logged "WaitingScreenObserve: Refresh Rect logged" proxy-f.log "client Refresh R
 logged "WaitingScreenObserve: Suppress Output logged" proxy-f.log "client Suppress Output #1: allowDisplayUpdates 0"
 logged "WaitingScreenObserve: counts at the end of the wait" proxy-f.log "waiting screen: 1 Refresh Rect, 2 Suppress Output PDU(s) from the client"
 logged "unread client data during a wait reported" proxy-g.log "bytes during the wait that were not read"
+# TlsKeyLogFile: the secrets of exactly one TLS handshake, the front's (the second field of
+# each NSS key log line is the client random); the back-end hop's are not there although
+# that login reached proxy B over TLS. Mode 0600 under umask 022.
+if grep -q '"user": "keyloguser"' b.log && [ "$(stat -c %a tls-keys.txt 2>/dev/null)" = 600 ] &&
+   [ "$(awk '{print $2}' tls-keys.txt | sort -u | wc -l)" = 1 ] &&
+   grep -qE '^(CLIENT_RANDOM|CLIENT_TRAFFIC_SECRET_0) ' tls-keys.txt; then
+    echo "ok   TlsKeyLogFile: the front's TLS secrets only, mode 0600"
+else
+    echo "FAIL TlsKeyLogFile ($(stat -c %a tls-keys.txt 2>&1), $(awk '{print $1, substr($2, 1, 8)}' tls-keys.txt 2>/dev/null | tr '\n' ' '))"; fail=1
+fi
+logged "TlsKeyLogFile: warned per connection" proxy-h.log "TlsKeyLogFile is on: this connection's TLS secrets go to"
+logged "TlsKeyLogFile: a relative path is refused and logged" proxy-c.log \
+    "TlsKeyLogFile tls-keys-relative.txt not written: not an absolute path"
+if [ ! -e tls-keys-relative.txt ]; then echo "ok   TlsKeyLogFile: nothing written for a refused path"
+else echo "FAIL TlsKeyLogFile: written to a relative path"; fail=1; fi
 if python3 - <<'PY'
 import json, sys
 f = [json.loads(l) for l in open("f.log")]

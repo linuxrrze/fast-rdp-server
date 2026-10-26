@@ -38,7 +38,12 @@ Windows 10 and Windows 11 each.
       restart; the same steps.
 - [ ] Per connection note: which button started it (*Connect* or *Reconnect* in mstsc's
       dialog), what mstsc showed, the times.
-- [ ] Bring back: both proxy journals, mstsc's event log, the notes.
+- [ ] Both runs: `tcpdump` and the `ss` loop on the proxy host from before connection 1
+      ([lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
+      *Packet capture*). On a build after 0.7.6 also `fastrdp_proxy_tls_keylog: true`
+      (lab users only), and copy the key log after each run.
+- [ ] Bring back: both proxy journals, mstsc's event log, the notes, the captures and
+      `ss` logs (and key logs).
 
 Decision: the panel on connection 2 in run 2 means an unanswered Refresh Rect or Suppress
 Output was the cause, and the switch becomes the default. Otherwise compare connection 2

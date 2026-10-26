@@ -97,6 +97,12 @@
     mode: "0640"
   notify: Restart fastrdp-proxy
 
+- name: No TLS key log left behind
+  ansible.builtin.file:
+    path: "{{ fastrdp_proxy_tls_keylog_file }}"
+    state: absent
+  when: not fastrdp_proxy_tls_keylog | bool
+
 - name: Proxy unit
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../broker/session/systemd/fastrdp-proxy.service"

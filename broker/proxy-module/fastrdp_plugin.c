@@ -97,6 +97,7 @@
 #include "fastrdp_code.h"
 #include "fastrdp_frontdiag.h"
 #include "fastrdp_inputtrace.h"
+#include "fastrdp_keylog.h"
 #include "fastrdp_panel.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
 #if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
@@ -2731,6 +2732,9 @@ static BOOL fastrdp_client_pre_connect(proxyPlugin* plugin, proxyData* pdata, vo
 	    /* AcceptRemoteGuard sets this on the front; as a client setting it would require
 	     * Remote Credential Guard from the back-end */
 	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteCredentialGuard, FALSE) ||
+	    /* TlsKeyLogFile is for the front only: the back-end hop carries the broker's
+	     * credentials */
+	    !freerdp_settings_set_string(settings, FreeRDP_TlsSecretsFile, NULL) ||
 	    !freerdp_settings_set_pointer_len(settings, FreeRDP_LoadBalanceInfo, NULL, 0))
 		return FALSE;
 	/* The back-end's certificate: only the broker's (the TLS code accepts a listed
@@ -2924,7 +2928,11 @@ static BOOL install_read_pdu_wrapper(rdpContext* ctx)
  * client that requires the mode gets a negotiation response without that flag and
  * disconnects itself (patches/freerdp/0002).
  * NLA: Kerberos only, see fastrdp_ntlm_refused(). The back-end client inherits the
- * package list; fastrdp_client_pre_connect() replaces it. */
+ * package list; fastrdp_client_pre_connect() replaces it.
+ * TlsKeyLogFile (lab only, backlog A5): the front's TLS accept comes after this hook, so
+ * its secrets go to the file (fastrdp_keylog.h); fastrdp_client_pre_connect() clears the
+ * inherited setting for the back-end. A file that cannot be prepared costs the key log,
+ * not the login. */
 static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, void* custom)
 {
 	WINPR_UNUSED(plugin);
@@ -2932,6 +2940,19 @@ static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, v
 	if (!pdata || !pdata->ps || !pdata->ps->peer)
 		return FALSE;
 	rdpSettings* front = pdata->ps->settings;
+	const char* keylog = config_str(pdata, "TlsKeyLogFile", "");
+	if (*keylog)
+	{
+		char err[128];
+		if (fastrdp_keylog_prepare(keylog, err, sizeof(err)) != 0)
+			WLog_WARN(TAG, "[%s] TlsKeyLogFile %s not written: %s", pdata->session_id, keylog, err);
+		else if (!freerdp_settings_set_string(front, FreeRDP_TlsSecretsFile, keylog))
+			return FALSE;
+		else
+			WLog_WARN(TAG, "[%s] TlsKeyLogFile is on: this connection's TLS secrets go to %s, "
+			               "a capture of it can be decrypted (lab only, backlog A5)",
+			          pdata->session_id, keylog);
+	}
 	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
 	pdata->ps->peer->SspiNtlmHashCallback = fastrdp_ntlm_refused;
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&

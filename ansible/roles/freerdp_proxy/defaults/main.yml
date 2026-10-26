@@ -12,3 +12,6 @@ fastrdp_proxy_build_packages: [build-essential, cmake, pkgconf, libcjson-dev]
 # Minimum FreeRDP version: 3.32 adds [Target] CertificatePolicy used below.
 fastrdp_proxy_min_version: "3.32.0"
 # fastrdp_proxy_broker_timeout (proxy.ini [FastRDP] Timeout): role common
+# fastrdp_proxy_tls_keylog (role common) writes here: the unit's CacheDirectory (0700,
+# the proxy's user), the only directory ProtectSystem=strict leaves it
+fastrdp_proxy_tls_keylog_file: /var/cache/fastrdp-proxy/tls-keylog.txt

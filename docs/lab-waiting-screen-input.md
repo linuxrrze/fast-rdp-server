@@ -171,7 +171,39 @@ and the keys typed during "Checking the code…" are not counted.
 
 Client-side traces where available: xfreerdp3/Remmina `/log-level:DEBUG` with
 `WLOG_FILTER=com.freerdp.core.input:TRACE` (shows what the client sends); nothing
-comparable for mstsc or the Windows App. Wireshark sees only TLS.
+comparable for mstsc or the Windows App. Wireshark sees only TLS, unless the TLS key log
+below is on.
+
+**Packet capture with the TLS key log (backlog A5 only, never for the code tests).** For
+the mstsc reconnect investigation (F19c) the proxy can write the TLS secrets of every
+client connection (`fastrdp_proxy_tls_keylog: true`, proxy.ini `[FastRDP] TlsKeyLogFile`;
+fast-rdp-server after 0.7.6): to `/var/cache/fastrdp-proxy/tls-keylog.txt`, mode 0600,
+with a warning per connection (`TlsKeyLogFile is on: …`). The hop to the back-end is
+never logged. **The file plus a capture decrypts everything the client sent and
+received:** the code typed into the waiting screen, and the password of a TLS login
+(web path, `fastrdp_allow_tls_logins`). Kerberos NLA credentials stay encrypted by
+CredSSP [inferred: CredSSP encrypts them with the GSS session key, which the TLS secrets
+do not give]. Lab users with throwaway passwords only, approve with the QR code or a
+test TOTP, and treat both files as secrets.
+
+```
+# on the proxy host, from before connection 1 until after the last connection
+sudo tcpdump -i any -s 0 -w /root/a5-run1.pcap 'tcp port 3389'
+# meanwhile, the TCP view (send queue, window) every half second
+while sleep 0.5; do date +%T.%N; ss -tinm 'sport = :3389'; done | sudo tee /root/a5-run1-ss.txt >/dev/null
+# afterwards
+sudo cp /var/cache/fastrdp-proxy/tls-keylog.txt /root/a5-run1-keys.txt
+```
+
+Use `fastrdp_listen_port` if it is not 3389, and *Decode As… → TPKT* in Wireshark for
+another port. In Wireshark: *Preferences → Protocols → TLS → (Pre)-Master-Secret log
+filename* = the copied key log; then the display filter `rdp` shows the slow-path PDUs
+(Client Info, Confirm Active, Refresh Rect, Suppress Output, Shutdown Request, Set Error
+Info, Deactivate All); fast-path updates and GFX are decoded only in part [inferred:
+Wireshark's RDP dissector]. Even without the key log, the capture and the `ss` lines show
+whether the proxy sent the panel on connection 2 (several kB right after the handshake,
+like connection 1), whether mstsc took it (ACKs, no zero window, `Send-Q` not growing) and
+which side closed the connection (FIN or RST) and when.
 
 ## 4. Tests
 
@@ -243,7 +275,7 @@ default field of 6 digits the sixth digit submits; Enter is only needed with sev
 | F17c | in Keycloak, the flow `fastrdp-otp-check`: set the sub-flow `fastrdp-otp-check - no otp` to *Disabled* (a hand-made mistake); afterwards run the role again | dave types any 6 digits; then run the role in check mode, then normally | Keycloak issues dave a token on his name alone, without `otp` in `amr`; the broker refuses it: the field closes with `code_off`, no attempt, broker `Keycloak flow issued a token without 'otp' in amr …` at ERROR. Check mode lists `rebuild direct grant flow fastrdp-otp-check` and a warning naming the disabled step; the normal run rebuilds the flow, after which dave gets F11 again | fail if dave passes, or if check mode reports nothing (safeguards 2 and 1, [auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)) |
 | F18 | combinations with privacyIDEA push | – | Not offered: `code_or_web` uses Keycloak only | – |
 | F19 | C1–C3 (mstsc), `fastrdp-freerdp3` ≥ 3.32.2-7 (`patches/freerdp/0008`); unattended: `tests/lab/a5_f19.py` ([lab-windows-mcp.md](lab-windows-mcp.md) §5) | After F1: click the X in mstsc's connection bar, confirm mstsc's dialog; then *Connect* again in the **same** mstsc (no restart). Once more with the X while the panel waits for the code | X during the session: mstsc's own disconnect dialog, then a clean close; proxy journal without `disconnect provider ultimatum sent to peer` for that session; broker `session end`. The next *Connect*: the panel with code field and QR code within 1 s, F1 and the QR approval both work (field report 2026-10-23 before the patch: black window until `mfa_timeout`). X while the panel waits: the login is abandoned at once (broker log), no Keycloak call; record what mstsc shows | fail if the next *Connect* in the same mstsc shows no panel, or if the proxy still logs the provider-initiated disconnect for a running session. Field report with v0.7.4: mstsc's dialog appears (0008 works), the next *Connect* still shows no panel: run F19c |
-| F19c | C1–C3 (mstsc), fast-rdp-server with the A5 diagnostics | Backlog A5, decides the cause. Proxy journal with `-o short-precise`. Run 1, `fastrdp_proxy_waiting_screen_observe: false` (default): restart mstsc, log in and approve (connection 1), X, *Connect* in the same mstsc (connection 2), wait for the countdown to end; then GNOME logout instead of the X (connections 3 and 4). Run 2: the same with `fastrdp_proxy_waiting_screen_observe: true` (role run, proxy restart). Note per connection which button started it (*Connect* in the main window or *Reconnect* in mstsc's dialog) and what mstsc showed | Per connection one `front: client "…"` line: compare connection 2 with 1 (desktop size, monitors, scale, gfx, bitmap cache/persist, auto-reconnect cookie, performance flags, connection type). `back-end Save Session Info to the client: …` lines show what mstsc got from the back-end. Run 1: `the client sent at least N bytes during the wait that were not read` for connection 2 means mstsc sent something during the wait. Run 2: `client Refresh Rect #…` / `client Suppress Output #…: allowDisplayUpdates 0|1` lines and the counts at the end of the wait | pass when run 2 shows the panel on connection 2 (then the cause is a Refresh Rect or Suppress Output nobody answered, and the switch becomes the default); otherwise the lines locate the difference; attach both journals and mstsc's event log |
+| F19c | C1–C3 (mstsc), fast-rdp-server with the A5 diagnostics | Backlog A5, decides the cause. Proxy journal with `-o short-precise`. Run 1, `fastrdp_proxy_waiting_screen_observe: false` (default): restart mstsc, log in and approve (connection 1), X, *Connect* in the same mstsc (connection 2), wait for the countdown to end; then GNOME logout instead of the X (connections 3 and 4). Run 2: the same with `fastrdp_proxy_waiting_screen_observe: true` (role run, proxy restart). Note per connection which button started it (*Connect* in the main window or *Reconnect* in mstsc's dialog) and what mstsc showed | Per connection one `front: client "…"` line: compare connection 2 with 1 (desktop size, monitors, scale, gfx, bitmap cache/persist, auto-reconnect cookie, performance flags, connection type). `back-end Save Session Info to the client: …` lines show what mstsc got from the back-end. Run 1: `the client sent at least N bytes during the wait that were not read` for connection 2 means mstsc sent something during the wait. Run 2: `client Refresh Rect #…` / `client Suppress Output #…: allowDisplayUpdates 0|1` lines and the counts at the end of the wait. With a capture (§3 *Packet capture with the TLS key log*, both runs): connection 2 against 1 in Wireshark (Client Info, Confirm Active, what mstsc sends during the wait, whether the panel's updates are acknowledged), and who closes | pass when run 2 shows the panel on connection 2 (then the cause is a Refresh Rect or Suppress Output nobody answered, and the switch becomes the default); otherwise the lines locate the difference; attach both journals and mstsc's event log |
 | F19b | C1–C3 (mstsc) | After F1: log out inside the session (GNOME *Log Out*; on an xrdp desktop its logout), no X; then *Connect* again in the same mstsc; once more with a restarted mstsc for comparison. Note the times | Proxy journal: `received ErrorInfo PDU. code=0x…` (gnome-remote-desktop sends 0x1) and the session end; mstsc's message after the logout; the next *Connect*: the panel within 1 s and F1 works. On Windows, export Event Viewer → *Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational* for both connections (disconnect reasons). Field report 2026-10-23: mstsc closed the next connection itself after 7.5 s while the login waited (`front connection closed while waiting for the broker`); record whether anybody cancelled | fail if the next *Connect* in the same mstsc shows no panel or ends by itself; attach the event log either way |
 
 ### 4.4 Security observations (S)
@@ -321,3 +353,5 @@ both features share the input path.
 - Delete the lab users' OTP and passkey credentials, and set
   `fastrdp_proxy_input_trace: false` again (the proxy warns on every connection while it
   is on).
+- `fastrdp_proxy_tls_keylog: false` again (the role run removes the key log), and delete
+  the captures and key log copies once the A5 analysis is done.

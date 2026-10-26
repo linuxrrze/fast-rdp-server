@@ -191,6 +191,13 @@ fastrdp_proxy_input_trace: false
 # For the mstsc test of a second Connect in the same mstsc window; needs the waiting screen
 # and fastrdp-freerdp3 with patches/freerdp/0007.
 fastrdp_proxy_waiting_screen_observe: false
+# LAB ONLY (proxy.ini [FastRDP] TlsKeyLogFile; backlog A5): the proxy appends the TLS
+# secrets of every client connection to /var/cache/fastrdp-proxy/tls-keylog.txt (mode
+# 0600), so Wireshark can decrypt a capture of the client's traffic: with the file, a
+# capture shows everything, the code typed into the waiting screen and the password of a
+# TLS login included. Never the back-end hop. Lab users only; switching it off removes
+# the file. The proxy warns on every connection while it is on.
+fastrdp_proxy_tls_keylog: false
 # The panel's texts (broker [ui]): language en or de (built in) or one of fastrdp_ui_texts;
 # the client's keyboard layout picks the language when there are texts for it.
 fastrdp_ui_language: en

@@ -369,7 +369,7 @@
       vars:
         fastrdp_proxy_status_info: true
 
-    - name: Proxy.ini, lab switches (input trace, waiting screen observation)
+    - name: Proxy.ini, lab switches (input trace, waiting screen observation, TLS key log)
       ansible.builtin.template:
         src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
         dest: "{{ render_out }}/proxy-input-trace.ini"
@@ -377,6 +377,7 @@
       vars:
         fastrdp_proxy_input_trace: true
         fastrdp_proxy_waiting_screen_observe: true
+        fastrdp_proxy_tls_keylog: true
 
     - name: Proxy.ini, waiting screen switched off
       ansible.builtin.template:
