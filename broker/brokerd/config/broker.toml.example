@@ -95,6 +95,12 @@ yubikey_otp = true
 #code_attempts = 3                  # wrong codes per login, then it fails
 #code_user_failures = 10            # wrong codes per user within code_failure_window:
 #code_failure_window = 900          # the code field stays closed (approval page only)
+# LAB ONLY, never in production: these local accounts log in WITHOUT a second factor.
+# Instead of the mode above the waiting screen asks them for any 4 digits and Enter
+# (nothing is checked), only if the proxy can show its code field; otherwise the mode
+# above applies. No reconnect grace from it; web gateway logins are unaffected. The
+# broker warns at start and on every such login. docs/auth-matrix.md#lab-keypress
+#lab_keypress_users = []
 
 [mfa.privacyidea]
 url = "https://privacyidea.example.com"

@@ -47,6 +47,10 @@ web_approval_single_pending = {{ fastrdp_mfa_web_approval_single_pending | bool 
 code_attempts = {{ fastrdp_mfa_code_attempts | int }}
 code_user_failures = {{ fastrdp_mfa_code_user_failures | int }}
 code_failure_window = {{ fastrdp_mfa_code_failure_window | int }}
+{% if fastrdp_mfa_lab_keypress_users | length > 0 %}
+# LAB ONLY: these accounts log in WITHOUT a second factor (fastrdp_mfa_lab_keypress_users)
+lab_keypress_users = {{ fastrdp_mfa_lab_keypress_users | to_json }}
+{% endif %}
 
 [mfa.privacyidea]
 {% if fastrdp_broker_pi_ca.stat.checksum | default('') | length > 0 %}

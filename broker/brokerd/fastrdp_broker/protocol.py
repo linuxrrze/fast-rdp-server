@@ -35,7 +35,7 @@ Proxy module -> broker.sock:
   Requests without "progress" (older modules, WaitingScreen off) get the reply alone; a
   module that asks gets none from an older broker and keeps its generic panel. The module
   accepts at most 32 progress messages, each within the 64 KiB line limit.
-    {"progress": "mfa", "method": "push"|"web"|"push_or_web"|"code_or_web", "timeout_s": int,
+    {"progress": "mfa", "method": "push"|"web"|"push_or_web"|"code_or_web"|"lab_keypress", "timeout_s": int,
      "lines": [str], "countdown": str, "approve_url": str, "qr": [str],
      "code_entry": {"digits": int, "label": str, "checking": str, "message": str}}
       once the login waits for the user's second factor (mfa.SecondFactor notify): a
@@ -62,6 +62,10 @@ Proxy module -> broker.sock:
       while a field is open; one that comes after the approval page answered is dropped.
       The code is never logged by either side. Each "mfa" message restarts the countdown
       with the time left.
+      "lab_keypress" (LAB ONLY, [mfa] lab_keypress_users, mfa.SecondFactor.lab_keypress):
+      instead of the second factor, the same field until Enter ("digits" 0) under a LAB
+      text; any code the module sends lets the login go on, unchecked. Only for a request
+      with "code_entry": 1; otherwise the configured second factor applies.
     {"progress": "choose_desktop", "options": [{"name": str, "label": str, "running": bool}],
      "default": str, "timeout_s": int, "lines": [str], "countdown": str, "hint": str}
       the desktop picker ([broker] desktop_picker, Broker.pick_desktop): after the second

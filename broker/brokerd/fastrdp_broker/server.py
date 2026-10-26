@@ -107,6 +107,11 @@ class Broker:
                 "skip the %s second factor",
                 ", ".join(cfg.auth.realms), " or ".join(cfg.mfa.kdc_evidence_as_mfa), cfg.mfa.mode,
             )
+        if cfg.mfa.lab_keypress_users:
+            log.warning("[mfa] lab_keypress_users is set: these users log in WITHOUT a second factor: %s "
+                        "(LAB ONLY: any digits and Enter on the waiting screen; without the proxy's code "
+                        "field the %s second factor applies)", ", ".join(cfg.mfa.lab_keypress_users),
+                        cfg.mfa.mode)
         # [mfa] reconnect_grace (grace.py): reconnects skip a recently passed second factor.
         self.grace = ReconnectGrace(cfg.mfa.reconnect_grace, cfg.mfa.reconnect_grace_same_address)
         if self.grace.enabled and cfg.mfa.mode != "none":
@@ -447,7 +452,8 @@ class Broker:
                 split = split_otp(secret, self.cfg.mfa)
                 if split:
                     secret, otp = split
-                elif self.cfg.mfa.mode == "otp" and not self.grace.lookup(self.grace_key(user, msg)):
+                elif (self.cfg.mfa.mode == "otp" and user.name not in self.cfg.mfa.lab_keypress_users
+                      and not self.grace.lookup(self.grace_key(user, msg))):
                     # Without a grace entry the login fails anyway: refuse before PAM.
                     raise Denied(f"{user.name}: no OTP appended to password", "mfa_failed")
             try:
@@ -539,7 +545,24 @@ class Broker:
                          "(%s passed %ds ago from %s)%s", user.name, msg.get("method"),
                          str_field(msg, "client_address"), entry.factor, age, entry.address,
                          "; appended OTP not checked" if otp else "")
+            elif user.name in self.cfg.mfa.lab_keypress_users and progress and codes is not None:
+                # LAB ONLY: no second factor, a key on the waiting screen (mfa.lab_keypress);
+                # no grace (passed stays None)
+                log.warning("%s: %s login from %s: LAB ONLY [mfa] lab_keypress_users: NO second factor, "
+                            "waiting for digits and Enter on the waiting screen", user.name, msg.get("method"),
+                            str_field(msg, "client_address"))
+                try:
+                    await self.mfa.lab_keypress(user.name, codes, notify)
+                except MfaDenied as exc:
+                    raise Denied(f"MFA failed for {user.name}: {exc}", exc.reason) from None
+                log.warning("%s: LAB ONLY: logged in without a second factor (key on the waiting screen)",
+                            user.name)
             else:
+                if user.name in self.cfg.mfa.lab_keypress_users:
+                    # fail closed: without the module's code field the configured factor applies
+                    log.warning("%s: [mfa] lab_keypress_users: the proxy cannot show the code field "
+                                "(waiting screen off, an older module or no patches/freerdp/0007); "
+                                "the %s second factor applies", user.name, self.cfg.mfa.mode)
                 try:
                     # privacyIDEA knows directory users by their short name, also
                     # with fully qualified SSSD names ('alice@example.com' -> 'alice').

@@ -59,6 +59,11 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       `tests/lab/rdpcapture/decode.py … --summary` and `evtx_summary.py <file>.evtx`. Note
       per connection the button (*Connect* / *Reconnect*), whether mstsc was restarted,
       what mstsc showed, the times.
+      For A, C and D the second factor is in the way: a lab account in
+      `fastrdp_mfa_lab_keypress_users` (with `fastrdp_mfa_lab_keypress_ack`,
+      [auth-matrix.md](auth-matrix.md#lab-keypress)) logs in with any 4 digits and Enter
+      on the waiting screen instead (the waiting screen is still shown, which A5 is about).
+      Not for B: reconnect grace needs a real second factor (lab logins never earn it).
 - [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
       `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
       desktop: connection 1 into the session (a black desktop is fine), X, connection 2.

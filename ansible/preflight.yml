@@ -730,6 +730,20 @@
                     ~ session_start ~ ' (the session start after the approval), at most 600 (docs/auth-matrix.md#web-approval)'}] }}
       when: preflight_mfa_mode in ['web', 'push_or_web', 'code_or_web']
 
+    # LAB ONLY broker [mfa] lab_keypress_users: say it loudly on every preflight
+    - name: Result - MFA lab accounts
+      vars:
+        lab_users: "{{ fastrdp_mfa_lab_keypress_users | default([]) }}"
+      ansible.builtin.set_fact:
+        preflight_results: >-
+          {{ preflight_results + [{'check': 'MFA lab accounts',
+             'status': 'WARN',
+             'detail': 'fastrdp_mfa_lab_keypress_users: ' ~ (lab_users | map('string') | join(', '))
+                       ~ ' log in WITHOUT a second factor (LAB ONLY: any digits and Enter on the waiting screen)',
+             'fix': 'never on a production host: fastrdp_mfa_lab_keypress_users: [] and fastrdp_mfa_lab_keypress_ack: "" '
+                    ~ '(docs/auth-matrix.md#lab-keypress)'}] }}
+      when: lab_users | length > 0
+
     - name: Probe the OIDC issuer from the host
       ansible.builtin.uri:
         url: "{{ preflight_web_issuer }}/.well-known/openid-configuration"

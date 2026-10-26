@@ -470,6 +470,16 @@ class BrokerToml(unittest.TestCase):
         mfa = broker_config.parse(toml("broker-mfa.toml")).mfa
         self.assertEqual((mfa.reconnect_grace, mfa.reconnect_grace_same_address), (600, False))
 
+    def test_lab_keypress_users(self):
+        # LAB ONLY: absent by default, rendered with a comment when set
+        for name in ("broker-lab.toml", "broker-minimal.toml"):
+            self.assertNotIn("lab_keypress_users", (OUT / name).read_text(), name)
+            self.assertEqual(broker_config.parse(toml(name)).mfa.lab_keypress_users, [], name)
+        text = (OUT / "broker-mfa.toml").read_text()
+        self.assertIn("# LAB ONLY: these accounts log in WITHOUT a second factor", text)
+        self.assertEqual(broker_config.parse(toml("broker-mfa.toml")).mfa.lab_keypress_users,
+                         ["labuser", "lab2@example.com"])
+
     def test_web_approval(self):
         for name in ("broker-lab.toml", "broker-minimal.toml", "broker-mfa.toml"):
             mfa = broker_config.parse(toml(name)).mfa
@@ -629,7 +639,9 @@ class CommonChecks(unittest.TestCase):
     def run_checks(self, host="rdp1.example.com", **extra):
         args = [shutil.which("ansible-playbook"), "-i", f"{host},", str(HERE / "check_common.yml")]
         for k, v in extra.items():
-            args += ["-e", f"{k}={v}" if isinstance(v, (str, int)) else json.dumps({k: v})]
+            # "k=v" would cut a value with spaces into several variables
+            plain = isinstance(v, int) or (isinstance(v, str) and " " not in v)
+            args += ["-e", f"{k}={v}" if plain else json.dumps({k: v})]
         env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
                    ANSIBLE_PYTHON_INTERPRETER=sys.executable)
         env.pop("ANSIBLE_CONFIG", None)
@@ -764,6 +776,14 @@ class CommonChecks(unittest.TestCase):
             "TLS login source not an address": dict(ok, fastrdp_tls_login_sources=["127.0.0.1", "localhost"]),
             "TLS login source with a newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\nAllowTls=true"]),
             "TLS login source with a trailing newline": dict(ok, fastrdp_tls_login_sources=["127.0.0.1\n"]),
+            # LAB ONLY accounts without a second factor need the exact acknowledgement
+            "lab keypress users without the acknowledgement": dict(ok, fastrdp_mfa_lab_keypress_users=["labuser"]),
+            "lab keypress users with another acknowledgement": dict(
+                ok, fastrdp_mfa_lab_keypress_users=["labuser"], fastrdp_mfa_lab_keypress_ack="yes"),
+            "lab keypress users as a string": dict(ok, fastrdp_mfa_lab_keypress_users="labuser",
+                                                   fastrdp_mfa_lab_keypress_ack="lab only: these users skip MFA"),
+            "lab keypress user not an account name": dict(ok, fastrdp_mfa_lab_keypress_users=["lab user"],
+                                                          fastrdp_mfa_lab_keypress_ack="lab only: these users skip MFA"),
             "reconnect grace negative": dict(ok, fastrdp_mfa_reconnect_grace=-1),
             "reconnect grace over an hour": dict(ok, fastrdp_mfa_reconnect_grace=3601),
             "reconnect grace in minutes": dict(ok, fastrdp_mfa_reconnect_grace="10m"),
@@ -838,6 +858,13 @@ class CommonChecks(unittest.TestCase):
         for value in (True, False, "true", "False"):
             with self.subTest(value):
                 self.assertEqual(self.run_checks(**ok, fastrdp_accept_remote_guard=value), 0)
+
+    def test_lab_keypress_users_pass(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_lab_keypress_users=["labuser", "b@example.com"],
+                                         fastrdp_mfa_lab_keypress_ack="lab only: these users skip MFA"), 0)
+        # the acknowledgement alone changes nothing
+        self.assertEqual(self.run_checks(**ok, fastrdp_mfa_lab_keypress_ack="lab only: these users skip MFA"), 0)
 
     def test_reconnect_grace_passes(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}

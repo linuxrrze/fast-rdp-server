@@ -24,6 +24,8 @@ from .privacyidea import PrivacyIdea, PrivacyIdeaError
 log = logging.getLogger(__name__)
 
 YUBIKEY_OTP = re.compile(r"[cbdefghijklnrtuv]{44}\Z")   # \Z: not before a trailing newline
+# LAB ONLY [mfa] lab_keypress_users: seconds the waiting screen waits for the key
+LAB_KEYPRESS_TIMEOUT = 60
 
 
 # Called once a login waits for the user: (method "push" | "web" | "push_or_web" |
@@ -462,6 +464,23 @@ class SecondFactor:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(push, web, return_exceptions=True)
+
+    async def lab_keypress(self, account: str, codes: CodeEntry, notify: Notify | None = None) -> str:
+        """LAB ONLY ([mfa] lab_keypress_users): no second factor. The waiting screen shows
+        the code field with a LAB text; whatever the user types there (the module sends
+        4..10 digits on Enter) lets the login go on, unchecked and never logged. Returns
+        "lab_keypress"; raises MfaDenied (mfa_timeout) without an answer within
+        LAB_KEYPRESS_TIMEOUT seconds. The caller makes sure the module can show the field
+        (`codes`) and records no reconnect grace."""
+        codes.open = True
+        notify_safely(notify, "lab_keypress", LAB_KEYPRESS_TIMEOUT, entry={"state": "ready", "attempts_left": 0})
+        try:
+            await asyncio.wait_for(codes.get(), LAB_KEYPRESS_TIMEOUT)
+        except TimeoutError:
+            raise MfaDenied("LAB: no key on the waiting screen in time", "mfa_timeout") from None
+        finally:
+            codes.open = False
+        return "lab_keypress"
 
     async def code_or_web(self, user: str, account: str, method: str, client_address: str | None,
                           codes: CodeEntry, notify: Notify | None = None) -> str:

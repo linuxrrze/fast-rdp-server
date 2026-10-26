@@ -286,6 +286,8 @@
         fastrdp_otp_lengths: [6, 8]
         fastrdp_mfa_reconnect_grace: 600
         fastrdp_mfa_reconnect_grace_same_address: false
+        fastrdp_mfa_lab_keypress_users: [labuser, "lab2@example.com"]
+        fastrdp_mfa_lab_keypress_ack: "lab only: these users skip MFA"
         fastrdp_privacyidea_ca_src: files/pi-ca.pem
         fastrdp_broker_pi_ca: {stat: {exists: true, checksum: "{{ '0123456789abcdef' * 4 }}"}}   # broker role's stat
         fastrdp_privacyidea_service_user: pi-service

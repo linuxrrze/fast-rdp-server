@@ -379,6 +379,25 @@
       (docs/desktop-matrix.md#choosing-a-desktop).
     quiet: true
 
+# LAB ONLY: accounts without a second factor need the exact acknowledgement (broker [mfa]
+# lab_keypress_users; the broker checks the names again at start)
+- name: Lab accounts without a second factor are acknowledged
+  ansible.builtin.assert:
+    that:
+      - fastrdp_mfa_lab_keypress_users is sequence and fastrdp_mfa_lab_keypress_users is not string
+      - fastrdp_mfa_lab_keypress_users | length <= 32
+      - fastrdp_mfa_lab_keypress_users | map('string') | reject('match', '^[A-Za-z0-9_][A-Za-z0-9._@-]{0,255}\Z') | list | length == 0
+      - >-
+        fastrdp_mfa_lab_keypress_users | length == 0
+        or fastrdp_mfa_lab_keypress_ack == 'lab only: these users skip MFA'
+    fail_msg: >-
+      fastrdp_mfa_lab_keypress_users (LAB ONLY) lists local accounts that log in WITHOUT a
+      second factor (at most 32 account names). A non-empty list needs
+      fastrdp_mfa_lab_keypress_ack: "lab only: these users skip MFA" (exactly), so it cannot
+      be switched on by accident (docs/auth-matrix.md#lab-keypress). Never on a production
+      host.
+    quiet: true
+
 # LAB ONLY build variants exist only for the source build (roles/xrdp/tasks/build.yml);
 # the APT packages are the plain vendored builds.
 - name: Lab build variants need the source build

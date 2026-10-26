@@ -206,6 +206,38 @@ most of it). With web approval the common checks require
 `fastrdp_proxy_broker_timeout` ≥ `fastrdp_mfa_web_approval_timeout` + 90; for push,
 keep it at least `push_timeout` + 90 (privacyIDEA's setting is not checked).
 
+### Lab keypress
+
+**LAB ONLY, never on a production host.** `fastrdp_mfa_lab_keypress_users` (broker
+`[mfa] lab_keypress_users`, default `[]`) lists local accounts that log in **without a
+second factor**, for debugging the waiting screen (backlog A5) without approving every
+login. A non-empty list also needs `fastrdp_mfa_lab_keypress_ack: "lab only: these users
+skip MFA"` (exactly; the common checks refuse anything else), at most 32 account names
+as the broker logs them (fully qualified with `fastrdp_sssd_fully_qualified_names`).
+
+- For a listed account the waiting screen shows *LAB ONLY: no second factor for
+  {user}* and the code field (`Any 4 digits + Enter:`) instead of the configured mode;
+  typing any digits and Enter lets the login go on, nothing is checked and the digits
+  are never logged. No answer within 60 s: refused as an MFA timeout (0x409). The proxy
+  module needs no change (it is the `code_or_web` field, until Enter; the module wants
+  at least 4 digits).
+- **Fail closed:** only when the module announced its code field (`"code_entry": 1`:
+  waiting screen on and `patches/freerdp/0007`). Otherwise (waiting screen off, an older
+  module or FreeRDP) the configured second factor applies, with a warning in the broker
+  log.
+- Never earns [reconnect grace](#reconnect-grace); a grace entry from an earlier real
+  second factor still applies. Exempt groups, `nla_kdc_enforced` and KDC evidence work
+  as before. Web gateway logins are unchanged (their MFA happens at Keycloak), and so is
+  everybody not on the list.
+- Loud on purpose: the broker logs a WARNING at start (`[mfa] lab_keypress_users is set:
+  these users log in WITHOUT a second factor: …`) and two per login, `make preflight`
+  shows *MFA lab accounts* as WARN, and broker.toml carries a LAB ONLY comment.
+- Texts: `mfa_lab_keypress` and `lab_keypress_label` ([Waiting screen](#waiting-screen)).
+
+Use it on the lab host with lab accounts only, for tests that do not need a real second
+factor ([lab-checklist-0.7.6.md](lab-checklist-0.7.6.md) §1); remove it afterwards
+(`fastrdp_mfa_lab_keypress_users: []`, deploy).
+
 ### Web approval
 
 **`fastrdp_mfa_mode: web`** (broker `[mfa] mode = "web"`): an RDP login that owes its
@@ -578,7 +610,9 @@ Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `mfa_code_or_web`, `qr_hint`,
 (a running session's desktop: `{desktop} (running)`), `picker_reconnects` (another
 X11 desktop while an xrdp session runs: `{desktop} (opens the running {running})`) and
 `picker_blocked` (GNOME while the user has another graphical session: `{desktop} (log
-out of the other desktop first)`);
+out of the other desktop first)`), LAB ONLY ([lab keypress](#lab-keypress))
+`mfa_lab_keypress` (the text instead of the second factor) and `lab_keypress_label` (the
+field's label);
 placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}` `{code}` (the
 web approval's two-digit code; a line naming it is left out without one) `{running}`
 `{count}` (the picker's rows); `\n` starts a new line; a language without some keys

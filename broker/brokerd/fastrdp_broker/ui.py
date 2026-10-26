@@ -32,7 +32,10 @@ below the text, code_label (before the masked digits), code_checking (while Keyc
 checks it), code_wrong ({count}: attempts left), code_unavailable (Keycloak not
 reachable), and without a field, the approval page only: code_blocked (too many wrong
 codes), code_no_otp (the user has no authenticator app in Keycloak) and code_off (the
-code check is not usable, e.g. a setup error). """
+code check is not usable, e.g. a setup error).
+
+LAB ONLY: [mfa] lab_keypress_users get mfa_lab_keypress (method "lab_keypress") and the
+code field labelled lab_keypress_label, until Enter: no second factor is checked. """
 
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ from .config import UiSection
 TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "mfa_code_or_web", "qr_hint", "session_start",
              "countdown", "picker_title", "picker_hint", "picker_countdown", "picker_running",
              "picker_reconnects", "picker_blocked", "code_label", "code_checking", "code_wrong", "code_unavailable",
-             "code_blocked", "code_no_otp", "code_off")
+             "code_blocked", "code_no_otp", "code_off", "mfa_lab_keypress", "lab_keypress_label")
 PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code", "running", "count")
 MAX_TEMPLATE = 2000
 MAX_LINES = 12      # the module shows at most 16 after wrapping
@@ -90,6 +93,10 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "code_no_otp": "No authenticator app is set up for your account. Approve with your "
                        "passkey: scan the QR code.",
         "code_off": "Codes cannot be checked at the moment. Please use the approval page.",
+        "mfa_lab_keypress": "LAB ONLY: no second factor for {user}\n"
+                            "Type any 4 digits and press Enter to continue.\n"
+                            "This test account skips MFA ([mfa] lab_keypress_users).",
+        "lab_keypress_label": "Any 4 digits + Enter:",
     },
     "de": {
         "mfa_push": "Anmeldung bestätigen\n"
@@ -130,6 +137,10 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "code_no_otp": "Für Ihr Konto ist keine Authenticator-App eingerichtet. Bestätigen Sie "
                        "mit Ihrem Passkey: QR-Code scannen.",
         "code_off": "Codes können gerade nicht geprüft werden. Bitte die Freigabeseite verwenden.",
+        "mfa_lab_keypress": "NUR LABOR: kein zweiter Faktor für {user}\n"
+                            "Beliebige 4 Ziffern eingeben und Eingabe drücken.\n"
+                            "Dieses Testkonto überspringt MFA ([mfa] lab_keypress_users).",
+        "lab_keypress_label": "4 Ziffern + Eingabe:",
     },
 }
 
@@ -219,8 +230,12 @@ class WaitingTexts:
             if state in CLOSED_STATES:
                 msg["lines"] = (msg["lines"] + [message])[:MAX_LINES]
             else:
-                msg["code_entry"] = {"digits": digits if CODE_DIGITS[0] <= digits <= CODE_DIGITS[1] else 0,
-                                     "label": self.text(lang, "code_label", user=user),
+                lab = method == "lab_keypress"  # LAB ONLY: any digits, until Enter
+                if lab or not CODE_DIGITS[0] <= digits <= CODE_DIGITS[1]:
+                    digits = 0
+                msg["code_entry"] = {"digits": digits,
+                                     "label": self.text(lang, "lab_keypress_label" if lab else "code_label",
+                                                        user=user),
                                      "checking": self.text(lang, "code_checking", user=user),
                                      "message": message}
         if method in QR_METHODS and self.cfg.approve_url:

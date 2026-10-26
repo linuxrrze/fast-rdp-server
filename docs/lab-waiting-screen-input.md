@@ -68,6 +68,10 @@ Risks per client that only a lab shows:
 - the limits at their defaults: `fastrdp_mfa_code_attempts: 3` per login,
   `fastrdp_mfa_code_user_failures: 10` within `fastrdp_mfa_code_failure_window: 900` s;
 - `fastrdp_proxy_input_trace: true` (proxy.ini `[FastRDP] InputTrace`, [§3](#3-capturing-input-without-leaking-codes));
+- for tests that are about the waiting screen and not about the code check (A5, F19),
+  optionally a lab account in `fastrdp_mfa_lab_keypress_users` (LAB ONLY,
+  [auth-matrix.md](auth-matrix.md#lab-keypress)): the same code field, but any 4 digits
+  and Enter let the login go on, with no second factor; never for the code tests (S, I);
 - `fastrdp_mfa_web_approval_timeout: 90`, `fastrdp_mfa_reconnect_grace: 300` for F8;
 - the proxy's journal at INFO; DEBUG only where a test says so.
 

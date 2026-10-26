@@ -167,6 +167,12 @@ class MfaSection:
     code_attempts: int = 3
     code_user_failures: int = 10
     code_failure_window: int = 900
+    # LAB ONLY: local accounts that log in WITHOUT a second factor. Instead of the
+    # configured mode the proxy's waiting screen asks them to type any digits and press
+    # Enter (the code field, protocol.py "code_entry"); nothing is checked. Only when the
+    # module can show the field; otherwise the configured second factor applies. Never
+    # earns reconnect grace; web gateway logins are unaffected. docs/auth-matrix.md#lab-keypress
+    lab_keypress_users: list[str] = field(default_factory=list)
     privacyidea: PrivacyIdeaSection = field(default_factory=PrivacyIdeaSection)
     keycloak: KeycloakOtpSection = field(default_factory=KeycloakOtpSection)
 
@@ -278,6 +284,9 @@ KDC_EVIDENCE_ITEM = re.compile(r"ind:[\x21-\x7e]{1,64}|sid:S-1-[0-9]{1,15}(-[0-9
 # with FAST/SPAKE (MIT, FreeIPA); S-1-18-1 "authentication authority asserted identity"
 # is in every AD/Samba AS logon, S-1-18-2 marks S4U2Self; Everyone, Authenticated Users,
 # Users. Domain Users (RID 513) is refused below.
+# [mfa] lab_keypress_users: local account names (also fully qualified SSSD names)
+LAB_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._@-]{0,255}")
+MAX_LAB_KEYPRESS_USERS = 32
 KDC_EVIDENCE_NOT_MFA = {"ind:hardened", "sid:S-1-18-1", "sid:S-1-18-2", "sid:S-1-1-0",
                         "sid:S-1-5-11", "sid:S-1-5-32-545"}
 
@@ -449,6 +458,11 @@ def parse(raw: dict) -> Config:
         value = getattr(mfa, key)
         if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
             raise ConfigError(f"[mfa] {key} must be a whole number in {lo}..{hi}")
+    if not isinstance(mfa.lab_keypress_users, list) or not all(
+        isinstance(u, str) and LAB_USER.fullmatch(u) for u in mfa.lab_keypress_users
+    ) or len(mfa.lab_keypress_users) > MAX_LAB_KEYPRESS_USERS:
+        raise ConfigError(f"[mfa] lab_keypress_users (LAB ONLY) must be a list of at most "
+                          f"{MAX_LAB_KEYPRESS_USERS} local account names")
     if mfa.mode in KEYCLOAK_OTP_MODES:
         if not isinstance(kc.issuer, str) or not KEYCLOAK_ISSUER.fullmatch(kc.issuer.rstrip("/")):
             raise ConfigError(f"[mfa.keycloak] issuer must be https://<host>/realms/<realm> (http on loopback) for "

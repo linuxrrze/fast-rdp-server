@@ -124,6 +124,16 @@ fastrdp_mfa_kdc_evidence_as_mfa: []
 # `fastrdpctl clear-grace USER` forgets a user's grace.
 fastrdp_mfa_reconnect_grace: 0
 fastrdp_mfa_reconnect_grace_same_address: true
+# LAB ONLY, never in production (broker [mfa] lab_keypress_users;
+# docs/auth-matrix.md#lab-keypress): these local accounts log in WITHOUT a second factor.
+# The waiting screen asks them for any 4 digits and Enter instead (for debugging the
+# waiting screen without approving every login); nothing is checked. Only when the proxy
+# can show its code field (waiting screen, patches/freerdp/0007), else the configured
+# mode applies; no reconnect grace from it; web gateway logins unchanged. The broker
+# warns at start and per login; preflight warns. A non-empty list also needs
+# fastrdp_mfa_lab_keypress_ack set to exactly "lab only: these users skip MFA".
+fastrdp_mfa_lab_keypress_users: []
+fastrdp_mfa_lab_keypress_ack: ""
 # Web approval (fastrdp_mfa_mode web or push_or_web; needs fastrdp_web_enabled;
 # docs/auth-matrix.md#web-approval): the RDP login waits until the user approves it on
 # https://<fqdn>/web/approve after a fresh MFA sign-in at Keycloak (passkey, TOTP, ...).
@@ -220,7 +230,8 @@ fastrdp_ui_language_from_keyboard: true
 # Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web,
 # mfa_code_or_web, qr_hint, session_start, countdown, for the desktop picker picker_title,
 # picker_hint, picker_countdown, picker_running, picker_reconnects, picker_blocked and for the code field
-# code_label, code_checking, code_wrong, code_unavailable, code_blocked, code_no_otp, code_off; placeholders {user} {approve_url}
+# code_label, code_checking, code_wrong, code_unavailable, code_blocked, code_no_otp, code_off,
+# LAB ONLY mfa_lab_keypress and lab_keypress_label; placeholders {user} {approve_url}
 # {timeout} {method} {desktop} {code} (the web approval's two-digit code) {running}
 # {count} (broker/brokerd/fastrdp_broker/ui.py).
 fastrdp_ui_texts: {}

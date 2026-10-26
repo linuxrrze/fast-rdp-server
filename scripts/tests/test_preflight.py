@@ -478,6 +478,14 @@ class TestPreflightKdcEvidenceResult(unittest.TestCase):
         self.assertIn("fastrdp_web_enabled is false", r["noweb"]["detail"])
         self.assertNotIn("exceeds", r["noweb"]["detail"])
 
+    def test_lab_keypress_users_warn(self):
+        r = self.run_play({
+            "lab": ({"fastrdp_mfa_lab_keypress_users": ["labuser", "test2"]}, {}),
+        }, names=("Result - MFA lab accounts",))
+        self.assertEqual(r["lab"]["status"], "WARN", r["lab"])
+        self.assertIn("labuser, test2 log in WITHOUT a second factor", r["lab"]["detail"])
+        self.assertIn("never on a production host", r["lab"]["fix"])
+
     def test_build_without_patch_0005(self):
         r = self.run_play({"build": ({"fastrdp_install_method": "build",
                                       "fastrdp_mfa_kdc_evidence_as_mfa": ["ind:pkinit"]}, {})},
