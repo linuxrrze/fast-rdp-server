@@ -177,7 +177,7 @@ below is on.
 **Packet capture with the TLS key log (backlog A5 only, never for the code tests).** For
 the mstsc reconnect investigation (F19c) the proxy can write the TLS secrets of every
 client connection (`fastrdp_proxy_tls_keylog: true`, proxy.ini `[FastRDP] TlsKeyLogFile`;
-fast-rdp-server after 0.7.6): to `/var/cache/fastrdp-proxy/tls-keylog.txt`, mode 0600,
+fast-rdp-server 0.7.7 or later): to `/var/cache/fastrdp-proxy/tls-keylog.txt`, mode 0600,
 with a warning per connection (`TlsKeyLogFile is on: …`). The hop to the back-end is
 never logged. **The file plus a capture decrypts everything the client sent and
 received:** the code typed into the waiting screen, and the password of a TLS login

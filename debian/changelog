@@ -1,3 +1,29 @@
+fast-rdp-server (0.7.7) unstable; urgency=medium
+
+  * Proxy module: lab-only switch fastrdp_proxy_tls_keylog (proxy.ini
+    TlsKeyLogFile, default off) writes the TLS secrets of every client
+    connection to /var/cache/fastrdp-proxy/tls-keylog.txt (mode 0600, a
+    warning per connection, never the back-end hop), so Wireshark can
+    decrypt a capture of the mstsc reconnect runs; switching it off
+    removes the file (backlog A5).
+  * Broker, desktop picker: GNOME is marked "(log out of the other desktop
+    first)" ([ui] picker_blocked) while the user has another graphical
+    session, and a desktop that can start is preselected (backlog A6).
+  * Webgate notifications: ntfy_ca_file (Ansible
+    fastrdp_web_notify_ntfy_ca_src) trusts the CA of a private ntfy
+    server, also for Web Push to webpush_extra_hosts; preflight.yml checks
+    the notification setup (ntfy health and token, CA file, VAPID key);
+    fastrdp-setup asks for the backends, ntfy URL, token and CA (backlog
+    W1).
+  * Lab tools: unattended A5 / F19 run over Windows-MCP (tests/lab/a5_f19.py,
+    mstsc.ps1, send-keys.ps1), TOTP tool, QR approval client approve.py and
+    a software passkey for the approval sign-in; lab checklist for the
+    round.
+  * Tests: proxy e2e covers the code field on the waiting screen (backlog
+    W5) and the TLS key log.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 26 Oct 2026 18:23:59 +0100
+
 fast-rdp-server (0.7.6) unstable; urgency=medium
 
   * xrdp: sesman.ini sets SessionSockdirGroup=xrdp. xrdp runs as

@@ -7,8 +7,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.6**, `fastrdp-freerdp3 3.32.2-7`,
-      `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
+- [ ] Host on **fast-rdp-server 0.7.7** (0.7.6 lacks only the TLS key log of A5),
+      `fastrdp-freerdp3 3.32.2-7`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.
 - [ ] Inventory for the round: `fastrdp_desktop_picker: true`,
       `fastrdp_mfa_mode: code_or_web` with the Keycloak setup of
@@ -40,7 +40,7 @@ Windows 10 and Windows 11 each.
       dialog), what mstsc showed, the times.
 - [ ] Both runs: `tcpdump` and the `ss` loop on the proxy host from before connection 1
       ([lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
-      *Packet capture*). On a build after 0.7.6 also `fastrdp_proxy_tls_keylog: true`
+      *Packet capture*). Also `fastrdp_proxy_tls_keylog: true`
       (lab users only), and copy the key log after each run.
 - [ ] Bring back: both proxy journals, mstsc's event log, the notes, the captures and
       `ss` logs (and key logs).
