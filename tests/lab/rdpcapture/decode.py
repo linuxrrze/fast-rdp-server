@@ -9,13 +9,16 @@
 # PDU by PDU, per connection.
 #
 #   tests/lab/rdpcapture/decode.py CAPTURE.pcap KEYLOG.txt [--port 3389]
+#   ... --summary          one line per connection (numbered)
+#   ... --compare N M      the differences between connections N and M
 #
 # CAPTURE: tcpdump -w of the client side (pcap or pcapng; Ethernet or Linux cooked, IPv4);
 # KEYLOG: /var/cache/fastrdp-proxy/tls-keylog.txt (proxy.ini [FastRDP] TlsKeyLogFile).
 # Prints one timeline per TCP connection (seconds since its first packet), runs of the
 # same PDU collapsed into one line ("x4 (until 0.244)"). Only PDU names, sizes and protocol
 # fields (Set Error Info code, Control action, DVC names, input event classes); never key
-# material or payload bytes. TLS 1.3 only (what freerdp-proxy negotiates with OpenSSL 3);
+# material or payload bytes (--compare gives the offsets where the client's Core Data and
+# Confirm Active differ, not the bytes). TLS 1.3 only (what freerdp-proxy negotiates with OpenSSL 3);
 # connections without secrets in the key log are listed as such. Needs python3-cryptography.
 """LAB ONLY: per-connection RDP timeline from a capture and the proxy's TLS key log."""
 
@@ -289,8 +292,9 @@ def channel_names(upt, dpt):
     return dict(zip(ids, names))
 
 
-def analyse(segs, keys):
-    """The events of one connection, or None without its secrets in the key log."""
+def decrypt(segs, keys):
+    """(client plaintext, server plaintext, channel names) of one connection, each
+    plaintext as [(timestamp, bytes)], or None without its secrets in the key log."""
     ub, uts = joined(reassemble(segs, True))
     db, dts = joined(reassemble(segs, False))
     uo, do = split_x224(ub), split_x224(db)
@@ -314,11 +318,215 @@ def analyse(segs, keys):
         return None  # not TLS 1.3
     upt = tls_plain(ub[uo:], lambda p: uts(p + uo), up)
     dpt = tls_plain(db[do:], lambda p: dts(p + do), dn)
-    names = channel_names(upt, dpt)
+    return upt, dpt, channel_names(upt, dpt)
+
+
+def analyse(segs, keys):
+    """The events of one connection, or None without its secrets in the key log."""
+    dec = decrypt(segs, keys)
+    if dec is None:
+        return None
+    upt, dpt, names = dec
     ev = [(t, "C>S", d) for t, d in rdp_units(upt, True, names)]
     ev += [(t, "S>C", d) for t, d in rdp_units(dpt, False, names)]
     ev.sort(key=lambda e: e[0])
     return ev
+
+
+# --- per-connection summary (--summary, --compare)
+
+GRAPHICS = "Microsoft::Windows::RDS::Graphics"
+
+
+def mcs_send_data(pdu):
+    """(channel id, user data) of an MCS Send Data Request/Indication in a TPKT PDU, or None."""
+    x = pdu[4:]
+    if len(x) < 2 or x[1] & 0xF0 != 0xF0:
+        return None
+    m = x[x[0] + 1:]
+    if len(m) < 7 or m[0] >> 2 not in (25, 26):
+        return None
+    chan = struct.unpack(">H", m[3:5])[0]
+    ln, o = per_len(m, 6)
+    return chan, m[o:o + ln]
+
+
+def dvc_fields(d):
+    """(command, channel id, name or creation status) of a drdynvc chunk that carries a
+    whole DVC PDU (CHANNEL_PDU_HEADER, then the DVC header), or None."""
+    if len(d) < 10:
+        return None
+    p = d[8:]
+    cmd, cb = p[0] >> 4, (1, 2, 4, 4)[p[0] & 3]
+    if len(p) < 1 + cb:
+        return None
+    cid = int.from_bytes(p[1:1 + cb], "little")
+    rest = p[1 + cb:]
+    if cmd == 1:
+        nm = rest.split(b"\x00")[0]
+        if nm and all(32 <= c < 127 for c in nm):
+            return cmd, cid, nm.decode("ascii")  # the server's Create Request
+        if len(rest) >= 4:
+            return cmd, cid, struct.unpack("<i", rest[:4])[0]  # the client's Create Response
+    return cmd, cid, None
+
+
+def tcp_end(segs):
+    """How the TCP connection ended: "FIN from client at 12.3 s" etc. (first FIN or RST of
+    each kind), or "open" without either."""
+    t0, out = segs[0]["ts"], []
+    for kind, bit in (("RST", 0x04), ("FIN", 0x01)):
+        for s in segs:
+            if s["flags"] & bit:
+                out.append(f"{kind} from {'client' if s['c2s'] else 'server'} at {s['ts'] - t0:.1f} s")
+                break
+    return ", ".join(out) or "open"
+
+
+def summary(segs, keys):
+    """The comparable facts of one connection (a dict; values are str, int, bool, lists)."""
+    t0 = segs[0]["ts"]
+    info = {"client": fmt_addr(segs[0]["cli"]), "start": t0, "duration": segs[-1]["ts"] - t0,
+            "decrypted": False, "tcp_end": tcp_end(segs)}
+    dec = decrypt(segs, keys)
+    if dec is None:
+        return info
+    upt, dpt, names = dec
+    info["decrypted"] = True
+    ev = []  # (timestamp, c2s, kind, pdu, fast-path header length)
+    for stream, c2s in ((upt, True), (dpt, False)):
+        buf, ts_at = joined(stream)
+        ev += [(ts_at(o), c2s, k, pdu, hl) for o, k, pdu, hl in split_units(buf)]
+    ev.sort(key=lambda e: e[0])
+    joins, dvc_req, dvc_ok, demand, bitmaps = [], {}, set(), [], []
+    seen = collections.Counter()
+    errinfo, ultimatum, core, confirm, first_chan, prev_share = [], None, None, None, None, None
+    for ts, c2s, kind, pdu, hl in ev:
+        if kind == "fast" and not c2s:
+            body, o = pdu[hl:], 0
+            while o + 3 <= len(body):
+                h = body[o]
+                o += 2 if h >> 6 else 1
+                sz = struct.unpack("<H", body[o:o + 2])[0]
+                o += 2 + sz
+                if h & 0xF == 1 and (h >> 4) & 3 in (0, 1):  # a bitmap update starts
+                    bitmaps.append(ts)
+            continue
+        if kind != "tpkt":
+            continue
+        if c2s and b"\x7f\x65" in pdu[:12] and core is None:
+            core = _gcc_block(pdu, 0xC001)
+        desc = slow(pdu, names)
+        if desc.startswith("MCS ChannelJoinRequest") and c2s:
+            joins.append(int(desc.split()[-1]))
+        elif desc.startswith("MCS DisconnectProviderUltimatum"):
+            ultimatum = f"{desc.split('=')[1]} from {'client' if c2s else 'server'}"
+        sd = mcs_send_data(pdu)
+        if sd is None:
+            continue
+        chan, d = sd
+        if chan == 1003:
+            if desc in ("DemandActive", "DeactivateAll") and not c2s:
+                if desc == "DemandActive":
+                    demand.append((ts, prev_share == "DeactivateAll"))
+                prev_share = desc
+            elif desc == "ConfirmActive" and c2s and confirm is None:
+                confirm = d
+            elif desc.startswith("Data SetErrorInfo") and not c2s:
+                errinfo.append(desc.split("=")[1])
+            elif c2s and desc.split(" ")[:2] in (["Data", "RefreshRect"], ["Data", "SuppressOutput"],
+                                                  ["Data", "ShutdownRequest"]):
+                seen[desc.split(" ")[1]] += 1
+            continue
+        name = names.get(chan)
+        if name is None:
+            continue
+        if not c2s and first_chan is None:
+            first_chan = ts
+        if name == "drdynvc":
+            f = dvc_fields(d)
+            if f and f[0] == 1 and isinstance(f[2], str) and not c2s:
+                dvc_req[f[1]] = f[2]
+            elif f and f[0] == 1 and f[2] == 0 and c2s:
+                dvc_ok.add(f[1])
+    # the session (back-end) starts with the last Demand Active before the first channel
+    # data the server sends: before it only the proxy's waiting screen talks
+    session = None
+    if first_chan is not None:
+        session = max((t for t, _ in demand if t <= first_chan), default=first_chan)
+    created = [dvc_req[c] for c in sorted(dvc_req) if c in dvc_ok]
+    info.update({
+        "static_channels": [names[c] for c in sorted(names)],
+        "joins": "skipped" if not joins else ",".join(names.get(j, str(j)) for j in joins),
+        "dvcs_created": created,
+        "graphics": GRAPHICS in created,
+        "reactivations": sum(1 for _t, after_deactivate in demand[1:] if after_deactivate),
+        "session_at": None if session is None else round(session - t0, 3),
+        "bitmaps_pre_session": sum(1 for t in bitmaps if session is None or t < session),
+        "bitmaps_total": len(bitmaps),
+        "refresh_rect": seen["RefreshRect"], "suppress_output": seen["SuppressOutput"],
+        "shutdown_request": seen["ShutdownRequest"],
+        "set_error_info": errinfo, "ultimatum": ultimatum or "none",
+        "_core": core, "_confirm": confirm,
+    })
+    return info
+
+
+def summary_line(n, info):
+    """One line per connection."""
+    head = (f"{n:2d} {info['client']:21s} {time.strftime('%H:%M:%S', time.localtime(info['start']))} "
+            f"{info['duration']:6.1f}s")
+    if not info["decrypted"]:
+        return head + f" not decrypted (no TLS 1.3 secrets); tcp {info['tcp_end']}"
+    dv = ",".join(x.replace("Microsoft::Windows::RDS::", "RDS:") for x in info["dvcs_created"]) or "-"
+    return (head + f" decrypted; static {','.join(info['static_channels']) or '-'} (joins {info['joins']}); "
+            f"DVCs {dv}; Graphics {'yes' if info['graphics'] else 'no'}; reactivations {info['reactivations']}; "
+            f"bitmaps pre-session {info['bitmaps_pre_session']}/{info['bitmaps_total']}"
+            + (f" (session at {info['session_at']:.1f}s)" if info["session_at"] is not None else " (no session)")
+            + f"; RefreshRect {info['refresh_rect']} SuppressOutput {info['suppress_output']}"
+              f" ShutdownRequest {info['shutdown_request']}; end: SetErrorInfo "
+              f"{','.join(info['set_error_info']) or '-'}, ultimatum {info['ultimatum']}, tcp {info['tcp_end']}")
+
+
+def byte_diff(a, b):
+    """Where two byte strings differ: offset ranges only, never their contents."""
+    if a is None or b is None:
+        return "missing in " + ("both" if a is None and b is None else "one")
+    if a == b:
+        return f"identical ({len(a)} bytes)"
+    ranges, start = [], None
+    for i in range(max(len(a), len(b))):
+        diff = i >= len(a) or i >= len(b) or a[i] != b[i]
+        if diff and start is None:
+            start = i
+        elif not diff and start is not None:
+            ranges.append((start, i - 1))
+            start = None
+    if start is not None:
+        ranges.append((start, max(len(a), len(b)) - 1))
+    shown = ", ".join(f"{x}" if x == y else f"{x}-{y}" for x, y in ranges[:20])
+    more = f" (+{len(ranges) - 20} more)" if len(ranges) > 20 else ""
+    return f"differ at offsets {shown}{more} (lengths {len(a)}/{len(b)})"
+
+
+COMPARED = ("decrypted", "static_channels", "joins", "dvcs_created", "graphics", "reactivations",
+            "bitmaps_pre_session", "bitmaps_total", "refresh_rect", "suppress_output", "shutdown_request",
+            "set_error_info", "ultimatum", "tcp_end")
+
+
+def compare(n, a, m, b):
+    """Lines: the fields in which connections n and m differ, then the byte comparison of
+    the client's Core Data and Confirm Active."""
+    lines = [f"compare {n} ({a['client']}) and {m} ({b['client']}):"]
+    for k in COMPARED:
+        if a.get(k) != b.get(k):
+            lines.append(f"  {k}: {a.get(k)!r} | {b.get(k)!r}")
+    if len(lines) == 1:
+        lines.append("  no difference in the summary fields")
+    if a["decrypted"] and b["decrypted"]:
+        lines.append("  Client Core Data: " + byte_diff(a["_core"], b["_core"]))
+        lines.append("  Confirm Active: " + byte_diff(a["_confirm"], b["_confirm"]))
+    return lines
 
 
 def collapse(events, t0):
@@ -342,9 +550,25 @@ def main(argv=None):
     ap.add_argument("capture", help="pcap or pcapng of the client side")
     ap.add_argument("keylog", help="NSS key log (proxy.ini [FastRDP] TlsKeyLogFile)")
     ap.add_argument("--port", type=int, default=3389, help="the proxy's RDP port (default 3389)")
+    ap.add_argument("--summary", action="store_true", help="one line per connection instead of the timelines")
+    ap.add_argument("--compare", nargs=2, type=int, metavar=("N", "M"),
+                    help="differences between connections N and M (numbers from --summary)")
     a = ap.parse_args(argv)
     keys = load_keylog(a.keylog)
-    for cli, segs in streams(a.capture, a.port).items():
+    conns = list(streams(a.capture, a.port).items())
+    if a.summary or a.compare:
+        infos = [summary(segs, keys) for _cli, segs in conns]
+        if a.summary:
+            for n, info in enumerate(infos, 1):
+                print(summary_line(n, info))
+        if a.compare:
+            n, m = a.compare
+            if not (1 <= n <= len(infos) and 1 <= m <= len(infos)):
+                ap.error(f"--compare: connections are numbered 1 to {len(infos)}")
+            for line in compare(n, infos[n - 1], m, infos[m - 1]):
+                print(line)
+        return 0
+    for cli, segs in conns:
         t0 = segs[0]["ts"]
         print(f"===== {fmt_addr(cli)} {time.strftime('%H:%M:%S', time.localtime(t0))}")
         ev = analyse(segs, keys)

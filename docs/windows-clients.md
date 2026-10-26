@@ -863,8 +863,7 @@ Two open problems that users of mstsc see; both are tracked in the
 **Black window on the next *Connect* in the same mstsc ([backlog A5](backlog.md#sessions)).**
 After a connection that reached a desktop, closing it (the X or a logout) and pressing
 *Connect* again in the same mstsc window shows a black window instead of the waiting
-screen until the second factor times out. A freshly started mstsc, and the connection
-after a black one, work. The proxy sends the same waiting screen in both cases; mstsc
+screen until the second factor times out. A freshly started mstsc works. The proxy sends the same waiting screen in both cases; mstsc
 does not show it, most likely because it keeps GFX output state of the previous
 connection (findings: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)). No fix yet.
 Workarounds:

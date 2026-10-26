@@ -195,9 +195,14 @@ while sleep 0.5; do date +%T.%N; ss -tinm 'sport = :3389'; done | sudo tee /root
 sudo cp /var/cache/fastrdp-proxy/tls-keylog.txt /root/a5-run1-keys.txt
 ```
 
-Without Wireshark, `tests/lab/rdpcapture/decode.py a5-run1.pcap a5-run1-keys.txt` prints
-the PDUs of every connection as a timeline (names and sizes only;
-[a5-capture-2026-10-26.md](a5-capture-2026-10-26.md#method)).
+`sudo tests/lab/a5-collect.sh start a5-run1` / `stop a5-run1` does the same in one go
+(capture, `ss` loop, key log copy with mode 0600, the journals and xrdp.log since the
+start, into `/root/fastrdp-lab/a5-run1`). Without Wireshark,
+`tests/lab/rdpcapture/decode.py a5-run1.pcap a5-run1-keys.txt` prints the PDUs of every
+connection as a timeline (names and sizes only;
+[a5-capture-2026-10-26.md](a5-capture-2026-10-26.md#method)), `--summary` one line per
+connection and `--compare N M` the differences of two; mstsc's event log comes from
+`tests/lab/windows/rdp-eventlog.ps1` and reads with `tests/lab/rdpcapture/evtx_summary.py`.
 
 Use `fastrdp_listen_port` if it is not 3389, and *Decode As… → TPKT* in Wireshark for
 another port. In Wireshark: *Preferences → Protocols → TLS → (Pre)-Master-Secret log

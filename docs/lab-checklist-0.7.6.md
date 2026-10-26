@@ -35,7 +35,9 @@ Findings so far: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md).
 Done on 2026-10-26 (0.7.7/0.7.8, mstsc build 26100, Windows 11):
 
 - [x] **Run 1** (switches off): connection 2 black after a session, every time; the
-      next connection after a black one works again.
+      next connection after a black one worked, but the event log shows it in a new mstsc
+      process ([a5-capture](a5-capture-2026-10-26.md#process-ids-in-the-event-log)): to
+      check again in the same window.
 - [x] **Run 2** (`fastrdp_proxy_waiting_screen_reactivate: true`): the reactivation
       completes, connection 2 still black. The switch stays off.
 - [x] **GFX off, first try** (`[Channels] GFX=false`, xfce): connection 2 still black.
@@ -44,12 +46,19 @@ Done on 2026-10-26 (0.7.7/0.7.8, mstsc build 26100, Windows 11):
 
 Next session (in this order; the first two decide whether backlog A8 is needed):
 
-- [ ] **Before every run:** restart mstsc; on the proxy host `tcpdump` and the `ss` loop
-      from before connection 1, `fastrdp_proxy_tls_keylog: true`, copy the key log after
-      the run ([lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
-      *Packet capture*); afterwards export mstsc's event log
-      (*TerminalServices-ClientActiveXCore/Operational*). Note per connection the button
-      (*Connect* / *Reconnect*), what mstsc showed, the times.
+- [ ] **Before every run:** restart mstsc; `fastrdp_proxy_tls_keylog: true`; on the proxy
+      host `sudo tests/lab/a5-collect.sh start <run>` before connection 1 (tcpdump and the
+      `ss` loop) and `sudo tests/lab/a5-collect.sh stop <run>` after the last connection
+      (key log, journals, xrdp.log, a summary; everything in `/root/fastrdp-lab/<run>`;
+      [lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
+      *Packet capture*). On the Windows client afterwards
+      `tests/lab/windows/rdp-eventlog.ps1 -Clear` (exports mstsc's event log
+      *TerminalServices-ClientActiveXCore* → *RDPClient/Operational* to an .evtx, prints it
+      per connection, then empties the log for the next run; elevated PowerShell for
+      `-Clear`; untested on Windows so far). Analysis:
+      `tests/lab/rdpcapture/decode.py … --summary` and `evtx_summary.py <file>.evtx`. Note
+      per connection the button (*Connect* / *Reconnect*), whether mstsc was restarted,
+      what mstsc showed, the times.
 - [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
       `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
       desktop: connection 1 into the session (a black desktop is fine), X, connection 2.

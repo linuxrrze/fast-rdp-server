@@ -123,10 +123,11 @@ test-keycloak:   # CHROME=<chromium>, optional KEYCLOAK_HOME/JAVA_HOME; see test
 
 # LAB ONLY tools under tests/lab that have offline unit tests (totp.py: RFC 6238 vectors,
 # secret parsing, fresh-step logic; a5_f19.py: MCP client, plumbing, the F19 sequence
-# against fakes); stdlib only.
+# against fakes; rdpcapture: decode.py and evtx_summary.py on synthetic data; a5-collect.sh
+# with stubbed commands); stdlib only (python3-cryptography, python-evtx: more tests run).
 test-lab:
 	python3 -m unittest -v tests/lab/test_totp.py tests/lab/test_a5_f19.py tests/lab/test_approve.py \
-	  tests/lab/test_rdpcapture.py
+	  tests/lab/test_rdpcapture.py tests/lab/test_a5_collect.py
 
 # Prototype (docs/webauthn-redirection.md): RDPEWA/CTAPHID codecs, stdlib only, not shipped.
 test-prototypes:
