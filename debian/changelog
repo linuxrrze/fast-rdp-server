@@ -1,3 +1,30 @@
+fast-rdp-server (0.7.9) unstable; urgency=medium
+
+  * Broker: lab-only [mfa] lab_keypress_users (fastrdp_mfa_lab_keypress_users,
+    needs fastrdp_mfa_lab_keypress_ack): listed accounts log in without a
+    second factor by typing any digits and Enter on the waiting screen, for
+    debugging backlog A5; fails closed to the configured factor without the
+    proxy's code field, never earns reconnect grace, warns at start, per
+    login and in preflight.
+  * fastrdp-freerdp3 3.32.2-8 (patches/freerdp/0007): a reactivation started
+    inside PostConnect (WaitingScreenReactivate) no longer logs a tpkt
+    warning and a failed transport_check_fds.
+  * xrdp role: lab-only fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip builds
+    xorgxrdp without the RemoteFX Progressive tile skip (backlog A9; build
+    method only); the build stamp of an earlier variant no longer stands for
+    the build installed now.
+  * Lab tools: tests/lab/a5-collect.sh (capture, ss loop, key log, journals
+    on the proxy host), tests/lab/windows/rdp-eventlog.ps1 and
+    rdpcapture/evtx_summary.py (mstsc's event log per connection),
+    decode.py --summary and --compare.
+  * Docs: A5 findings (run 2, GFX off first try, process ids in mstsc's event
+    log) and the next lab session, backlog A9 and A10 (xfce glitches with
+    RemoteFX Progressive, xfce black with GFX off), known display issues in
+    windows-clients.md, an xrdp issue draft for A9 (upstream.md §12), a
+    feasibility note for the waiting screen over GFX (A8).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 26 Oct 2026 23:02:26 +0100
+
 fast-rdp-server (0.7.8) unstable; urgency=medium
 
   * Proxy module: lab-only switch fastrdp_proxy_waiting_screen_reactivate
