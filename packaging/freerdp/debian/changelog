@@ -1,3 +1,14 @@
+fastrdp-freerdp3 (3.32.2-8) unstable; urgency=medium
+
+  * patches/freerdp: core/peer (0007): a reactivation that the peer's
+    PostConnect starts and reads itself no longer ends in a failed read:
+    the state machine's rerun after the client's Font List PDU no longer
+    parses the consumed stream again (FreeRDP logged a tpkt "got 0" warning
+    with a backtrace and a transport_check_fds error). The fastrdp proxy
+    module's lab switch WaitingScreenReactivate does this (backlog A5).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 26 Oct 2026 22:14:56 +0100
+
 fastrdp-freerdp3 (3.32.2-7) unstable; urgency=medium
 
   * patches/freerdp: core/peer: a client's Shutdown Request PDU (mstsc: the X

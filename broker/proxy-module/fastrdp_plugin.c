@@ -1759,10 +1759,11 @@ static void ws_observe_end(waitingScreen* ws)
  * List) is read here, the way the picker reads input (patches/freerdp/0007: the peer's
  * state machine runs from inside PostConnect); input meanwhile is dropped, channel data
  * counted as during the picker. Once the Font List brings the connection back to
- * CONNECTION_STATE_ACTIVE, 0007 hands the already consumed PDU to the active state
- * again, which fails that one read (an empty stream: FreeRDP logs a tpkt warning and a
- * transport_check_fds error); the connection itself is active and fine, so that failure
- * counts as done. Activate still runs once, after PostConnect.
+ * CONNECTION_STATE_ACTIVE, the state machine reruns on the consumed PDU; since
+ * fastrdp-freerdp3 3.32.2-8 0007 ends that rerun quietly, before it the rerun fails that
+ * one read (FreeRDP logs a tpkt warning "got 0" and a transport_check_fds error). Either
+ * way the connection is active, which counts as done. Activate still runs once, after
+ * PostConnect.
  * The hand-over to the back-end later reactivates again, as without the switch.
  * Experiment: mstsc showed the panel black after a connection that used GFX; does a
  * reactivation make it show legacy Bitmap Updates again? A client that does not answer
@@ -1842,8 +1843,7 @@ static void ws_reactivate(waitingScreen* ws)
 		return;
 	}
 	WLog_INFO(TAG, "[%s] WaitingScreenReactivate: reactivation completed in %ld ms, drawing the "
-	               "waiting screen (FreeRDP's tpkt warning \"got 0\" and transport_check_fds error "
-	               "just before are expected)",
+	               "waiting screen",
 	          sid, ms);
 	ws_redraw(ws, TRUE);
 }

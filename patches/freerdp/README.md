@@ -333,6 +333,14 @@ compiles the picker in only with the macro and calls the function through a weak
 reference, so a module built against these headers but loaded with an unpatched
 `libfreerdp3` offers no picker instead of running into the nested `PostConnect`.
 
+Since 3.32.2-8 the patch also covers a reactivation that `PostConnect` starts and reads
+itself (fastrdp's lab switch `WaitingScreenReactivate`, backlog A5): the client's Font
+List PDU brings the state back to `CONNECTION_STATE_ACTIVE`, and the state machine
+reruns on the same, already consumed stream (`peer_recv_callback_internal()`). Before,
+the active state read that empty stream and failed (a tpkt "got 0" warning with a
+backtrace and a `transport_check_fds` error, harmless but noisy); now a rerun with
+nothing left ends without a read while `PostConnect` runs.
+
 Without a patch, a module could set `peer->connected` itself before reading and reset
 it afterwards. That depends on FreeRDP's internals in the same way, leaves the peer in
 an inconsistent state if the module fails in between, and cannot be detected; the patch
@@ -343,7 +351,9 @@ keypad with NumLock, arrows, Enter, Esc, Unicode), a click, keys typed before th
 picker showed (ignored), the countdown, and a client closed during the picker; every
 choice reaches the broker and the login reaches the back-end afterwards. Without the
 patch the module does not announce the picker and these checks fail; the rest of the
-suite passes either way.
+suite passes either way. The reactivation (proxy I, 3.32.2-8): no tpkt "got 0" warning
+and no failed `transport_check_fds` in the proxy log; with the 3.32.2-7 version of the
+patch that check fails.
 
 **Status upstream.** Still present in 3.32.2. Not submitted
 ([docs/upstream.md](../../docs/upstream.md)).

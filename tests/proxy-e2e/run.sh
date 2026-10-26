@@ -13,7 +13,7 @@
 # FREERDP_PREFIX=/opt/fastrdp against fastrdp's patched build (see freerdp-env.sh).
 # The desktop picker checks need patches/freerdp/0007 (fastrdp-freerdp3 3.32.2-6); without
 # it the module does not offer the picker and they fail. The Shutdown Request Denied checks
-# need patches/freerdp/0008 (3.32.2-7).
+# need patches/freerdp/0008 (3.32.2-7), the reactivation's read-error check 0007 of 3.32.2-8.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=${SYSROOT:-}
@@ -495,6 +495,13 @@ if grep -q '"user": "reactivate"' b.log; then echo "ok   WaitingScreenReactivate
 else echo "FAIL WaitingScreenReactivate: the login did not reach the back-end"; fail=1; fi
 logged "WaitingScreenReactivate: warned per connection" proxy-i.log "WaitingScreenReactivate is on: "
 logged "WaitingScreenReactivate: reactivation completed logged" proxy-i.log "WaitingScreenReactivate: reactivation completed in"
+# The rerun after the reactivation's Font List inside PostConnect must not parse the
+# consumed PDU again (patches/freerdp/0007 since 3.32.2-8): no tpkt "got 0" warning, no
+# transport_check_fds STATE_RUN_FAILED (STATE_RUN_QUIT_SESSION at the end is the logout)
+readerr='tpkt_verify_header|got 0|transport_check_fds.*STATE_RUN_FAILED'
+if ! grep -qE "$readerr" proxy-i.log; then
+    echo "ok   WaitingScreenReactivate: no read error after the reactivation"
+else echo "FAIL WaitingScreenReactivate: read error after the reactivation ($(grep -E "$readerr" proxy-i.log | head -3 | tr '\n' ' '))"; fail=1; fi
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

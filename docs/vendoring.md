@@ -156,5 +156,13 @@ matches the tested tree; the same revision also carries 0009 (journald appender,
 only), which this local build did not include. NLA and smartcard suites not rerun (no Kerberos in that build; 0008 touches only
 `libfreerdp/core/peer.c`); the full `build-freerdp.sh` configuration is left to CI.
 
+2026-10-26, `3.32.2-8` (0007 extended: the rerun after a reactivation's Font List inside
+`PostConnect` reads nothing): the local build of 2026-10-23 rebuilt with the new
+`peer.c` (the series 0001–0009 applies to the release tarball with `--fuzz=0`, and
+`peer.c` matches the tested tree), TLS e2e suite 110/110 without zxing-cpp (1 new
+check: no read error after the reactivation in proxy I's log). Against the 3.32.2-7
+build: 109/110, the new check fails. NLA and smartcard suites not rerun (0007 touches
+only `libfreerdp/core/peer.c` and the reactivation is TLS-only in the suite).
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.
