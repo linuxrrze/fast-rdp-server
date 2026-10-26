@@ -28,9 +28,20 @@ totp_secret_file = "~/lab-secrets/labuser1.totp"
 totp_state = "~/lab-secrets/labuser1.step"     # one code per time step (otpPolicyCodeReusable false)
 # algorithm = "SHA1"                           # digits = 6, period = 30: the realm's OTP policy
 # picker_keys = ["Enter"]                      # keys for the desktop picker, if it shows
+# connection2 = "web"                          # connection 2 approved on the approval page like a
+#                                              # phone after the QR code (tests/lab/approve.py), not
+#                                              # the code; also --connection2 web
+# password_file = "~/lab-secrets/labuser1.password"   # the Keycloak password (connection2 = "web")
+# idp_user = "labuser1"                        # Keycloak user name, if not name
+
+[web]                                          # connection2 = "web" only
+# approve_url = "https://rdp1.lab.example.com/web/approve"   # default: [ui] approve_url of broker.toml
+# ca_file = "~/lab-secrets/lab-ca.pem"         # CA of the webgate's and Keycloak's certificates, or
+# cert_sha256 = ["AA:BB:…", "CC:DD:…"]         # their SHA-256 fingerprints (webgate, Keycloak)
 
 [timing]
 # panel_limit = 1.0                            # s from the session window to the panel (connection 2)
 # panel_timeout = 20                           # s until "no panel"
 # login_timeout = 60                           # s from the code to the back-end
 # close_timeout = 15                           # s for mstsc to close the session window
+# approve_timeout = 15                         # s from Approve to the broker's line (connection2 = "web")

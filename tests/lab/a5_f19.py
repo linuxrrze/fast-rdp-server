@@ -8,6 +8,7 @@
 # Set-up: docs/lab-windows-mcp.md (Windows-MCP, tests/lab/windows/*.ps1 in helper_dir).
 #
 #   tests/lab/a5_f19.py --config a5-f19.toml [--out DIR] [--no-x-while-waiting]
+#                       [--connection2 code|web]
 #
 # Steps (the connection number is the one in the report):
 #   1  restart mstsc (/edit rdp_file), Connect, the panel, the code (tests/lab/totp.py),
@@ -16,7 +17,11 @@
 #      connection dialog, the proxy must not log "disconnect provider ultimatum sent to
 #      peer" (patch 0008), the broker logs "session end"
 #   2  Connect in the same process: the panel within panel_limit seconds of the session
-#      window, then the code and the desktop again (the A5 symptom: a black window)
+#      window, then the code and the desktop again (the A5 symptom: a black window);
+#      connection2 = "web": instead of the code, the panel still shown, then the login
+#      approved like a phone after its QR code (tests/lab/approve.py: Keycloak password +
+#      TOTP, Approve on <approve_url>?login=<id>), the broker's "approved via the
+#      login-bound link"
 #   X  as above
 #   3  Connect, the X while the panel waits: the broker abandons the login at once
 # Before each connection the user's reconnect grace is cleared (fastrdpctl clear-grace),
@@ -52,6 +57,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOTP = HERE / "totp.py"
+BROKER_TOML = "/etc/fastrdp/broker.toml"
+WEB_APPROVAL_MODES = ("web", "push_or_web", "code_or_web")   # fastrdp_broker/config.py
 PROTOCOL = "2025-06-18"
 SESSION_ID = re.compile(r"\b[0-9A-F]{32}\b")
 FREERDP_MIN = "3.32.2-7"   # patches/freerdp/0008: Shutdown Request Denied
@@ -59,6 +66,17 @@ FREERDP_MIN = "3.32.2-7"   # patches/freerdp/0008: Shutdown Request Denied
 
 class SetupError(Exception):
     pass
+
+
+def approve_module():
+    """tests/lab/approve.py (the approval page like a phone), loaded for connection2 = "web" only."""
+    import importlib.util
+    if "fastrdp_lab_approve" not in sys.modules:
+        spec = importlib.util.spec_from_file_location("fastrdp_lab_approve", HERE / "approve.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["fastrdp_lab_approve"] = mod   # dataclasses look the module up
+        spec.loader.exec_module(mod)
+    return sys.modules["fastrdp_lab_approve"]
 
 
 class StepFailed(Exception):
@@ -424,11 +442,14 @@ class F19:
         self.mode = w.get("key_mode", "Scancode")
         self.shots = w.get("shots_dir")
         self.user = u["name"]
+        self.connection2 = u.get("connection2", "code")
+        self.approve_url: str | None = None   # web: [web] approve_url or the broker's [ui] approve_url
         self.picker_keys = u.get("picker_keys", ["Enter"])
         self.panel_limit = float(t.get("panel_limit", 1.0))
         self.panel_timeout = float(t.get("panel_timeout", 20))
         self.login_timeout = float(t.get("login_timeout", 60))
         self.close_timeout = float(t.get("close_timeout", 15))
+        self.approve_timeout = float(t.get("approve_timeout", 15))
         self.pid: int | None = None
         self.journal: Journal | None = None
         self.conns: list[dict] = []
@@ -458,6 +479,26 @@ class F19:
                                   root=True).strip() or "false"
         self.r.info["waiting_screen_observe"] = observe
         print(f"INFO WaitingScreenObserve={observe} (F19c run {'2' if observe == 'true' else '1'})")
+        if self.connection2 == "web":
+            self.web_preconditions()
+
+    def web_preconditions(self) -> None:
+        """The approval page needs a web approval mode; its URL is the QR code's."""
+        try:
+            broker = tomllib.loads(self.server.out(["cat", BROKER_TOML], root=True))
+        except tomllib.TOMLDecodeError as exc:
+            raise SetupError(f"{BROKER_TOML}: {exc}") from None
+        mode = broker.get("mfa", {}).get("mode", "none")
+        ok = mode in WEB_APPROVAL_MODES
+        self.r.check("pre.web", ok, f"[mfa] mode = {mode!r}" + ("" if ok else
+                     f": no approval page (connection2 = \"web\" needs one of {', '.join(WEB_APPROVAL_MODES)})"))
+        if not ok:
+            raise SetupError(f"connection2 = \"web\": [mfa] mode {mode!r} in {BROKER_TOML} has no approval page")
+        self.approve_url = self.cfg.get("web", {}).get("approve_url") or broker.get("ui", {}).get("approve_url")
+        if not self.approve_url:
+            raise SetupError(f"connection2 = \"web\": no approval URL ([ui] approve_url in {BROKER_TOML} "
+                             "is empty; set [web] approve_url)")
+        self.r.info["approve_url"] = self.approve_url
 
     def start_mstsc(self) -> None:
         self.win.mstsc("stop")
@@ -523,6 +564,56 @@ class F19:
         if not self.r.check(f"c{n}.code", accepted is not None,
                             "code accepted by Keycloak" if accepted else "the code was not accepted"):
             raise StepFailed(f"connection {n}: login failed")
+        self.desktop(conn, mark)
+
+    def web_decide(self):
+        """Approve the user's one waiting login on the approval page (no journal line names
+        its id: approve.py takes it from the page's list, then opens <url>?login=<id>)."""
+        approve = approve_module()
+        u, w = self.cfg["user"], self.cfg.get("web", {})
+        pins = w.get("cert_sha256") or []
+        code = approve.code_source(u["totp_secret_file"], u.get("totp_state"), 8, False,
+                                   u.get("algorithm"), u.get("digits"), u.get("period"))
+        browser = approve.Browser(w.get("ca_file") and os.path.expanduser(w["ca_file"]),
+                                  tuple([pins] if isinstance(pins, str) else pins))
+        return approve.Approver(self.approve_url, u.get("idp_user", self.user),
+                                approve.read_password(u["password_file"]), code, browser).run()
+
+    def login_web(self, conn: dict) -> None:
+        """Connection 2 approved on the approval page instead of the code (connection2 = "web")."""
+        approve = approve_module()
+        n, sid = conn["n"], conn["sid"]
+        if not (sid and conn["hwnd"]):
+            raise StepFailed(f"connection {n}: no session to log in")
+        pending = self.journal.wait(lambda e: "web approval pending for" in e.msg and self.user in e.msg,
+                                    10, conn["mark"])
+        if not self.r.check(f"c{n}.pending", pending is not None,
+                            "broker: web approval pending" if pending else "no 'web approval pending' line"):
+            raise StepFailed(f"connection {n}: the login does not wait for web approval")
+        still = self.win.mstsc("watch", timeout=20, Timeout=3, Until="panel", ProcessId=self.pid)
+        self.r.check(f"c{n}.panel_shown", bool(still.get("reached")),
+                     "panel still shown" if still.get("reached") else f"window state {still.get('state')}")
+        mark = self.journal.mark()
+        try:
+            res = self.web_decide()
+        except approve.SetupError as exc:
+            raise SetupError(f"approve.py: {exc}") from None
+        except approve.Failed as exc:
+            self.r.check(f"c{n}.web", False, f"approval page: {exc}")
+            raise StepFailed(f"connection {n}: not approved") from None
+        conn["login_id"] = res.login
+        self.r.check(f"c{n}.web", True, f"approval page: {res.message}")
+        line = self.journal.wait(lambda e: f"web approval for {self.user} from" in e.msg
+                                 and "approved via the login-bound link" in e.msg, self.approve_timeout, mark)
+        if not self.r.check(f"c{n}.approved", line is not None,
+                            "broker: approved via the login-bound link" if line
+                            else "no 'web approval for … approved via the login-bound link' line"):
+            raise StepFailed(f"connection {n}: login failed")
+        self.desktop(conn, mark)
+
+    def desktop(self, conn: dict, mark: int) -> None:
+        """After the second factor: the picker (picker_keys), the back-end, the desktop."""
+        n, sid = conn["n"], conn["sid"]
         picker = self.journal.wait(lambda e: e.session == sid and "desktop picker:" in e.msg, 3, mark)
         if picker and self.picker_keys:
             self.win.send_keys(conn["hwnd"], "Scancode", keys=self.picker_keys)
@@ -606,7 +697,10 @@ class F19:
             self.journal.wait(lambda e: e.session == c2["sid"] and ("waiting screen:" in e.msg or
                               "front connection closed" in e.msg), self.login_timeout, c2["mark"])
             raise StepFailed("connection 2 showed no panel (backlog A5)")
-        self.login(c2)
+        if self.connection2 == "web":
+            self.login_web(c2)
+        else:
+            self.login(c2)
         self.close_x(c2, "x2")
 
         if x_while_waiting:
@@ -635,7 +729,15 @@ def load_config(path: Path) -> dict:
         for k in keys:
             if k not in cfg.get(section, {}):
                 raise SetupError(f"{path}: [{section}] {k} missing")
+    check_user(cfg["user"], path)
     return cfg
+
+
+def check_user(u: dict, path: Path) -> None:
+    if u.get("connection2", "code") not in ("code", "web"):
+        raise SetupError(f'{path}: [user] connection2 is "code" or "web"')
+    if u.get("connection2") == "web" and "password_file" not in u:
+        raise SetupError(f'{path}: [user] password_file missing (connection2 = "web")')
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -643,9 +745,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--out", type=Path)
     ap.add_argument("--no-x-while-waiting", action="store_true", help="skip connection 3")
+    ap.add_argument("--connection2", choices=("code", "web"),
+                    help="connection 2: the code (default) or the approval page ([user] connection2)")
     args = ap.parse_args(argv)
     try:
         cfg = load_config(args.config)
+        if args.connection2:
+            cfg["user"]["connection2"] = args.connection2
+            check_user(cfg["user"], args.config)
         out = args.out or Path(f"a5-f19-{time.strftime('%Y%m%d-%H%M%S')}")
         out.mkdir(parents=True, exist_ok=True)
         token = Path(os.path.expanduser(cfg["mcp"]["auth_key_file"])).read_text().strip()

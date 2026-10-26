@@ -167,6 +167,7 @@ What it does, connection by connection:
 | 1 | restarts mstsc (`/edit` the `.rdp` file), presses *Connect*, types the TOTP code, answers the picker (`picker_keys`) | panel, `code field shown`, code accepted, back-end connected, desktop drawn |
 | X | WM_CLOSE to the session window (the X), *OK* in mstsc's dialog | dialog text, window closed, mstsc's connection dialog back in the same process, no `disconnect provider ultimatum sent to peer`, broker `session end` |
 | 2 | *Connect* in the same mstsc | panel within `panel_limit` (1 s) of the session window; otherwise the run records the black time, waits for the proxy to give up and stops (backlog A5) |
+| 2 web | with `connection2 = "web"`: approves the login on the approval page instead of typing the code (below) | broker `web approval pending`, panel still shown, *Login approved*, broker `approved via the login-bound link`, back-end connected, desktop drawn |
 | X | as above | as above |
 | 3 | *Connect*, then the X while the panel waits | broker `login of session … abandoned` within 5 s, no code check |
 
@@ -184,8 +185,30 @@ What it does, connection by connection:
   proxy restart in between), into separate `--out` directories.
 - Exit status 0: all checks passed (warnings allowed); 1: a check failed; 2: set-up error
   (configuration, MCP, ssh).
-- Not covered: the QR approval on connection 2 (approve on a phone by hand, or run the
-  approval page tests), F19b (logout).
+- **QR approval** (`[user] connection2 = "web"` or `--connection2 web`): connection 2 is
+  approved like a phone after scanning the waiting screen's QR code, by
+  `tests/lab/approve.py`: `<approve_url>?login=<id>`, the fresh sign-in at Keycloak
+  (username and password form, then the OTP form, the code from the same `totp_state`
+  file as the code field), back through `<prefix>/callback`, *Approve* on the login's
+  own page (`POST <prefix>/approve`: `csrf`, `id`, `login`, `decision`). No journal line
+  names the login's id, so it takes the id from the page's list (exactly one login must
+  wait) and opens `?login=<id>` from there. Needs `[mfa] mode` `web`, `push_or_web` or
+  `code_or_web` (checked in `/etc/fastrdp/broker.toml`, `pre.web`), the Keycloak
+  password in `[user] password_file`, and `[web]` for TLS (`ca_file` or `cert_sha256`
+  of the webgate's and Keycloak's certificates); the URL is `[ui] approve_url` of
+  broker.toml unless `[web] approve_url` says otherwise. By hand:
+
+  ```sh
+  tests/lab/approve.py --url 'https://rdp1.lab.example.com/web/approve?login=<id>' \
+      --user labuser1 --password-file ~/lab-secrets/labuser1.password \
+      --totp-secret-file ~/lab-secrets/labuser1.totp --totp-state ~/lab-secrets/labuser1.step \
+      --ca-file ~/lab-secrets/lab-ca.pem          # or --pin SHA256 per host; --deny
+  ```
+
+  Exit 0 decided as asked, 1 refused (sign-in, no single login waiting, the webgate),
+  2 set-up error. Nothing secret in its output (no password, code, cookies, OIDC codes).
+- Not covered: F19b (logout); a Keycloak flow that asks for a passkey first (the
+  script fills username, password and OTP forms only).
 
 ## 6. Watching the box
 
@@ -221,8 +244,9 @@ code=$(tests/lab/totp.py --secret-file ~/lab-secrets/labuser1.totp \
   (`otpPolicyCodeReusable: false`), so a second login in the same step waits for the
   next one. `--min-left 8` waits when the code would expire while being typed.
   `--no-wait` exits 75 instead of waiting.
-- Tests that are about the approval page (F-tests with QR or link) still approve there,
-  e.g. with the CDP driver of `tests/keycloak/`; a code typed here covers W5 only.
+- Tests that are about the approval page (F-tests with QR or link) still approve there:
+  `tests/lab/approve.py` (§5, QR approval) or the CDP driver of `tests/keycloak/`; a code
+  typed here covers W5 only.
 
 ## 8. Secrets
 
@@ -230,5 +254,6 @@ code=$(tests/lab/totp.py --secret-file ~/lab-secrets/labuser1.totp \
   in Windows-MCP's log, and on screenshots while the panel shows it. Use lab-only users
   and TOTP seeds, keep screenshots and MCP logs in the lab, and delete them after the
   round. Lab tests S1–S4 concern fastrdp's own logs and stay strict.
-- The auth key and the TOTP seeds live in the orchestrator's vault. Rotate the auth key
+- The auth key, the TOTP seeds and the Keycloak password (`connection2 = "web"`) live in
+  the orchestrator's vault. Rotate the auth key
   after the round, or remove the task: `windows-mcp uninstall`.

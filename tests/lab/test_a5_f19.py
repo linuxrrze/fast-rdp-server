@@ -131,8 +131,9 @@ class McpClient(unittest.TestCase):
 class FakeLab:
     """The Windows box and the fastrdp host in one: mstsc actions append journal lines."""
 
-    def __init__(self, black_on: tuple[int, ...] = ()):
+    def __init__(self, black_on: tuple[int, ...] = (), mfa_mode: str = "code_or_web"):
         self.entries: list = []
+        self.mfa_mode = mfa_mode
         self.black_on = black_on       # connections that show a black window (the A5 symptom)
         self.conn = 0
         self.connected = False
@@ -164,6 +165,7 @@ class FakeLab:
             sid = SID[self.conn - 1]
             self.log("fastrdp-proxy", f"[{sid}] " + FRONT.format(cookie="no"))
             self.log("fastrdp-proxy", f"[{sid}] code field shown (6 digits)")
+            self.log("fastrdp-brokerd", "web approval pending for labuser1 from 192.0.2.10 (tls login, 120s, code 42)")
             self.waiting = True
             if self.conn in self.black_on:
                 return {"ok": True, "reached": False, "state": "black", "window_ms": 300,
@@ -172,6 +174,8 @@ class FakeLab:
             return {"ok": True, "reached": True, "state": "panel", "window_ms": 300,
                     "states": [["none", 0], ["black", 300], ["panel", 700]], "rect": [0, 0, 1280, 800],
                     "windows": self.windows(True)}
+        if action == "watch" and p.get("Until") == "panel":    # still waiting?
+            return {"ok": True, "reached": self.waiting, "state": "panel" if self.waiting else "other"}
         if action == "watch" and p.get("Until") == "desktop":
             return {"ok": True, "reached": True, "state": "other", "windows": self.windows(True)}
         if action == "close":
@@ -205,9 +209,21 @@ class FakeLab:
     def screenshot(self, rect, path):
         return False
 
+    # tests/lab/approve.py against the approval page (F19.web_decide)
+    def web_decide(self):
+        sid = SID[self.conn - 1]
+        self.waiting = False
+        self.log("fastrdp-brokerd", "web approval for labuser1 from 192.0.2.10 (tls login): approved via the "
+                                    "login-bound link on the approval page")
+        self.log("fastrdp-proxy", f"[{sid}] desktop picker: 2 desktops, default xfce, 30 s")
+        return f19.approve_module().Result("QRcodeOnMyScreen_0123A", "approved",
+                                           "Login approved. Your RDP client continues now.")
+
     # Server
     def out(self, argv, root=False):
-        return {"dpkg-query": "3.32.2-7", "sed": "false\n", "date": "1000000000.0\n"}[argv[0]]
+        return {"dpkg-query": "3.32.2-7", "sed": "false\n", "date": "1000000000.0\n",
+                "cat": f'[mfa]\nmode = "{self.mfa_mode}"\n[ui]\napprove_url = "https://rdp1.lab/web/approve"\n'
+                }[argv[0]]
 
     def run(self, argv, root=False, timeout=30):
         if argv[0] == "fastrdpctl":
@@ -220,17 +236,18 @@ class FakeLab:
 
 
 class Sequence(unittest.TestCase):
-    def run_f19(self, lab: FakeLab):
+    def run_f19(self, lab: FakeLab, **user):
         cfg = {"windows": {"client_name": "WIN11-LAB", "rdp_file": r"C:\lab\fastrdp.rdp", "helper_dir": r"C:\lab"},
-               "user": {"name": "labuser1", "totp_secret_file": "/nonexistent"},
-               "timing": {"login_timeout": 1, "close_timeout": 1}}
+               "user": {"name": "labuser1", "totp_secret_file": "/nonexistent", **user},
+               "timing": {"login_timeout": 1, "close_timeout": 1, "approve_timeout": 1}}
         report = f19.Report()
         with tempfile.TemporaryDirectory() as d, redirect_stdout(io.StringIO()):
             test = f19.F19(cfg, Path(d), lab, lab, report)
             test.code = lambda: "123456"
+            test.web_decide = lab.web_decide
             try:
                 test.run()
-            except f19.StepFailed as exc:
+            except (f19.StepFailed, f19.SetupError) as exc:
                 report.check("run", False, str(exc))
             test.finish("2026-10-25T00:00:00Z")
         return {c["id"]: c["status"] for c in report.checks}, test
@@ -265,6 +282,93 @@ class Sequence(unittest.TestCase):
         lab.mstsc = mstsc
         checks, _ = self.run_f19(lab)
         self.assertEqual(checks["x1.no_ultimatum"], "fail")
+
+
+class Connection2Web(unittest.TestCase):
+    run_f19 = Sequence.run_f19
+
+    def test_pass(self):
+        lab = FakeLab()
+        checks, test = self.run_f19(lab, connection2="web", password_file="/nonexistent")
+        self.assertNotIn("fail", checks.values(), checks)
+        for cid in ("pre.web", "c1.code", "c2.panel", "c2.pending", "c2.panel_shown", "c2.web", "c2.approved",
+                    "c2.session", "c2.desktop", "x2.session_end", "x3.abandoned"):
+            self.assertEqual(checks.get(cid), "pass", cid)
+        self.assertNotIn("c2.code", checks)
+        self.assertEqual(lab.keys, [(42, "Scancode", "<code>"), (42, "Scancode", ["Enter"]),   # c1
+                                    (42, "Scancode", ["Enter"])])                              # c2: the picker only
+        self.assertEqual(test.approve_url, "https://rdp1.lab/web/approve")   # broker.toml [ui] approve_url
+        self.assertEqual(test.conns[1]["login_id"], "QRcodeOnMyScreen_0123A")
+
+    def test_mode_without_an_approval_page(self):
+        checks, test = self.run_f19(FakeLab(mfa_mode="otp"), connection2="web", password_file="/nonexistent")
+        self.assertEqual((checks["pre.web"], checks["run"]), ("fail", "fail"))
+        self.assertEqual(test.conns, [])
+
+    def test_not_approved(self):
+        lab = FakeLab()
+
+        def refused():
+            raise f19.approve_module().Failed("approve refused: HTTP 409: This login was already denied.")
+        lab.web_decide = refused
+        checks, _ = self.run_f19(lab, connection2="web", password_file="/nonexistent")
+        self.assertEqual((checks["c2.web"], checks["run"]), ("fail", "fail"))
+        self.assertNotIn("c2.approved", checks)
+
+    def test_no_broker_line(self):
+        lab = FakeLab()
+        real = lab.web_decide
+
+        def quiet():
+            res = real()
+            lab.entries = [e for e in lab.entries if "approved via" not in e.msg]
+            return res
+        lab.web_decide = quiet
+        checks, _ = self.run_f19(lab, connection2="web", password_file="/nonexistent")
+        self.assertEqual(checks["c2.approved"], "fail")
+
+    def test_web_decide_wiring(self):
+        """[user]/[web] reach approve.py: Keycloak name, password file, TOTP state, pins."""
+        approve = f19.approve_module()
+        seen = {}
+
+        class FakeApprover:
+            def __init__(self, url, user, password, code, browser):
+                seen.update(url=url, user=user, password=password, browser=browser)
+
+            def run(self):
+                return "ran"
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "pw").write_text("secret pw\n")
+            Path(d, "seed").write_text("JBSWY3DPEHPK3PXP\n")
+            cfg = {"user": {"name": "labuser1", "idp_user": "labuser1@lab", "password_file": f"{d}/pw",
+                            "totp_secret_file": f"{d}/seed", "totp_state": f"{d}/step"},
+                   "web": {"cert_sha256": "AB" * 32}, "windows": {"client_name": "W"}}
+            test = f19.F19(cfg, Path(d), None, None, f19.Report())
+            test.approve_url = "https://rdp1.lab/web/approve"
+            real = approve.Approver
+            approve.Approver = FakeApprover
+            try:
+                self.assertEqual(test.web_decide(), "ran")
+            finally:
+                approve.Approver = real
+        self.assertEqual((seen["url"], seen["user"], seen["password"]),
+                         ("https://rdp1.lab/web/approve", "labuser1@lab", "secret pw"))
+        self.assertTrue(any(isinstance(h, approve._PinnedHandler) for h in seen["browser"].opener.handlers))
+
+    def test_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = ('[mcp]\nurl="http://x/"\nauth_key_file="k"\n[windows]\nrdp_file="r"\nclient_name="c"\n'
+                    'helper_dir="h"\n[server]\nssh="s"\n[user]\nname="u"\ntotp_secret_file="t"\n')
+            for extra, ok in (("", True), ('connection2="web"\npassword_file="p"\n', True),
+                              ('connection2="web"\n', False), ('connection2="qr"\n', False)):
+                with self.subTest(extra):
+                    Path(d, "c.toml").write_text(base + extra)
+                    if ok:
+                        f19.load_config(Path(d, "c.toml"))
+                    else:
+                        with self.assertRaises(f19.SetupError):
+                            f19.load_config(Path(d, "c.toml"))
 
 
 if __name__ == "__main__":
