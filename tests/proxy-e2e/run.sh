@@ -91,6 +91,9 @@ mkproxy g 23396 f.sock '127.0.0.0/8' deny WaitingScreen=false
 mkproxy h 23397 a.sock '127.0.0.0/8' deny "WaitingScreen=false
 TlsKeyLogFile=$W/tls-keys.txt"
 sed -i 's/^AllowTlsFrom=.*/&\nTlsKeyLogFile=tls-keys-relative.txt/' c.ini
+# I reactivates the client before the waiting screen (lab switch WaitingScreenReactivate,
+# backlog A5); its own fake broker as for F
+mkproxy i 23398 f.sock '127.0.0.0/8' deny WaitingScreenReactivate=true
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -108,11 +111,12 @@ WLOG_FILTER="proxy.modules.fastrdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" e.ini
 LD_PRELOAD="$W/shim.so" "$PROXY" f.ini > proxy-f.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
 (umask 022 && LD_PRELOAD="$W/shim.so" exec "$PROXY" h.ini > proxy-h.log 2>&1) &
+LD_PRELOAD="$W/shim.so" "$PROXY" i.ini > proxy-i.log 2>&1 &
 for _ in $(seq 50); do grep -q ready a.out b.out f.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23395) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23397) 2>/dev/null &&
-    break; sleep 0.2; done
+    (exec 3<>/dev/tcp/127.0.0.1/23398) 2>/dev/null && break; sleep 0.2; done
 
 E2E_CLIENT_ADDRESS=203.0.113.7 timeout 20 ./client 127.0.0.1 23389 alice good fastrdp:gnome >/dev/null 2>&1 || true
 timeout 20 ./client 127.0.0.1 23389 mallory bad "" > mallory.out 2>&1 || true
@@ -182,6 +186,10 @@ E2E_KEEP_S=7 E2E_REFRESH_AT_MS=1500 E2E_SUPPRESS_AT_MS=2700 timeout 30 ./client 
 # Proxy G reads nobody's input during the wait (waiting screen off): keys typed then stay
 # unread, which the module reports at the end of the wait
 E2E_KEEP_S=5 E2E_EARLY_KEYS=1,2,3 timeout 30 ./client 127.0.0.1 23396 oldbroker good "" > unread.out 2>&1 || true
+# Proxy I (WaitingScreenReactivate) during an MFA wait (fake broker: 'reactivate' like
+# 'progress', 3.5 s): Deactivate All and Demand Active before the first panel tile, the
+# panel after it, the login on to the back-end (which reactivates once more)
+E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23398 reactivate good "" > reactivate.out 2>&1 || true
 # Field report (A3/A5): the desktop picker with WaitingScreenObserve on (proxy F). Both read
 # the client during the wait; the picker must show, take the key and hand the input back
 E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23395 pickerobserve good "" > pickerobserve.out 2>&1 || true
@@ -258,9 +266,10 @@ expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not an
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 34 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
-# picker login through proxy F and the key-log login through proxy H
-expect "back-end received the token, not the password" 'len(lb) == 34 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# 35 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
+# picker login through proxy F, the key-log login through proxy H and the reactivated
+# login through proxy I
+expect "back-end received the token, not the password" 'len(lb) == 35 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -471,6 +480,21 @@ PY
 then echo "ok   WaitingScreenObserve with the desktop picker: picker shown, key 2 chosen, session reached the back-end"
 else echo "FAIL WaitingScreenObserve with the desktop picker ($(grep -h pickerobserve f.log | tr '\n' ' '))"; fail=1; fi
 logged "WaitingScreenObserve with the desktop picker: picker drawn" proxy-f.log "desktop picker: 3 desktops"
+# WaitingScreenReactivate: the first Demand Active after the connection sequence comes
+# before any Bitmap Update (the reactivation at the start of the wait), the panel's
+# updates follow it, the second one is the hand-over to the back-end
+if python3 - <<'PY'
+import re, sys
+out = open("reactivate.out").read()
+da = [int(b) for b in re.findall(r"demand_active #\d+ at \d+ ms after (\d+) bitmap updates", out)]
+sys.exit(0 if len(da) >= 2 and da[0] == 0 and da[1] >= 2 and "deactivate_all #2 " in out else 1)
+PY
+then echo "ok   WaitingScreenReactivate: Deactivate All + Demand Active before the panel, panel drawn after it"
+else echo "FAIL WaitingScreenReactivate ($(grep -E 'deactivate_all #|demand_active|bitmap_updates' reactivate.out | tr '\n' ' '))"; fail=1; fi
+if grep -q '"user": "reactivate"' b.log; then echo "ok   WaitingScreenReactivate: the login reached the back-end"
+else echo "FAIL WaitingScreenReactivate: the login did not reach the back-end"; fail=1; fi
+logged "WaitingScreenReactivate: warned per connection" proxy-i.log "WaitingScreenReactivate is on: "
+logged "WaitingScreenReactivate: reactivation completed logged" proxy-i.log "WaitingScreenReactivate: reactivation completed in"
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
@@ -482,5 +506,6 @@ fi
 if [ $fail -ne 0 ]; then
     echo "--- proxy A log:"; grep -E "fastrdp|ERROR" proxy-a.log | tail -20
     echo "--- proxy E log:"; grep -E "fastrdp|ERROR" proxy-e.log | tail -20
+    echo "--- proxy I log:"; grep -E "fastrdp|ERROR" proxy-i.log | tail -20
 fi
 exit $fail

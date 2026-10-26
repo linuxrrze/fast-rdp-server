@@ -49,6 +49,9 @@
  *   (2.2.11.3), 2000 ms later with 1; prints "suppress_output sent=0|1",
  *   "suppressed_rects=N" (rectangles received while suppressed, the first 200 ms of
  *   in-flight data not counted) and "resumed_rects=N" (in the 1000 ms after allowing).
+ * Prints each (re)activation the server starts after the connection is up: "deactivate_all
+ *   #N at T ms" and "demand_active #N at T ms after B bitmap updates" (the waiting screen
+ *   with WaitingScreenReactivate, the hand-over to the back-end).
  * Prints how the server ended the connection: "server_end: deactivate_all=0|1 dpu=N"
  *   (the reason of the MCS Disconnect Provider Ultimatum, 1 provider initiated, 3 user
  *   requested; -1: none, a bare close).
@@ -102,6 +105,18 @@ static BOOL post_connect(freerdp* inst)
 	inst->context->update->BitmapUpdate = count_bitmap_update;
 	inst->context->update->ServerStatusInfo = print_status_info;
 	return TRUE;
+}
+static BOOL sniff_server_pdus(freerdp* inst);
+/* The PDU watch goes in once, from PostConnect: before the client reads the server's
+ * first PDU after the connection sequence (WaitingScreenReactivate's Deactivate All
+ * follows the Font Map at once) */
+static BOOL post_connect_watch(freerdp* inst)
+{
+	static BOOL watching;
+	if (!watching && !sniff_server_pdus(inst))
+		printf("client: cannot watch the server's PDUs\n");
+	watching = TRUE;
+	return post_connect(inst);
 }
 static void dump_screen(freerdp* inst, const char* path)
 {
@@ -260,8 +275,9 @@ static void send_shutdown_request(freerdp* inst)
 }
 /* The server's PDUs pass here first (slow path, over TLS without a security header):
  * - MCS Disconnect Provider Ultimatum: its reason in server_dpu;
- * - on the I/O channel, PDUTYPE_DEACTIVATEALLPDU sets deactivate_all, and a Data PDU with
- *   pduType2 PDUTYPE2_SHUTDOWN_DENIED (0x25) sets shutdown_denied_ms. */
+ * - on the I/O channel, PDUTYPE_DEACTIVATEALLPDU sets deactivate_all, PDUTYPE_DEMANDACTIVEPDU
+ *   is counted (both printed), and a Data PDU with pduType2 PDUTYPE2_SHUTDOWN_DENIED (0x25)
+ *   sets shutdown_denied_ms. */
 static rdpTransportIo io_orig;
 static long shutdown_denied_ms = -1;
 
@@ -288,6 +304,7 @@ static void send_suppress_output(freerdp* inst, BYTE allow)
 }
 static int server_dpu = -1;
 static BOOL deactivate_all;
+static unsigned deactivate_alls, demand_actives;
 static int sniff_read_pdu(rdpTransport* transport, wStream* s)
 {
 	const int rc = io_orig.ReadPdu(transport, s);
@@ -301,7 +318,13 @@ static int sniff_read_pdu(rdpTransport* transport, wStream* s)
 	o += 6; /* choice, initiator, channelId, dataPriority */
 	o += (p[o] & 0x80) ? 2 : 1; /* PER length */
 	if ((size_t)rc >= o + 6 && (p[o + 2] & 0x0f) == 0x6 /* PDUTYPE_DEACTIVATEALLPDU */)
+	{
 		deactivate_all = TRUE;
+		printf("client: deactivate_all #%u at %ld ms\n", ++deactivate_alls, elapsed_ms());
+	}
+	if ((size_t)rc >= o + 6 && (p[o + 2] & 0x0f) == 0x1 /* PDUTYPE_DEMANDACTIVEPDU */)
+		printf("client: demand_active #%u at %ld ms after %u bitmap updates\n", ++demand_actives,
+		       elapsed_ms(), bitmap_updates);
 	if ((size_t)rc >= o + 6 + 9 && (p[o + 2] & 0x0f) == 0x7 /* PDUTYPE_DATAPDU */ &&
 	    p[o + 6 + 8] == 0x25)
 	{
@@ -393,7 +416,7 @@ int main(int argc, char** argv)
 	size_t channel_data = getenv("E2E_CHANNEL_DATA") ? strtoul(getenv("E2E_CHANNEL_DATA"), NULL, 10) : 0;
 	if (channel_data)
 		inst->LoadChannels = announce_channel;
-	inst->PostConnect = post_connect;
+	inst->PostConnect = post_connect_watch;
 	const long keep_ms = 1000L * (getenv("E2E_KEEP_S") ? atoi(getenv("E2E_KEEP_S")) : 4);
 	const char* dump = getenv("E2E_DUMP");
 	const long dump_at = getenv("E2E_DUMP_AT_MS") ? atol(getenv("E2E_DUMP_AT_MS")) : 1500;
@@ -417,8 +440,6 @@ int main(int argc, char** argv)
 	const long connected_ms = elapsed_ms();
 	if (ok && getenv("E2E_EARLY_KEYS"))
 		send_keys(inst, getenv("E2E_EARLY_KEYS"));
-	if (ok && !sniff_server_pdus(inst))
-		printf("client: cannot watch the server's PDUs\n");
 	while (ok && elapsed_ms() - connected_ms < keep_ms &&
 	       !freerdp_shall_disconnect_context(inst->context))
 	{

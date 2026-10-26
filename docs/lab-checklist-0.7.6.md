@@ -13,8 +13,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 - [ ] Inventory for the round: `fastrdp_desktop_picker: true`,
       `fastrdp_mfa_mode: code_or_web` with the Keycloak setup of
       [lab-waiting-screen-input.md §2](lab-waiting-screen-input.md#2-setup),
-      `fastrdp_proxy_input_trace: true`, `fastrdp_proxy_waiting_screen_observe: false`
-      (run 2 of A5 turns it on).
+      `fastrdp_proxy_input_trace: true`, `fastrdp_proxy_waiting_screen_observe: false`,
+      `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on).
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
@@ -31,11 +31,24 @@ Tick an item when its results are attached; update the backlog row afterwards.
 Test plan: [lab-waiting-screen-input.md](lab-waiting-screen-input.md) F19, F19b, F19c.
 Windows 10 and Windows 11 each.
 
-- [ ] **Run 1** (`WaitingScreenObserve` off): restart mstsc; log in and approve
-      (connection 1); X; *Connect* in the same mstsc (connection 2), wait for the end of
-      the countdown; then GNOME *Log Out* instead of the X (connections 3, 4).
-- [ ] **Run 2:** `fastrdp_proxy_waiting_screen_observe: true`, role run, proxy
-      restart; the same steps.
+Run 1 was done on 2026-10-26 with 0.7.7 and mstsc build 26100 (Windows 11 24H2, inferred
+from the build; findings:
+[a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)): the window is black only after a
+connection that used GFX, and mstsc sends no Refresh Rect or Suppress Output during the
+wait, so `WaitingScreenObserve` has nothing to answer and stays off.
+
+- [ ] **Run 1** (both switches off; still open on Windows 10): restart mstsc;
+      log in and approve (connection 1); X; *Connect* in the same mstsc (connection 2),
+      wait for the end of the countdown; then GNOME *Log Out* instead of the X
+      (connections 3, 4).
+- [ ] **Run 2:** `fastrdp_proxy_waiting_screen_reactivate: true`, role run, proxy
+      restart; the same steps. The journal shows `WaitingScreenReactivate: reactivation
+      completed in N ms` per connection (F19c run 3).
+- [ ] **GFX off (confirms the cause):** `[Channels] GFX=false` temporarily in
+      `/etc/fastrdp/proxy.ini` (proxy restart; the next role run puts it back), with the
+      xfce/xrdp desktop (gnome-remote-desktop probably needs GFX, unverified) and both
+      switches off: restart mstsc, connection 1 into the session, X, connection 2. The
+      panel on connection 2 is expected if GFX is the cause.
 - [ ] Per connection note: which button started it (*Connect* or *Reconnect* in mstsc's
       dialog), what mstsc showed, the times.
 - [ ] Both runs: `tcpdump` and the `ss` loop on the proxy host from before connection 1
@@ -45,9 +58,11 @@ Windows 10 and Windows 11 each.
 - [ ] Bring back: both proxy journals, mstsc's event log, the notes, the captures and
       `ss` logs (and key logs).
 
-Decision: the panel on connection 2 in run 2 means an unanswered Refresh Rect or Suppress
-Output was the cause, and the switch becomes the default. Otherwise compare connection 2
-with connection 1 in the `front:` lines and look for unread client bytes in run 1.
+Decision: the panel on connection 2 in run 2 means the reactivation clears what mstsc
+carries over from the GFX connection; the switch then becomes the default for the
+waiting screen. The panel with GFX off but not in run 2 points at the waiting screen over
+GFX ([backlog A8](backlog.md#maybe-later)). Otherwise compare the decoded captures
+(`tests/lab/rdpcapture/decode.py`) of connections 1 and 2.
 
 ## 2. Fixes of 0.7.5 / 0.7.6
 

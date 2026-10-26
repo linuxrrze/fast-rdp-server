@@ -191,6 +191,13 @@ fastrdp_proxy_input_trace: false
 # For the mstsc test of a second Connect in the same mstsc window; needs the waiting screen
 # and fastrdp-freerdp3 with patches/freerdp/0007.
 fastrdp_proxy_waiting_screen_observe: false
+# LAB ONLY (proxy.ini [FastRDP] WaitingScreenReactivate; backlog A5): before the waiting
+# screen draws its first panel, the proxy runs a deactivation-reactivation sequence with
+# the client (Deactivate All, Demand Active; [MS-RDPBCGR] 1.3.1.3), as it does when the
+# back-end takes over. Experiment for mstsc's black window on a second Connect after a
+# session that used GFX; needs the waiting screen and fastrdp-freerdp3 with
+# patches/freerdp/0007. The proxy warns on every connection while it is on.
+fastrdp_proxy_waiting_screen_reactivate: false
 # LAB ONLY (proxy.ini [FastRDP] TlsKeyLogFile; backlog A5): the proxy appends the TLS
 # secrets of every client connection to /var/cache/fastrdp-proxy/tls-keylog.txt (mode
 # 0600), so Wireshark can decrypt a capture of the client's traffic: with the file, a

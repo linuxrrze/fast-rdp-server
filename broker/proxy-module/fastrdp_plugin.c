@@ -392,6 +392,7 @@ static const char* json_str(const cJSON* obj, const char* key);
 #define WS_PICKER_MAX_TIMEOUT 60 /* seconds the picker may wait ([broker] desktop_picker_timeout) */
 #define WS_PICKER_GRACE_S 5      /* the broker waits that much longer for the answer */
 #define WS_PICKER_DRAIN_MS 500   /* at most, reading what the client sent before the picker */
+#define WS_REACTIVATE_MS 5000    /* at most, waiting for the client's answer to the reactivation */
 /* Static channel data read during the picker, counted with WS_PICKER_CHUNK_COST per chunk
  * (the proxy's per-chunk copy): above it the login is abandoned (ws_picker_channel_data()) */
 #define WS_PICKER_MAX_CHANNEL_BYTES (4 * 1024 * 1024)
@@ -509,6 +510,9 @@ typedef struct
 	unsigned refresh_rects, suppress_outputs;
 	pRefreshRect refresh_rect;       /* the proxy's, while observing */
 	pSuppressOutput suppress_output; /* the proxy's, while observing */
+	/* [FastRDP] WaitingScreenReactivate (lab, backlog A5): the first draw waits for
+	 * ws_reactivate() */
+	BOOL reactivate;
 } waitingScreen;
 
 static long ws_ms_until(const struct timespec* t)
@@ -772,7 +776,9 @@ static waitingScreen* waiting_screen_new(proxyData* pdata)
 	static const char* const generic[] = { WS_GENERIC_TEXT };
 	fastrdp_panel_init(ws->panel);
 	fastrdp_panel_set_text(ws->panel, generic, ARRAYSIZE(generic));
-	ws_redraw(ws, TRUE);
+	ws->reactivate = config_bool(pdata, "WaitingScreenReactivate", FALSE);
+	if (!ws->reactivate)
+		ws_redraw(ws, TRUE);
 	return ws;
 }
 
@@ -1745,6 +1751,103 @@ static void ws_observe_end(waitingScreen* ws)
 		          ws->suppressed ? ", output still suppressed" : "");
 }
 
+/* [FastRDP] WaitingScreenReactivate (lab, backlog A5): before the first panel, the front
+ * connection runs a deactivation-reactivation sequence ([MS-RDPBCGR] 1.3.1.3), as the
+ * proxy does when the back-end takes over (pf_client.c proxy_server_reactivate()):
+ * update->DesktopResize is FreeRDP's rdp_server_reactivate(), which sends Deactivate All
+ * and Demand Active. The client's answer (Confirm Active, Synchronize, Control, Font
+ * List) is read here, the way the picker reads input (patches/freerdp/0007: the peer's
+ * state machine runs from inside PostConnect); input meanwhile is dropped, channel data
+ * counted as during the picker. Once the Font List brings the connection back to
+ * CONNECTION_STATE_ACTIVE, 0007 hands the already consumed PDU to the active state
+ * again, which fails that one read (an empty stream: FreeRDP logs a tpkt warning and a
+ * transport_check_fds error); the connection itself is active and fine, so that failure
+ * counts as done. Activate still runs once, after PostConnect.
+ * The hand-over to the back-end later reactivates again, as without the switch.
+ * Experiment: mstsc showed the panel black after a connection that used GFX; does a
+ * reactivation make it show legacy Bitmap Updates again? A client that does not answer
+ * within WS_REACTIVATE_MS gets no panel (graphics before its Confirm Active would break
+ * the sequence), the login goes on. */
+static void ws_reactivate(waitingScreen* ws)
+{
+	proxyData* pdata = ws->pdata;
+	const char* sid = pdata->session_id;
+	if (!ws->draw || !ws->picker.offered)
+	{
+		WLog_WARN(TAG, "[%s] WaitingScreenReactivate ignored: needs the waiting screen and "
+		               "patches/freerdp/0007",
+		          sid);
+		ws_redraw(ws, TRUE);
+		return;
+	}
+	WLog_WARN(TAG, "[%s] WaitingScreenReactivate is on: the client is deactivated and "
+	               "reactivated before the waiting screen (lab only, backlog A5)",
+	          sid);
+	rdpContext* ctx = (rdpContext*)pdata->ps;
+	rdpUpdate* update = pdata->ps->update;
+	freerdp_peer* peer = pdata->ps->peer;
+	const BOOL took = !ws->picker.keyboard; /* WaitingScreenObserve may read already */
+	if (took)
+		ws_input_take(ws);
+	struct timespec end;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_nsec += WS_REACTIVATE_MS * 1000000L;
+	end.tv_sec += end.tv_nsec / 1000000000L;
+	end.tv_nsec %= 1000000000L;
+	const char* failed = NULL;
+	if (!update || !update->DesktopResize || !update->DesktopResize(ctx))
+		failed = "Deactivate All or Demand Active not sent";
+	while (!failed && freerdp_get_state(ctx) != CONNECTION_STATE_ACTIVE)
+	{
+		const long left = ws_ms_until(&end);
+		if (left <= 0)
+		{
+			failed = "no answer from the client in time";
+			break;
+		}
+		struct pollfd fds[MAX_ABORT_FDS];
+		const nfds_t n = ws_picker_fds(ws, fds, ARRAYSIZE(fds));
+		const int pr = poll(fds, n, (int)left);
+		if (pr < 0 && errno == EINTR)
+			continue;
+		if (pr < 0)
+		{
+			failed = "poll failed";
+			break;
+		}
+		if (pr == 0)
+			continue;
+		if (pdata->abort_event && fds[0].fd == GetEventFileDescriptor(pdata->abort_event) &&
+		    fds[0].revents)
+		{
+			failed = "the proxy ends the session";
+			break;
+		}
+		if (!peer->CheckFileDescriptor(peer) &&
+		    freerdp_get_state(ctx) != CONNECTION_STATE_ACTIVE)
+		{
+			ws->picker.gone = TRUE;
+			failed = "the front connection failed";
+		}
+	}
+	if (took)
+		ws_input_restore(ws);
+	const long ms = WS_REACTIVATE_MS - ws_ms_until(&end);
+	if (failed)
+	{
+		WLog_WARN(TAG, "[%s] WaitingScreenReactivate: reactivation not completed after %ld ms (%s, "
+		               "state %s)",
+		          sid, ms, failed, freerdp_state_string(freerdp_get_state(ctx)));
+		ws_stop(ws, "the client was not reactivated");
+		return;
+	}
+	WLog_INFO(TAG, "[%s] WaitingScreenReactivate: reactivation completed in %ld ms, drawing the "
+	               "waiting screen (FreeRDP's tpkt warning \"got 0\" and transport_check_fds error "
+	               "just before are expected)",
+	          sid, ms);
+	ws_redraw(ws, TRUE);
+}
+
 /* Bytes the client sent during a wait in which nobody read its connection (no picker,
  * code field or WaitingScreenObserve): what waits in the socket's receive queue, still
  * TLS-encrypted, so only an indication that the client spoke (Refresh Rect, Suppress
@@ -2592,6 +2695,8 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 				          pdata->session_id);
 			ws_observe_start(screen);
 		}
+		if (config_bool(pdata, "WaitingScreenReactivate", FALSE))
+			ws_reactivate(screen);
 	}
 
 	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);

@@ -345,7 +345,7 @@ class Audio(unittest.TestCase):
 
 class ProxyIni(unittest.TestCase):
     def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false",
-              input_trace="false", observe="false", keylog=""):
+              input_trace="false", observe="false", reactivate="false", keylog=""):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -374,6 +374,9 @@ class ProxyIni(unittest.TestCase):
         # waiting screen observation (lab only, backlog A5): off unless
         # fastrdp_proxy_waiting_screen_observe
         self.assertEqual(p["FastRDP"]["WaitingScreenObserve"], observe)
+        # reactivation before the waiting screen (lab only, backlog A5): off unless
+        # fastrdp_proxy_waiting_screen_reactivate
+        self.assertEqual(p["FastRDP"]["WaitingScreenReactivate"], reactivate)
         # TLS key log (lab only, backlog A5): none unless fastrdp_proxy_tls_keylog; the file
         # in the unit's CacheDirectory, the only place ProtectSystem=strict lets it write
         self.assertEqual(p["FastRDP"]["TlsKeyLogFile"], keylog)
@@ -399,7 +402,7 @@ class ProxyIni(unittest.TestCase):
 
     def test_input_trace(self):
         self.check("proxy-input-trace.ini", "true", input_trace="true", observe="true",
-                   keylog="/var/cache/fastrdp-proxy/tls-keylog.txt")
+                   reactivate="true", keylog="/var/cache/fastrdp-proxy/tls-keylog.txt")
 
 
 class GpuPackages(unittest.TestCase):
@@ -701,6 +704,7 @@ class CommonChecks(unittest.TestCase):
             "waiting screen not a bool": dict(ok, fastrdp_proxy_waiting_screen="maybe"),
             "input trace not a bool": dict(ok, fastrdp_proxy_input_trace="lab"),
             "waiting screen observation not a bool": dict(ok, fastrdp_proxy_waiting_screen_observe="lab"),
+            "waiting screen reactivation not a bool": dict(ok, fastrdp_proxy_waiting_screen_reactivate="lab"),
             "TLS key log not a bool": dict(ok, fastrdp_proxy_tls_keylog="/tmp/keys"),
             # the QR code adds ?login=<id> (22 characters) within 213 bytes
             "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),

@@ -316,6 +316,7 @@
       - fastrdp_proxy_status_info | string | lower in ['true', 'false']
       - fastrdp_proxy_input_trace | string | lower in ['true', 'false']
       - fastrdp_proxy_waiting_screen_observe | string | lower in ['true', 'false']
+      - fastrdp_proxy_waiting_screen_reactivate | string | lower in ['true', 'false']
       - fastrdp_proxy_tls_keylog | string | lower in ['true', 'false']
       - fastrdp_ui_language_from_keyboard | string | lower in ['true', 'false']
       - fastrdp_ui_qr_code | string | lower in ['true', 'false']
@@ -366,7 +367,8 @@
       fastrdp_tls_login_sources is a list of addresses/CIDRs (docs/backends/web.md);
       fastrdp_accept_remote_guard is true or false (docs/windows-clients.md §3.11);
       fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_proxy_input_trace,
-      fastrdp_proxy_waiting_screen_observe, fastrdp_proxy_tls_keylog,
+      fastrdp_proxy_waiting_screen_observe, fastrdp_proxy_waiting_screen_reactivate,
+      fastrdp_proxy_tls_keylog,
       fastrdp_ui_language_from_keyboard and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language
       (two or three lower-case letters) of fastrdp_ui_texts; fastrdp_ui_approve_url is ""
       or an https:// URL of at most 184 characters (docs/auth-matrix.md#waiting-screen);

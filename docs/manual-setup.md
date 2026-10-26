@@ -1435,6 +1435,9 @@ InputTrace=false
 ; Lab only: read the client during the whole MFA wait, answer Refresh Rect and Suppress
 ; Output on the waiting screen and log them (docs/backlog.md A5).
 WaitingScreenObserve=false
+; Lab only: deactivate and reactivate the client before the first waiting screen panel
+; (Deactivate All, Demand Active), for mstsc's black window (docs/backlog.md A5).
+WaitingScreenReactivate=false
 ; Lab only: append the TLS secrets of every client connection to this file (empty: none),
 ; for Wireshark (docs/backlog.md A5). Anyone with the file can decrypt a capture.
 TlsKeyLogFile=

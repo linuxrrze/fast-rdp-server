@@ -14,7 +14,8 @@ User 'pushwait' stands for a pending MFA push: the reply comes after PUSH_WAIT s
 unless the proxy closes the connection first; either way a "pushwait" record with the
 seconds waited and whether the peer closed goes to the log.
 Progress lines (protocol.py; only when the login asks with "progress": 1):
-  'progress'      an "mfa" message (push_or_web, approval URL, QR code of the login-bound
+  'progress', 'reactivate'
+                  an "mfa" message (push_or_web, approval URL, QR code of the login-bound
                   URL <approval URL>?login=$E2E_LOGIN_ID from the broker's ui.py and
                   qrcode.py, PROGRESS_TIMEOUT s countdown) at once, a "session_start"
                   message after PROGRESS_WAIT s, then the reply
@@ -137,7 +138,7 @@ def progress(conn: socket.socket, req: dict) -> bool:
     closed = False
     if user == "oldbroker":
         closed = wait_closed(conn, 2)
-    elif asked and user == "progress":
+    elif asked and user in ("progress", "reactivate"):
         send(conn, MFA_PROGRESS)
         closed = wait_closed(conn, PROGRESS_WAIT)
         if not closed:
@@ -272,7 +273,7 @@ def serve(conn: socket.socket) -> None:
                     return
             if req["op"] == "login" and req["user"] == "holdsession" and not wait_hold(conn, req["user"]):
                 return
-            if req["op"] == "login" and req["user"] in ("progress", "oldbroker", "badprogress",
+            if req["op"] == "login" and req["user"] in ("progress", "reactivate", "oldbroker", "badprogress",
                                                          "floodprogress") and not progress(conn, req):
                 return
             if req["op"] == "login" and req["user"].startswith("code") and not code_entry(conn, req):
