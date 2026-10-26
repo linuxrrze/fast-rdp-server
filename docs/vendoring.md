@@ -56,6 +56,16 @@ Three consumers use exactly these files, so the patch set cannot diverge:
 `packaging/ci/check-build-deps.sh` (part of `make lint`) checks that the packages'
 Build-Depends cover each script's `--deps`.
 
+**Lab-only variants** are not part of any series. `patches/xorgxrdp-lab/` holds
+diagnostic patches that only the Ansible `build` path applies, each behind its own LAB
+ONLY variable that also goes into the build stamp (so toggling it rebuilds); the
+packages never contain them, and the common role refuses the variable with
+`fastrdp_install_method: apt`. Today: `0001-gfxpro-no-tile-skip.patch`
+(`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`, backlog A9), which makes xorgxrdp's
+RemoteFX Progressive capture send every damaged tile. Checked 2026-10-26: it applies to
+the 0.10.5 tarball and `module/rdpCapture.c` compiles with it (alone, against Ubuntu
+26.04's `xserver-xorg-dev` headers); the full lab build is untested.
+
 ## Build details that matter
 
 - **Private prefix with `DT_RPATH`.** Every FreeRDP binary and library in

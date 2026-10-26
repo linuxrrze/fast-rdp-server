@@ -205,6 +205,14 @@ fastrdp_proxy_waiting_screen_reactivate: false
 # TLS login included. Never the back-end hop. Lab users only; switching it off removes
 # the file. The proxy warns on every connection while it is on.
 fastrdp_proxy_tls_keylog: false
+# LAB ONLY (backlog A9, roles/xrdp): build xorgxrdp with patches/xorgxrdp-lab/0001, which
+# disables the "unchanged tile" skip of its RemoteFX Progressive capture
+# (rdpCaptureGfxPro(): every damaged 64x64 tile is sent). Tells whether the stale
+# rectangles of X11 desktops over GFX progressive come from that skip or from the
+# encoder. More tiles to encode and send; never in production. Only with
+# fastrdp_install_method: build (the fastrdp-xrdp package has no lab variant); toggling
+# it rebuilds xrdp and xorgxrdp.
+fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: false
 # The panel's texts (broker [ui]): language en or de (built in) or one of fastrdp_ui_texts;
 # the client's keyboard layout picks the language when there are texts for it.
 fastrdp_ui_language: en

@@ -75,6 +75,19 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       xfce desktop: event 1401 `AvcEnabled=1` means xrdp uses H.264 there and the
       RemoteFX Progressive glitches do not occur (check `Matched H264 mode` in
       `/var/log/xrdp.log`); note whether windows leave stale rectangles.
+- [ ] **E. A9: capture or encoder?** Lab host with `fastrdp_install_method: build` only:
+      `fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: true` in `lab.yml`, deploy (rebuilds
+      xrdp and xorgxrdp with `patches/xorgxrdp-lab/0001`: the progressive capture sends
+      every damaged tile instead of skipping tiles whose hash matches the last capture),
+      new session (log out first). Then the A9 repro with the client that glitched (mstsc
+      with `AvcEnabled=0` or `xfreerdp3 /gfx:progressive`; `xrdp.log`: `gfx rfx pro`),
+      moving windows over each other for a minute:
+      - clean: the tile skip (or a stored hash that goes stale) is the cause; report it
+        to xorgxrdp with this result ([upstream.md §12](upstream.md#12-xrdp--xorgxrdp-stale-tiles-with-gfx-remotefx-progressive-backlog-a9)).
+      - the same glitches: the capture's skip is not it; the encoder (xrdp/librfxcodec)
+        or the client's progressive decoding; report to xrdp.
+      Note the CPU load of xrdp and Xorg compared with the normal build. Set the variable
+      back to `false` and deploy afterwards (rebuilds the normal variant).
 - [ ] Bring back: proxy and broker journals, captures, `ss` logs, key logs, mstsc's event
       logs, the notes.
 

@@ -386,3 +386,6 @@ Notes for us, not for the issue:
 > - xrdp and xorgxrdp `devel`; other X11 desktops (MATE, plain twm); a single-monitor
 >   resolution that is a multiple of 64; glamor.
 > - A decoded capture showing which tiles the client got for one window move.
+
+The lab build for the first item: [lab-checklist-0.7.6.md](lab-checklist-0.7.6.md) §1
+item E (`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`, `patches/xorgxrdp-lab/`).

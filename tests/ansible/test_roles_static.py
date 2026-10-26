@@ -131,6 +131,26 @@ class RolesStatic(unittest.TestCase):
                     self.assertRegex(line.strip(), r"^(stdin|JOIN_PW|fastrdp_join_password):|^- |^#",
                                      f"{f.name}: {line.strip()}")
 
+    def test_xorgxrdp_lab_variant_only_in_the_build_path(self):
+        # backlog A9: the LAB ONLY patch is applied by the Ansible build alone, only with its
+        # variable, and is part of the build stamp (toggling rebuilds); never in a package
+        role = ANSIBLE / "roles" / "xrdp"
+        build = (role / "tasks" / "build.yml").read_text()
+        main = (role / "tasks" / "main.yml").read_text()
+        patch = "patches/xorgxrdp-lab/0001-gfxpro-no-tile-skip.patch"
+        self.assertTrue((REPO / patch).is_file())
+        self.assertIn('if [ "$LAB_GFXPRO_NO_TILE_SKIP" = 1 ]; then', build)
+        self.assertIn(patch, build)
+        self.assertIn("LAB_GFXPRO_NO_TILE_SKIP: \"{{ '1' if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool", build)
+        self.assertIn("-lab-gfxpro-no-tile-skip-", main)
+        self.assertIn("fastrdp_xorgxrdp_lab_gfxpro_patch", main)
+        # a stamp of another variant left behind would stand for the wrong build
+        self.assertLess(build.index("Stamps of earlier builds removed"), build.index("- name: Build stamp"))
+        self.assertIn("patches: \"\"", (REPO / "third_party" / "sources.yml").read_text().split("xorgxrdp:", 1)[1])
+        for f in sorted((REPO / "packaging").rglob("*")) + sorted((REPO / "debian").rglob("*")):
+            if f.is_file() and f.name != "changelog":
+                self.assertNotIn("xorgxrdp-lab", f.read_text(errors="replace"), str(f))
+
     def test_gdm_headless_static_user(self):
         # dbus-daemon (Ubuntu 26.04) drops the unit's DynamicUser client; static gdm user,
         # with the sandboxing DynamicUser implied, and not root (root bypasses GDM's polkit rule)

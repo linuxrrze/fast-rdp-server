@@ -638,6 +638,13 @@ class CommonChecks(unittest.TestCase):
     def test_minimal_passes(self):
         self.assertEqual(self.run_checks(fastrdp_realm="EXAMPLE.COM", fastrdp_domain="example.com"), 0)
 
+    def test_lab_xorgxrdp_variant_with_the_build(self):
+        ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
+        self.assertEqual(self.run_checks(fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True, **ok), 0)
+        self.assertEqual(self.run_checks(fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True,
+                                         fastrdp_install_method="build", **ok), 0)
+        self.assertEqual(self.run_checks(fastrdp_install_method="apt", **ok), 0)
+
     def test_rdp_file_name_and_port(self):
         ok = {"fastrdp_realm": "EXAMPLE.COM", "fastrdp_domain": "example.com"}
         self.assertEqual(self.run_checks(fastrdp_web_rdp_host="rdp.example.com", fastrdp_web_rdp_port=443, **ok), 0)
@@ -706,6 +713,10 @@ class CommonChecks(unittest.TestCase):
             "waiting screen observation not a bool": dict(ok, fastrdp_proxy_waiting_screen_observe="lab"),
             "waiting screen reactivation not a bool": dict(ok, fastrdp_proxy_waiting_screen_reactivate="lab"),
             "TLS key log not a bool": dict(ok, fastrdp_proxy_tls_keylog="/tmp/keys"),
+            "lab xorgxrdp variant not a bool": dict(ok, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip="lab"),
+            # the APT packages have no lab variant (backlog A9)
+            "lab xorgxrdp variant with the APT packages": dict(
+                ok, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True, fastrdp_install_method="apt"),
             # the QR code adds ?login=<id> (22 characters) within 213 bytes
             "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),
             "approval URL not https": dict(ok, fastrdp_ui_approve_url="http://rdp1.example.com/web/approve"),

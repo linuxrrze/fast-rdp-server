@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Mon, 26 Oct 2026 22:19:51 +0100
+Subject: [PATCH] LAB ONLY: rdpCaptureGfxPro: send every damaged tile (no hash
+ skip)
+
+fastrdp backlog A9: X11 desktops over GFX with RemoteFX Progressive
+leave stale tiles after moving windows; H.264 is clean. The progressive
+capture skips a 64x64 tile whose hash equals the one stored when the
+tile was last captured; the H.264 capture has no such skip. This build
+never skips, so every damaged tile reaches xrdp's progressive encoder:
+clean output points at the skip (or what makes a stored hash stale),
+the same glitches at the encoder or the client.
+
+Diagnostic only: more tiles to encode and send. Not for production and
+not in the fastrdp-xrdp package; built only with the Ansible build
+method and fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: true.
+---
+ module/rdpCapture.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/module/rdpCapture.c b/module/rdpCapture.c
+index 7591af4..a2e68ca 100644
+--- a/module/rdpCapture.c
++++ b/module/rdpCapture.c
+@@ -1111,7 +1111,9 @@ rdpCaptureGfxPro(rdpClientCon *clientCon, RegionPtr in_reg, BoxPtr *out_rects,
+                              + (x / XRDP_RFX_ALIGN);
+                 LLOGLN(10, ("rdpCaptureGfxPro: crc 0x%" PRIx64 " 0x%" PRIx64,
+                        crc, clientCon->rfx_crcs[mon_index][crc_offset]));
+-                if (crc == clientCon->rfx_crcs[mon_index][crc_offset])
++                /* fastrdp LAB ONLY (backlog A9): never skip a tile whose hash
++                 * matches the last one captured; every damaged tile is sent */
++                if (0 && crc == clientCon->rfx_crcs[mon_index][crc_offset])
+                 {
+                     LLOGLN(10, ("rdpCaptureGfxPro: crc skip at x %d y %d", x, y));
+                     rdpRegionInit(&tile_reg, &rect, 0);

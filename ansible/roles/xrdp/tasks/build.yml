@@ -12,7 +12,7 @@
         src: "{{ playbook_dir }}/../{{ item }}"
         dest: "{{ fastrdp_xrdp_src_dir }}/{{ item }}"
         mode: u=rwX,g=rX,o=rX
-      loop: [third_party/, patches/xrdp/]
+      loop: [third_party/, patches/xrdp/, patches/xorgxrdp-lab/]
 
     - name: Fetch, patch, build and install xrdp + xorgxrdp (third_party/build-xrdp.sh)
       ansible.builtin.shell:
@@ -21,6 +21,11 @@
           rm -rf build
           xrdp=$(third_party/fetch.sh xrdp build)
           xorgxrdp=$(third_party/fetch.sh xorgxrdp build)
+          if [ "$LAB_GFXPRO_NO_TILE_SKIP" = 1 ]; then
+              echo "LAB ONLY: xorgxrdp without the progressive tile skip (backlog A9)" >&2
+              patch -d "$xorgxrdp" -p1 --forward --batch -i \
+                  "$PWD/patches/xorgxrdp-lab/0001-gfxpro-no-tile-skip.patch"
+          fi
           third_party/build-xrdp.sh "$xrdp" "$xorgxrdp"
           rm -rf build
         chdir: "{{ fastrdp_xrdp_src_dir }}"
@@ -30,11 +35,29 @@
         FASTRDP_XRDP_UNITDIR: /etc/systemd/system
         FASTRDP_XRDP_FFMPEG: "{{ '1' if fastrdp_xrdp_h264_encoder_effective != 'x264' else '0' }}"
         FASTRDP_XORGXRDP_GLAMOR: "{{ '1' if fastrdp_xorgxrdp_glamor | bool else '0' }}"
+        LAB_GFXPRO_NO_TILE_SKIP: "{{ '1' if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool else '0' }}"
       changed_when: true
 
     - name: Refresh linker cache
       ansible.builtin.command: ldconfig
       changed_when: true
+
+    # one stamp per installed variant: a stamp left from an earlier variant (glamor,
+    # FFmpeg, the LAB ONLY xorgxrdp) must not stand for the build installed now
+    - name: Stamps of earlier builds
+      ansible.builtin.find:
+        paths: "{{ fastrdp_xrdp_src_dir }}"
+        patterns: ".installed-xrdp-*"
+        hidden: true
+      register: fastrdp_xrdp_old_stamps
+
+    - name: Stamps of earlier builds removed
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ fastrdp_xrdp_old_stamps.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
 
     - name: Build stamp
       ansible.builtin.file:
