@@ -855,6 +855,38 @@ answers accept-incomplete, the AP-REP and a MIC. Not recorded: whether mstsc sen
 anyway (it did not trip `nla_server_authenticate()`, compare §3.3), and the DC-side
 events of lab L18 (AS for `<NAME>$`, TGS with ENC-TKT-IN-SKEY).
 
+### 3.15 Known display issues (A5, A9)
+
+Two open problems that users of mstsc see; both are tracked in the
+[backlog](backlog.md#sessions).
+
+**Black window on the next *Connect* in the same mstsc ([backlog A5](backlog.md#sessions)).**
+After a connection that reached a desktop, closing it (the X or a logout) and pressing
+*Connect* again in the same mstsc window shows a black window instead of the waiting
+screen until the second factor times out. A freshly started mstsc, and the connection
+after a black one, work. The proxy sends the same waiting screen in both cases; mstsc
+does not show it, most likely because it keeps GFX output state of the previous
+connection (findings: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)). No fix yet.
+Workarounds:
+- Approve the login anyway: the push on the phone or the approval page
+  (`https://<rdp-fqdn>/web/approve`) work while the window stays black; the login goes on
+  and the desktop is expected to appear after the hand-over [inferred: the working
+  connections of the lab run all repainted at the hand-over; not confirmed for a black
+  one].
+- Close mstsc completely and start it again before reconnecting.
+- Administrators: a reconnect grace period (`fastrdp_mfa_reconnect_grace`,
+  [auth-matrix.md](auth-matrix.md#reconnect-grace)) skips the second factor, and with it
+  the waiting, for a quick reconnect from the same address.
+
+**Stale rectangles on X11 desktops via xrdp ([backlog A9](backlog.md#sessions)).** On
+xfce and other X11 desktops served by xrdp, moving windows can leave stale or wrong
+rectangles behind when the client does not decode H.264: xrdp then encodes RemoteFX
+Progressive, and that path glitches (mstsc with `AvcEnabled=0` in its event 1401, typical
+for Windows VMs without hardware H.264 decoding; `xfreerdp3 /gfx:progressive` the same).
+Clients with H.264 (mstsc on a PC with a GPU, `xfreerdp /gfx:AVC420`) are clean. GNOME
+(gnome-remote-desktop) is not affected. No workaround on the server yet; an upstream
+report is drafted ([upstream.md](upstream.md) §12).
+
 ## 4. Required AD / client settings
 
 **AD / server:**
@@ -923,6 +955,8 @@ Resource Redirection* applies to Windows hosts, not to fastrdp; the server side 
 | 8 | No KDC proxy offering (§3.10) | gap | **implemented, Windows lab pending:** `fastrdp_web_kdcproxy` (python3-kdcproxy behind the web gateway's nginx, [web-access.md](web-access.md#kdc-proxy)) |
 | 9 | auth-matrix.md / client-guide.md: SSO row lacks Credential Guard/Restricted Admin; `LAB\alice` advice for non-joined clients | docs | **done** (UPN and FQDN recommended); revisit after the lab |
 | 10 | WinPR U2U acceptor cannot get a TGT with AD: mstsc's KERB-TGT-REQUEST fails, Kerberos dropped (§3.14, field report) | bug (upstream FreeRDP) + keytab content | **fixed:** `patches/freerdp/0004` (machine account TGT from the keytab), `fastrdp-termsrv-keytab` copies the `<NAME>$` entries (same keys), identity role checks them, module logs U2U requests. e2e: `run_nla.sh` (AD-like MIT KDC). mstsc confirmed (field report 2026-10-22) |
+| 11 | mstsc: black window instead of the waiting screen on the next *Connect* in the same process (§3.15) | open (mstsc behaviour) | backlog A5; workarounds in §3.15 |
+| 12 | xrdp: stale rectangles with RemoteFX Progressive on X11 desktops (§3.15) | bug (upstream xrdp/xorgxrdp, inferred) | backlog A9; report drafted ([upstream.md](upstream.md) §12) |
 
 ## 6. What only a Windows lab can settle
 

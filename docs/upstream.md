@@ -21,6 +21,7 @@ self-built FreeRDP 3.32.1 (with the fix below) and MIT krb5 1.22.2.
 | 9 | FreeRDP | Server: a PDU read while the peer's PostConnect callback runs (the callback reads the connection itself) calls PostConnect a second time, nested in the first | `patches/freerdp/0007`, shipped in `fastrdp-freerdp3` 3.32.2-6 (3.32.2-8: also a reactivation started inside PostConnect); not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
 | 10 | FreeRDP | WinPR: `WITH_SYSTEMD` compiles the WLog journald appender, but `WINPR_HAVE_JOURNALD_H` is set in a CMake directory scope that never reaches `winpr/config.h`, so `WLOG_APPENDER=JOURNALD` is ignored without a message | `patches/freerdp/0009`, in `fastrdp-freerdp3` 3.32.2-7 (not built yet); not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
 | 11 | FreeRDP | Server: a client's Shutdown Request PDU (mstsc: the X in the connection bar) is answered with a "provider initiated" Disconnect Provider Ultimatum even for a running session; [MS-RDPBCGR] 1.3.1.4.1 requires a Shutdown Request Denied PDU and leaves the disconnect to the client | `patches/freerdp/0008`, shipped in `fastrdp-freerdp3` 3.32.2-7; not submitted. Reasoning: [patches/freerdp/README.md](../patches/freerdp/README.md) |
+| 12 | xrdp / xorgxrdp | X11 desktops over GFX with RemoteFX Progressive leave stale or wrong 64×64 tiles after moving windows; H.264 is clean (backlog A9) | issue text drafted in §12; not posted (cause not yet narrowed to one project) |
 
 Nothing in 1–4 is needed for fastrdp itself:
 - (1) is a client-side bug, and p11-kit-proxy (small slot ids) avoids it.
@@ -301,3 +302,87 @@ pull request**. Items marked *to do* must be done before submitting.
 > - This complements `xrdp_accel_assist` on devel: that helper is a zero-copy
 >   NVENC path, while this backend adds VA-API and QSV, works with any xorgxrdp
 >   setup, and is optional at build time.
+
+## 12. xrdp / xorgxrdp: stale tiles with GFX RemoteFX Progressive (backlog A9)
+
+Issue draft for [backlog A9](backlog.md#sessions). Post it to xrdp (the encoder and
+xorgxrdp's capture are both neutrinolabs projects; xrdp is where GFX issues are usually
+filed) once the lab build without the tile skip (below, *Not tried yet*) has told
+whether the capture or the encoder is at fault; then name the project accordingly and
+add the result. Before posting, the reporter confirms the versions on the host
+(`dpkg -l fastrdp-xrdp xorgxrdp xrdp 2>/dev/null; xrdp --version`) and attaches
+`xrdp.log` and `~/.xorgxrdp.<display>.log` of one session.
+
+Notes for us, not for the issue:
+- fastrdp builds xrdp 0.10.6.1 with one patch, `patches/xrdp/0001` (an FFmpeg H.264
+  encoder). It touches `xrdp/xrdp_encoder.c` only in the H.264 selection
+  (`xrdp_encoder_create`, `xrdp_encoder_delete`, the `#if` guard before
+  `process_enc_h264`, `gfx_wiretosurface1`), not `gfx_wiretosurface2` or librfxcodec, so
+  the progressive path is upstream's [verified: the patch's hunks]. Say so in the issue;
+  offer to reproduce with an unpatched build if asked.
+- xorgxrdp 0.10.5 is built unpatched (`third_party/sources.yml`, `patches: ""`).
+
+> **Title:** GFX RemoteFX Progressive: stale/wrong tiles after moving windows (xfce,
+> software rendering); H.264 clean
+>
+> **Versions**
+> - xrdp 0.10.6.1 (built from the release tarball with one local patch that adds an
+>   FFmpeg H.264 encoder; it does not touch `gfx_wiretosurface2` or librfxcodec)
+> - xorgxrdp 0.10.5 (release tarball, unpatched)
+> - Ubuntu 26.04, Xorg with xorgxrdp, **software rendering** (`/etc/X11/xrdp/xorg.conf`
+>   "(software rendering)", no glamor in the xorgxrdp log)
+> - Desktop: xfce4 with xfwm4; compositing on or off (`use_compositing`) makes no
+>   difference
+> - The RDP connection passes through a FreeRDP 3.32.2 based proxy (freerdp-proxy) with
+>   the GFX channel passed through; the glitches look the same with every client below.
+>
+> **Steps**
+> 1. Connect with a client that ends up in xrdp's progressive mode (xrdp.log:
+>    `Matched RFX mode`, `xrdp_encoder_create: starting gfx rfx pro codec session`), e.g.
+>    `xfreerdp3 /gfx:progressive` or mstsc on a machine without H.264 decoding (its
+>    event 1401 shows `AvcEnabled=0`).
+> 2. Open a few windows (terminal, file manager) and drag one across the others for a few
+>    seconds.
+>
+> **Expected:** the screen matches the desktop once the window stops.
+>
+> **Actual:** stale or wrong rectangles remain where the window was until something
+> else redraws that area (not measured yet whether they align to the 64×64 tiles).
+>
+> **Codec comparison** (same host, same xfce session type)
+>
+> | Client | xrdp.log | Result |
+> |---|---|---|
+> | mstsc (Windows 11, `AvcEnabled=0`) | `Matched RFX mode`, gfx rfx pro | glitches |
+> | xfreerdp3 3.32 `/gfx:progressive` | `Matched RFX mode`, gfx rfx pro | glitches |
+> | xfreerdp3 3.32 `/gfx:RFX` | `Matched RFX mode`, gfx rfx pro (xrdp's GFX RFX mode is progressive) | glitches |
+> | xfreerdp 3.32 `/gfx:AVC420` (built with H.264) | `Matched H264 mode` | clean |
+>
+> **Where we looked** (sources of the versions above)
+> - xorgxrdp `module/rdpCapture.c`: `rdpCapture()` sends `CC_GFX_PRO` to
+>   `rdpCaptureGfxPro()` and `CC_GFX_A2` (H.264) to `rdpCaptureGfxA2()`.
+>   `rdpCaptureGfxPro()` walks the damage in 64×64 tiles, hashes each one (`wyhash`; a
+>   partly damaged tile is zero-filled with `rdpFillBox_yuvalp()`, the damaged rectangles
+>   copied in, and the rectangles hashed as well; a fully damaged tile is hashed from
+>   the frame buffer with `wyhash_rfx_tile()`), and **skips a tile whose hash equals
+>   `clientCon->rfx_crcs[mon_index][…]`**, the hash stored when that tile was last
+>   captured. The H.264 capture has no such skip. If a captured tile does not reach the
+>   client (a frame dropped or not encoded further down), its stored hash still says
+>   "sent", and the next capture of the same content skips it: that would leave exactly
+>   this kind of stale tile [inferred, not shown]. (`module/rdpEgl.c` has the same skip
+>   for glamor; not used here.)
+> - xrdp `xrdp/xrdp_encoder.c`: `gfx_wiretosurface2()` encodes the captured tiles with
+>   librfxcodec (`rfxcodec_encode()`, a handle created with `RFX_FLAGS_RLGR1 |
+>   RFX_FLAGS_PRO1` per monitor, the damage rectangles as region) and sends them in
+>   chunks of `max_compressed_bytes`; the loop stops without sending the rest if
+>   `rfxcodec_encode()` returns no tile or `xrdp_egfx_wire_to_surface2()` fails.
+>   librfxcodec's progressive encoder (`librfxcodec/src/rfxencode*.c`, also
+>   `rfxencode_differential.c`) is the other candidate.
+>
+> **Not tried yet**
+> - xorgxrdp with the hash skip in `rdpCaptureGfxPro()` disabled (every damaged tile
+>   sent): clean would point at the capture/skip, still glitching at the encoder or the
+>   client side of progressive. *(result to add)*
+> - xrdp and xorgxrdp `devel`; other X11 desktops (MATE, plain twm); a single-monitor
+>   resolution that is a multiple of 64; glamor.
+> - A decoded capture showing which tiles the client got for one window move.

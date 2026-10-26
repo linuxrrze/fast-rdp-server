@@ -30,40 +30,53 @@ Tick an item when its results are attached; update the backlog row afterwards.
 ## 1. A5: mstsc reconnect in the same process (priority)
 
 Test plan: [lab-waiting-screen-input.md](lab-waiting-screen-input.md) F19, F19b, F19c.
-Windows 10 and Windows 11 each.
+Findings so far: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md).
 
-Run 1 was done on 2026-10-26 with 0.7.7 and mstsc build 26100 (Windows 11 24H2, inferred
-from the build; findings:
-[a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)): the window is black only after a
-connection that used GFX, and mstsc sends no Refresh Rect or Suppress Output during the
-wait, so `WaitingScreenObserve` has nothing to answer and stays off.
+Done on 2026-10-26 (0.7.7/0.7.8, mstsc build 26100, Windows 11):
 
-- [ ] **Run 1** (both switches off; still open on Windows 10): restart mstsc;
-      log in and approve (connection 1); X; *Connect* in the same mstsc (connection 2),
-      wait for the end of the countdown; then GNOME *Log Out* instead of the X
-      (connections 3, 4).
-- [ ] **Run 2:** `fastrdp_proxy_waiting_screen_reactivate: true`, role run, proxy
-      restart; the same steps. The journal shows `WaitingScreenReactivate: reactivation
-      completed in N ms` per connection (F19c run 3).
-- [ ] **GFX off (confirms the cause):** `[Channels] GFX=false` temporarily in
-      `/etc/fastrdp/proxy.ini` (proxy restart; the next role run puts it back), with the
-      xfce/xrdp desktop (gnome-remote-desktop probably needs GFX, unverified) and both
-      switches off: restart mstsc, connection 1 into the session, X, connection 2. The
-      panel on connection 2 is expected if GFX is the cause.
-- [ ] Per connection note: which button started it (*Connect* or *Reconnect* in mstsc's
-      dialog), what mstsc showed, the times.
-- [ ] Both runs: `tcpdump` and the `ss` loop on the proxy host from before connection 1
-      ([lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
-      *Packet capture*). Also `fastrdp_proxy_tls_keylog: true`
-      (lab users only), and copy the key log after each run.
-- [ ] Bring back: both proxy journals, mstsc's event log, the notes, the captures and
-      `ss` logs (and key logs).
+- [x] **Run 1** (switches off): connection 2 black after a session, every time; the
+      next connection after a black one works again.
+- [x] **Run 2** (`fastrdp_proxy_waiting_screen_reactivate: true`): the reactivation
+      completes, connection 2 still black. The switch stays off.
+- [x] **GFX off, first try** (`[Channels] GFX=false`, xfce): connection 2 still black.
+      Not conclusive yet: the xfce desktop of connection 1 was black itself (backlog A10)
+      and nothing shows whether mstsc started GFX in connection 1.
 
-Decision: the panel on connection 2 in run 2 means the reactivation clears what mstsc
-carries over from the GFX connection; the switch then becomes the default for the
-waiting screen. The panel with GFX off but not in run 2 points at the waiting screen over
-GFX ([backlog A8](backlog.md#maybe-later)). Otherwise compare the decoded captures
-(`tests/lab/rdpcapture/decode.py`) of connections 1 and 2.
+Next session (in this order; the first two decide whether backlog A8 is needed):
+
+- [ ] **Before every run:** restart mstsc; on the proxy host `tcpdump` and the `ss` loop
+      from before connection 1, `fastrdp_proxy_tls_keylog: true`, copy the key log after
+      the run ([lab-waiting-screen-input.md §3](lab-waiting-screen-input.md#3-capturing-input-without-leaking-codes),
+      *Packet capture*); afterwards export mstsc's event log
+      (*TerminalServices-ClientActiveXCore/Operational*). Note per connection the button
+      (*Connect* / *Reconnect*), what mstsc showed, the times.
+- [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
+      `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
+      desktop: connection 1 into the session (a black desktop is fine), X, connection 2.
+      Check mstsc's event log for **1401/1402 during connection 1**:
+      - none, and connection 2 black: GFX is **not** the trigger, a session as such is;
+        continue with C.
+      - none, and the panel on connection 2: GFX is the trigger; backlog A8 is the fix.
+      - 1401 present: mstsc used GFX anyway, the test does not count (and A10 likely has
+        the same cause); bring the capture.
+- [ ] **B. Reconnect grace (mitigation, any cause):** `fastrdp_mfa_reconnect_grace: 900`
+      in `lab.yml`, deploy, GNOME: connection 1 approve, X, connection 2 within 15 min
+      from the same client. Expected: no waiting for the second factor, the desktop
+      directly (broker log `second factor skipped: reconnect grace`). Note whether the
+      short session-start screen is black and whether the desktop then appears.
+- [ ] **C. Which part of the session leaves mstsc broken** (only if A rules GFX out):
+      repeat connection 1 → X → connection 2 with mstsc's *Local Resources* reduced step by
+      step, mstsc restarted each time: (1) clipboard, printers, drives and devices off;
+      (2) also *Remote audio: Do not play* and recording off; (3) connection 1 X'ed right
+      after the desktop appears versus after a minute. The step at which connection 2
+      shows the panel names the channel; the decoded captures
+      (`tests/lab/rdpcapture/decode.py`) of connection 1 show what it opened.
+- [ ] **D. A9 reach (xfce glitches):** mstsc from a physical Windows PC with a GPU to the
+      xfce desktop: event 1401 `AvcEnabled=1` means xrdp uses H.264 there and the
+      RemoteFX Progressive glitches do not occur (check `Matched H264 mode` in
+      `/var/log/xrdp.log`); note whether windows leave stale rectangles.
+- [ ] Bring back: proxy and broker journals, captures, `ss` logs, key logs, mstsc's event
+      logs, the notes.
 
 ## 2. Fixes of 0.7.5 / 0.7.6
 

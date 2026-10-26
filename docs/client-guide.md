@@ -132,6 +132,11 @@ connection type:i:7
   Specify KDC proxy servers for Kerberos clients*, realm `LAB.EXAMPLE.COM` →
   `<https rdp1.lab.example.com:443:KdcProxy />`, if the administrator enabled the
   server's KDC proxy ([windows-clients.md](windows-clients.md) §3.10).
+- **Known issues** ([windows-clients.md](windows-clients.md) §3.15): after closing a
+  session, *Connect* again in the same mstsc window may stay black instead of showing
+  what the server waits for. Approve the push or the approval page anyway, or close and
+  restart mstsc first. X11 desktops (xfce and the like) may leave stale rectangles when
+  moving windows on PCs without H.264 decoding (often virtual machines).
 
 ## When the server refuses the login
 
