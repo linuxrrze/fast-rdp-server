@@ -24,9 +24,12 @@
  * E2E_DUMP=FILE, E2E_DUMP_AT_MS=N: decode the graphics (FreeRDP's GDI) and write the screen
  *   as a PPM image N ms (default 1500) after the connection started.
  * E2E_KEYS=LIST, E2E_INPUT_AT_MS=N: keys sent N ms (default 2500) after connecting, e.g. to
- *   the desktop picker: comma-separated tokens, each a press and a release: "1".."9" (top
- *   row), "kp1".."kp9" (numeric keypad), "up", "down", "tab", "enter", "esc", "u1".."u9"
- *   (Unicode keyboard events); "dN" / "rN" only press / only release top-row N.
+ *   the desktop picker or the code field: comma-separated tokens, each a press and a
+ *   release: "0".."9" (top row), "kp1".."kp9" (numeric keypad), "up", "down", "tab",
+ *   "enter", "esc", "bksp", "u0".."u9" (Unicode keyboard events); "dN" / "rN" only press /
+ *   only release top-row N.
+ * E2E_KEYS2=LIST, E2E_INPUT2_AT_MS=N: a second batch N ms (default 5000) after connecting
+ *   (a code typed again after a wrong one).
  * E2E_EARLY_KEYS=LIST: the same right after connecting (typed during the MFA wait).
  * E2E_NUMLOCK=1: a Synchronize event with NumLock on before the keys.
  * E2E_CLICK=+N: at E2E_INPUT_AT_MS, a left click on the picker row N rows below the
@@ -125,11 +128,12 @@ static void send_key(rdpInput* input, const char* t)
 	{
 		const char* name;
 		UINT16 code; /* | 0x100: extended */
-	} named[] = { { "up", 0x148 }, { "down", 0x150 }, { "tab", 0x0f }, { "enter", 0x1c }, { "esc", 0x01 } };
+	} named[] = { { "up", 0x148 },   { "down", 0x150 }, { "tab", 0x0f },
+		          { "enter", 0x1c }, { "esc", 0x01 },   { "bksp", 0x0e } };
 	static const BYTE keypad[9] = { 0x4f, 0x50, 0x51, 0x4b, 0x4c, 0x4d, 0x47, 0x48, 0x49 };
 	UINT16 code = 0;
 	BOOL down = TRUE, up = TRUE;
-	if (t[0] == 'u' && t[1] >= '1' && t[1] <= '9' && !t[2])
+	if (t[0] == 'u' && t[1] >= '0' && t[1] <= '9' && !t[2])
 	{
 		(void)freerdp_input_send_unicode_keyboard_event(input, 0, (UINT16)t[1]);
 		(void)freerdp_input_send_unicode_keyboard_event(input, KBD_FLAGS_RELEASE, (UINT16)t[1]);
@@ -143,6 +147,8 @@ static void send_key(rdpInput* input, const char* t)
 	}
 	if (t[0] >= '1' && t[0] <= '9' && !t[1])
 		code = (UINT16)(0x02 + t[0] - '1');
+	else if (t[0] == '0' && !t[1])
+		code = 0x0b;
 	else if (strncmp(t, "kp", 2) == 0 && t[2] >= '1' && t[2] <= '9' && !t[3])
 		code = keypad[t[2] - '1'];
 	for (size_t i = 0; i < sizeof(named) / sizeof(named[0]) && !code; i++)
@@ -394,6 +400,8 @@ int main(int argc, char** argv)
 	const char* keys = getenv("E2E_KEYS");
 	const char* click = getenv("E2E_CLICK");
 	const long input_at = getenv("E2E_INPUT_AT_MS") ? atol(getenv("E2E_INPUT_AT_MS")) : 2500;
+	const char* keys2 = getenv("E2E_KEYS2");
+	const long input2_at = getenv("E2E_INPUT2_AT_MS") ? atol(getenv("E2E_INPUT2_AT_MS")) : 5000;
 	long shutdown_at = getenv("E2E_SHUTDOWN_AT_MS") ? atol(getenv("E2E_SHUTDOWN_AT_MS")) : -1;
 	long refresh_at = getenv("E2E_REFRESH_AT_MS") ? atol(getenv("E2E_REFRESH_AT_MS")) : -1;
 	long suppress_at = getenv("E2E_SUPPRESS_AT_MS") ? atol(getenv("E2E_SUPPRESS_AT_MS")) : -1;
@@ -426,6 +434,11 @@ int main(int argc, char** argv)
 			if (click)
 				click_row(inst, atoi(click));
 			keys = click = NULL;
+		}
+		if (keys2 && elapsed_ms() - connected_ms >= input2_at)
+		{
+			send_keys(inst, keys2);
+			keys2 = NULL;
 		}
 		if (shutdown_at >= 0 && elapsed_ms() - connected_ms >= shutdown_at)
 		{

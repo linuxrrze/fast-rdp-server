@@ -33,6 +33,16 @@ xfce, PICKER_TIMEOUT s, if the login announced "picker": 1; then it waits up to
 PICKER_TIMEOUT + 5 s for the module's one line. A "pickerchoice" record holds whether a
 prompt went out, the line received (null: none), whether the peer closed and the seconds
 waited; the reply names the chosen desktop.
+Code field ([mfa] code_or_web, protocol.py "code_entry"; users whose name starts with
+'code'): after CODE_DELAY s an "mfa" prompt with a field for CODE_DIGITS digits (user
+'codeenter': 0, until Enter), if the login announced "code_entry": 1; CODE_OK is right,
+another code gets a new prompt saying so ('codelock': a prompt without the field instead,
+too many wrong codes), up to CODE_TRIES codes. 'codeweb': the approval page answers
+CODE_WEB_AFTER s after the prompt (session start, no code). A "codeentry" record holds
+whether a prompt went out, the code lines received (also strays after the field closed,
+read for CODE_STRAY s), whether CODE_OK came, whether the peer closed and the seconds
+waited; the login is
+accepted after CODE_OK or the approval page.
 Connections are served in threads, so a waiting request does not hold up others."""
 import json
 import os
@@ -63,6 +73,13 @@ PROGRESS_WAIT = 3.5
 PROGRESS_TIMEOUT = 5
 APPROVE_URL = "https://rdp1.lab.example.com/web/approve"
 LOGIN_ID = os.environ.get("E2E_LOGIN_ID", "A" * 22)   # the pending login's id (mfa.WebApprovals)
+CODE_DELAY = 1.5
+CODE_DIGITS = 6
+CODE_OK = "123456"
+CODE_TRIES = 3
+CODE_WAIT = 10.0
+CODE_WEB_AFTER = 1.5
+CODE_STRAY = 3.0
 PICKER_DELAY = 1.5
 PICKER_TIMEOUT = 6
 PICKER_OPTIONS = [{"name": "xfce", "label": "Xfce", "running": False},
@@ -170,6 +187,79 @@ def picker(conn: socket.socket, req: dict) -> tuple[bool, str]:
     return not closed, chosen
 
 
+class Lines:
+    """The module's lines on a broker connection, each within a time limit."""
+
+    def __init__(self, conn: socket.socket):
+        self.conn, self.buf, self.closed = conn, b"", False
+
+    def read(self, seconds: float):
+        """The next line as JSON, or None (time up or the peer closed: self.closed)."""
+        end = time.monotonic() + seconds
+        while b"\n" not in self.buf and not self.closed:
+            left = end - time.monotonic()
+            if left <= 0 or not select.select([self.conn], [], [], left)[0]:
+                return None
+            data = self.conn.recv(4096)
+            self.closed = not data
+            self.buf += data
+        if b"\n" not in self.buf:
+            return None
+        line, self.buf = self.buf.split(b"\n", 1)
+        return json.loads(line)
+
+
+def code_prompt(digits: int, message: str, field: bool = True) -> dict:
+    msg = {**MFA_PROGRESS, "method": "code_or_web", "timeout_s": 30,
+           "lines": ["Approve your sign-in, or type the code from your authenticator app"]}
+    if field:
+        msg["code_entry"] = {"digits": digits, "label": "Code:", "checking": "Checking the code\u2026",
+                             "message": message}
+    return msg
+
+
+def code_entry(conn: socket.socket, req: dict) -> bool:
+    """The code field of the 'code*' users; False if the peer closed meanwhile."""
+    asked, user, start = req.get("code_entry") == 1, req["user"], time.monotonic()
+    lines, codes, accepted = Lines(conn), [], False
+    if wait_closed(conn, CODE_DELAY):
+        record({"op": "codeentry", "user": user, "asked": asked, "codes": [], "closed": True})
+        return False
+    if not asked:
+        record({"op": "codeentry", "user": user, "asked": False, "codes": [], "closed": False})
+        return True
+    digits = 0 if user == "codeenter" else CODE_DIGITS
+    send(conn, code_prompt(digits, ""))
+    if user == "codeweb":
+        line = lines.read(CODE_WEB_AFTER)
+        if line is not None:
+            codes.append(line)
+    else:
+        while len(codes) < CODE_TRIES:
+            line = lines.read(CODE_WAIT)
+            if line is None:
+                break
+            codes.append(line)
+            if line == {"op": "code", "code": CODE_OK}:
+                accepted = True
+                break
+            if user == "codelock":
+                send(conn, code_prompt(digits, "", field=False))
+                break
+            send(conn, code_prompt(digits, f"Wrong code. {CODE_TRIES - len(codes)} attempt(s) left."))
+    if not lines.closed and not accepted:
+        # the approval page answers (codeweb, codelock): the field is gone, a code typed now
+        # must not arrive
+        send(conn, {"progress": "session_start", "lines": ["Starting your desktop\u2026"]})
+        while (line := lines.read(CODE_STRAY)) is not None:
+            codes.append(line)
+    elif accepted:
+        send(conn, {"progress": "session_start", "lines": ["Starting your desktop\u2026"]})
+    record({"op": "codeentry", "user": user, "asked": True, "codes": codes, "accepted": accepted,
+            "closed": lines.closed, "waited": round(time.monotonic() - start, 2)})
+    return not lines.closed
+
+
 def serve(conn: socket.socket) -> None:
     with conn:
         for line in conn.makefile():
@@ -184,6 +274,8 @@ def serve(conn: socket.socket) -> None:
                 return
             if req["op"] == "login" and req["user"] in ("progress", "oldbroker", "badprogress",
                                                          "floodprogress") and not progress(conn, req):
+                return
+            if req["op"] == "login" and req["user"].startswith("code") and not code_entry(conn, req):
                 return
             desktop = "xfce"
             if req["op"] == "login" and req["user"].startswith("picker"):

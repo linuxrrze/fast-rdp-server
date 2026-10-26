@@ -491,10 +491,14 @@ code brings the field back with "Wrong code. Attempts left: 2".
   get the approval page only.
 
 **Not tested yet:** typing the code in real clients (mstsc, Windows App on macOS/iOS,
-Remmina): which keyboard events they send to the panel. The proxy module's part is built
-and syntax-checked against FreeRDP 3.32.2 with fastrdp's patches, and its key handling
-has unit tests (`tests/proxy-module/test_code.c`); see [backlog.md](backlog.md) W5 and
-the lab plan [lab-waiting-screen-input.md](lab-waiting-screen-input.md).
+Remmina): which keyboard events they send to the panel. The proxy module's part runs end
+to end with a FreeRDP client inside the real `freerdp-proxy` (3.32.2 with fastrdp's
+patches, `tests/proxy-e2e/run.sh` against a fake broker: top-row, keypad and Unicode
+digits, Backspace, Enter, a wrong code and a new field, keys from before the prompt
+ignored, no code sent once the approval page or too many wrong codes closed the field,
+codes never logged), and its key handling has unit tests (`tests/proxy-module/test_code.c`);
+see [backlog.md](backlog.md) W5 and the lab plan
+[lab-waiting-screen-input.md](lab-waiting-screen-input.md).
 
 **Input trace for the client lab** (`fastrdp_proxy_input_trace`, proxy.ini
 `[FastRDP] InputTrace`, default `false`, **lab only**): the proxy logs one line per input

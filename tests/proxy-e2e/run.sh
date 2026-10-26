@@ -201,6 +201,24 @@ picker pickerchan E2E_CHANNEL_DATA=65536 E2E_KEYS=2 & pids+=($!)
 picker pickerflood E2E_CHANNEL_DATA=6291456 & pids+=($!)
 # proxy A has the waiting screen switched off: no picker offered, the login goes on as before
 E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 pickeroff good "" > pickeroff.out 2>&1 & pids+=($!)
+# Code field ([mfa] code_or_web, backlog W5 (b); proxy E): the fake broker prompts 1.5 s after
+# the login with a field for 6 digits (codeenter: until Enter) and takes 123456; the clients
+# type 2.5 s after connecting, a second batch at 5 s.
+code() { # user [VAR=value ...]
+    local u=$1; shift
+    env E2E_KEEP_S=12 "$@" timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
+}
+code codeok E2E_KEYS=1,2,3,4,5,6 & pids+=($!)
+code codewrong E2E_KEYS=6,5,4,3,2,1 E2E_KEYS2=1,2,3,4,5,6 & pids+=($!)
+# keys typed before the prompt do not count; keypad with NumLock, Backspace, Enter
+code codeenter E2E_EARLY_KEYS=9,9 E2E_NUMLOCK=1 E2E_KEYS=kp1,kp2,kp3,kp4,kp5,kp7,bksp,kp6,enter & pids+=($!)
+code codeunicode E2E_KEYS=u1,u2,u3,u4,u5,u6 & pids+=($!)
+# the approval page answers 1.5 s after the prompt, the code is typed after that
+code codeweb E2E_KEYS=1,2,3,4,5,6 E2E_INPUT_AT_MS=4500 & pids+=($!)
+# a wrong code, then too many: the broker's next prompt has no field, the retyped code stays
+code codelock E2E_KEYS=6,5,4,3,2,1 E2E_KEYS2=1,2,3,4,5,6 & pids+=($!)
+# proxy A without the waiting screen: no field offered
+E2E_KEEP_S=6 E2E_KEYS=1,2,3,4,5,6 timeout 30 ./client 127.0.0.1 23389 codeoff good "" > codeoff.out 2>&1 & pids+=($!)
 wait "${pids[@]}"
 sleep 1
 
@@ -218,20 +236,22 @@ pr = lambda user: [r for r in a if r["op"] == "progresswait" and r["user"] == us
 pc = {r["user"]: r for r in a if r["op"] == "pickerchoice"}
 hold = lambda log: [r for r in log if r["op"] == "holdwait"]
 sid = lambda user: [r["session_id"] for r in la if r["user"] == user]
+cc = {r["user"]: r for r in a if r["op"] == "codeentry"}
+codes = lambda user: [c.get("code") for c in cc.get(user, {}).get("codes", [])]
 chose = lambda user: (pc[user].get("line") or {}).get("desktop", "none") if pc.get(user, {}).get("line") else "none"
 sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-expect "front broker saw the expected logins"         'len(la) == 40'
+expect "front broker saw the expected logins"         'len(la) == 47'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
 expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not any(r["user"] in ("railuser", "pinuser") for r in la)'
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 26 logins reach proxy B: 24 through proxy A, the unread-keys login through proxy G and
+# 33 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G and
 # the picker login through proxy F
-expect "back-end received the token, not the password" 'len(lb) == 26 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+expect "back-end received the token, not the password" 'len(lb) == 33 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -271,6 +291,20 @@ expect "picker: channel data above the cap: login abandoned, broker connection c
     'pc["pickerflood"]["closed"] and pc["pickerflood"].get("line") is None'
 expect "picker: chosen logins reached the back-end, the abandoned one not (pickerobserve: proxy F)" \
     'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff", "pickerobserve"])'
+expect "code field offered with the waiting screen, not without" \
+    'all(r.get("code_entry") == 1 for r in la if r["user"].startswith("code") and r["user"] != "codeoff") and "code_entry" not in [r for r in la if r["user"] == "codeoff"][0] and not cc["codeoff"]["asked"]'
+expect "code field: six top-row digits sent as one code" 'codes("codeok") == ["123456"] and cc["codeok"]["accepted"]'
+expect "code field: a wrong code, a new field, then the right code" \
+    'codes("codewrong") == ["654321", "123456"] and cc["codewrong"]["accepted"]'
+expect "code field until Enter: keys from before the prompt ignored, keypad with NumLock, Backspace" \
+    'codes("codeenter") == ["123456"] and cc["codeenter"]["accepted"]'
+expect "code field: Unicode digits"                    'codes("codeunicode") == ["123456"] and cc["codeunicode"]["accepted"]'
+expect "code field closed by the approval page: a code typed then never reaches the broker" \
+    'cc["codeweb"]["codes"] == [] and not cc["codeweb"]["closed"]'
+expect "code field gone after too many wrong codes: the retyped code never reaches the broker" \
+    'codes("codelock") == ["654321"] and not cc["codelock"]["closed"]'
+expect "code field: every code login reached the back-end" \
+    'sorted(r["user"] for r in lb if r["user"].startswith("code")) == ["codeenter", "codelock", "codeoff", "codeok", "codeunicode", "codeweb", "codewrong"]'
 expect "Shutdown Request during the session: session end reported, back-end connection closed" \
     'hold(a)[0]["closed"] is False and hold(b)[0]["closed"] and hold(b)[0]["waited"] < 2.9 and any(r["op"] == "end" and r["session_id"] in sid("holdsession") for r in a)'
 expect "Shutdown Request during the picker: login abandoned, broker connection closed" \
@@ -350,6 +384,14 @@ logged "malformed QR code from the broker left out, login goes on" proxy-e.log \
     "malformed QR code from the broker left out"
 logged "too many progress messages logged" proxy-e.log "more than 32 progress messages"
 logged "picker: choice logged" proxy-e.log "desktop picker: gnome (click)"
+logged "code field shown with its length" proxy-e.log "code field shown (6 digits)"
+logged "code field until Enter shown" proxy-e.log "code field shown (0 digits)"
+logged "second code of a login sent" proxy-e.log "code 2 from the waiting screen sent to the broker"
+if ! grep -qE "123456|654321" proxy-a.log proxy-e.log; then
+    echo "ok   codes never logged by the proxy"
+else
+    echo "FAIL a code appears in the proxy log"; fail=1
+fi
 logged "picker: closed client logged" proxy-e.log "front connection closed during the desktop picker"
 logged "picker: channel data cap logged" proxy-e.log "more than 4194304 bytes of channel data during the desktop picker"
 # the client really sent the data: without it the pickerchan choice check passes anyway
