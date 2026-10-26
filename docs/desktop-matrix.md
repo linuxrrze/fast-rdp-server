@@ -121,6 +121,12 @@ row; Esc starts the preselected one. When the countdown (`fastrdp_desktop_picker
 moved the selection. Keys typed before the picker showed (during the MFA wait) do not
 count.
 
+GNOME cannot start while the user has another graphical session (an xrdp/X11 desktop:
+GDM refuses its headless session). The picker then marks GNOME `(log out of the other
+desktop first)` and preselects another desktop (`desktop picker: gnome desktops cannot
+start now: logind session …` in the broker's log); chosen anyway, the login is refused
+with the same reason. A running GNOME session is never marked.
+
 | `fastrdp_desktop_picker` | The picker is shown |
 |---|---|
 | `never` (default) | never; the order above decides |

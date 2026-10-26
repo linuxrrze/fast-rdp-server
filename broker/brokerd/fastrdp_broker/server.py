@@ -227,6 +227,22 @@ class Broker:
                 log.info("%s: %s session state unknown: %s", user.name, name, str(exc) or type(exc).__name__)
         return running
 
+    async def blocked_backends(self, user: LocalUser, backends: set[str], running: dict[str, str]) -> dict[str, str]:
+        """back-end -> what keeps a new session of it from starting (Backend.blocked_by),
+        for those of `backends` without a running session (a back-end that cannot tell in
+        5 s counts as not blocked: it refuses at the start then)."""
+        blocked = {}
+        for name in sorted(backends - running.keys()):
+            try:
+                reason = await asyncio.wait_for(self.backends[name].blocked_by(user), 5)
+            except Exception as exc:  # noqa: BLE001 - only a hint for the picker
+                log.info("%s: whether a %s session can start is unknown: %s", user.name, name,
+                         str(exc) or type(exc).__name__)
+                continue
+            if reason:
+                blocked[name] = reason
+        return blocked
+
     async def pick_desktop(self, user: LocalUser, msg: dict, chosen: str, source: str, lang: str,
                            ask: AskDesktop) -> str:
         """[broker] desktop_picker: the user picks the desktop on the proxy's waiting screen
@@ -261,6 +277,13 @@ class Broker:
                 log.info("%s: no desktop picker: reconnecting to the running %s session (%s)",
                          user.name, default, self.cfg.desktops[default].backend)
                 return default
+        # a desktop whose back-end cannot start now (GNOME beside an X11 session, A6) is
+        # marked and not preselected; choosing it still reaches the back-end's refusal
+        blocked = await self.blocked_backends(user, {d.backend for d in allowed}, running)
+        for backend, reason in blocked.items():
+            log.info("%s: desktop picker: %s desktops cannot start now: %s", user.name, backend, reason)
+        if self.cfg.desktops[default].backend in blocked:
+            default = next((d.name for d in allowed if d.backend not in blocked), default)
         # at most 9 rows (keys 1-9), the preselected one among them
         rows = allowed[:9]
         if default not in {d.name for d in rows}:
@@ -271,6 +294,7 @@ class Broker:
             options.append({
                 "name": d.name, "label": d.label or d.name, "running": other == d.name,
                 "reconnects": (self.cfg.desktops[other].label or other) if other and other != d.name else None,
+                "blocked": d.backend in blocked,
             })
         timeout = self.cfg.broker.desktop_picker_timeout
         log.info("%s: desktop picker: %s, %s preselected, %ds", user.name,
@@ -288,6 +312,10 @@ class Broker:
                 or not identity.desktop_allowed(self.cfg, desktop, user):
             log.warning("%s: desktop picker answer %r was not offered; %s", user.name, desktop, default)
             return default
+        if self.cfg.desktops[desktop].backend in blocked:
+            log.info("%s: desktop %s chosen in the desktop picker although it cannot start now (%s)",
+                     user.name, desktop, blocked[self.cfg.desktops[desktop].backend])
+            return desktop
         log.info("%s: desktop %s chosen in the desktop picker", user.name, desktop)
         return desktop
 

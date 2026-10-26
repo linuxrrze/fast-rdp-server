@@ -150,6 +150,7 @@ qr_code = true                   # QR code of approve_url?login=<id>, to approve
 #picker_countdown = "Weiter in"
 #picker_running = "{desktop} (läuft)"
 #picker_reconnects = "{desktop} (öffnet das laufende {running})"
+#picker_blocked = "{desktop} (erst anderen Desktop abmelden)"
 # Code field (mode code_or_web); code_wrong also {count} (attempts left):
 #code_label = "Authenticator-Code:"
 #code_checking = "Code wird geprüft…"

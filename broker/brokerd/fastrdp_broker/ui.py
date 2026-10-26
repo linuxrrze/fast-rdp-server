@@ -23,8 +23,9 @@ is no credential; the page still wants the user's fresh MFA sign-in.
 The desktop picker ([broker] desktop_picker, Broker.pick_desktop) uses picker_title (the
 lines above the rows; {desktop}: the preselected one), picker_hint (one line below them,
 cut at the panel's width), picker_countdown, and for the rows picker_running (the
-desktop of a running session) and picker_reconnects (another desktop of the same
-back-end: choosing it reconnects to the running {running}).
+desktop of a running session), picker_reconnects (another desktop of the same
+back-end: choosing it reconnects to the running {running}) and picker_blocked (a desktop
+that cannot start now: GNOME while the user has another graphical session).
 
 [mfa] mode code_or_web uses mfa_code_or_web and, for the code field the module draws
 below the text, code_label (before the masked digits), code_checking (while Keycloak
@@ -42,7 +43,7 @@ from .config import UiSection
 
 TEXT_KEYS = ("mfa_push", "mfa_web", "mfa_push_or_web", "mfa_code_or_web", "qr_hint", "session_start",
              "countdown", "picker_title", "picker_hint", "picker_countdown", "picker_running",
-             "picker_reconnects", "code_label", "code_checking", "code_wrong", "code_unavailable",
+             "picker_reconnects", "picker_blocked", "code_label", "code_checking", "code_wrong", "code_unavailable",
              "code_blocked", "code_no_otp", "code_off")
 PLACEHOLDERS = ("user", "approve_url", "timeout", "method", "desktop", "code", "running", "count")
 MAX_TEMPLATE = 2000
@@ -80,6 +81,7 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "picker_countdown": "Continuing in",
         "picker_running": "{desktop} (running)",
         "picker_reconnects": "{desktop} (opens the running {running})",
+        "picker_blocked": "{desktop} (log out of the other desktop first)",
         "code_label": "Authenticator code:",
         "code_checking": "Checking the code…",
         "code_wrong": "Wrong code. Attempts left: {count}",
@@ -118,6 +120,7 @@ BUILTIN_TEXTS: dict[str, dict[str, str]] = {
         "picker_countdown": "Weiter in",
         "picker_running": "{desktop} (läuft)",
         "picker_reconnects": "{desktop} (öffnet das laufende {running})",
+        "picker_blocked": "{desktop} (erst anderen Desktop abmelden)",
         "code_label": "Authenticator-Code:",
         "code_checking": "Code wird geprüft…",
         "code_wrong": "Falscher Code. Verbleibende Versuche: {count}",
@@ -235,13 +238,16 @@ class WaitingTexts:
 
     def picker(self, lang: str, user: str, options: list[dict], default: str, timeout: int) -> dict:
         """{"progress": "choose_desktop", ...} (protocol.py). `options`: {"name", "label",
-        "running": bool, "reconnects": label of the same back-end's running desktop or None};
+        "running": bool, "reconnects": label of the same back-end's running desktop or None,
+        "blocked": bool (the desktop cannot start now)};
         `default`: the preselected name."""
         rows = []
         for o in options:
             label = o["label"]
             if o.get("running"):
                 label = self.text(lang, "picker_running", user=user, desktop=label, running=label)
+            elif o.get("blocked"):
+                label = self.text(lang, "picker_blocked", user=user, desktop=label)
             elif o.get("reconnects"):
                 label = self.text(lang, "picker_reconnects", user=user, desktop=label, running=o["reconnects"])
             rows.append({"name": o["name"], "label": label[:MAX_OPTION_LABEL], "running": bool(o.get("running"))})

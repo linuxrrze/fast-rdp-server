@@ -575,8 +575,10 @@ Keys: `mfa_push`, `mfa_web`, `mfa_push_or_web`, `mfa_code_or_web`, `qr_hint`,
 `session_start`, `countdown`, for the code field `code_label`, `code_checking`,
 `code_wrong` (`{count}`: attempts left), `code_unavailable`, `code_blocked` (too many wrong codes), `code_no_otp` (no authenticator app in Keycloak), `code_off` (the code check is unusable; these three without a field), and for the desktop picker `picker_title` (above the rows), `picker_hint`
 (one line below them, cut at the panel's width), `picker_countdown`, `picker_running`
-(a running session's desktop: `{desktop} (running)`) and `picker_reconnects` (another
-X11 desktop while an xrdp session runs: `{desktop} (opens the running {running})`);
+(a running session's desktop: `{desktop} (running)`), `picker_reconnects` (another
+X11 desktop while an xrdp session runs: `{desktop} (opens the running {running})`) and
+`picker_blocked` (GNOME while the user has another graphical session: `{desktop} (log
+out of the other desktop first)`);
 placeholders `{user}` `{approve_url}` `{timeout}` `{method}` `{desktop}` `{code}` (the
 web approval's two-digit code; a line naming it is left out without one) `{running}`
 `{count}` (the picker's rows); `\n` starts a new line; a language without some keys

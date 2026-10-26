@@ -69,9 +69,10 @@ Proxy module -> broker.sock:
       the client's input: WaitingScreen, patches/freerdp/0007), names no desktop
       ("desktop_hint"), is no web login, the user may use more than one desktop and, with
       "if_multiple", has not chosen one before (desktop_choice() source). 2..9
-      options in [desktops] order ("label" with the running/reconnects marks of [ui]
-      picker_running, picker_reconnects; "running": the desktop of a running session),
-      "default" preselected (one of them), "timeout_s" 3..60. The module answers once:
+      options in [desktops] order ("label" with the running/reconnects/blocked marks of
+      [ui] picker_running, picker_reconnects, picker_blocked; "running": the desktop of a
+      running session), "default" preselected (one of them; a blocked desktop, which
+      cannot start now, only if no other can), "timeout_s" 3..60. The module answers once:
         {"op": "choice", "desktop": str|null}
       null (Esc, or the countdown ran out) = "default". The broker waits timeout_s + 5
       seconds; no answer, a name it did not offer, or one the user may no longer use gives

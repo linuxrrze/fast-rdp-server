@@ -197,7 +197,7 @@ fastrdp_ui_language: en
 fastrdp_ui_language_from_keyboard: true
 # Own texts: {language: {key: text}}, keys mfa_push, mfa_web, mfa_push_or_web,
 # mfa_code_or_web, qr_hint, session_start, countdown, for the desktop picker picker_title,
-# picker_hint, picker_countdown, picker_running, picker_reconnects and for the code field
+# picker_hint, picker_countdown, picker_running, picker_reconnects, picker_blocked and for the code field
 # code_label, code_checking, code_wrong, code_unavailable, code_blocked, code_no_otp, code_off; placeholders {user} {approve_url}
 # {timeout} {method} {desktop} {code} (the web approval's two-digit code) {running}
 # {count} (broker/brokerd/fastrdp_broker/ui.py).

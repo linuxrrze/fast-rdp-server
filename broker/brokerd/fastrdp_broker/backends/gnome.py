@@ -42,20 +42,25 @@ class GnomeBackend(Backend):
             and netcheck.listener_uids(session.port) == {user.uid}
         )
 
-    async def _refuse_beside_other_graphical_session(self, user: LocalUser) -> None:
+    async def blocked_by(self, user: LocalUser) -> str | None:
         """GDM refuses a headless session while the user has another open graphical one
         ("There's already an opened session for user ..."; field report 2026-10-24: an
-        xrdp/X11 session, logind type x11, service xrdp-sesman). Say so before starting
-        instead of letting the unit fail five times."""
+        xrdp/X11 session, logind type x11, service xrdp-sesman): those logind sessions."""
         others = [p for p in await sysutil.user_sessions(user.name)
                   if p.get("Type") in GRAPHICAL_TYPES and p.get("Class", "user") == "user"
                   and p.get("State") != "closing"]
-        if others:
-            names = ", ".join(f"{p['Id']} ({p.get('Type')}, {p.get('Service') or 'unknown service'})"
-                              for p in others)
+        if not others:
+            return None
+        return "logind session " + ", ".join(
+            f"{p['Id']} ({p.get('Type')}, {p.get('Service') or 'unknown service'})" for p in others)
+
+    async def _refuse_beside_other_graphical_session(self, user: LocalUser) -> None:
+        """Say so before starting instead of letting the unit fail five times."""
+        blocker = await self.blocked_by(user)
+        if blocker:
             raise BackendError(
                 f"GNOME session for {user.name} cannot start while the user has another graphical "
-                f"session: logind session {names}; log out of it first (an xrdp/X11 desktop: log out "
+                f"session: {blocker}; log out of it first (an xrdp/X11 desktop: log out "
                 f"there or `fastrdpctl logout {user.name}`)")
 
     async def ensure(self, req: LoginRequest) -> Target:

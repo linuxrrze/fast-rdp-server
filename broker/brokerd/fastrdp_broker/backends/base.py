@@ -66,6 +66,11 @@ class Backend:
     async def logout(self, user: LocalUser) -> None:
         raise NotImplementedError
 
+    async def blocked_by(self, user: LocalUser) -> str | None:
+        """What keeps a new session of this back-end from starting for the user now (for
+        the log and the desktop picker), None if nothing does. Default: nothing."""
+        return None
+
     # helpers for per-user loopback back-ends
     def allocate_port(self) -> int:
         lo, hi = self.cfg.broker.port_range

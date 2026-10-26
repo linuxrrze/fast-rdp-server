@@ -54,7 +54,8 @@ class PickerConfigTests(unittest.TestCase):
 class PickerTextTests(unittest.TestCase):
     OPTIONS = [{"name": "xfce", "label": "Xfce", "running": False, "reconnects": "MATE"},
                {"name": "mate", "label": "MATE", "running": True, "reconnects": None},
-               {"name": "gnome", "label": "GNOME", "running": False, "reconnects": None}]
+               {"name": "gnome", "label": "GNOME", "running": False, "reconnects": None},
+               {"name": "gnome2", "label": "GNOME 2", "running": False, "reconnects": None, "blocked": True}]
 
     def test_prompt(self):
         t = ui.WaitingTexts(config.UiSection())
@@ -65,24 +66,26 @@ class PickerTextTests(unittest.TestCase):
         self.assertEqual(msg["options"], [
             {"name": "xfce", "label": "Xfce (opens the running MATE)", "running": False},
             {"name": "mate", "label": "MATE (running)", "running": True},
-            {"name": "gnome", "label": "GNOME", "running": False}])
+            {"name": "gnome", "label": "GNOME", "running": False},
+            {"name": "gnome2", "label": "GNOME 2 (log out of the other desktop first)", "running": False}])
         self.assertEqual(msg["lines"], ["Choose your desktop"])
-        self.assertEqual(msg["hint"], "1-3, arrow keys + Enter, or click. Esc: MATE")
+        self.assertEqual(msg["hint"], "1-4, arrow keys + Enter, or click. Esc: MATE")
         de = t.picker("de", "alice", self.OPTIONS, "gnome", 10)
         self.assertEqual((de["lines"], de["options"][1]["label"], de["hint"][-10:]),
                          (["Desktop auswählen"], "MATE (läuft)", "Esc: GNOME"))
+        self.assertEqual(de["options"][3]["label"], "GNOME 2 (erst anderen Desktop abmelden)")
 
     def test_own_texts_and_limits(self):
         t = ui.WaitingTexts(config.UiSection(texts={"en": {
             "picker_title": "Hello {user}\nPick one of {count} (default {desktop})",
             "picker_running": "{desktop} " + "x" * 80, "picker_hint": "a\nb"}}))
         msg = t.picker("en", "alice", self.OPTIONS, "xfce", 10)
-        self.assertEqual(msg["lines"], ["Hello alice", "Pick one of 3 (default Xfce)"])
+        self.assertEqual(msg["lines"], ["Hello alice", "Pick one of 4 (default Xfce)"])
         self.assertEqual(len(msg["options"][1]["label"]), ui.MAX_OPTION_LABEL)
         self.assertEqual(msg["hint"], "a")    # one line
         for lang, table in ui.BUILTIN_TEXTS.items():
             for key in ("picker_title", "picker_hint", "picker_countdown", "picker_running",
-                        "picker_reconnects"):
+                        "picker_reconnects", "picker_blocked"):
                 with self.subTest(lang=lang, key=key):
                     ui.check_template(table[key])
         with self.assertRaisesRegex(ConfigError, r"unknown placeholder \{password\}"):
@@ -96,6 +99,8 @@ class _PickerHarness(_BrokerHarness):
         self.cfg.broker.desktop_picker = "always"
         self.cfg.broker.desktop_picker_timeout = 10
         self.cfg.broker.session_tgt = "off"  # GNOME/Plasma logins: no PAM TGT step here
+        # GNOME asks logind whether another graphical session blocks it: nothing does here
+        self.broker.backends["gnome"].blocked_by = mock.AsyncMock(return_value=None)
 
     async def picker_login(self, answer=None, *, raw=None, timeout=10, after_prompt=None,
                            raw_first=False, **kw):
@@ -292,6 +297,44 @@ class PickerTests(_PickerHarness, unittest.IsolatedAsyncioTestCase):
             await self.picker_login(None)
         self.assertTrue(any("xrdp session state unknown: TimeoutError" in line for line in logs.output),
                         logs.output)
+
+    async def test_gnome_blocked_by_another_graphical_session(self):
+        # field report 2026-10-24 (A6): GNOME was offered and preselected while an Xfce
+        # session ran; GDM then refused it. Marked now, and not preselected.
+        gnome = self.broker.backends["gnome"]
+        gnome.blocked_by = mock.AsyncMock(return_value="logind session 40 (x11, xrdp-sesman)")
+        self.broker.desktop_prefs.set("alice", "gnome")             # would be preselected
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            progress, reply = await self.picker_login(None)
+        prompt = self.prompts(progress)[0]
+        labels = {o["name"]: (o["label"], o["running"]) for o in prompt["options"]}
+        self.assertEqual(labels["gnome"], ("gnome (log out of the other desktop first)", False))
+        self.assertEqual(labels["xfce"], ("Xfce", False))
+        self.assertEqual(labels["plasma"], ("plasma", False))        # another back-end
+        self.assertEqual((prompt["default"], reply["desktop"]), ("xfce", "xfce"))
+        self.assertTrue(any("gnome desktops cannot start now: logind session 40 (x11, xrdp-sesman)" in line
+                            for line in logs.output), logs.output)
+        # chosen anyway: the back-end's own refusal decides (with its message), logged here
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            _, reply = await self.picker_login("gnome")
+        self.assertEqual((reply["desktop"], self.started()), ("gnome", "gnome"))
+        self.assertTrue(any("desktop gnome chosen in the desktop picker although it cannot start now" in line
+                            for line in logs.output), logs.output)
+        # a running GNOME session is reused, not blocked: the back-end is not asked
+        gnome.blocked_by.reset_mock()
+        self.broker.state.put(Session(user="alice", backend="gnome", desktop="gnome"))
+        progress, reply = await self.picker_login(None)
+        prompt = self.prompts(progress)[0]
+        self.assertEqual((prompt["default"], prompt["options"][5]["label"]), ("gnome", "gnome (running)"))
+        gnome.blocked_by.assert_not_awaited()
+        # a back-end that cannot tell counts as not blocked, logged
+        self.broker.state.drop("alice", "gnome")
+        gnome.blocked_by = mock.AsyncMock(side_effect=OSError("loginctl"))
+        with self.assertLogs("fastrdp.broker", "INFO") as logs:
+            progress, reply = await self.picker_login(None)
+        self.assertEqual((self.prompts(progress)[0]["default"], reply["desktop"]), ("gnome", "gnome"))
+        self.assertTrue(any("whether a gnome session can start is unknown: loginctl" in line
+                            for line in logs.output), logs.output)
 
     async def test_running_skip(self):
         self.cfg.broker.desktop_picker_when_running = "skip"

@@ -717,6 +717,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             {"Id": "7", "Type": "tty", "Class": "user", "Service": "sshd", "State": "active"},
             {"Id": "40", "Type": "x11", "Class": "user", "Service": "xrdp-sesman", "State": "online"},
         ]
+        with p:   # what the desktop picker shows (A6 c)
+            self.assertEqual(await b.blocked_by(self.req("gnome").user), "logind session 40 (x11, xrdp-sesman)")
         with p, self.assertRaisesRegex(BackendError, r"another graphical session: logind session 40 "
                                                      r"\(x11, xrdp-sesman\); log out of it first"):
             await b.ensure(self.req("gnome"))
@@ -725,6 +727,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         # a closing one, SSH and the user manager do not count
         m["user_sessions"].return_value[2]["State"] = "closing"
         with p:
+            self.assertIsNone(await b.blocked_by(self.req("gnome").user))
             await b.ensure(self.req("gnome"))
         m["start_unit"].assert_awaited()
 
