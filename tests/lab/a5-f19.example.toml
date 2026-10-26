@@ -32,6 +32,8 @@ totp_state = "~/lab-secrets/labuser1.step"     # one code per time step (otpPoli
 #                                              # phone after the QR code (tests/lab/approve.py), not
 #                                              # the code; also --connection2 web
 # password_file = "~/lab-secrets/labuser1.password"   # the Keycloak password (connection2 = "web")
+# passkey_file = "~/lab-secrets/labuser1.passkey"     # or a software passkey (tests/lab/passkey.py,
+#                                              # approve.py --passkey-enrol): no password, no code step
 # idp_user = "labuser1"                        # Keycloak user name, if not name
 
 [web]                                          # connection2 = "web" only

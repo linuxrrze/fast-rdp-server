@@ -328,39 +328,46 @@ class Connection2Web(unittest.TestCase):
         self.assertEqual(checks["c2.approved"], "fail")
 
     def test_web_decide_wiring(self):
-        """[user]/[web] reach approve.py: Keycloak name, password file, TOTP state, pins."""
+        """[user]/[web] reach approve.py: Keycloak name, password file or passkey file, TOTP
+        state, pins."""
         approve = f19.approve_module()
         seen = {}
 
         class FakeApprover:
-            def __init__(self, url, user, password, code, browser):
-                seen.update(url=url, user=user, password=password, browser=browser)
+            def __init__(self, url, user, password, code, browser, passkeys=None):
+                seen.update(url=url, user=user, password=password, browser=browser, passkeys=passkeys)
 
             def run(self):
                 return "ran"
         with tempfile.TemporaryDirectory() as d:
             Path(d, "pw").write_text("secret pw\n")
             Path(d, "seed").write_text("JBSWY3DPEHPK3PXP\n")
-            cfg = {"user": {"name": "labuser1", "idp_user": "labuser1@lab", "password_file": f"{d}/pw",
-                            "totp_secret_file": f"{d}/seed", "totp_state": f"{d}/step"},
-                   "web": {"cert_sha256": "AB" * 32}, "windows": {"client_name": "W"}}
-            test = f19.F19(cfg, Path(d), None, None, f19.Report())
-            test.approve_url = "https://rdp1.lab/web/approve"
+            approve.passkey.KeyFile(f"{d}/key", approve.passkey.Passkey.new("kc.lab", b"u")).close()
+            user = {"name": "labuser1", "idp_user": "labuser1@lab", "password_file": f"{d}/pw",
+                    "totp_secret_file": f"{d}/seed", "totp_state": f"{d}/step"}
             real = approve.Approver
             approve.Approver = FakeApprover
             try:
-                self.assertEqual(test.web_decide(), "ran")
+                for u in (user, {**{k: v for k, v in user.items() if k != "password_file"}, "passkey_file": f"{d}/key"}):
+                    cfg = {"user": u, "web": {"cert_sha256": "AB" * 32}, "windows": {"client_name": "W"}}
+                    test = f19.F19(cfg, Path(d), None, None, f19.Report())
+                    test.approve_url = "https://rdp1.lab/web/approve"
+                    self.assertEqual(test.web_decide(), "ran")
+                    if "password_file" in u:
+                        self.assertEqual((seen["url"], seen["user"], seen["password"], seen["passkeys"]),
+                                         ("https://rdp1.lab/web/approve", "labuser1@lab", "secret pw", None))
+                        self.assertTrue(any(isinstance(h, approve._PinnedHandler)
+                                            for h in seen["browser"].opener.handlers))
+                    else:
+                        self.assertEqual((seen["password"], seen["passkeys"].path), (None, f"{d}/key"))
             finally:
                 approve.Approver = real
-        self.assertEqual((seen["url"], seen["user"], seen["password"]),
-                         ("https://rdp1.lab/web/approve", "labuser1@lab", "secret pw"))
-        self.assertTrue(any(isinstance(h, approve._PinnedHandler) for h in seen["browser"].opener.handlers))
 
     def test_config(self):
         with tempfile.TemporaryDirectory() as d:
             base = ('[mcp]\nurl="http://x/"\nauth_key_file="k"\n[windows]\nrdp_file="r"\nclient_name="c"\n'
                     'helper_dir="h"\n[server]\nssh="s"\n[user]\nname="u"\ntotp_secret_file="t"\n')
-            for extra, ok in (("", True), ('connection2="web"\npassword_file="p"\n', True),
+            for extra, ok in (("", True), ('connection2="web"\npassword_file="p"\n', True), ('connection2="web"\npasskey_file="k"\n', True),
                               ('connection2="web"\n', False), ('connection2="qr"\n', False)):
                 with self.subTest(extra):
                     Path(d, "c.toml").write_text(base + extra)

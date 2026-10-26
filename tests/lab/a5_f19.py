@@ -20,8 +20,8 @@
 #      window, then the code and the desktop again (the A5 symptom: a black window);
 #      connection2 = "web": instead of the code, the panel still shown, then the login
 #      approved like a phone after its QR code (tests/lab/approve.py: Keycloak password +
-#      TOTP, Approve on <approve_url>?login=<id>), the broker's "approved via the
-#      login-bound link"
+#      TOTP or [user] passkey_file, Approve on <approve_url>?login=<id>), the broker's
+#      "approved via the login-bound link"
 #   X  as above
 #   3  Connect, the X while the panel waits: the broker abandons the login at once
 # Before each connection the user's reconnect grace is cleared (fastrdpctl clear-grace),
@@ -574,10 +574,12 @@ class F19:
         pins = w.get("cert_sha256") or []
         code = approve.code_source(u["totp_secret_file"], u.get("totp_state"), 8, False,
                                    u.get("algorithm"), u.get("digits"), u.get("period"))
+        password = approve.read_password(u["password_file"]) if "password_file" in u else None
+        passkeys = approve.Passkeys(u["passkey_file"]) if "passkey_file" in u else None
         browser = approve.Browser(w.get("ca_file") and os.path.expanduser(w["ca_file"]),
                                   tuple([pins] if isinstance(pins, str) else pins))
-        return approve.Approver(self.approve_url, u.get("idp_user", self.user),
-                                approve.read_password(u["password_file"]), code, browser).run()
+        return approve.Approver(self.approve_url, u.get("idp_user", self.user), password, code, browser,
+                                passkeys=passkeys).run()
 
     def login_web(self, conn: dict) -> None:
         """Connection 2 approved on the approval page instead of the code (connection2 = "web")."""
@@ -736,8 +738,8 @@ def load_config(path: Path) -> dict:
 def check_user(u: dict, path: Path) -> None:
     if u.get("connection2", "code") not in ("code", "web"):
         raise SetupError(f'{path}: [user] connection2 is "code" or "web"')
-    if u.get("connection2") == "web" and "password_file" not in u:
-        raise SetupError(f'{path}: [user] password_file missing (connection2 = "web")')
+    if u.get("connection2") == "web" and not ({"password_file", "passkey_file"} & set(u)):
+        raise SetupError(f'{path}: [user] password_file or passkey_file missing (connection2 = "web")')
 
 
 def main(argv: list[str] | None = None) -> int:

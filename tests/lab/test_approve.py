@@ -3,7 +3,9 @@
 """Offline tests of tests/lab/approve.py: the QR code flow against the real webgate
 (broker/webgate, its approval page) with a fake broker on a Unix socket and a fake
 Keycloak that serves the login and OTP forms like its v2 login theme and checks the
-TOTP (no step twice: otpPolicyCodeReusable false). Without python3-cryptography the
+TOTP (no step twice: otpPolicyCodeReusable false), and the passkey forms (username page
+with passkeys, registration as required action) with their WebAuthn checks: challenge,
+origin, rpId hash, flags, signature, a growing sign count. Without python3-cryptography the
 webgate's guacjson/webpush (not on the approval path) are stubbed."""
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ _spec = importlib.util.spec_from_file_location("fastrdp_lab_approve", HERE / "ap
 ap = importlib.util.module_from_spec(_spec)
 sys.modules["fastrdp_lab_approve"] = ap   # dataclasses look the module up
 _spec.loader.exec_module(ap)
+pk = ap.passkey
 
 sys.path.insert(0, str(HERE.parents[1] / "broker" / "webgate"))
 try:
@@ -53,6 +56,7 @@ logging.getLogger("fastrdp.webgate").addHandler(logging.NullHandler())
 logging.getLogger("fastrdp.webgate").propagate = False
 
 USER, PASSWORD = "labuser1", "pw: not in any output"
+USER_ID = "6f1c0d3e-5b7a-4c2e-9d10-labuser1fake"   # Keycloak's user id = the passkey's user handle
 SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 MINE, OTHER = "QRcodeOnMyScreen_0123A", "SomebodyElsesLogin-987"
 
@@ -66,6 +70,10 @@ class FakeKeycloak(http.server.BaseHTTPRequestHandler):
     used: set = set()        # TOTP steps used (otpPolicyCodeReusable false)
     posts: list = []         # (step, form) of every login-actions POST
     tamper_state = False
+    passkey_login = False    # the username page offers passkeys (webauth form)
+    register_passkey = False  # required action webauthn-register-passwordless after the OTP
+    credentials: dict = {}   # credential id -> {"pub": (x, y), "count": int}
+    rp_id = "127.0.0.1"
 
     def log_message(self, *a):
         pass
@@ -88,9 +96,19 @@ class FakeKeycloak(http.server.BaseHTTPRequestHandler):
         if s["step"] == "password":
             err = (f'<div class="pf-v5-c-alert pf-m-danger"><span class="pf-v5-c-alert__title kc-feedback-text">'
                    f"{error}</span></div>" if error else "")
-            body = (f'{err}<form id="webauth" action="{action}" method="post">'   # passkey autofill
-                    '<input type="hidden" id="clientDataJSON" name="clientDataJSON">'
-                    '<input type="hidden" id="username" name="username"></form>'
+            if self.passkey_login:
+                s["challenge"] = pk.b64u(secrets.token_bytes(32))
+                webauth = ('<form id="webauth" action="{a}" method="post">' + "".join(
+                    f'<input type="hidden" id="{n}" name="{n}">' for n in (
+                        "clientDataJSON", "authenticatorData", "signature", "credentialId", "userHandle", "error"))
+                    + '</form><script type="module">const args = {{ isUserIdentified : false, '
+                    f'challenge : "{s["challenge"]}", userVerification : "required", rpId : "{self.rp_id}", '
+                    'createTimeout : 0 }};</script>').format(a=action)
+            else:
+                webauth = (f'<form id="webauth" action="{action}" method="post">'   # passkey autofill off
+                           '<input type="hidden" id="clientDataJSON" name="clientDataJSON">'
+                           '<input type="hidden" id="username" name="username"></form>')
+            body = (f'{err}{webauth}'
                     f'<form id="kc-form-login" onsubmit="login.disabled = true; return true;" '
                     f'action="{action}" method="post" novalidate="novalidate">'
                     '<input type="hidden" id="id-hidden-input" name="credentialId">'
@@ -99,6 +117,19 @@ class FakeKeycloak(http.server.BaseHTTPRequestHandler):
                     '<input type="checkbox" id="rememberMe" name="rememberMe">'
                     '<button class="pf-v5-c-button pf-m-primary" name="login" id="kc-login" type="submit">'
                     "Sign In</button></form>")
+        elif s["step"] == "register":
+            s["challenge"] = pk.b64u(secrets.token_bytes(32))
+            err = f'<div class="pf-v5-c-alert"><span class="kc-feedback-text">{error}</span></div>' if error else ""
+            body = (f'{err}<form id="register" class="pf-v5-c-form" action="{action}" method="post">' + "".join(
+                f'<input type="hidden" id="{n}" name="{n}"/>' for n in (
+                    "clientDataJSON", "attestationObject", "publicKeyCredentialId", "authenticatorLabel",
+                    "transports", "authenticatorAttachment", "error")) + '</form>'
+                    '<script type="module">const args = { challenge : "' + s["challenge"] + '", userid : "'
+                    + pk.b64u(USER_ID.encode()) + f'", username : "{USER}", signatureAlgorithms : [-7, -257], '
+                    f'rpEntityName : "lab", rpId : "{self.rp_id}", attestationConveyancePreference : "not specified", '
+                    'authenticatorAttachment : "not specified", requireResidentKey : "Yes", '
+                    'userVerificationRequirement : "required" };</script>'
+                    '<input type="submit" class="pf-v5-c-button" id="registerWebAuthn" value="Register"/>')
         else:
             err = (f'<span id="input-error-otp-code" class="pf-v5-c-helper-text__item-text" aria-live="polite">'
                    f"{error}</span>" if error else "")
@@ -144,15 +175,66 @@ class FakeKeycloak(http.server.BaseHTTPRequestHandler):
         if q.get("session_code") != s["code"] or q.get("execution") != f"e-{s['step']}":
             return self.sorry("Action expired. Please continue with login now.")
         type(self).posts.append((s["step"], form))
+        if s["step"] == "password" and form.get("authenticatorData"):
+            if not self.passkey_ok(s, form):
+                return self.form_page(sid, "Failed to authenticate by the Passkey.")
+            return self.complete(sid, s)
         if s["step"] == "password":
             if form.get("username") != USER or form.get("password") != PASSWORD:
                 return self.form_page(sid, "Invalid username or password.")
             s["step"] = "otp"
             return self.form_page(sid)
+        if s["step"] == "register":
+            if not self.registration_ok(s, form):
+                return self.form_page(sid, "Failed to register your Passkey.")
+            return self.complete(sid, s)
         step = self.valid_step(form.get("otp", ""))
         if step is None:
             return self.form_page(sid, "Invalid authenticator code.")
         self.used.add(step)
+        if self.register_passkey:
+            s["step"] = "register"
+            return self.form_page(sid)
+        return self.complete(sid, s)
+
+    def client_data_ok(self, s, form, kind):
+        cd = json.loads(pk.unb64u(form["clientDataJSON"]))
+        origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(self.issuer))
+        return (cd["type"], cd["challenge"], cd["origin"]) == (kind, s.pop("challenge", None), origin)
+
+    def passkey_ok(self, s, form):
+        """webauthn4j's checks of an assertion, as far as a fake goes."""
+        cred = self.credentials.get(form.get("credentialId"))
+        auth = pk.unb64u(form["authenticatorData"])
+        if cred is None or not self.client_data_ok(s, form, "webauthn.get"):
+            return False
+        count = int.from_bytes(auth[33:37], "big")
+        if auth[:32] != hashlib.sha256(self.rp_id.encode()).digest() or auth[32] & 0x05 != 0x05 \
+                or count <= cred["count"] or pk.unb64u(form["userHandle"]) != USER_ID.encode():
+            return False
+        if not ecdsa_verify(cred["pub"], auth + hashlib.sha256(pk.unb64u(form["clientDataJSON"])).digest(),
+                            pk.unb64u(form["signature"])):
+            return False
+        cred["count"] = count
+        return True
+
+    def registration_ok(self, s, form):
+        if not self.client_data_ok(s, form, "webauthn.create"):
+            return False
+        att = cbor_decode(pk.unb64u(form["attestationObject"]))
+        auth = att["authData"]
+        if att["fmt"] != "none" or auth[:32] != hashlib.sha256(self.rp_id.encode()).digest() or auth[32] & 0x45 != 0x45:
+            return False
+        n = int.from_bytes(auth[53:55], "big")
+        cred_id, cose = auth[55:55 + n], cbor_decode(auth[55 + n:])
+        if pk.b64u(cred_id) != form["publicKeyCredentialId"] or (cose[1], cose[3], cose[-1]) != (2, -7, 1):
+            return False
+        self.credentials[pk.b64u(cred_id)] = {"pub": (int.from_bytes(cose[-2], "big"), int.from_bytes(cose[-3], "big")),
+                                              "count": int.from_bytes(auth[33:37], "big"),
+                                              "label": form.get("authenticatorLabel")}
+        return True
+
+    def complete(self, sid, s):
         del self.sessions[sid]
         code = secrets.token_urlsafe(16)
         self.codes[code] = (s["q"], int(time.time()))
@@ -181,6 +263,48 @@ class FakeKeycloak(http.server.BaseHTTPRequestHandler):
                   "auth_time": auth_time, "acr": "mfa", "amr": ["pwd", "otp"], "preferred_username": USER}
         b64 = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()  # noqa: E731
         self.reply(200, json.dumps({"id_token": f"{b64({'alg': 'none'})}.{b64(claims)}.", "access_token": "x"}))
+
+
+def ecdsa_verify(pub, msg, der):
+    """ES256 verification (P-256 arithmetic of tests/lab/passkey.py)."""
+    if der[0] != 0x30 or der[2] != 0x02:
+        return False
+    rl = der[3]
+    r = int.from_bytes(der[4:4 + rl], "big")
+    s = int.from_bytes(der[6 + rl:6 + rl + der[5 + rl]], "big")
+    if not (0 < r < pk.N and 0 < s < pk.N):
+        return False
+    w = pow(s, -1, pk.N)
+    e = int.from_bytes(hashlib.sha256(msg).digest(), "big")
+    pt = pk.point_add(pk.point_mul(e * w % pk.N), pk.point_mul(r * w % pk.N, pub))
+    return pt is not None and pt[0] % pk.N == r
+
+
+def cbor_decode(data):
+    """The CBOR subset of attestation objects and COSE keys."""
+    def item(i):
+        major, ai = data[i] >> 5, data[i] & 31
+        i += 1
+        if ai < 24:
+            n = ai
+        else:
+            size = {24: 1, 25: 2, 26: 4, 27: 8}[ai]
+            n, i = int.from_bytes(data[i:i + size], "big"), i + size
+        if major == 0:
+            return n, i
+        if major == 1:
+            return -1 - n, i
+        if major in (2, 3):
+            raw = data[i:i + n]
+            return (raw if major == 2 else raw.decode()), i + n
+        if major == 5:
+            out = {}
+            for _ in range(n):
+                k, i = item(i)
+                out[k], i = item(i)
+            return out, i
+        raise ValueError(f"CBOR major type {major}")
+    return item(0)[0]
 
 
 class FakeBroker(socketserver.ThreadingUnixStreamServer):
@@ -229,6 +353,8 @@ class Lab(unittest.TestCase):
         FakeKeycloak.secret, _ = ap.totp.parse_secret(SECRET)
         FakeKeycloak.sessions, FakeKeycloak.codes, FakeKeycloak.used, FakeKeycloak.posts = {}, {}, set(), []
         FakeKeycloak.tamper_state = False
+        FakeKeycloak.passkey_login = FakeKeycloak.register_passkey = False
+        FakeKeycloak.credentials = {}
         self.broker = FakeBroker(f"{self.tmp}/b.sock")
         cfg = wg_config.parse({
             "webgate": {"public_url": "http://127.0.0.1:1", "broker_socket": f"{self.tmp}/b.sock"},
@@ -251,10 +377,11 @@ class Lab(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
 
-    def approver(self, url="/web/approve", code=None, password=PASSWORD, browser=None):
-        code = code or ap.code_source(self.write("secret", SECRET), self.state, min_left=0,
-                                      sleep=lambda s: None)
-        return ap.Approver(self.base + url, USER, password, code, browser, self.lines.append)
+    def approver(self, url="/web/approve", code=None, password=PASSWORD, browser=None, passkeys=None):
+        if password is not None:
+            code = code or ap.code_source(self.write("secret", SECRET), self.state, min_left=0,
+                                          sleep=lambda s: None)
+        return ap.Approver(self.base + url, USER, password, code, browser, self.lines.append, passkeys)
 
     def write(self, name, text):
         path = f"{self.tmp}/{name}"
@@ -407,6 +534,142 @@ class QrFlow(Lab):
         self.assert_nothing_secret(msg)
 
 
+class PasskeyFlow(Lab):
+    def setUp(self):
+        super().setUp()
+        self.key = f"{self.tmp}/labuser1.passkey"
+
+    def enrol(self):
+        FakeKeycloak.register_passkey = True
+        self.broker.wait(MINE)
+        res = self.approver(f"/web/approve?login={MINE}", passkeys=ap.Passkeys(self.key, enrol=True)).run()
+        FakeKeycloak.register_passkey = False
+        return res
+
+    def stored(self):
+        return pk.Passkey.from_json(Path(self.key).read_text())
+
+    def test_enrol_then_passkey_only(self):
+        res = self.enrol()
+        self.assertEqual(res.decision, "approved")
+        self.assertEqual(oct(os.stat(self.key).st_mode & 0o777), "0o600")
+        key = self.stored()
+        self.assertEqual((key.rp_id, key.user_handle, key.sign_count, key.user_name),
+                         ("127.0.0.1", USER_ID.encode(), 0, USER))
+        [cred] = FakeKeycloak.credentials.values()
+        self.assertEqual(cred["label"], "lab soft passkey")
+        self.assertEqual(self.lines, ["IdP: login form", "IdP: OTP form", "IdP: passkey registration"])
+        # then no password and no code: the username page's passkey sign-in, twice
+        FakeKeycloak.passkey_login = True
+        self.lines.clear()
+        for n, rid in ((1, OTHER), (2, MINE)):
+            self.broker.wait(rid)
+            FakeKeycloak.posts.clear()
+            res = self.approver(f"/web/approve?login={rid}", password=None, passkeys=ap.Passkeys(self.key)).run()
+            self.assertEqual((res.login, res.decision), (rid, "approved"))
+            self.assertEqual([s for s, _ in FakeKeycloak.posts], ["password"])   # the one webauth POST
+            self.assertEqual(sorted(FakeKeycloak.posts[0][1]), ["authenticatorData", "clientDataJSON",
+                                                                "credentialId", "error", "signature", "userHandle"])
+            self.assertEqual(self.stored().sign_count, n)
+        self.assertEqual(self.lines, ["IdP: passkey", "IdP: passkey"])
+        self.assert_nothing_secret(res.message, *self.lines)
+        for t in (repr(self.stored()), res.message):
+            self.assertNotIn(pk.b64u(pk.i2b(self.stored().private_key)), t)
+
+    def test_old_sign_count_refused(self):
+        """A copy of the key file with an older count is a cloned authenticator for Keycloak."""
+        self.enrol()
+        FakeKeycloak.passkey_login = True
+        copy = Path(self.key).read_text()
+        self.broker.wait(MINE)
+        self.approver(password=None, passkeys=ap.Passkeys(self.key)).run(login=MINE)
+        Path(self.key).write_text(copy)
+        self.broker.wait(MINE)
+        with self.assertRaisesRegex(ap.Failed, "did not accept the passkey: Failed to authenticate by the Passkey"):
+            self.approver(password=None, passkeys=ap.Passkeys(self.key)).run(login=MINE)
+        self.assertEqual(len(self.decided()), 2)    # the enrolment's and the first passkey sign-in's
+
+    def test_key_for_another_rp_id(self):
+        self.enrol()
+        FakeKeycloak.passkey_login = True
+        key = self.stored()
+        key.rp_id = "kc.other.example"
+        Path(self.key).write_text(key.to_json())
+        self.broker.wait(MINE)
+        with self.assertRaisesRegex(ap.SetupError, "passkey is for 'kc.other.example', the IdP asks for '127.0.0.1'"):
+            self.approver(password=None, passkeys=ap.Passkeys(self.key)).run(login=MINE)
+        self.assertEqual(self.stored().sign_count, 0)    # nothing signed
+
+    def test_page_rp_id_must_fit_its_host(self):
+        self.enrol()
+        FakeKeycloak.passkey_login = True
+        FakeKeycloak.rp_id = "evil.example"
+        self.addCleanup(setattr, FakeKeycloak, "rp_id", "127.0.0.1")
+        self.broker.wait(MINE)
+        with self.assertRaisesRegex(ap.Failed, "names rpId 'evil.example', not its host"):
+            self.approver(password=None, passkeys=ap.Passkeys(self.key)).run(login=MINE)
+
+    def test_file_mode_and_existing_file(self):
+        Path(self.key).write_text("{}")
+        os.chmod(self.key, 0o644)
+        with self.assertRaisesRegex(ap.SetupError, "readable by group or others"):
+            ap.Passkeys(self.key)
+        with self.assertRaisesRegex(ap.SetupError, "exists"):
+            ap.Passkeys(self.key, enrol=True)
+        os.chmod(self.key, 0o600)
+        with self.assertRaisesRegex(ap.SetupError, "not a passkey file"):
+            ap.Passkeys(self.key)
+
+    def test_registration_refused_removes_the_file(self):
+        FakeKeycloak.register_passkey = True
+        self.broker.wait(MINE)
+        with mock_origin("http://127.0.0.1:9"):
+            with self.assertRaisesRegex(ap.Failed, "did not accept the new passkey: Failed to register"):
+                self.approver(passkeys=ap.Passkeys(self.key, enrol=True)).run(login=MINE)
+        self.assertFalse(os.path.exists(self.key))
+        self.assertEqual(FakeKeycloak.credentials, {})
+
+    def test_registration_asked_without_enrol(self):
+        FakeKeycloak.register_passkey = True
+        self.broker.wait(MINE)
+        with self.assertRaisesRegex(ap.Failed, "asks to register a passkey"):
+            self.approver().run(login=MINE)
+
+    def test_no_passkey_offered_and_no_password(self):
+        self.enrol()
+        self.broker.wait(MINE)
+        with self.assertRaisesRegex(ap.Failed, "asks for a password or a TOTP code"):
+            self.approver(password=None, passkeys=ap.Passkeys(self.key)).run(login=MINE)
+
+    def test_cli(self):
+        self.enrol()
+        FakeKeycloak.passkey_login = True
+        self.broker.wait(MINE)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ap.main(["--url", f"{self.base}/web/approve?login={MINE}", "--user", USER,
+                          "--passkey-file", self.key, "-v"])
+        self.assertEqual((rc, out.getvalue(), err.getvalue()), (0, f"approved {MINE}\n", "approve: IdP: passkey\n"))
+        for argv in (["--passkey-file", self.key, "--passkey-enrol"], [],
+                     ["--password-file", self.key]):
+            with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(ap.main(["--url", self.base, "--user", USER, *argv]), 2)
+
+
+@contextlib.contextmanager
+def mock_origin(origin):
+    """The passkey signs for another origin than Keycloak's (as a phishing page would get)."""
+    real = ap.Passkeys.context
+
+    def fake(resp):
+        return origin, real(resp)[1]
+    ap.Passkeys.context = staticmethod(fake)
+    try:
+        yield
+    finally:
+        ap.Passkeys.context = staticmethod(real)
+
+
 class Cli(Lab):
     def run_main(self, *args, url=None, password=PASSWORD):
         out, err = io.StringIO(), io.StringIO()
@@ -459,6 +722,34 @@ class Units(unittest.TestCase):
         self.assertEqual((f.action, f.method), ("/a?x=1&y=2", "post"))
         self.assertEqual(f.data({"t": "typed"}), [("h", "v"), ("t", "typed"), ("r", "1"), ("b", "1")])
         self.assertEqual(page.message(), "Boom & more")
+
+    def test_rfc6979_p256_sha256(self):
+        """RFC 6979 A.2.5, message "sample" (s as low S)."""
+        d = 0xC9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721
+        self.assertEqual(pk.point_mul(d), (0x60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6,
+                                           0x7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299))
+        r, s = pk.sign_rs(d, b"sample")
+        self.assertEqual(r, 0xEFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716)
+        self.assertEqual(pk.N - s, 0xF7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8)
+        self.assertTrue(ecdsa_verify(pk.point_mul(d), b"sample", pk.der_signature(r, s)))
+
+    def test_cbor_and_script_values(self):
+        self.assertEqual(pk.cbor({1: 2, 3: -7, -1: b"\x00" * 24, "fmt": "none"}).hex(),
+                         "a4010203262058180000000000000000000000000000000000000000000000006366" "6d74646e6f6e65")
+        page = 'const args = { challenge : "abc_-1", rpId : \'kc.lab\', userid : "" };'
+        self.assertEqual([ap.script_value(page, n) for n in ("challenge", "rpId", "userid", "x")],
+                         ["abc_-1", "kc.lab", "", None])
+
+    @unittest.skipUnless(importlib.util.find_spec("cryptography"), "python3-cryptography")
+    def test_signature_with_cryptography(self):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        key = pk.Passkey.new("kc.lab", b"u")
+        x, y = pk.point_mul(key.private_key)
+        pub = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1()).public_key()
+        a = key.assertion("Y2hhbGxlbmdl", "https://kc.lab")
+        pub.verify(pk.unb64u(a["signature"]), pk.unb64u(a["authenticatorData"])
+                   + hashlib.sha256(pk.unb64u(a["clientDataJSON"])).digest(), ec.ECDSA(hashes.SHA256()))
 
     def test_code_source_errors_hold_no_secret(self):
         with tempfile.TemporaryDirectory() as d:

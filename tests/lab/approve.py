@@ -2,30 +2,39 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 #
-# LAB ONLY (signs a lab user in at Keycloak with password and TOTP and decides that user's
-# waiting RDP login; never point it at a real account).
+# LAB ONLY (signs a lab user in at Keycloak with password and TOTP or a software passkey
+# and decides that user's waiting RDP login; never point it at a real account).
 # What a phone does with the waiting screen's QR code, <approve_url>?login=<id>
 # ([mfa] mode web, push_or_web or code_or_web; broker/webgate/fastrdp_webgate/app.py):
 #   GET  <prefix>/approve?login=<id>  303 to the IdP (prompt=login, max_age=0; cookie
 #                                     fastrdp_web_login holds state, nonce, PKCE, the id)
 #   Keycloak: the login form (username, password), then the OTP form (otp); each form
-#        is posted to its own action URL (login-actions/authenticate?session_code=...)
+#        is posted to its own action URL (login-actions/authenticate?session_code=...).
+#        With --passkey-file: the webauth form (username page with passkeys, or WebAuthn as
+#        second factor) instead, signed by tests/lab/passkey.py; challenge and rpId come
+#        from the page's script, the origin is Keycloak's own.
 #   GET  <prefix>/callback?code&state 303 back to <prefix>/approve?login=<id>, cookie
 #                                     fastrdp_web_approve (the sign-in, 300 s)
 #   GET  <prefix>/approve?login=<id>  the login's page: forms with csrf, id, login, decision
 #   POST <prefix>/approve             csrf, id, login=<id> (bound), decision=approve|deny
 #
 #   tests/lab/approve.py --url https://rdp.example.com/web/approve [--login ID]
-#       --user labuser1 --password-file F --totp-secret-file F [--totp-state F]
-#       [--ca-file F | --pin SHA256 ...] [--deny]
+#       --user labuser1 [--password-file F --totp-secret-file F [--totp-state F]]
+#       [--passkey-file F [--passkey-enrol]] [--ca-file F | --pin SHA256 ...] [--deny]
 # --url: the approval page, its prefix (…/web) or the host (…/web/approve), or the QR
 # code's URL with ?login=<id>. Without a login id (no journal line names it): the page's
 # list, which must hold exactly one login, then that login's own page as the QR code
 # opens it. --totp-state: the file the orchestrator uses too, so no time step is used
 # twice (otpPolicyCodeReusable false). --pin: SHA-256 of a server certificate (the
 # webgate's, Keycloak's; repeat it), instead of CA checks.
-# Never printed or logged: the password, the code, cookies, OIDC codes and states (URLs
-# in messages are cut to scheme, host and path). Output: "approved <id>" or "denied <id>".
+# --passkey-file: sign in with that passkey wherever Keycloak offers it (no password or
+# code needed when the username page has passkeys). --passkey-enrol: the file must not
+# exist yet; after password and TOTP, Keycloak's passkey registration (required action
+# webauthn-register-passwordless, set by an admin on the lab user) gets a new passkey,
+# which is written to the file (0600) and removed again if Keycloak refuses it.
+# Never printed or logged: the password, the code, the passkey and its signatures,
+# challenges, cookies, OIDC codes and states (URLs in messages are cut to scheme, host
+# and path). Output: "approved <id>" or "denied <id>".
 # Exit: 0 decided as asked, 1 failed (sign-in refused, no single login waiting, the
 # webgate refused), 2 set-up error (options, files, TLS pin).
 """LAB ONLY: approve or deny a waiting RDP login like a phone after the QR code (see header)."""
@@ -33,6 +42,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import html.parser
@@ -53,10 +63,16 @@ from typing import Callable
 _spec = importlib.util.spec_from_file_location("fastrdp_lab_totp", Path(__file__).resolve().parent / "totp.py")
 totp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(totp)
+_spec = importlib.util.spec_from_file_location("fastrdp_lab_passkey", Path(__file__).resolve().parent / "passkey.py")
+passkey = importlib.util.module_from_spec(_spec)
+sys.modules["fastrdp_lab_passkey"] = passkey   # dataclasses look the module up
+_spec.loader.exec_module(passkey)
 
 MAX_STEPS = 12          # redirects and forms of one sign-in
 LOGIN_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")   # app.SAFE_LOGIN_ID
 MESSAGE_CLASS = re.compile(r"error|alert|feedback", re.I)
+WEBAUTHN_SIGN = {"clientDataJSON", "authenticatorData", "signature", "credentialId"}
+WEBAUTHN_REGISTER = {"clientDataJSON", "attestationObject", "publicKeyCredentialId"}
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "wbr"}
 
 
@@ -323,11 +339,75 @@ class Result:
     message: str
 
 
+def script_value(page: str, name: str) -> str | None:
+    """A string of Keycloak's inline WebAuthn script (challenge : "…", rpId : '…')."""
+    m = re.search(r"\b%s\s*:\s*([\"'])([^\"'<>]*)\1" % re.escape(name), page)
+    return m.group(2) if m else None
+
+
+class Passkeys:
+    """tests/lab/passkey.py for the webauth and register forms of one sign-in."""
+
+    def __init__(self, path: str, enrol: bool = False):
+        self.path, self.enrol = os.path.expanduser(path), enrol
+        if enrol and os.path.lexists(self.path):
+            raise SetupError(f"--passkey-enrol: {path} exists (a new passkey never replaces a file)")
+        if not enrol:
+            self.open().close()     # readable, 0600, a passkey
+
+    def open(self, create=None):
+        try:
+            return passkey.KeyFile(self.path, create)
+        except OSError as e:
+            raise SetupError(f"passkey file: {e.strerror}") from None
+        except passkey.PasskeyError as e:
+            raise SetupError(f"passkey file: {e}") from None
+
+    @staticmethod
+    def context(resp: Response) -> tuple[str, str]:
+        """(origin, rpId) of a Keycloak page; the rpId must be its host or a parent domain."""
+        u = urllib.parse.urlsplit(resp.url)
+        host = (u.hostname or "").lower()
+        rp_id = script_value(resp.body, "rpId") or host
+        if not (host == rp_id or host.endswith("." + rp_id)):
+            raise Failed(f"the IdP page at {safe_url(resp.url)} names rpId {rp_id!r}, not its host")
+        return f"{u.scheme}://{u.netloc}", rp_id
+
+    def assertion(self, resp: Response) -> dict[str, str]:
+        challenge = script_value(resp.body, "challenge")
+        if not challenge:
+            raise Failed(f"passkey sign-in at {safe_url(resp.url)} without a challenge")
+        origin, rp_id = self.context(resp)
+        with self.open() as kf:
+            if kf.key.rp_id != rp_id:
+                raise SetupError(f"the passkey is for {kf.key.rp_id!r}, the IdP asks for {rp_id!r}")
+            return kf.next_count().assertion(challenge, origin)
+
+    def register(self, resp: Response) -> dict[str, str]:
+        challenge, userid = script_value(resp.body, "challenge"), script_value(resp.body, "userid")
+        if not (challenge and userid):
+            raise Failed(f"passkey registration at {safe_url(resp.url)} without challenge or user id")
+        origin, rp_id = self.context(resp)
+        try:
+            handle = passkey.unb64u(userid)
+        except ValueError:
+            raise Failed("passkey registration: the user id is not base64url") from None
+        key = passkey.Passkey.new(rp_id, handle, script_value(resp.body, "username") or "")
+        self.open(key).close()      # stored before Keycloak knows it
+        return key.register(challenge, origin)
+
+    def discard(self) -> None:
+        """Keycloak refused the new passkey: remove its file again."""
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.path)
+
+
 class Approver:
-    def __init__(self, url: str, user: str, password: str, code: Callable[[], str],
-                 browser: Browser | None = None, log: Callable[[str], None] = lambda s: None):
+    def __init__(self, url: str, user: str, password: str | None, code: Callable[[], str] | None,
+                 browser: Browser | None = None, log: Callable[[str], None] = lambda s: None,
+                 passkeys: Passkeys | None = None):
         self.base, self.qr_login = approve_urls(url)
-        self.user, self.password, self.code = user, password, code
+        self.user, self.password, self.code, self.passkeys = user, password, code, passkeys
         self.http = browser or Browser()
         self.log = log
         u = urllib.parse.urlsplit(self.base)
@@ -343,8 +423,17 @@ class Approver:
     def open(self, url: str) -> tuple[Response, Page]:
         """GET a webgate page, signing in at the IdP when it sends us there; the webgate's
         page once it answers without a redirect."""
+        state = {"registered": False}
+        try:
+            return self._open(url, state)
+        except (Failed, SetupError):
+            if state["registered"]:     # Keycloak did not go on to the webgate with it
+                self.passkeys.discard()
+            raise
+
+    def _open(self, url: str, state: dict) -> tuple[Response, Page]:
         resp = self.http.request(url)
-        password_sent = otp_sent = False
+        password_sent = otp_sent = passkey_sent = False
         for _ in range(MAX_STEPS):
             if resp.status in (301, 302, 303, 307, 308) and resp.location:
                 nxt = urllib.parse.urljoin(resp.url, resp.location)
@@ -355,12 +444,39 @@ class Approver:
             page = Page(resp.body)
             if self.at_webgate(resp.url):
                 return resp, page
-            forms = [f for f in page.forms if f.method == "post" and f.visible() & {"username", "password", "otp"}]
+            posts = [f for f in page.forms if f.method == "post"]
+            register = [f for f in posts if WEBAUTHN_REGISTER <= f.names()]
+            if register:
+                if state["registered"]:
+                    raise Failed(f"the IdP did not accept the new passkey: {page.message()}")
+                if not (self.passkeys and self.passkeys.enrol):
+                    raise Failed("the IdP asks to register a passkey (required action; --passkey-enrol)")
+                values = self.passkeys.register(resp)
+                state["registered"] = True
+                self.log("IdP: passkey registration")
+                resp = self.http.request(urllib.parse.urljoin(resp.url, register[0].action or resp.url),
+                                         register[0].data(values))
+                continue
+            webauth = [f for f in posts if WEBAUTHN_SIGN <= f.names()]
+            if webauth and self.passkeys and not self.passkeys.enrol:
+                if passkey_sent:
+                    raise Failed(f"the IdP did not accept the passkey: {page.message()}")
+                values, passkey_sent = self.passkeys.assertion(resp), True
+                self.log("IdP: passkey")
+                resp = self.http.request(urllib.parse.urljoin(resp.url, webauth[0].action or resp.url),
+                                         webauth[0].data(values))
+                continue
+            forms = [f for f in posts if f.visible() & {"username", "password", "otp"}]
             if not forms:
                 raise Failed(f"IdP page without a login form at {safe_url(resp.url)} "
                              f"(HTTP {resp.status}): {page.message()}")
             form = forms[0]
             names = form.visible()
+            if names & {"otp", "password"} and passkey_sent:
+                raise Failed(f"the IdP did not accept the passkey: {page.message()}")
+            if names & {"otp", "password"} and self.password is None:
+                raise Failed("the IdP asks for a password or a TOTP code (no passkey offered there; "
+                             "--password-file, --totp-secret-file)")
             if "otp" in names:
                 if otp_sent:
                     raise Failed(f"the IdP did not accept the TOTP code: {page.message()}")
@@ -432,8 +548,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--url", required=True, help="approval page, prefix, host or QR code URL")
     ap.add_argument("--login", help="the login's id (default: from --url, else the single one waiting)")
     ap.add_argument("--user", required=True, help="Keycloak user name")
-    ap.add_argument("--password-file", required=True)
-    ap.add_argument("--totp-secret-file", required=True)
+    ap.add_argument("--password-file")
+    ap.add_argument("--totp-secret-file")
     ap.add_argument("--totp-state", help="tests/lab/totp.py --state file (one code per step)")
     ap.add_argument("--raw", action="store_true", help="the secret is Keycloak's raw key text")
     ap.add_argument("--algorithm")
@@ -443,16 +559,29 @@ def main(argv: list[str] | None = None) -> int:
     tls = ap.add_mutually_exclusive_group()
     tls.add_argument("--ca-file")
     tls.add_argument("--pin", action="append", default=[], metavar="SHA256")
+    ap.add_argument("--passkey-file", help="tests/lab/passkey.py key file (0600)")
+    ap.add_argument("--passkey-enrol", action="store_true",
+                    help="register a new passkey into --passkey-file (after password and TOTP)")
     ap.add_argument("--deny", action="store_true")
     ap.add_argument("--timeout", type=float, default=20)
     ap.add_argument("-v", "--verbose", action="store_true", help="steps on stderr (nothing secret)")
     args = ap.parse_args(argv)
     try:
-        code = code_source(args.totp_secret_file, args.totp_state, args.min_left, args.raw,
-                           args.algorithm, args.digits, args.period)
+        if bool(args.password_file) != bool(args.totp_secret_file):
+            raise SetupError("--password-file and --totp-secret-file go together")
+        if not (args.password_file or args.passkey_file):
+            raise SetupError("--password-file and --totp-secret-file, or --passkey-file")
+        if args.passkey_enrol and not (args.passkey_file and args.password_file):
+            raise SetupError("--passkey-enrol: --passkey-file, --password-file and --totp-secret-file")
+        code = password = None
+        if args.password_file:
+            code = code_source(args.totp_secret_file, args.totp_state, args.min_left, args.raw,
+                               args.algorithm, args.digits, args.period)
+            password = read_password(args.password_file)
+        passkeys = Passkeys(args.passkey_file, args.passkey_enrol) if args.passkey_file else None
         log = (lambda s: print(f"approve: {s}", file=sys.stderr)) if args.verbose else (lambda s: None)
-        approver = Approver(args.url, args.user, read_password(args.password_file), code,
-                            Browser(args.ca_file, tuple(args.pin), args.timeout), log)
+        approver = Approver(args.url, args.user, password, code,
+                            Browser(args.ca_file, tuple(args.pin), args.timeout), log, passkeys)
         res = approver.run(args.login, approve=not args.deny)
     except SetupError as e:
         print(f"approve: {e}", file=sys.stderr)

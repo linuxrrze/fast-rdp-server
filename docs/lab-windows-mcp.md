@@ -206,9 +206,33 @@ What it does, connection by connection:
   ```
 
   Exit 0 decided as asked, 1 refused (sign-in, no single login waiting, the webgate),
-  2 set-up error. Nothing secret in its output (no password, code, cookies, OIDC codes).
-- Not covered: F19b (logout); a Keycloak flow that asks for a passkey first (the
-  script fills username, password and OTP forms only).
+  2 set-up error. Nothing secret in its output (no password, code, passkey, cookies,
+  OIDC codes).
+- **Passkey instead of password and code** (`[user] passkey_file`, `approve.py
+  --passkey-file`): `tests/lab/passkey.py` is a software passkey (WebAuthn, ES256,
+  stdlib only) that answers Keycloak's passkey forms, so the approval is one sign-in
+  without a TOTP step. It needs the realm's passkeys (`fastrdp_keycloak_passkeys`) and
+  not the hardware-only policy, which refuses a software passkey (attestation "none").
+  Enrol it once for the lab user: an admin sets the required action
+  `webauthn-register-passwordless` on the user, then
+
+  ```sh
+  tests/lab/approve.py --url https://rdp1.lab.example.com/web/approve \
+      --user labuser1 --password-file ~/lab-secrets/labuser1.password \
+      --totp-secret-file ~/lab-secrets/labuser1.totp --totp-state ~/lab-secrets/labuser1.step \
+      --passkey-file ~/lab-secrets/labuser1.passkey --passkey-enrol --ca-file ~/lab-secrets/lab-ca.pem
+  ```
+
+  signs in with password and code and registers a new passkey ("lab soft passkey") into
+  the file (created 0600; removed again if Keycloak refuses it; an existing file is never
+  replaced). One login must be waiting for it, as for every approval. After that,
+  `--passkey-file` alone signs in on the username page. The file holds the sign count:
+  it is locked while in use and raised before each signature, since Keycloak refuses a
+  count that does not grow (a copy of an older file is a cloned authenticator). The
+  passkey is bound to Keycloak's host name (rpId) and origin. The Keycloak flows of the
+  passkey forms are taken from the 26.8.1 theme and a run against it in the passkey
+  research, not from a lab run of `approve.py`.
+- Not covered: F19b (logout).
 
 ## 6. Watching the box
 
@@ -254,6 +278,8 @@ code=$(tests/lab/totp.py --secret-file ~/lab-secrets/labuser1.totp \
   in Windows-MCP's log, and on screenshots while the panel shows it. Use lab-only users
   and TOTP seeds, keep screenshots and MCP logs in the lab, and delete them after the
   round. Lab tests S1–S4 concern fastrdp's own logs and stay strict.
-- The auth key, the TOTP seeds and the Keycloak password (`connection2 = "web"`) live in
-  the orchestrator's vault. Rotate the auth key
+- The auth key, the TOTP seeds, the Keycloak password and the passkey file
+  (`connection2 = "web"`) live in the orchestrator's vault. The passkey file is a full
+  second factor for its user: delete the credential in Keycloak (Users → the user →
+  Credentials, "lab soft passkey") when the lab user is no longer needed. Rotate the auth key
   after the round, or remove the task: `windows-mcp uninstall`.
