@@ -491,6 +491,7 @@
         fastrdp_web_notify_rate_limit: 5/3600
         fastrdp_web_notify_alert_on_deny: false
         fastrdp_web_notify_webpush_extra_hosts: [NTFY.lab.example.com]
+        fastrdp_web_notify_ntfy_ca_src: /etc/ssl/certs/lab-ca.pem
 
     - name: Nginx site without and with the KDC proxy (web_gateway)
       ansible.builtin.template:

@@ -83,6 +83,21 @@
   when: "'ntfy' not in fastrdp_web_notify_backends or fastrdp_web_notify_ntfy_token | length == 0"
   notify: Restart fastrdp-webgate
 
+- name: Approval notifications - CA of the ntfy server
+  ansible.builtin.copy:
+    src: "{{ fastrdp_web_notify_ntfy_ca_src }}"
+    dest: /etc/fastrdp/webgate-ntfy-ca.pem
+    mode: "0644"
+  when: fastrdp_web_notify_ntfy_ca_src | length > 0
+  notify: Restart fastrdp-webgate
+
+- name: Approval notifications - no ntfy CA left
+  ansible.builtin.file:
+    path: /etc/fastrdp/webgate-ntfy-ca.pem
+    state: absent
+  when: fastrdp_web_notify_ntfy_ca_src | length == 0
+  notify: Restart fastrdp-webgate
+
 # Kept when web push is switched off: a new key would invalidate every browser subscription.
 - name: Approval notifications - VAPID key for web push, generated once
   ansible.builtin.shell:

@@ -71,6 +71,10 @@ ROLE_DEFAULTS = {
     "fastrdp_mfa_keycloak_client_secret": "{{ vault_fastrdp_mfa_keycloak_client_secret | default('') }}",
     "fastrdp_mfa_keycloak_ca_src": "{{ fastrdp_web_oidc_ca_src | default('') }}",
     "fastrdp_proxy_broker_timeout": 180,
+    "fastrdp_web_notify_backends": [],
+    "fastrdp_web_notify_ntfy_url": "",
+    "fastrdp_web_notify_ntfy_token": "{{ vault_fastrdp_web_notify_ntfy_token | default('') }}",
+    "fastrdp_web_notify_ntfy_ca_src": "",
 }
 # The broker's [broker] session_start_timeout (config.py, not rendered): after a web
 # approval the session still has to start within the proxy's wait for the broker.
@@ -151,6 +155,12 @@ VARIABLES = [
      "Keycloak admin user (password grant via admin-cli); its password is in vault.yml"),
     ("web", "fastrdp_keycloak_account_console_mfa", False,
      "the account console signs in with the MFA flow too (closes the enrolment gap, docs/passkeys.md)"),
+    ("web", "fastrdp_web_notify_backends", [],
+     "approval notifications: [] (off) | ntfy | webpush; users turn them on at /web/notify (docs/notifications.md)"),
+    ("web", "fastrdp_web_notify_ntfy_url", "", "ntfy server (https://) for approval notifications"),
+    ("web", "fastrdp_web_notify_ntfy_token", ROLE_DEFAULTS["fastrdp_web_notify_ntfy_token"],
+     "from vault.yml (write access to the topics fastrdp-*)"),
+    ("web", "fastrdp_web_notify_ntfy_ca_src", "", "CA of the ntfy server, on this machine (\"\" = system trust store)"),
     ("performance", "fastrdp_gpu", "auto", "auto | nvidia | mesa | none"),
     ("performance", "fastrdp_x264_threads", 2, "x264 threads per xrdp session"),
     ("performance", "fastrdp_backend_port_range", [33900, 34899], "loopback ports for back-end sessions"),
@@ -171,6 +181,8 @@ VAULT_KEYS = {
     "keycloak_admin_password": "vault_fastrdp_keycloak_admin_password",
     # read by the roles/common default fastrdp_mfa_keycloak_client_secret
     "mfa_keycloak_client_secret": "vault_fastrdp_mfa_keycloak_client_secret",
+    # read by the web_gateway role default fastrdp_web_notify_ntfy_token
+    "notify_ntfy_token": "vault_fastrdp_web_notify_ntfy_token",
 }
 SECRET_ENV = {
     "join_password": "FASTRDP_JOIN_PASSWORD",
@@ -179,6 +191,7 @@ SECRET_ENV = {
     "keycloak_admin_client_secret": "FASTRDP_KEYCLOAK_ADMIN_CLIENT_SECRET",
     "keycloak_admin_password": "FASTRDP_KEYCLOAK_ADMIN_PASSWORD",
     "mfa_keycloak_client_secret": "FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET",
+    "notify_ntfy_token": "FASTRDP_WEB_NOTIFY_NTFY_TOKEN",
 }
 
 
@@ -365,6 +378,27 @@ def v_secret(value, _a=None):
     return v
 
 
+def v_optional_secret(value, _a=None):
+    v = "" if value is None else str(value)
+    if "\n" in v:
+        raise SetupError("single line only")
+    return v
+
+
+NOTIFY_CHOICES = {"none": [], "ntfy": ["ntfy"], "webpush": ["webpush"], "both": ["ntfy", "webpush"]}
+
+
+def v_notify_backends(value, _a=None):
+    """none / ntfy / webpush / both, or the backends themselves (a list or "ntfy,webpush":
+    answers files, the last answers)."""
+    if isinstance(value, str) and value.strip().lower() in NOTIFY_CHOICES:
+        return list(NOTIFY_CHOICES[value.strip().lower()])
+    items = _list(value)
+    if all(isinstance(i, str) for i in items) and list(map(str.lower, items)) in NOTIFY_CHOICES.values():
+        return [i.lower() for i in items]
+    raise SetupError("choose one of: " + ", ".join(NOTIFY_CHOICES))
+
+
 def v_checksum(value, _a=None):
     v = _str(value).lower()
     if v and not re.match(r"^sha256:[0-9a-f]{64}$", v):
@@ -523,6 +557,15 @@ def _code(a):
 def _code_own_realm(a):
     """code_or_web with a Keycloak realm other than the web gateway's."""
     return _code(a) and a.get("mfa_keycloak_issuer", a.get("web_oidc_issuer")) != a.get("web_oidc_issuer")
+
+
+def _notify(a):
+    """Approval notifications: for logins waiting for web approval, from the web gateway."""
+    return _web(a) and _web_approval(a)
+
+
+def _ntfy(a):
+    return _notify(a) and "ntfy" in (a.get("notify_backends") or [])
 
 
 def _keycloak_admin(a):
@@ -763,6 +806,19 @@ QUESTIONS = [
            "     longer use the account console: enrol their first factor another way (admin,\n"
            "     docs/passkeys.md#close-the-enrolment-gap-enrolling-a-factor-needs-mfa).\n"
            "  n  nothing changes; each Ansible run warns while the gap is open."),
+    Q("notify_backends", "Approval notifications on phones: none / ntfy / webpush (browser) / both",
+      v_notify_backends, "none", when=_notify,
+      help="Opt-in per user at https://<fqdn>/web/notify: when an RDP login waits for approval, the\n"
+           "user's phone shows a notification linking to the approval page (approving still takes the\n"
+           "MFA sign-in there; docs/notifications.md).\n"
+           "  ntfy     your ntfy server (https://ntfy.sh works too); users subscribe in the ntfy app\n"
+           "  webpush  the browser's own push service (Chrome, Firefox, Safari on iOS as a home-screen\n"
+           "           web app); nothing to run, the host must reach the push services over HTTPS"),
+    Q("notify_ntfy_url", "ntfy server URL (e.g. https://ntfy.example.com)", v_https_url, when=_ntfy),
+    Q("notify_ntfy_token", "ntfy access token with write access to fastrdp-* (stored in the vault; empty = none)",
+      v_optional_secret, "", when=_ntfy, secret=True),
+    Q("notify_ntfy_ca", "CA certificate of the ntfy server on this machine (empty = system trust store)",
+      v_file(True), "", when=_ntfy),
     Q("web_public_url", "Public web URL", v_web_url, "https://{{ fastrdp_fqdn }}", when=_web,
       ask=lambda a: False),
     Q("install_method", "Install method: apt (packages, recommended) / build (compile on the host)",
@@ -1017,6 +1073,11 @@ def variables_for(a):
         v["fastrdp_web_oidc_ca_src"] = a.get("web_oidc_ca", "")
         v["fastrdp_web_public_url"] = a.get("web_public_url", ROLE_DEFAULTS["fastrdp_web_public_url"])
         v["fastrdp_web_passkeys"] = bool(a.get("web_passkeys", False))
+    if _notify(a):
+        v["fastrdp_web_notify_backends"] = a.get("notify_backends") or []
+    if _ntfy(a):
+        v["fastrdp_web_notify_ntfy_url"] = a["notify_ntfy_url"]
+        v["fastrdp_web_notify_ntfy_ca_src"] = a.get("notify_ntfy_ca", "")
     if _keycloak_admin(a):
         v["fastrdp_keycloak_admin_realm"] = a["keycloak_admin_realm"]
         if _keycloak_admin_client(a):
@@ -1251,6 +1312,12 @@ def next_steps(a, inv_dir, vault_mode, password_file):
         if _code_flow_by_hand(a):
             lines.append("  - " + CODE_CHECK_FLOW_WARNING[0].lower() + CODE_CHECK_FLOW_WARNING[1:-1] + ";")
         lines.append("  - users need TOTP in Keycloak for the code, or a passkey for the approval page.")
+    if _notify(a) and a.get("notify_backends"):
+        lines += ["", "Approval notifications (docs/notifications.md): users turn them on at "
+                  f"{a.get('web_public_url', 'https://<fqdn>').replace('{{ fastrdp_fqdn }}', host)}/web/notify."]
+        if _ntfy(a):
+            lines.append("  The ntfy token needs write access to the topics fastrdp-*" if a.get("notify_ntfy_token")
+                         else "  No ntfy token: the ntfy server must let anyone publish to the topics fastrdp-*.")
     if vault_mode == "plaintext":
         lines += ["", f"WARNING: {inv_dir}/group_vars/all/vault.yml is NOT encrypted. Run:",
                   f"  ansible-vault encrypt {inv_dir}/group_vars/all/vault.yml"]

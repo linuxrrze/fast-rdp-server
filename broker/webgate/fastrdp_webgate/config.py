@@ -106,6 +106,10 @@ class NotifySection:
     state_dir: str = "/var/lib/fastrdp-webgate"
     ntfy_url: str = ""               # https://ntfy.example.com (the server; topics per user)
     ntfy_token_file: str = ""        # access token with write access to the topics ("" = none)
+    # PEM with the CA certificate(s) of an ntfy server with a private CA ("" = the system
+    # trust store); also used for Web Push to webpush_extra_hosts (that server as a
+    # UnifiedPush distributor), never for the browsers' push services
+    ntfy_ca_file: str = ""
     vapid_private_key_file: str = ""  # PEM, EC P-256 (openssl ecparam -name prime256v1 -genkey)
     vapid_subject: str = ""          # mailto:admin@example.com or https://... (RFC 8292)
     webpush_allowed_hosts: list[str] = field(default_factory=lambda: list(DEFAULT_PUSH_HOSTS))
@@ -214,6 +218,8 @@ def _check_notify(cfg: Config) -> None:
         return
     if not n.state_dir.startswith("/"):
         raise ConfigError("notify.state_dir must be an absolute path")
+    if not isinstance(n.ntfy_ca_file, str) or (n.ntfy_ca_file and not n.ntfy_ca_file.startswith("/")):
+        raise ConfigError("notify.ntfy_ca_file must be an absolute path (or empty: the system trust store)")
     if "ntfy" in n.backends:
         url = n.ntfy_url.rstrip("/")
         parts = urllib.parse.urlsplit(url)

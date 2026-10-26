@@ -91,6 +91,7 @@ attacker's. Only the QR code in the user's own RDP window names a login
 | `fastrdp_web_notify_backends` | `[]` | `[]` off; `ntfy`, `webpush` or both. Needs `fastrdp_web_enabled` and `fastrdp_mfa_mode` `web` or `push_or_web` (checked: in the other modes nothing would ever be sent) |
 | `fastrdp_web_notify_ntfy_url` | `""` | the ntfy server, `https://` (checked) |
 | `fastrdp_web_notify_ntfy_token` | `vault_fastrdp_web_notify_ntfy_token` | access token with write access to `fastrdp-*`; written to `/etc/fastrdp/webgate-ntfy.token` (`root:_fastrdp-web 0640`). `""`: publish without a token |
+| `fastrdp_web_notify_ntfy_ca_src` | `""` | an ntfy server with a private CA: its CA certificate (PEM on the controller), copied to `/etc/fastrdp/webgate-ntfy-ca.pem` (`ntfy_ca_file` in `webgate.toml`). The webgate then trusts only that CA for ntfy and for Web Push to `fastrdp_web_notify_webpush_extra_hosts` (that server as UnifiedPush distributor); the browsers' push services always use the system trust store. `""`: the system trust store |
 | `fastrdp_web_notify_vapid_subject` | `mailto:root@<fqdn>` | contact for the push services (RFC 8292), `mailto:` or `https://` |
 | `fastrdp_web_notify_webpush_extra_hosts` | `[]` | push service hosts accepted in addition to the built-in ones (FCM, Mozilla, Apple, WNS), e.g. `[ntfy.example.com]` for [UnifiedPush](#android-without-google-services); DNS names (checked: no URL, port, wildcard or IP address). Exactly these hosts, **not** their subdomains, and only ntfy's UnifiedPush endpoints on them: `https://<host>/up<topic>`, optionally `?up=1` (topic: letters, digits, `_`, `-`). `webpush_extra_hosts` in `webgate.toml` |
 | `fastrdp_web_notify_rate_limit` | `"3/600"` | notifications per user and window (1..100 per 60..86400 s) |
@@ -106,6 +107,18 @@ needs `https://` (service workers), which `fastrdp_web_public_url` is by default
 Subscriptions live in `/var/lib/fastrdp-webgate/notify/<account>.json` (the unit's
 `StateDirectory`, `_fastrdp-web`, 0700; files 0600), keyed by the local account the
 broker resolves the user to. Removing a file removes that user's subscriptions.
+
+`scripts/fastrdp-setup` asks for them with web approval and browser access: the
+backends (`none`, `ntfy`, `webpush`, `both`), and for ntfy the URL, the token (stored in
+the vault; also `FASTRDP_WEB_NOTIFY_NTFY_TOKEN`) and the CA file.
+
+`preflight.yml` checks them (*Approval notifications*): the MFA mode and browser access,
+ntfy's `/v1/health` from the host, the token at `/v1/account` (refused: FAIL; no token:
+WARN), the CA file on the controller, the VAPID subject, and whether the VAPID key exists
+already (else `site.yml` generates it). With `fastrdp_web_notify_ntfy_ca_src` the probes do
+not verify ntfy's certificate (the CA is on the controller). Write access to `fastrdp-*`
+is not visible without publishing: the *Send a test notification* button on `/web/notify`
+shows it.
 
 Without Ansible: [manual-setup.md](manual-setup.md#152-web-access-keycloak--guacamole) (`[notify]` in
 `webgate.toml`).
@@ -250,7 +263,7 @@ link is the approval page.
   `web push subscription … has expired (HTTP 410); removed`), rate-limit hits and
   subscription changes.
 - Test: the *Send a test notification* button on `/web/notify`.
-- `preflight.yml` does not check the ntfy server yet ([backlog](backlog.md#web-approval)).
+- `preflight.yml`: *Approval notifications* (above).
 
 Not tested on real devices yet: delivery to iOS (home-screen web app, ntfy app with
 upstream), Android Chrome/Firefox, IronFox/Fennec with UnifiedPush (Sunup or ntfy),

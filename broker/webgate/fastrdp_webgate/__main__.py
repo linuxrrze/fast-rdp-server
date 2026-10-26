@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import ssl
 import sys
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def make_notifier(cfg: config_mod.Config):
     if not n.backends:
         return None
     from . import webpush
-    from .notify import Notifier
+    from .notify import Notifier, own_server_opener
     from .notifystore import SubscriptionStore
 
     key = None
@@ -34,10 +35,14 @@ def make_notifier(cfg: config_mod.Config):
             except webpush.WebPushError as exc:
                 raise config_mod.ConfigError(f"{n.vapid_private_key_file}: {exc}") from None
     token = config_mod.read_secret(n.ntfy_token_file) if "ntfy" in n.backends and n.ntfy_token_file else None
+    try:
+        own_opener = own_server_opener(n.ntfy_ca_file)
+    except (OSError, ssl.SSLError) as exc:
+        raise config_mod.ConfigError(f"notify.ntfy_ca_file {n.ntfy_ca_file}: {exc}") from None
     if not os.path.isdir(n.state_dir) or not os.access(n.state_dir, os.W_OK):
         raise config_mod.ConfigError(f"notify.state_dir {n.state_dir} must be a directory the webgate "
                                      "may write (systemd StateDirectory=fastrdp-webgate)")
-    return Notifier(cfg, SubscriptionStore(n.state_dir), vapid_key=key, ntfy_token=token)
+    return Notifier(cfg, SubscriptionStore(n.state_dir), vapid_key=key, ntfy_token=token, own_opener=own_opener)
 
 
 def main(argv: list[str] | None = None) -> int:

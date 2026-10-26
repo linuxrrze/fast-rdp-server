@@ -562,6 +562,59 @@ class TestMfaAndAudioOptions(SetupTestCase):
         self.assertNotIn("fastrdp_mfa_web_approval_timeout", main)
         self.assertNotIn("fastrdp_proxy_broker_timeout", main)
 
+    def test_notifications(self):
+        # W1 follow-up: asked with web approval; ntfy's token goes to the vault, its CA is copied
+        main = self.main(dict(LAB, mfa_mode="web", **self.WEB))
+        for k in ("fastrdp_web_notify_backends", "fastrdp_web_notify_ntfy_url", "fastrdp_web_notify_ntfy_ca_src"):
+            self.assertNotIn(k, main)                                   # "none": the role default
+        ca = self.tmp / "ntfy-ca.pem"
+        ca.write_text(self.cert.read_text())
+        inv, out = self.generate(dict(LAB, mfa_mode="code_or_web", notify_backends="both",
+                                      notify_ntfy_url="https://ntfy.lab.example.com", notify_ntfy_ca=str(ca),
+                                      **self.WEB), "--force",
+                                 env=dict(self.ENV, FASTRDP_MFA_KEYCLOAK_CLIENT_SECRET="c",
+                                          FASTRDP_WEB_NOTIFY_NTFY_TOKEN="tk_Secret-7"))
+        text = (inv / "group_vars/all/main.yml").read_text()
+        main = yaml.safe_load(text)
+        self.assertEqual((main["fastrdp_web_notify_backends"], main["fastrdp_web_notify_ntfy_url"],
+                          main["fastrdp_web_notify_ntfy_ca_src"]),
+                         (["ntfy", "webpush"], "https://ntfy.lab.example.com", str(ca)))
+        self.assertNotIn("fastrdp_web_notify_ntfy_token", main)        # the role default reads the vault
+        self.assertIn('vault_fastrdp_web_notify_ntfy_token: "tk_Secret-7"', self.vault(inv))
+        self.assertNotIn("tk_Secret-7", text + (inv / "setup-answers.json").read_text() + out)
+        self.assertIn("users turn them on at https://rdp1.lab.example.com/web/notify", out)
+        self.assertIn("The ntfy token needs write access to the topics fastrdp-*", out)
+        # web push only: no ntfy settings; without a token a note
+        main = self.main(dict(LAB, mfa_mode="web", notify_backends=["webpush"], notify_ntfy_url="https://x",
+                              **self.WEB))
+        self.assertEqual(main["fastrdp_web_notify_backends"], ["webpush"])
+        self.assertNotIn("fastrdp_web_notify_ntfy_url", main)
+        inv, out = self.generate(dict(LAB, mfa_mode="web", notify_backends="ntfy",
+                                      notify_ntfy_url="https://ntfy.sh", **self.WEB), "--force", env=self.ENV)
+        self.assertIn("No ntfy token: the ntfy server must let anyone publish", out)
+        self.assertNotIn("vault_fastrdp_web_notify_ntfy_token", self.vault(inv))
+        # not asked without web approval (push) or without browser access
+        main = self.main(dict(LAB, mfa_mode="push", privacyidea_url="https://pi.lab.example.com",
+                              web_enabled=True, notify_backends="ntfy", **self.WEB))
+        self.assertNotIn("fastrdp_web_notify_backends", main)
+        # the prompt shows a remembered answer as "ntfy,webpush"; answers files may give the list
+        for value, backends in (("both", ["ntfy", "webpush"]), ("ntfy,webpush", ["ntfy", "webpush"]),
+                                (["ntfy", "webpush"], ["ntfy", "webpush"]), ("NTFY", ["ntfy"]), ("none", []),
+                                ([], []), ("", [])):
+            with self.subTest(value=value):
+                self.assertEqual(setup.v_notify_backends(value), backends)
+
+    def test_notification_rejections(self):
+        for answers, fragment in (
+                ({"notify_backends": "sms"}, "notify_backends: choose one of: none, ntfy, webpush, both"),
+                ({"notify_backends": ["webpush", "ntfy"]}, "notify_backends: choose one of"),
+                ({"notify_backends": "ntfy"}, "notify_ntfy_url: missing answer"),
+                ({"notify_backends": "ntfy", "notify_ntfy_url": "http://ntfy.example.com"}, "notify_ntfy_url"),
+                ({"notify_backends": "ntfy", "notify_ntfy_url": "https://ntfy.example.com",
+                  "notify_ntfy_ca": "/nonexistent/ca.pem"}, "notify_ntfy_ca: /nonexistent/ca.pem does not exist")):
+            with self.subTest(answers=answers):
+                self.assert_rejected(dict(LAB, mfa_mode="web", **answers, **self.WEB), fragment)
+
     def test_web_approval_rejections(self):
         self.assert_rejected(dict(LAB, mfa_mode="web", web_enabled=False),
                              "web_enabled: MFA mode 'web' needs browser access")

@@ -11,7 +11,10 @@ login id and no other link.
 A background thread long-polls the broker (op mfa_events, protocol.py) and hands each
 message to a small thread pool (bounded queue; test messages in a pool of their own), one
 task per subscription, with a short timeout. Every error is logged and dropped: nothing here can delay or fail a login. Backends: ntfy
-(POST to <ntfy_url>/<the user's topic>) and Web Push (webpush.py).
+(POST to <ntfy_url>/<the user's topic>) and Web Push (webpush.py). [notify] ntfy_ca_file:
+the CA of a private ntfy server, for ntfy and for Web Push to webpush_extra_hosts (that
+server as a UnifiedPush distributor); the browsers' push services use the system trust
+store.
 """
 
 from __future__ import annotations
@@ -21,9 +24,11 @@ import hashlib
 import json
 import logging
 import socket
+import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -90,6 +95,16 @@ def broker_mfa_events(path: str, wait_s: int, timeout: float) -> list[dict]:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None  # never carry the token elsewhere
+
+
+def own_server_opener(ca_file: str):
+    """An opener (no redirects) that trusts only the CA in `ca_file` (PEM), for the site's
+    own ntfy server; None for "" (the system trust store). Raises OSError or ssl.SSLError
+    for a missing or broken file."""
+    if not ca_file:
+        return None
+    ctx = ssl.create_default_context(cafile=ca_file)
+    return urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ctx))
 
 
 def send_ntfy(base_url: str, topic: str, msg: Message, token: str | None, timeout: float = SEND_TIMEOUT,
@@ -164,12 +179,14 @@ class Lane:
 
 class Notifier:
     def __init__(self, cfg: Config, store: SubscriptionStore, *, vapid_key=None, ntfy_token: str | None = None,
-                 clock=time.monotonic, workers: int = 4):
+                 own_opener=None, clock=time.monotonic, workers: int = 4):
         self.cfg = cfg
         self.n = cfg.notify
         self.store = store
         self.vapid_key = vapid_key
         self.ntfy_token = ntfy_token
+        # [notify] ntfy_ca_file (own_server_opener); None: the system trust store
+        self.own_opener = own_opener
         self.clock = clock
         self.approve_url = cfg.webgate.public_url.rstrip("/") + cfg.webgate.path_prefix + "/approve"
         self.rate = RateLimit(*self.n.rate(), clock=clock)
@@ -276,7 +293,7 @@ class Notifier:
         try:
             if sub["type"] == "ntfy":
                 status = send_ntfy(self.n.ntfy_url, str(sub.get("topic")), msg, self.ntfy_token,
-                                   timeout=SEND_TIMEOUT)
+                                   timeout=SEND_TIMEOUT, opener=self.own_opener)
                 if status == 200:
                     return True
                 log.warning("ntfy refused the notification for %s: HTTP %d%s", user, status,
@@ -291,9 +308,11 @@ class Notifier:
                 return False
             payload = json.dumps({"title": msg.title, "body": msg.body, "tag": msg.tag, "url": msg.url},
                                  separators=(",", ":")).encode()
+            own = (urllib.parse.urlsplit(str(sub.get("endpoint"))).hostname or "").lower() \
+                in self.n.webpush_extra_hosts
             status = webpush.send(sub, payload, self.vapid_key, self.n.vapid_subject, ttl=msg.ttl,
                                   urgency="high" if msg.urgent else "normal", topic=msg.tag,
-                                  timeout=SEND_TIMEOUT)
+                                  timeout=SEND_TIMEOUT, opener=self.own_opener if own else None)
             if status in (200, 201, 202):
                 return True
             if status in (404, 410):

@@ -783,6 +783,9 @@ class CommonChecks(unittest.TestCase):
             "push host a wildcard": dict(web, fastrdp_web_notify_webpush_extra_hosts=["*.example.com"]),
             "push host an IP address": dict(web, fastrdp_web_notify_webpush_extra_hosts=["10.0.0.5"]),
             "push host without a dot": dict(web, fastrdp_web_notify_webpush_extra_hosts=["ntfy"]),
+            "ntfy CA not on the controller": dict(web, fastrdp_web_notify_backends=["ntfy"],
+                                                  fastrdp_web_notify_ntfy_url="https://ntfy.example.com",
+                                                  fastrdp_web_notify_ntfy_ca_src="/nonexistent/ntfy-ca.pem"),
         }
         for name, extra in cases.items():
             with self.subTest(name):
@@ -945,15 +948,16 @@ class WebgateToml(unittest.TestCase):
 
     def test_notifications_off_by_default(self):
         n = webgate_config.parse(toml("webgate.toml")).notify
-        self.assertEqual((n.backends, n.ntfy_token_file), ([], ""))
+        self.assertEqual((n.backends, n.ntfy_token_file, n.ntfy_ca_file), ([], "", ""))
         self.assertEqual((n.webpush_allowed_hosts, n.webpush_extra_hosts), (webgate_config.DEFAULT_PUSH_HOSTS, []))
         self.assertNotIn("webpush_", (OUT / "webgate.toml").read_text())
 
     def test_notifications(self):
         n = webgate_config.parse(toml("webgate-notify.toml")).notify
         self.assertEqual(n.backends, ["ntfy", "webpush"])
-        self.assertEqual((n.ntfy_url, n.ntfy_token_file), ("https://ntfy.lab.example.com",
-                                                           "/etc/fastrdp/webgate-ntfy.token"))
+        self.assertEqual((n.ntfy_url, n.ntfy_token_file, n.ntfy_ca_file),
+                         ("https://ntfy.lab.example.com", "/etc/fastrdp/webgate-ntfy.token",
+                          "/etc/fastrdp/webgate-ntfy-ca.pem"))
         self.assertEqual((n.vapid_private_key_file, n.vapid_subject),
                          ("/etc/fastrdp/webgate-vapid.pem", "mailto:root@rdp1.lab.example.com"))
         self.assertEqual((n.rate(), n.alert_on_deny, n.show_code, n.state_dir),

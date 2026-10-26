@@ -91,9 +91,10 @@ def browser_subscription(endpoint):
 
 
 class Recorder:
-    """Local HTTP server that records requests and answers `status` (after `delay`)."""
+    """Local HTTP server that records requests and answers `status` (after `delay`);
+    HTTPS with `tls` (a server ssl.SSLContext)."""
 
-    def __init__(self, status=200, delay=0.0):
+    def __init__(self, status=200, delay=0.0, tls=None):
         self.status, self.delay, self.requests = status, delay, []
         rec = self
 
@@ -113,12 +114,53 @@ class Recorder:
                     pass
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.url = f"http://127.0.0.1:{self.srv.server_port}"
+        if tls is not None:
+            self.srv.socket = tls.wrap_socket(self.srv.socket, server_side=True)
+        self.url = f"{'https' if tls else 'http'}://127.0.0.1:{self.srv.server_port}"
         threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
 
     def close(self):
         self.srv.shutdown()
         self.srv.server_close()
+
+
+def private_ca(tmp):
+    """A CA (its PEM at <tmp>/ca.pem) and a server context for 127.0.0.1 signed by it."""
+    import datetime
+    import ipaddress
+    import ssl
+
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    def cert(subject, issuer, key, sign_key, ca):
+        # key identifiers: Python 3.13+ verifies with VERIFY_X509_STRICT
+        now = datetime.datetime.now(datetime.timezone.utc)
+        b = (x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(key.public_key())
+             .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(minutes=5))
+             .not_valid_after(now + datetime.timedelta(days=1))
+             .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+             .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+             .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(sign_key.public_key()),
+                            critical=False))
+        if ca:
+            b = b.add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), True)
+        else:
+            b = b.add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+                                critical=False)
+        return b.sign(sign_key, hashes.SHA256())
+
+    def name(cn):
+        return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    ca_key, srv_key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+    ca = cert(name("lab ntfy CA"), name("lab ntfy CA"), ca_key, ca_key, True)
+    srv = cert(name("127.0.0.1"), ca.subject, srv_key, ca_key, False)
+    Path(tmp, "ca.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    Path(tmp, "srv.pem").write_bytes(srv.public_bytes(serialization.Encoding.PEM) + srv_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(f"{tmp}/srv.pem")
+    return f"{tmp}/ca.pem", ctx
 
 
 class SyncPool:
@@ -216,6 +258,8 @@ class NotifyConfigTests(unittest.TestCase):
             ({"backends": ["webpush"], **good, "webpush_extra_hosts": ["localhost"]}, "extra_hosts"),
             ({"backends": ["webpush"], **good, "webpush_extra_hosts": "ntfy.example.com"}, "extra_hosts"),
             ({"backends": ["ntfy"], "ntfy_url": "https://n", "state_dir": "rel"}, "state_dir"),
+            ({"backends": ["ntfy"], "ntfy_url": "https://n", "ntfy_ca_file": "ca.pem"}, "ntfy_ca_file"),
+            ({"backends": ["ntfy"], "ntfy_url": "https://n", "ntfy_ca_file": 1}, "ntfy_ca_file"),
             ({"rate_limit": "3"}, "rate_limit"),
             ({"rate_limit": "0/600"}, "rate_limit"),
             ({"rate_limit": "3/10"}, "rate_limit"),
@@ -531,6 +575,46 @@ class NotifierTests(unittest.TestCase):
             self.notifier.handle(self.event(id="boom"))
         with mock.patch.object(self.store, "list", side_effect=OSError("disk")):
             self.notifier.handle(self.event(id="disk"))
+
+    def test_private_ca(self):
+        """[notify] ntfy_ca_file: ntfy and Web Push to webpush_extra_hosts (the own server as
+        UnifiedPush distributor) trust that CA; the browsers' push services do not."""
+        ca_file, tls = private_ca(self.tmp)
+        own = Recorder(tls=tls)
+        self.addCleanup(own.close)
+        self.cfg.notify.ntfy_url = own.url
+        # without the CA (the system trust store) the own server's certificate is refused
+        with self.assertLogs("fastrdp.webgate.notify", "WARNING") as logs:
+            self.assertFalse(self.notifier.send_one("alice", self.topic, self.notifier.pending_message(self.event())))
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", "\n".join(logs.output))
+        self.notifier.own_opener = notify.own_server_opener(ca_file)
+        self.assertTrue(self.notifier.send_one("alice", self.topic, self.notifier.pending_message(self.event())))
+        self.assertEqual(own.requests[-1][0], "/fastrdp-abc")
+        # Web Push: to an extra host with the CA, to any other host with the system store
+        sub, _, _ = browser_subscription(own.url + "/upAbC")
+        msg = self.notifier.pending_message(self.event())
+        with self.assertLogs("fastrdp.webgate.notify", "WARNING") as logs:
+            self.assertFalse(self.notifier.send_one("alice", sub, msg))
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", "\n".join(logs.output))
+        self.cfg.notify.webpush_extra_hosts = ["127.0.0.1"]   # parse() takes DNS names only
+        own.status = 201
+        self.assertTrue(self.notifier.send_one("alice", sub, msg))
+        self.assertEqual((own.requests[-1][0], len(own.requests)), ("/upAbC", 2))
+        self.assertEqual(notify.own_server_opener(""), None)
+        for bad in (f"{self.tmp}/missing.pem", f"{self.tmp}/vapid-broken.pem"):
+            Path(f"{self.tmp}/vapid-broken.pem").write_text("not a certificate\n")
+            with self.subTest(bad=bad), self.assertRaises((OSError, __import__("ssl").SSLError)):
+                notify.own_server_opener(bad)
+
+    def test_make_notifier_ca_file(self):
+        from fastrdp_webgate.__main__ import make_notifier
+        ca_file, _tls = private_ca(self.tmp)
+        cfg = cfg_with(self.tmp, backends=["ntfy"], ntfy_ca_file=ca_file)
+        self.assertIsNotNone(make_notifier(cfg).own_opener)
+        self.assertIsNone(make_notifier(cfg_with(self.tmp, backends=["ntfy"])).own_opener)
+        cfg.notify.ntfy_ca_file = f"{self.tmp}/missing.pem"
+        with self.assertRaisesRegex(config.ConfigError, "notify.ntfy_ca_file .*missing.pem"):
+            make_notifier(cfg)
 
     def test_timeouts_in_the_pool(self):
         self.notifier.pool = notify.Lane(2, 10, "test")

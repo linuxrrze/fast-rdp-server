@@ -8,7 +8,9 @@
 - it contains only read-only modules;
 - the KDC proxy and KDC evidence probes with stub tools; the KDC evidence result with
   ansible-playbook on localhost (when ansible-core is installed);
-- the Keycloak MFA check against a stub discovery document (ansible-playbook on localhost).
+- the Keycloak MFA check against a stub discovery document (ansible-playbook on localhost);
+- the approval notifications check against a stub ntfy server over HTTPS (ansible-playbook
+  on localhost, openssl for its certificate).
 """
 
 import importlib.machinery
@@ -617,6 +619,107 @@ class TestPreflightCodeCheck(unittest.TestCase):
         self.assertEqual(r["noscreen"]["status"], "FAIL", r["noscreen"])
         self.assertIn("fastrdp_proxy_waiting_screen is false", r["noscreen"]["detail"])
         self.assertIn("CA file /nonexistent/ca.pem not found", r["noscreen"]["detail"])
+
+
+class StubNtfy(BaseHTTPRequestHandler):
+    """ntfy's /v1/health and /v1/account: 401 for any token but GOOD (none: anonymous, 200)."""
+    GOOD = "tk_good"
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        auth = self.headers.get("Authorization")
+        if self.path == "/v1/health":
+            status, doc = 200, {"healthy": True}
+        elif self.path == "/v1/account":
+            ok = auth is None or auth == f"Bearer {self.GOOD}"
+            status, doc = (200, {"username": "*"}) if ok else (401, {"code": 40101, "error": "unauthorized"})
+        else:
+            status, doc = 404, {}
+        body = json.dumps(doc).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@unittest.skipIf(yaml is None or not shutil.which("ansible-playbook") or not shutil.which("openssl"),
+                 "PyYAML, ansible-core or openssl not installed")
+class TestPreflightNotifications(unittest.TestCase):
+    """'Approval notifications': the MFA mode, ntfy's health and token from the host (a
+    private CA: not verified there), the VAPID subject."""
+
+    TASKS = ("Probe the ntfy server from the host", "Check the ntfy access token from the host",
+             "Look for the VAPID key of web push", "Result - approval notifications")
+    BASE = TestPreflightKdcEvidenceResult.BASE
+    run_play = TestPreflightKdcEvidenceResult.run_play
+
+    def test_scenarios(self):
+        import ssl
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                        "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+                        "-keyout", str(tmp / "key.pem"), "-out", str(tmp / "ca.pem")],
+                       check=True, capture_output=True)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), StubNtfy)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tmp / "ca.pem", tmp / "key.pem")
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        with socket.socket() as s:                       # a port nobody listens on
+            s.bind(("127.0.0.1", 0))
+            closed = s.getsockname()[1]
+        url = f"https://127.0.0.1:{srv.server_port}"
+
+        def notify(backends=("ntfy",), **kw):
+            hv = {"fastrdp_fqdn": "rdp1.example.com", "fastrdp_web_enabled": True, "fastrdp_mfa_mode": "web",
+                  "fastrdp_web_notify_backends": list(backends),
+                  "fastrdp_web_notify_ntfy_url": url + "/", "fastrdp_web_notify_ntfy_ca_src": str(tmp / "ca.pem"),
+                  "vault_fastrdp_web_notify_ntfy_token": StubNtfy.GOOD}
+            hv.update(kw)
+            return ({k: v for k, v in hv.items() if v is not None}, {})
+        r = self.run_play({
+            "ok": notify(),
+            "badtoken": notify(vault_fastrdp_web_notify_ntfy_token="tk_wrong"),
+            "notoken": notify(vault_fastrdp_web_notify_ntfy_token=None),
+            "down": notify(fastrdp_web_notify_ntfy_url=f"https://127.0.0.1:{closed}"),
+            "systemca": notify(fastrdp_web_notify_ntfy_ca_src=None),        # the stub's CA is no public one
+            "webpush": notify(("webpush",)),
+            "subject": notify(("webpush",), fastrdp_web_notify_vapid_subject="root"),
+            "push": notify(fastrdp_mfa_mode="push", fastrdp_privacyidea_url="https://pi.example.com"),
+            "both": notify(("ntfy", "webpush", "sms"), fastrdp_web_notify_ntfy_url="http://ntfy.example.com",
+                           fastrdp_web_notify_ntfy_ca_src="/nonexistent/ntfy-ca.pem"),
+        }, names=self.TASKS)
+        for name, res in r.items():
+            self.assertEqual(res["check"], "Approval notifications", name)
+            self.assertIn("docs/notifications.md", res["fix"])
+        self.assertEqual(r["ok"]["status"], "PASS", r["ok"])
+        self.assertEqual(r["ok"]["detail"], url + " healthy, token accepted (TLS not verified here: the webgate "
+                         "trusts fastrdp_web_notify_ntfy_ca_src)")
+        self.assertEqual(r["badtoken"]["status"], "FAIL", r["badtoken"])
+        self.assertIn("ntfy refused the access token (/v1/account answered 401", r["badtoken"]["detail"])
+        self.assertEqual(r["notoken"]["status"], "WARN", r["notoken"])
+        self.assertIn("no ntfy token", r["notoken"]["detail"])
+        for name in ("down", "systemca"):
+            self.assertEqual(r[name]["status"], "FAIL", r[name])
+            self.assertIn("ntfy /v1/health answered -1", r[name]["detail"])
+        self.assertEqual(r["webpush"]["status"], "PASS", r["webpush"])
+        self.assertIn("web push: ", r["webpush"]["detail"])
+        self.assertTrue(r["webpush"]["detail"].endswith(", subject mailto:root@rdp1.example.com"), r["webpush"])
+        self.assertEqual(r["subject"]["status"], "FAIL", r["subject"])
+        self.assertIn("fastrdp_web_notify_vapid_subject must be", r["subject"]["detail"])
+        self.assertEqual(r["push"]["status"], "FAIL", r["push"])
+        self.assertIn("for logins waiting for web approval only", r["push"]["detail"])
+        self.assertEqual(r["both"]["status"], "FAIL", r["both"])
+        for fragment in ("must be a list of ntfy and webpush", "fastrdp_web_notify_ntfy_url is not an https:// URL",
+                         "CA file /nonexistent/ntfy-ca.pem not found"):
+            self.assertIn(fragment, r["both"]["detail"])
+        self.assertNotIn(StubNtfy.GOOD, json.dumps(r))
 
 
 if __name__ == "__main__":

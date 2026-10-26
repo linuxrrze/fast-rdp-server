@@ -52,6 +52,7 @@ backends = []                       # "ntfy", "webpush"
 state_dir = "/var/lib/fastrdp-webgate"   # subscriptions (systemd StateDirectory)
 ntfy_url = "https://ntfy.lab.example.com"
 ntfy_token_file = "/etc/fastrdp/webgate-ntfy.token"   # write access to fastrdp-*; "" = none
+#ntfy_ca_file = "/etc/fastrdp/webgate-ntfy-ca.pem"      # private CA of the ntfy server; "" = system trust store
 # openssl ecparam -name prime256v1 -genkey -noout -out /etc/fastrdp/webgate-vapid.pem
 vapid_private_key_file = "/etc/fastrdp/webgate-vapid.pem"
 vapid_subject = "mailto:root@rdp1.lab.example.com"

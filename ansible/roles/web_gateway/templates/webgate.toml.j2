@@ -44,6 +44,7 @@ backends = {{ fastrdp_web_notify_backends | to_json }}
 state_dir = "/var/lib/fastrdp-webgate"
 ntfy_url = {{ fastrdp_web_notify_ntfy_url | string | to_json }}
 ntfy_token_file = "{{ '/etc/fastrdp/webgate-ntfy.token' if fastrdp_web_notify_ntfy_token | length > 0 else '' }}"
+ntfy_ca_file = "{{ '/etc/fastrdp/webgate-ntfy-ca.pem' if fastrdp_web_notify_ntfy_ca_src | length > 0 else '' }}"
 vapid_private_key_file = "/etc/fastrdp/webgate-vapid.pem"
 vapid_subject = {{ fastrdp_web_notify_vapid_subject | string | to_json }}
 {% if fastrdp_web_notify_webpush_extra_hosts | length > 0 %}
