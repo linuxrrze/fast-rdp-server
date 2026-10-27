@@ -655,6 +655,9 @@ class CommonChecks(unittest.TestCase):
         self.assertEqual(self.run_checks(fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True, **ok), 0)
         self.assertEqual(self.run_checks(fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True,
                                          fastrdp_install_method="build", **ok), 0)
+        self.assertEqual(self.run_checks(fastrdp_xorgxrdp_lab_gfxpro_fill_tiles=True,
+                                         fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True,
+                                         fastrdp_install_method="build", **ok), 0)
         self.assertEqual(self.run_checks(fastrdp_install_method="apt", **ok), 0)
 
     def test_rdp_file_name_and_port(self):
@@ -729,6 +732,9 @@ class CommonChecks(unittest.TestCase):
             # the APT packages have no lab variant (backlog A9)
             "lab xorgxrdp variant with the APT packages": dict(
                 ok, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip=True, fastrdp_install_method="apt"),
+            "lab xorgxrdp fill variant not a bool": dict(ok, fastrdp_xorgxrdp_lab_gfxpro_fill_tiles="lab"),
+            "lab xorgxrdp fill variant with the APT packages": dict(
+                ok, fastrdp_xorgxrdp_lab_gfxpro_fill_tiles=True, fastrdp_install_method="apt"),
             # the QR code adds ?login=<id> (22 characters) within 213 bytes
             "approval URL too long for the QR code": dict(ok, fastrdp_ui_approve_url="https://" + "a" * 177),
             "approval URL not https": dict(ok, fastrdp_ui_approve_url="http://rdp1.example.com/web/approve"),

@@ -8,8 +8,10 @@ fastrdp_xrdp_build_key: "{{ lookup('ansible.builtin.pipe', playbook_dir ~ '/../t
 fastrdp_xorgxrdp_glamor: "{{ fastrdp_gpu_effective == 'mesa' or fastrdp_xorgxrdp_nvidia_glamor | bool }}"
 fastrdp_xorgxrdp_nvidia_glamor: false
 fastrdp_xorgxrdp_drm_device: /dev/dri/renderD128
-# LAB ONLY patch for fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip (roles/common, backlog A9)
+# LAB ONLY patches for fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip and
+# fastrdp_xorgxrdp_lab_gfxpro_fill_tiles (roles/common, backlog A9)
 fastrdp_xorgxrdp_lab_gfxpro_patch: "{{ playbook_dir }}/../patches/xorgxrdp-lab/0001-gfxpro-no-tile-skip.patch"
+fastrdp_xorgxrdp_lab_gfxpro_fill_patch: "{{ playbook_dir }}/../patches/xorgxrdp-lab/0002-gfxpro-fill-partial-tiles.patch"
 # H.264 encoder for xrdp sessions:
 #   auto  = nvenc on NVIDIA, vaapi on Intel/AMD, x264 otherwise
 #   vaapi | nvenc | qsv = FFmpeg hardware encoder (fastrdp patch, falls back to libx264

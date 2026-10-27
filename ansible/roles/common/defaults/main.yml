@@ -223,6 +223,13 @@ fastrdp_proxy_tls_keylog: false
 # fastrdp_install_method: build (the fastrdp-xrdp package has no lab variant); toggling
 # it rebuilds xrdp and xorgxrdp.
 fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: false
+# LAB ONLY (backlog A9, roles/xrdp): build xorgxrdp with patches/xorgxrdp-lab/0002, which
+# converts a partially damaged 64x64 tile of the RemoteFX Progressive capture whole from
+# the screen instead of putting the damaged parts on a zero (dark green) tile. Tells
+# whether that fill bleeds into the lossy-coded tile and makes the stale rectangles. Can
+# be combined with the variable above. Never in production; only with
+# fastrdp_install_method: build; toggling it rebuilds xrdp and xorgxrdp.
+fastrdp_xorgxrdp_lab_gfxpro_fill_tiles: false
 # The panel's texts (broker [ui]): language en or de (built in) or one of fastrdp_ui_texts;
 # the client's keyboard layout picks the language when there are texts for it.
 fastrdp_ui_language: en

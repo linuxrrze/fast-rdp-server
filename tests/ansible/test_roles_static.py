@@ -132,18 +132,28 @@ class RolesStatic(unittest.TestCase):
                                      f"{f.name}: {line.strip()}")
 
     def test_xorgxrdp_lab_variant_only_in_the_build_path(self):
-        # backlog A9: the LAB ONLY patch is applied by the Ansible build alone, only with its
-        # variable, and is part of the build stamp (toggling rebuilds); never in a package
+        # backlog A9: the LAB ONLY patches are applied by the Ansible build alone, each only
+        # with its variable, and are part of the build stamp (toggling rebuilds); never in a
+        # package
         role = ANSIBLE / "roles" / "xrdp"
         build = (role / "tasks" / "build.yml").read_text()
         main = (role / "tasks" / "main.yml").read_text()
-        patch = "patches/xorgxrdp-lab/0001-gfxpro-no-tile-skip.patch"
-        self.assertTrue((REPO / patch).is_file())
-        self.assertIn('if [ "$LAB_GFXPRO_NO_TILE_SKIP" = 1 ]; then', build)
-        self.assertIn(patch, build)
-        self.assertIn("LAB_GFXPRO_NO_TILE_SKIP: \"{{ '1' if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool", build)
-        self.assertIn("-lab-gfxpro-no-tile-skip-", main)
-        self.assertIn("fastrdp_xorgxrdp_lab_gfxpro_patch", main)
+        defaults = (role / "defaults" / "main.yml").read_text()
+        for patch, env, var, stamp, patch_var in (
+                ("0001-gfxpro-no-tile-skip.patch", "LAB_GFXPRO_NO_TILE_SKIP",
+                 "fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip", "-lab-gfxpro-no-tile-skip-",
+                 "fastrdp_xorgxrdp_lab_gfxpro_patch"),
+                ("0002-gfxpro-fill-partial-tiles.patch", "LAB_GFXPRO_FILL_TILES",
+                 "fastrdp_xorgxrdp_lab_gfxpro_fill_tiles", "-lab-gfxpro-fill-tiles-",
+                 "fastrdp_xorgxrdp_lab_gfxpro_fill_patch")):
+            patch = f"patches/xorgxrdp-lab/{patch}"
+            self.assertTrue((REPO / patch).is_file())
+            self.assertIn(f'if [ "${env}" = 1 ]; then', build)
+            self.assertIn(patch, build)
+            self.assertIn(f"{env}: \"{{{{ '1' if {var} | bool", build)
+            self.assertIn(stamp, main)
+            self.assertIn(f"lookup('ansible.builtin.file', {patch_var})", main)
+            self.assertIn(f"{patch_var}: \"{{{{ playbook_dir }}}}/../{patch}\"", defaults)
         # a stamp of another variant left behind would stand for the wrong build
         self.assertLess(build.index("Stamps of earlier builds removed"), build.index("- name: Build stamp"))
         self.assertIn("patches: \"\"", (REPO / "third_party" / "sources.yml").read_text().split("xorgxrdp:", 1)[1])

@@ -319,6 +319,7 @@
       - fastrdp_proxy_waiting_screen_reactivate | string | lower in ['true', 'false']
       - fastrdp_proxy_tls_keylog | string | lower in ['true', 'false']
       - fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | string | lower in ['true', 'false']
+      - fastrdp_xorgxrdp_lab_gfxpro_fill_tiles | string | lower in ['true', 'false']
       - fastrdp_ui_language_from_keyboard | string | lower in ['true', 'false']
       - fastrdp_ui_qr_code | string | lower in ['true', 'false']
       - fastrdp_ui_texts is mapping
@@ -370,6 +371,7 @@
       fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_proxy_input_trace,
       fastrdp_proxy_waiting_screen_observe, fastrdp_proxy_waiting_screen_reactivate,
       fastrdp_proxy_tls_keylog, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip,
+      fastrdp_xorgxrdp_lab_gfxpro_fill_tiles,
       fastrdp_ui_language_from_keyboard and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language
       (two or three lower-case letters) of fastrdp_ui_texts; fastrdp_ui_approve_url is ""
       or an https:// URL of at most 184 characters (docs/auth-matrix.md#waiting-screen);
@@ -405,9 +407,11 @@
     that:
       - not (fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool)
         or fastrdp_install_method | default('build') == 'build'
+      - not (fastrdp_xorgxrdp_lab_gfxpro_fill_tiles | bool)
+        or fastrdp_install_method | default('build') == 'build'
     fail_msg: >-
-      fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip (LAB ONLY, backlog A9) builds a patched
-      xorgxrdp from source; the fastrdp-xrdp package of the APT repository has no lab
-      variant. Use fastrdp_install_method: build on the lab host, or set the variable to
-      false.
+      fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip and fastrdp_xorgxrdp_lab_gfxpro_fill_tiles
+      (LAB ONLY, backlog A9) build a patched xorgxrdp from source; the fastrdp-xrdp
+      package of the APT repository has no lab variant. Use fastrdp_install_method: build
+      on the lab host, or set the variables to false.
     quiet: true

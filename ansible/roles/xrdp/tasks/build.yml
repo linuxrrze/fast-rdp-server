@@ -26,6 +26,11 @@
               patch -d "$xorgxrdp" -p1 --forward --batch -i \
                   "$PWD/patches/xorgxrdp-lab/0001-gfxpro-no-tile-skip.patch"
           fi
+          if [ "$LAB_GFXPRO_FILL_TILES" = 1 ]; then
+              echo "LAB ONLY: xorgxrdp filling partial progressive tiles from the screen (backlog A9)" >&2
+              patch -d "$xorgxrdp" -p1 --forward --batch -i \
+                  "$PWD/patches/xorgxrdp-lab/0002-gfxpro-fill-partial-tiles.patch"
+          fi
           third_party/build-xrdp.sh "$xrdp" "$xorgxrdp"
           rm -rf build
         chdir: "{{ fastrdp_xrdp_src_dir }}"
@@ -36,6 +41,7 @@
         FASTRDP_XRDP_FFMPEG: "{{ '1' if fastrdp_xrdp_h264_encoder_effective != 'x264' else '0' }}"
         FASTRDP_XORGXRDP_GLAMOR: "{{ '1' if fastrdp_xorgxrdp_glamor | bool else '0' }}"
         LAB_GFXPRO_NO_TILE_SKIP: "{{ '1' if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool else '0' }}"
+        LAB_GFXPRO_FILL_TILES: "{{ '1' if fastrdp_xorgxrdp_lab_gfxpro_fill_tiles | bool else '0' }}"
       changed_when: true
 
     - name: Refresh linker cache

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Tue, 27 Oct 2026 06:40:00 +0100
+Subject: [PATCH] LAB ONLY: rdpCaptureGfxPro: fill partially damaged tiles from
+ the framebuffer
+
+fastrdp backlog A9: X11 desktops over GFX with RemoteFX Progressive
+leave stale or wrong rectangles after moving windows; H.264 is clean.
+For a 64x64 tile that is only partly damaged, the progressive capture
+zero-fills the whole YUVA tile (Y=U=V=0: with the +128 chroma offset a
+saturated dark green) and converts only the damaged rects into it; the
+encoder then compresses the whole tile with loss, and the quantization
+error of the green part reaches the visible pixels near the damage
+edges. Window moves produce many such tiles. The H.264 capture
+(rdpCaptureGfxA2) has no zero-fill.
+
+This build converts the whole tile from the framebuffer instead (only
+the part beyond the screen edge stays zero); the region rects are
+unchanged. Clean output points at the zero-fill, the same glitches at
+something else (the tile skip: patch 0001, or the encoder).
+
+Diagnostic only: a little more conversion work per partial tile. Not
+for production and not in the fastrdp-xrdp package; built only with
+the Ansible build method and fastrdp_xorgxrdp_lab_gfxpro_fill_tiles:
+true. Applies with or without 0001.
+---
+ module/rdpCapture.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/module/rdpCapture.c b/module/rdpCapture.c
+--- a/module/rdpCapture.c
++++ b/module/rdpCapture.c
+@@ -1021,6 +1021,7 @@
+     uint64_t crc;
+     int num_crcs;
+     int mon_index;
++    BoxRec screen_rect;
+ 
+     LLOGLN(10, ("rdpCaptureGfxPro:"));
+ 
+@@ -1094,10 +1095,16 @@
+                     rects = REGION_RECTS(&tile_reg);
+                     num_rects = REGION_NUM_RECTS(&tile_reg);
+                     crc = wyhash((const void*)rects, num_rects * sizeof(BoxRec), crc, _wyp);
++                    /* fastrdp LAB ONLY (backlog A9): the whole tile from the
++                     * framebuffer, not only the damaged rects over zeros; only
++                     * the part beyond the screen edge stays zero */
++                    screen_rect = rect;
++                    screen_rect.x2 = RDPMIN(screen_rect.x2, id->width);
++                    screen_rect.y2 = RDPMIN(screen_rect.y2, id->height);
+                     rdpCopyBox_a8r8g8b8_to_yuvalp(clientCon, x, y,
+                                                   src, src_stride,
+                                                   dst, dst_stride,
+-                                                  rects, num_rects);
++                                                  &screen_rect, 1);
+                     crc_dst = dst + (y << 8) * (dst_stride >> 8) + (x << 8);
+                     crc = wyhash((const void*)crc_dst, 64 * 64 * 4, crc, _wyp);
+                     rdpRegionUninit(&tile_reg);

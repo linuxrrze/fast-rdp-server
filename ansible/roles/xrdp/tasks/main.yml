@@ -23,12 +23,14 @@
   ansible.builtin.include_tasks: build.yml
   when: fastrdp_install_method == 'build'
   vars:
-    # the LAB ONLY xorgxrdp variant (backlog A9) adds the hash of its patch
+    # the LAB ONLY xorgxrdp variants (backlog A9) add the hash of their patch
     fastrdp_build_stamp: >-
       {{ fastrdp_xrdp_src_dir }}/.installed-xrdp-{{ fastrdp_xrdp_build_key
       }}-glamor{{ fastrdp_xorgxrdp_glamor | bool }}-ffmpeg{{ fastrdp_xrdp_h264_encoder_effective != 'x264'
       }}{{ ('-lab-gfxpro-no-tile-skip-' ~ (lookup('ansible.builtin.file', fastrdp_xorgxrdp_lab_gfxpro_patch)
-            | hash('sha256'))[:16]) if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool else '' }}
+            | hash('sha256'))[:16]) if fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | bool else ''
+      }}{{ ('-lab-gfxpro-fill-tiles-' ~ (lookup('ansible.builtin.file', fastrdp_xorgxrdp_lab_gfxpro_fill_patch)
+            | hash('sha256'))[:16]) if fastrdp_xorgxrdp_lab_gfxpro_fill_tiles | bool else '' }}
 
 - name: Install from the APT repository
   when: fastrdp_install_method == 'apt'

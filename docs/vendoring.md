@@ -60,11 +60,15 @@ Build-Depends cover each script's `--deps`.
 diagnostic patches that only the Ansible `build` path applies, each behind its own LAB
 ONLY variable that also goes into the build stamp (so toggling it rebuilds); the
 packages never contain them, and the common role refuses the variable with
-`fastrdp_install_method: apt`. Today: `0001-gfxpro-no-tile-skip.patch`
-(`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`, backlog A9), which makes xorgxrdp's
-RemoteFX Progressive capture send every damaged tile. Checked 2026-10-26: it applies to
-the 0.10.5 tarball and `module/rdpCapture.c` compiles with it (alone, against Ubuntu
-26.04's `xserver-xorg-dev` headers); the full lab build is untested.
+`fastrdp_install_method: apt`. Today, both for backlog A9 and combinable:
+`0001-gfxpro-no-tile-skip.patch` (`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`), which
+makes xorgxrdp's RemoteFX Progressive capture send every damaged tile, and
+`0002-gfxpro-fill-partial-tiles.patch` (`fastrdp_xorgxrdp_lab_gfxpro_fill_tiles`),
+which converts a partially damaged tile whole from the frame buffer instead of
+zero-filling it. Checked 2026-10-26 (0001) and 2026-10-27 (0002, alone and with 0001 in
+either order): they apply to the 0.10.5 tarball and `module/rdpCapture.c` compiles
+without warnings (alone, against Ubuntu 26.04's `xserver-xorg-dev` headers); the full lab
+build is untested.
 
 ## Build details that matter
 
