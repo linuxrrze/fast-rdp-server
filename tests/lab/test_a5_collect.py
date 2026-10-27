@@ -28,6 +28,19 @@ STUBS = {
 }
 
 
+def running(pid: int) -> bool:
+    """Like a5-collect.sh's running(): a zombie counts as gone (CI containers whose PID 1
+    never reaps keep a killed orphan as one)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][:1] != "Z"
+    except OSError:
+        return False
+
+
 class A5Collect(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -69,7 +82,7 @@ class A5Collect(unittest.TestCase):
                          ["-i", "any", "-s", "0", "-U", "-w", str(d / "capture.pcap"), "tcp", "port", "3390"])
         pids = [int((d / f).read_text()) for f in ("tcpdump.pid", "ss.pid")]
         for pid in pids:
-            os.kill(pid, 0)
+            self.assertTrue(running(pid), pid)
         time.sleep(0.5)
         self.assertIn("sport = :3390", (d / "ss.txt").read_text())
         self.keylog.write_text(KEY_LINE + "\n")
@@ -80,10 +93,11 @@ class A5Collect(unittest.TestCase):
         r = self.run_script("stop", "run1")
         self.assertEqual(r.returncode, 0, r.stderr)
         for pid in pids:
-            with self.assertRaises(ProcessLookupError):
-                for _ in range(50):
-                    os.kill(pid, 0)
-                    time.sleep(0.1)
+            for _ in range(50):
+                if not running(pid):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(running(pid), pid)
         self.assertFalse(list(d.glob("*.pid")))
         k = d / "tls-keylog.txt"
         self.assertEqual(k.read_text(), KEY_LINE + "\n")

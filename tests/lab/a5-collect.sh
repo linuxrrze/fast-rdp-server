@@ -59,7 +59,15 @@ ini_port() {
              s && $1 ~ /^[ \t]*Port[ \t]*$/ { gsub(/[ \t\r]/, "", $2); print $2; exit }' "$PROXY_INI"
 }
 
-alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+# a zombie counts as gone: in a container whose PID 1 never reaps, a killed orphan stays one
+running() {
+    local st
+    kill -0 "$1" 2>/dev/null || return 1
+    st=$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null) || return 0
+    [ "${st%% *}" != Z ]
+}
+
+alive() { [ -f "$1" ] && running "$(cat "$1")"; }
 
 start() {
     if [ -z "$port" ]; then
@@ -96,10 +104,10 @@ stop_pids() {
     for f in "$dir/tcpdump.pid" "$dir/ss.pid"; do
         [ -f "$f" ] || continue
         pid=$(cat "$f")
-        if kill -0 "$pid" 2>/dev/null; then
+        if running "$pid"; then
             kill "$pid" 2>/dev/null || true
-            for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+            for _ in $(seq 50); do running "$pid" || break; sleep 0.1; done
+            running "$pid" && kill -9 "$pid" 2>/dev/null || true
             echo "a5-collect: stopped $(basename "$f" .pid) (pid $pid)"
         else
             echo "a5-collect: $(basename "$f" .pid) was not running (pid $pid)" >&2
