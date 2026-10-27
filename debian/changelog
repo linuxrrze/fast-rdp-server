@@ -1,3 +1,19 @@
+fast-rdp-server (0.7.10) unstable; urgency=medium
+
+  * xrdp role: lab-only fastrdp_xorgxrdp_lab_gfxpro_fill_tiles builds
+    xorgxrdp with patches/xorgxrdp-lab/0002: the RemoteFX Progressive
+    capture converts a partially damaged 64x64 tile whole from the
+    framebuffer instead of the damaged parts on a zero-filled tile (backlog
+    A9; build method only, part of the build stamp).
+  * Docs: spec check of the A5, A9 and A10 findings against Microsoft's
+    RDP specifications (a5-capture), backlog A5/A9/A10 updated; lab
+    checklist: quality profiles and the fill-tiles build for A9 (item E),
+    a second connect in the same mstsc window (item A), the dynamic
+    channels blocked (item F) and the codecs off for A10 (item G); the
+    xorgxrdp issue draft lists the fill-tiles build (upstream.md §12).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Tue, 27 Oct 2026 06:53:02 +0100
+
 fast-rdp-server (0.7.9) unstable; urgency=medium
 
   * Broker: lab-only [mfa] lab_keypress_users (fastrdp_mfa_lab_keypress_users,

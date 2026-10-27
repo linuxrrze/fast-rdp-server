@@ -7,9 +7,9 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.9** (0.7.8 lacks the lab keypress accounts and the
-      lab xorgxrdp variant, 0.7.7 the reactivation switch of A5, 0.7.6 also the TLS key
-      log),
+- [ ] Host on **fast-rdp-server 0.7.10** (0.7.9 lacks the fill-tiles lab xorgxrdp
+      variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
+      0.7.7 the reactivation switch of A5, 0.7.6 also the TLS key log),
       `fastrdp-freerdp3 3.32.2-8`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.
 - [ ] Inventory for the round: `fastrdp_desktop_picker: true`,
@@ -107,9 +107,8 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       zero fill below), the same strength at lost or skipped tiles.
       Then the lab builds (`fastrdp_install_method: build` only; each toggle rebuilds xrdp
       and xorgxrdp on deploy, then a new session):
-      1. `fastrdp_xorgxrdp_lab_gfxpro_fill_tiles: true` (`patches/xorgxrdp-lab/0002`, not
-         in v0.7.9: deploy from a checkout that has it): a
-         partially changed 64×64 tile is converted whole from the screen instead of the
+      1. `fastrdp_xorgxrdp_lab_gfxpro_fill_tiles: true` (`patches/xorgxrdp-lab/0002`, since
+         0.7.10): a partially changed 64×64 tile is converted whole from the screen instead of the
          changed parts on a zero tile (dark green in YUV) that the lossy encoder smears
          into the visible pixels. The main suspect of the spec check
          ([a5-capture](a5-capture-2026-10-26.md#spec-check-2026-10-27), A9).
