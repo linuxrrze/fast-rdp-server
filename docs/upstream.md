@@ -308,8 +308,9 @@ pull request**. Items marked *to do* must be done before submitting.
 Issue draft for [backlog A9](backlog.md#sessions). Post it to xrdp (the encoder and
 xorgxrdp's capture are both neutrinolabs projects; xrdp is where GFX issues are usually
 filed) once the lab build without the tile skip (below, *Not tried yet*) has told
-whether the capture or the encoder is at fault; then name the project accordingly and
-add the result. Before posting, the reporter confirms the versions on the host
+whether the capture or the encoder is at fault, and the build that fills partially
+changed tiles from the screen (also below) whether the zero fill is; then name the
+project accordingly and add the results. Before posting, the reporter confirms the versions on the host
 (`dpkg -l fastrdp-xrdp xorgxrdp xrdp 2>/dev/null; xrdp --version`) and attaches
 `xrdp.log` and `~/.xorgxrdp.<display>.log` of one session.
 
@@ -380,6 +381,11 @@ Notes for us, not for the issue:
 >   `rfxencode_differential.c`) is the other candidate.
 >
 > **Not tried yet**
+> - xorgxrdp converting a partly damaged tile whole from the frame buffer instead of
+>   zero-filling it in `rdpCaptureGfxPro()`. The zero fill is Y=U=V=0, a saturated dark
+>   green after the chroma offset; the encoder quantizes the whole tile, so its error
+>   may reach the damaged pixels near the edges, and the H.264 capture has no zero fill
+>   [inferred]. Clean would point at the zero fill. *(result to add)*
 > - xorgxrdp with the hash skip in `rdpCaptureGfxPro()` disabled (every damaged tile
 >   sent): clean would point at the capture/skip, still glitching at the encoder or the
 >   client side of progressive. *(result to add)*
@@ -387,5 +393,6 @@ Notes for us, not for the issue:
 >   resolution that is a multiple of 64; glamor.
 > - A decoded capture showing which tiles the client got for one window move.
 
-The lab build for the first item: [lab-checklist-0.7.6.md](lab-checklist-0.7.6.md) §1
-item E (`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`, `patches/xorgxrdp-lab/`).
+The lab builds for the first two items: [lab-checklist-0.7.6.md](lab-checklist-0.7.6.md)
+§1 item E (`fastrdp_xorgxrdp_lab_gfxpro_fill_tiles`, `patches/xorgxrdp-lab/0002`;
+`fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip`, `patches/xorgxrdp-lab/0001`).

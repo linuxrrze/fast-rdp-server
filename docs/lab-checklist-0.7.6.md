@@ -74,6 +74,12 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       - none, and the panel on connection 2: GFX is the trigger; backlog A8 is the fix.
       - 1401 present: mstsc used GFX anyway, the test does not count (and A10 likely has
         the same cause); bring the capture.
+      Then **after the black connection 2, *Connect* again in the very same window** (do
+      not close mstsc) and note the process id of each connection in the event log: a
+      panel there means a connection without a session clears mstsc's state (the basis of
+      the self-redirection idea, [a5-capture](a5-capture-2026-10-26.md#spec-check-2026-10-27));
+      black again means only a new mstsc process does. With item G's codec settings the
+      xfce desktop of connection 1 is probably visible too.
 - [ ] **B. Reconnect grace (mitigation, any cause):** `fastrdp_mfa_reconnect_grace: 900`
       in `lab.yml`, deploy, GNOME: connection 1 approve, X, connection 2 within 15 min
       from the same client. Expected: no waiting for the second factor, the desktop
@@ -90,19 +96,57 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       xfce desktop: event 1401 `AvcEnabled=1` means xrdp uses H.264 there and the
       RemoteFX Progressive glitches do not occur (check `Matched H264 mode` in
       `/var/log/xrdp.log`); note whether windows leave stale rectangles.
-- [ ] **E. A9: capture or encoder?** Lab host with `fastrdp_install_method: build` only:
-      `fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: true` in `lab.yml`, deploy (rebuilds
-      xrdp and xorgxrdp with `patches/xorgxrdp-lab/0001`: the progressive capture sends
-      every damaged tile instead of skipping tiles whose hash matches the last capture),
-      new session (log out first). Then the A9 repro with the client that glitched (mstsc
-      with `AvcEnabled=0` or `xfreerdp3 /gfx:progressive`; `xrdp.log`: `gfx rfx pro`),
-      moving windows over each other for a minute:
-      - clean: the tile skip (or a stored hash that goes stale) is the cause; report it
-        to xorgxrdp with this result ([upstream.md §12](upstream.md#12-xrdp--xorgxrdp-stale-tiles-with-gfx-remotefx-progressive-backlog-a9)).
-      - the same glitches: the capture's skip is not it; the encoder (xrdp/librfxcodec)
-        or the client's progressive decoding; report to xrdp.
-      Note the CPU load of xrdp and Xorg compared with the normal build. Set the variable
-      back to `false` and deploy afterwards (rebuilds the normal variant).
+- [ ] **E. A9: capture or encoder?** First without a rebuild, the quality profile: the
+      lab's mstsc asks for auto-detection and gets `fastrdp_xrdp_autodetect_profile`
+      (default `wan`: xrdp's `lq` quantization). Run the A9 repro (moving windows over each
+      other for a minute, mstsc with `AvcEnabled=0` or `xfreerdp3 /gfx:progressive`;
+      `xrdp.log`: `gfx rfx pro`) once with `fastrdp_xrdp_autodetect_profile: lan`
+      (`std`, the finest) and once with `modem` (`ulq`, the coarsest); deploy and a new
+      session each (log out first); the broker logs `connection type … towards xrdp`.
+      Much stronger glitches with `modem` point at lossy coding of wrong tile content (the
+      zero fill below), the same strength at lost or skipped tiles.
+      Then the lab builds (`fastrdp_install_method: build` only; each toggle rebuilds xrdp
+      and xorgxrdp on deploy, then a new session):
+      1. `fastrdp_xorgxrdp_lab_gfxpro_fill_tiles: true` (`patches/xorgxrdp-lab/0002`, not
+         in v0.7.9: deploy from a checkout that has it): a
+         partially changed 64×64 tile is converted whole from the screen instead of the
+         changed parts on a zero tile (dark green in YUV) that the lossy encoder smears
+         into the visible pixels. The main suspect of the spec check
+         ([a5-capture](a5-capture-2026-10-26.md#spec-check-2026-10-27), A9).
+         - clean: the zero fill is the cause; report to xorgxrdp with this result
+           ([upstream.md §12](upstream.md#12-xrdp--xorgxrdp-stale-tiles-with-gfx-remotefx-progressive-backlog-a9))
+           and consider carrying 0002 in the vendored series.
+         - the same glitches: go on with 2.
+      2. `fastrdp_xorgxrdp_lab_gfxpro_fill_tiles: false`,
+         `fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip: true` (`patches/xorgxrdp-lab/0001`):
+         every damaged tile is sent instead of skipping tiles whose hash matches the last
+         capture.
+         - clean: the tile skip (or a stored hash that goes stale) is the cause; report
+           it to xorgxrdp.
+         - the same glitches: neither capture suspect; the encoder (xrdp/librfxcodec) or
+           the client's progressive decoding; report to xrdp.
+      Both variables at once are possible (if 1 and 2 each only help partly). Note the
+      CPU load of xrdp and Xorg compared with the normal build. Set the variables back to
+      `false` and deploy afterwards (rebuilds the normal variant).
+- [ ] **F. A5: the dynamic channels blocked** (after A, if A says "a session as such"):
+      in `/etc/fastrdp/proxy.ini` `[Channels] Passthrough=drdynvc` (with
+      `PassthroughIsBlacklist=true`, as shipped; `GFX`, `AudioInput`, `AudioOutput`,
+      `VideoRedirection`, `CameraRedirection` and `[Input] Multitouch` must stay `true`,
+      otherwise the proxy intercepts drdynvc anyway and the block does nothing), proxy
+      restart, xfce with item G's codec settings: connection 1 into the session, X,
+      connection 2. Evidence that the block held: no 1401/1402 in the event log and no
+      DVC in `decode.py --summary` for connection 1. Connection 2 black: the dynamic
+      channels are not it (the hand-over itself, or the static channels: item C);
+      the panel: something on a dynamic channel (GFX or another) leaves mstsc broken.
+- [ ] **G. A10: xfce black without GFX, codecs off:** `[Channels] GFX=false` and
+      `[Codecs] RFX=false`, `NSC=false` in `/etc/fastrdp/proxy.ini`, proxy restart, xfce.
+      xrdp then sends plain bitmap updates instead of RemoteFX/NSCodec surface bits
+      (surface bits). The desktop visible: A10 is the codec path (the
+      proxy announces RemoteFX and NSCodec to xrdp under its own codec ids, never
+      translated to mstsc's; [backlog A10](backlog.md#sessions)). Still black: something
+      else in xrdp's non-GFX output; bring the capture (with the key log) so mstsc's
+      Confirm Active (codec list, surface commands) can be decoded. All three
+      `proxy.ini` edits (A, F, G) are undone by the next deploy.
 - [ ] Bring back: proxy and broker journals, captures, `ss` logs, key logs, mstsc's event
       logs, the notes.
 
