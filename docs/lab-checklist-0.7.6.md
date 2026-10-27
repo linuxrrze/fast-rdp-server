@@ -65,6 +65,12 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       [auth-matrix.md](auth-matrix.md#lab-keypress)) logs in with any 4 digits and Enter
       on the waiting screen instead (the waiting screen is still shown, which A5 is about).
       Not for B: reconnect grace needs a real second factor (lab logins never earn it).
+- [ ] **Client build:** note the exact Windows build (`winver`, 26100.x) of the lab
+      client: 24H2 builds before 26100.3194 (KB5051987) mishandle Bitmap Updates with
+      several rectangles ([FreeRDP #10413](https://github.com/FreeRDP/FreeRDP/issues/10413),
+      [a5-capture](a5-capture-2026-10-26.md#open-source-projects-2026-10-27)). If
+      available, repeat connections 1 and 2 on a fully patched Windows 11 and with the
+      Windows App.
 - [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
       `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
       desktop: connection 1 into the session (a black desktop is fine), X, connection 2.
