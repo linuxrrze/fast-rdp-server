@@ -113,7 +113,7 @@ WinPR acceptor (`winpr/libwinpr/sspi/Negotiate/negotiate.c`), verified:
   fed AP-REQs and so did not see it.
 - **Negotiated mechanism.** With an AD ticket the result is Kerberos, `supportedMech`
   MS-KRB5. The module sees package `Kerberos`
-  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:219-240`).
+  (`nla_package_name()`, `broker/proxy-module/fastrdp_plugin.c:238-259`).
 - **mechListMIC.**
   - If the first OID is a Kerberos OID and its AP-REQ is accepted, the acceptor answers in
     one round with accept-completed and the AP-REP, without a MIC (negotiate.c:1185-1191
@@ -170,11 +170,11 @@ safe). Still worth a robustness fix upstream (§5).
   - The proxy's acceptor does not offer NTLM (§3.13): the client's `[NegoEx, NTLM]` offer
     leaves no mechanism, and the login ends at the first CredSSP message. Before, NTLM ran
     to the end and failed at `ntlm_compute.c:285` (SamOpen), the module's check
-    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:2463-2473`) being the last line.
+    (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:3409-3419`) being the last line.
   - **TLS logins do not help mstsc:** after a failed CredSSP, mstsc does not fall back to
     TLS. A TLS login also needs credentials in the Client Info PDU, which mstsc only sends
     with saved credentials and CredSSP disabled (`enablecredsspsupport:i:0`). The proxy has
-    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:2630-2635`).
+    no logon screen (`fastrdp_fetch_target()`, `fastrdp_plugin.c:3576-3581`).
   - Options for IP access: none recommended. Windows 10 1507+ can do Kerberos to an IP if
     the client has the `TryIPSPN` registry value and the IP is registered as an SPN; avoid
     this.
@@ -253,8 +253,8 @@ negoToken together with the server's pubKeyAuth.
   | What Windows sends | When | Proxy/module behaviour | Session |
   |---|---|---|---|
   | TSPasswordCreds (domain, user, password) | fresh or saved credentials (GPO default: allowed to `TERMSRV/*` after Kerberos/cert server auth), or default credentials if *Allow delegating default credentials* lists the SPN | password forwarded to the broker; X11: one-time token → `pam_sss` → TGT | TGT on X11 |
-  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:2499-2527`) | no TGT |
-  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:2513-2525`; broker `server.py:72-77`) | no TGT |
+  | TSPasswordCreds with empty fields | Restricted Admin | no password; user = Kerberos principal (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:3445-3473`) | no TGT |
+  | TSSmartCardCreds (PIN, CSP data, hints) | smartcard credentials | PIN dropped (`PasswordIsSmartcardPin`, `fastrdp_server_peer_logon()`, `fastrdp_plugin.c:3459-3471`; broker `server.py:72-77`) | no TGT |
   | TSRemoteGuardCreds (`KERB_TICKET_LOGON`: `HOST/<proxy>` service ticket + TGT as KRB-CRED, optional NTLM supplemental creds) | Remote Credential Guard | default: not offered. The RDP_NEG_RSP lacks REDIRECTED_AUTHENTICATION_MODE_SUPPORTED (`patches/freerdp/0002`), so mstsc gives up before CredSSP; such credentials sent anyway are refused by `fastrdp_remote_credentials()`. `AcceptRemoteGuard=true`: accepted after Kerberos NLA, tickets zeroed and discarded, the broker gets `"remote_guard": true` and no password (parsing without supplemental creds: `patches/freerdp/0003`) | refused / no TGT |
 
   The delegated password is client-supplied and not verified by the broker on NLA
@@ -271,7 +271,7 @@ negoToken together with the server's pubKeyAuth.
 ### 3.5 Single sign-on (Q4)
 
 - **No password typed:** NLA completes on the ticket alone. The module requires only a
-  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:2461-2490`). The broker's NLA path needs no password
+  Kerberos identity (`fastrdp_server_peer_logon()`, `fastrdp_plugin.c:3407-3436`). The broker's NLA path needs no password
   (`server.py:58-78`) and runs the PAM *account* phase (`ad_gpo_map_remote_interactive`).
 - **MFA:**
   - `push` / `otp_or_push` trigger privacyIDEA push with `password=None` (`SecondFactor.verify()` → `SecondFactor.push()` in `mfa.py`).
@@ -393,7 +393,8 @@ Notes on the options above:
   in a test ([freerdp-client.md](freerdp-client.md)). What mstsc shows meanwhile ("Configuring
   remote session…" per [client-guide.md](client-guide.md), or an empty window) is lab S3/L15.
   With `fastrdp_proxy_waiting_screen` (default `true`) the proxy draws its own panel into
-  that window instead (Bitmap Updates, the one graphics output every client must accept):
+  that window instead (over GFX for clients that announced it, as mstsc does, else Bitmap
+  Updates, the one graphics output every client must accept):
   "Approve the sign-in" with a countdown, for web approval the approval URL, the login's
   code and a QR code for the phone (the page for this login), then "Connecting to your
   desktop…"; the panel is painted over in the background grey before the desktop arrives
@@ -865,8 +866,12 @@ After a connection that reached a desktop, closing it (the X or a logout) and pr
 *Connect* again in the same mstsc window shows a black window instead of the waiting
 screen until the second factor times out. A freshly started mstsc works. The proxy sends the same waiting screen in both cases; mstsc
 does not show it, most likely because it keeps GFX output state of the previous
-connection (findings: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)). No fix yet.
-Workarounds:
+connection (findings: [a5-capture-2026-10-26.md](a5-capture-2026-10-26.md)). Three
+changes aimed at it are on by default but not yet confirmed with mstsc: the waiting screen
+over GFX, a self-redirection of an mstsc that carries state over (it reconnects once by
+itself, with the same credentials), and a logon notification after the hand-over
+([auth-matrix.md](auth-matrix.md#mstsc-reconnects-backlog-a5); each can be switched off).
+If the window still stays black, workarounds:
 - Approve the login anyway: the push on the phone or the approval page
   (`https://<rdp-fqdn>/web/approve`) work while the window stays black; the login goes on
   and the desktop is expected to appear after the hand-over [inferred: the working

@@ -1425,7 +1425,8 @@ AllowTlsFrom=
 ; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
 AcceptRemoteGuard=false
 ; While the broker works on a login (push, web approval, session start), show what it
-; waits for: a panel drawn with Bitmap Updates, texts from the broker's [ui]. StatusInfo:
+; waits for: a panel, texts from the broker's [ui]; over the Graphics Pipeline for clients
+; that announced it (WaitingScreenGfx), else as Bitmap Updates. StatusInfo:
 ; also Server Status Info PDUs, to clients that ask for them.
 WaitingScreen=true
 StatusInfo=false
@@ -1438,6 +1439,13 @@ WaitingScreenObserve=false
 ; Lab only: deactivate and reactivate the client before the first waiting screen panel
 ; (Deactivate All, Demand Active), for mstsc's black window (docs/backlog.md A5).
 WaitingScreenReactivate=false
+; Backlog A5 fixes (docs/auth-matrix.md#waiting-screen): the waiting screen over GFX for
+; GFX clients; a client carrying state over from its previous connection (input before its
+; first Font List) redirected to the proxy itself once; a logon notification (Save Session
+; Info) to the client once the back-end session is up.
+WaitingScreenGfx=true
+SelfRedirect=true
+LogonNotify=true
 ; Lab only: append the TLS secrets of every client connection to this file (empty: none),
 ; for Wireshark (docs/backlog.md A5). Anyone with the file can decrypt a capture.
 TlsKeyLogFile=

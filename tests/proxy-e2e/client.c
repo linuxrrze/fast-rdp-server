@@ -49,6 +49,18 @@
  *   (2.2.11.3), 2000 ms later with 1; prints "suppress_output sent=0|1",
  *   "suppressed_rects=N" (rectangles received while suppressed, the first 200 ms of
  *   in-flight data not counted) and "resumed_rects=N" (in the 1000 ms after allowing).
+ * E2E_GFX=1: announce the Graphics Pipeline and load FreeRDP's drdynvc and rdpgfx client
+ *   channels, decoded by FreeRDP's GDI (E2E_DUMP shows the GFX output). Prints "gfx open at
+ *   T ms" and "gfx closed at T ms" for the Graphics channel and at the end "gfx: caps=0x...
+ *   resets=N surfaces=N maps=N frames=N fills=N planar=N commands=N deleted=N
+ *   first_frame_ms=N" (frames: EndFrame PDUs; planar: planar WireToSurface1 commands).
+ * E2E_BURST=1: before the client's first Font List PDU a fast-path input PDU (a QoE
+ *   timestamp, four key releases, a synchronize and a mouse event), like an mstsc that
+ *   carries state over from its previous connection (backlog A5); E2E_BURST=all: before
+ *   every Font List (also those of a redirected connection). Prints "burst before Font
+ *   List #N".
+ * Prints each Server Redirection the client follows ("redirected #N at T ms") and each
+ *   Save Session Info PDU ("save_session_info type=N at T ms").
  * Prints each (re)activation the server starts after the connection is up: "deactivate_all
  *   #N at T ms" and "demand_active #N at T ms after B bitmap updates" (the waiting screen
  *   with WaitingScreenReactivate, the hand-over to the back-end).
@@ -58,9 +70,16 @@
  * Prints the Set Error Info code the server sent before disconnecting ("errinfo=0x..."),
  * if freerdp_connect failed, the connect error ("connect_error=0x..."), and the Bitmap
  * Updates received ("bitmap_updates=N bitmap_rects=N first_bitmap_ms=N", -1: none). */
+#include <freerdp/addin.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/channels/rdpgfx.h>
+#include <freerdp/client/channels.h>
+#include <freerdp/client/cmdline.h>
+#include <freerdp/client/rdpgfx.h>
+#include <freerdp/event.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <freerdp/transport_io.h>
@@ -94,16 +113,112 @@ static BOOL print_status_info(rdpContext* ctx, UINT32 status)
 	printf("client: status_info=0x%04" PRIX32 "\n", status);
 	return TRUE;
 }
+static BOOL print_save_session_info(rdpContext* ctx, UINT32 type, const void* data)
+{
+	(void)ctx;
+	(void)data;
+	printf("client: save_session_info type=%" PRIu32 " at %ld ms\n", type, elapsed_ms());
+	return TRUE;
+}
+/* E2E_GFX: FreeRDP's GDI decodes the Graphics Pipeline; the callbacks below count what
+ * arrives on the way (they run on the drdynvc thread) */
+static unsigned gfx_resets, gfx_surfaces, gfx_maps, gfx_frames, gfx_fills, gfx_planar,
+    gfx_commands, gfx_deleted;
+static UINT32 gfx_caps;
+static long gfx_first_frame_ms = -1;
+static RdpgfxClientContext gfx_orig;
+#define COUNT(v) __atomic_fetch_add(&(v), 1, __ATOMIC_RELAXED)
+static UINT gfx_reset(RdpgfxClientContext* c, const RDPGFX_RESET_GRAPHICS_PDU* p)
+{
+	COUNT(gfx_resets);
+	return gfx_orig.ResetGraphics(c, p);
+}
+static UINT gfx_create(RdpgfxClientContext* c, const RDPGFX_CREATE_SURFACE_PDU* p)
+{
+	COUNT(gfx_surfaces);
+	return gfx_orig.CreateSurface(c, p);
+}
+static UINT gfx_map(RdpgfxClientContext* c, const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* p)
+{
+	COUNT(gfx_maps);
+	return gfx_orig.MapSurfaceToOutput(c, p);
+}
+static UINT gfx_end(RdpgfxClientContext* c, const RDPGFX_END_FRAME_PDU* p)
+{
+	if (COUNT(gfx_frames) == 0)
+		gfx_first_frame_ms = elapsed_ms();
+	return gfx_orig.EndFrame(c, p);
+}
+static UINT gfx_fill(RdpgfxClientContext* c, const RDPGFX_SOLID_FILL_PDU* p)
+{
+	COUNT(gfx_fills);
+	return gfx_orig.SolidFill(c, p);
+}
+static UINT gfx_command(RdpgfxClientContext* c, const RDPGFX_SURFACE_COMMAND* p)
+{
+	COUNT(gfx_commands);
+	if (p->codecId == RDPGFX_CODECID_PLANAR)
+		COUNT(gfx_planar);
+	return gfx_orig.SurfaceCommand(c, p);
+}
+static UINT gfx_delete(RdpgfxClientContext* c, const RDPGFX_DELETE_SURFACE_PDU* p)
+{
+	COUNT(gfx_deleted);
+	return gfx_orig.DeleteSurface(c, p);
+}
+static UINT gfx_caps_confirm(RdpgfxClientContext* c, const RDPGFX_CAPS_CONFIRM_PDU* p)
+{
+	(void)c;
+	gfx_caps = p->capsSet ? p->capsSet->version : 0;
+	return CHANNEL_RC_OK;
+}
+static void on_channel_connected(void* ctx, const ChannelConnectedEventArgs* e)
+{
+	rdpContext* context = ctx;
+	if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) != 0 || !context->gdi)
+		return;
+	RdpgfxClientContext* gfx = e->pInterface;
+	if (!gdi_graphics_pipeline_init(context->gdi, gfx))
+		printf("client: gfx pipeline not set up\n");
+	gfx_orig = *gfx;
+	gfx->ResetGraphics = gfx_reset;
+	gfx->CreateSurface = gfx_create;
+	gfx->MapSurfaceToOutput = gfx_map;
+	gfx->EndFrame = gfx_end;
+	gfx->SolidFill = gfx_fill;
+	gfx->SurfaceCommand = gfx_command;
+	gfx->DeleteSurface = gfx_delete;
+	gfx->CapsConfirm = gfx_caps_confirm;
+	printf("client: gfx open at %ld ms\n", elapsed_ms());
+}
+static void on_channel_disconnected(void* ctx, const ChannelDisconnectedEventArgs* e)
+{
+	rdpContext* context = ctx;
+	if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) != 0)
+		return;
+	printf("client: gfx closed at %ld ms after %u frames\n", elapsed_ms(), gfx_frames);
+	if (context->gdi)
+		gdi_graphics_pipeline_uninit(context->gdi, e->pInterface);
+}
+/* FreeRDP's GDI asks for it on a GFX ResetGraphics */
+static BOOL desktop_resize(rdpContext* ctx)
+{
+	const rdpSettings* s = ctx->settings;
+	return !ctx->gdi || gdi_resize(ctx->gdi, freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth),
+	                               freerdp_settings_get_uint32(s, FreeRDP_DesktopHeight));
+}
 static BOOL post_connect(freerdp* inst)
 {
-	if (getenv("E2E_DUMP") || getenv("E2E_CLICK"))
+	if (getenv("E2E_DUMP") || getenv("E2E_CLICK") || getenv("E2E_GFX"))
 	{
 		if (!gdi_init(inst, PIXEL_FORMAT_BGRX32))
 			return FALSE;
 		gdi_bitmap_update = inst->context->update->BitmapUpdate;
+		inst->context->update->DesktopResize = desktop_resize;
 	}
 	inst->context->update->BitmapUpdate = count_bitmap_update;
 	inst->context->update->ServerStatusInfo = print_status_info;
+	inst->context->update->SaveSessionInfo = print_save_session_info;
 	return TRUE;
 }
 static BOOL sniff_server_pdus(freerdp* inst);
@@ -236,6 +351,70 @@ static BOOL announce_channel(freerdp* inst)
 	memcpy(def->name, "e2echan", sizeof("e2echan"));
 	def->options = CHANNEL_OPTION_INITIALIZED;
 	return freerdp_settings_set_uint32(s, FreeRDP_ChannelCount, n + 1);
+}
+/* E2E_GFX: drdynvc with rdpgfx, as freerdp_client_load_addins() loads them (not that
+ * function itself: with FreeRDP's client defaults it also wants rdpdr) */
+static BOOL load_gfx(freerdp* inst)
+{
+	rdpSettings* s = inst->context->settings;
+	const char* gfx[] = { RDPGFX_CHANNEL_NAME };
+	if (!freerdp_dynamic_channel_collection_find(s, RDPGFX_CHANNEL_NAME) &&
+	    !freerdp_client_add_dynamic_channel(s, 1, gfx))
+		return FALSE;
+	if (!freerdp_settings_set_bool(s, FreeRDP_SupportDynamicChannels, TRUE))
+		return FALSE;
+	PVIRTUALCHANNELENTRYEX entry = (PVIRTUALCHANNELENTRYEX)(void*)freerdp_load_channel_addin_entry(
+	    "drdynvc", NULL, NULL, FREERDP_ADDIN_CHANNEL_STATIC | FREERDP_ADDIN_CHANNEL_ENTRYEX);
+	return entry && freerdp_channels_client_load_ex(inst->context->channels, s, entry, s) == 0;
+}
+static BOOL load_channels(freerdp* inst)
+{
+	if (getenv("E2E_GFX") && !load_gfx(inst))
+		return FALSE;
+	return !getenv("E2E_CHANNEL_DATA") || announce_channel(inst);
+}
+static BOOL on_redirect(freerdp* inst)
+{
+	(void)inst;
+	static unsigned redirects;
+	printf("client: redirected #%u at %ld ms\n", ++redirects, elapsed_ms());
+	return TRUE;
+}
+/* E2E_BURST: the client's PDUs pass here; a fast-path input PDU goes out before the Font
+ * List (slow path over TLS: TPKT, X.224 Data, MCS Send Data Request on the I/O channel,
+ * Share Control Header PDUTYPE_DATAPDU, Share Data Header pduType2 PDUTYPE2_FONTLIST) */
+static rdpTransportIo io_burst;
+static int burst_all;
+static unsigned font_lists;
+static int burst_write_pdu(rdpTransport* transport, wStream* s)
+{
+	const BYTE* p = Stream_Buffer(s);
+	const size_t n = Stream_GetPosition(s);
+	size_t o = 4 + 3;
+	if (n >= o + 7 && p[0] == 0x03 && (p[o] >> 2) == 25 /* SendDataRequest */ &&
+	    ((p[o + 3] << 8) | p[o + 4]) == 1003)
+	{
+		o += 6;
+		o += (p[o] & 0x80) ? 2 : 1;
+		if (n >= o + 15 && (p[o + 2] & 0x0f) == 0x7 && p[o + 14] == 0x27 /* FONTLIST */ &&
+		    (font_lists++ == 0 || burst_all))
+		{
+			/* fpInputHeader (7 events), length; QoE timestamp; key releases Ctrl, Alt, Shift,
+			 * Tab; synchronize; mouse move to 100,100 */
+			static const BYTE burst[] = { 0x1c, 0x17, 0xc0, 0x10, 0x27, 0x00, 0x00, 0x01, 0x1d,
+				                          0x01, 0x38, 0x01, 0x2a, 0x01, 0x0f, 0x60, 0x20, 0x00,
+				                          0x08, 0x64, 0x00, 0x64, 0x00 };
+			wStream* b = Stream_New(NULL, sizeof(burst));
+			if (b)
+			{
+				Stream_Write(b, burst, sizeof(burst));
+				printf("client: burst before Font List #%u sent=%d\n", font_lists,
+				       io_burst.WritePdu(transport, b) >= 0);
+				Stream_Free(b, TRUE);
+			}
+		}
+	}
+	return io_burst.WritePdu(transport, s);
 }
 static void send_channel_data(freerdp* inst, size_t size)
 {
@@ -414,9 +593,31 @@ int main(int argc, char** argv)
 	if (getenv("E2E_STATUS_INFO"))
 		freerdp_settings_set_bool(s, FreeRDP_SupportStatusInfoPdu, TRUE);
 	size_t channel_data = getenv("E2E_CHANNEL_DATA") ? strtoul(getenv("E2E_CHANNEL_DATA"), NULL, 10) : 0;
-	if (channel_data)
-		inst->LoadChannels = announce_channel;
+	if (getenv("E2E_GFX"))
+	{
+		/* the channels built into libfreerdp-client3, as freerdp_client_context_new() does */
+		freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0);
+		freerdp_settings_set_bool(s, FreeRDP_SupportGraphicsPipeline, TRUE);
+		PubSub_SubscribeChannelConnected(inst->context->pubSub, on_channel_connected);
+		PubSub_SubscribeChannelDisconnected(inst->context->pubSub, on_channel_disconnected);
+	}
+	if (channel_data || getenv("E2E_GFX"))
+		inst->LoadChannels = load_channels;
 	inst->PostConnect = post_connect_watch;
+	inst->Redirect = on_redirect;
+	if (getenv("E2E_BURST"))
+	{
+		const rdpTransportIo* io = freerdp_get_io_callbacks(inst->context);
+		burst_all = strcmp(getenv("E2E_BURST"), "all") == 0;
+		if (io)
+		{
+			io_burst = *io;
+			rdpTransportIo w = *io;
+			w.WritePdu = burst_write_pdu;
+			if (!freerdp_set_io_callbacks(inst->context, &w))
+				printf("client: cannot send the input burst\n");
+		}
+	}
 	const long keep_ms = 1000L * (getenv("E2E_KEEP_S") ? atoi(getenv("E2E_KEEP_S")) : 4);
 	const char* dump = getenv("E2E_DUMP");
 	const long dump_at = getenv("E2E_DUMP_AT_MS") ? atol(getenv("E2E_DUMP_AT_MS")) : 1500;
@@ -523,6 +724,11 @@ int main(int argc, char** argv)
 	printf("client: server_end: deactivate_all=%d dpu=%d\n", deactivate_all, server_dpu);
 	printf("client: bitmap_updates=%u bitmap_rects=%u first_bitmap_ms=%ld\n", bitmap_updates,
 	       bitmap_rects, first_bitmap_ms);
+	if (getenv("E2E_GFX"))
+		printf("client: gfx: caps=0x%08" PRIX32 " resets=%u surfaces=%u maps=%u frames=%u fills=%u "
+		       "planar=%u commands=%u deleted=%u first_frame_ms=%ld\n",
+		       gfx_caps, gfx_resets, gfx_surfaces, gfx_maps, gfx_frames, gfx_fills, gfx_planar,
+		       gfx_commands, gfx_deleted, gfx_first_frame_ms);
 	freerdp_disconnect(inst);
 	if (inst->context->gdi)
 		gdi_free(inst);

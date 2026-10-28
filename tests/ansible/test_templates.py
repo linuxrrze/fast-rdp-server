@@ -345,7 +345,7 @@ class Audio(unittest.TestCase):
 
 class ProxyIni(unittest.TestCase):
     def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false",
-              input_trace="false", observe="false", reactivate="false", keylog=""):
+              input_trace="false", observe="false", reactivate="false", keylog="", a5_fixes="true"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -377,6 +377,10 @@ class ProxyIni(unittest.TestCase):
         # reactivation before the waiting screen (lab only, backlog A5): off unless
         # fastrdp_proxy_waiting_screen_reactivate
         self.assertEqual(p["FastRDP"]["WaitingScreenReactivate"], reactivate)
+        # backlog A5 fixes, on unless switched off: fastrdp_proxy_waiting_screen_gfx,
+        # fastrdp_proxy_self_redirect, fastrdp_proxy_logon_notify
+        self.assertEqual((p["FastRDP"]["WaitingScreenGfx"], p["FastRDP"]["SelfRedirect"],
+                          p["FastRDP"]["LogonNotify"]), (a5_fixes,) * 3)
         # TLS key log (lab only, backlog A5): none unless fastrdp_proxy_tls_keylog; the file
         # in the unit's CacheDirectory, the only place ProtectSystem=strict lets it write
         self.assertEqual(p["FastRDP"]["TlsKeyLogFile"], keylog)
@@ -399,6 +403,9 @@ class ProxyIni(unittest.TestCase):
     def test_waiting_screen(self):
         self.check("proxy-waiting.ini", "true", status_info="true")
         self.check("proxy-no-waiting.ini", "true", waiting="false")
+
+    def test_a5_fixes_off(self):
+        self.check("proxy-a5-off.ini", "true", a5_fixes="false")
 
     def test_input_trace(self):
         self.check("proxy-input-trace.ini", "true", input_trace="true", observe="true",
@@ -727,6 +734,9 @@ class CommonChecks(unittest.TestCase):
             "input trace not a bool": dict(ok, fastrdp_proxy_input_trace="lab"),
             "waiting screen observation not a bool": dict(ok, fastrdp_proxy_waiting_screen_observe="lab"),
             "waiting screen reactivation not a bool": dict(ok, fastrdp_proxy_waiting_screen_reactivate="lab"),
+            "waiting screen over GFX not a bool": dict(ok, fastrdp_proxy_waiting_screen_gfx="auto"),
+            "self-redirection not a bool": dict(ok, fastrdp_proxy_self_redirect="once"),
+            "logon notification not a bool": dict(ok, fastrdp_proxy_logon_notify="plain"),
             "TLS key log not a bool": dict(ok, fastrdp_proxy_tls_keylog="/tmp/keys"),
             "lab xorgxrdp variant not a bool": dict(ok, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip="lab"),
             # the APT packages have no lab variant (backlog A9)

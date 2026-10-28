@@ -562,7 +562,9 @@ connection while it is on; switch it off after the lab.
 on a login, the RDP client shows a panel instead of a black or "connecting…" window.
 The RDP connection is already active at that point (the proxy asks the broker from its
 PostConnect callback), so the module can draw with Bitmap Updates, which every client
-must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)).
+must accept ([rdp-spec-conformance.md](rdp-spec-conformance.md#waiting-screen-bitmap-updates)),
+or, for a client that announced the Graphics Pipeline, over GFX
+([below](#mstsc-reconnects-backlog-a5)); the panel is the same.
 
 | Login state | What the user sees |
 |---|---|
@@ -644,6 +646,49 @@ client's keyboard and mouse before the back-end starts, which needs `fastrdp-fre
 Info PDUs ("finding destination", "bringing session online") to clients that announce
 support for them; FreeRDP clients never do, and whether mstsc shows anything is
 untested.
+
+#### mstsc reconnects (backlog A5)
+
+mstsc showed the waiting screen black on its next *Connect* in the same process after a
+session ([backlog A5](backlog.md#sessions)). Three changes aim at it; each is on by
+default and has its own switch. **None is confirmed with mstsc yet**; they are tested
+with FreeRDP clients only (`tests/proxy-e2e/run.sh`, proxies J, K and L).
+
+- **`fastrdp_proxy_waiting_screen_gfx`** (`[FastRDP] WaitingScreenGfx`, default `true`):
+  a client that announced the Graphics Pipeline and joined `drdynvc` gets the panel over
+  GFX instead of Bitmap Updates, as Windows, xrdp and gnome-remote-desktop draw their
+  logon screens. The module opens the dynamic channel manager and the Graphics channel
+  itself (version 1 capabilities, `Microsoft::Windows::RDS::Graphics`, the highest
+  capability set the client advertises without H.264, planar tiles), reads the client's
+  answers during the whole wait and keeps them away from the back-end, and before the
+  back-end takes over clears the panel, deletes the surface and closes the channel; the
+  back-end then opens its own Graphics channel after the proxy's reactivation.
+  Bitmap Updates instead (logged: `waiting screen as Bitmap Updates, not over GFX: …`)
+  for clients without GFX or `drdynvc`, with `[Channels] GFX=false`, without
+  `fastrdp-freerdp3` 3.32.2-6 (patch 0007), or when the client does not get to its
+  capabilities within 2 s (`waiting screen over GFX not possible …`). Open with mstsc:
+  whether it accepts a second dynamic channel capabilities exchange and a second
+  Graphics channel in one connection, and whether a back-end that draws without GFX
+  then still shows.
+- **`fastrdp_proxy_self_redirect`** (`[FastRDP] SelfRedirect`, default `true`): mstsc
+  that carries state over from its previous connection sends input (a synchronize event,
+  keys) before the first Font List of the new connection
+  ([a5-capture-2026-10-26.md](a5-capture-2026-10-26.md#run-2-reactivation-before-the-panel)).
+  Such a client gets a Server Redirection to the proxy itself (no target address, only a
+  routing token) before the broker sees the login, so no second factor is asked twice;
+  it connects again and logs in on the new connection. The redirection carries no user
+  name, domain or password: the client logs on with the credentials it has (mstsc with
+  saved or just typed credentials does not ask again, as with a Connection Broker; a
+  client without them may ask). A connection with the proxy's routing token (younger
+  than 2 minutes) is never redirected, and one client address at most once in 30 s.
+  Logged: `self-redirection: client … sent input before its first Font List …`. Whether
+  a new connection in the same mstsc process starts clean is not known.
+- **`fastrdp_proxy_logon_notify`** (`[FastRDP] LogonNotify`, default `true`): once the
+  back-end session is up (the client completed the hand-over's reactivation) the proxy
+  sends a logon notification (Save Session Info, plain notify; the server SHOULD send
+  one, and mstsc adds the server to its history only after one). One per connection: a
+  back-end's own logon notification is forwarded if it comes first, and dropped after
+  the proxy's (the auto-reconnect cookie always passes).
 
 ### Splitting password and OTP
 

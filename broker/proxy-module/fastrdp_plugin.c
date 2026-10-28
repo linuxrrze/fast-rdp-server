@@ -51,10 +51,18 @@
  *   InputTrace    = false     ; LAB ONLY: log the class of each input event the waiting
  *                             ; screen reads (code field, picker), never a value
  *                             ; (fastrdp_inputtrace.h, ws_trace())
+ *   WaitingScreenGfx = true   ; draw the waiting screen over the Graphics Pipeline for
+ *                             ; clients that announced it (ws_gfx_start(), backlog A5/A8)
+ *   SelfRedirect  = true      ; a client that carries state over from its previous
+ *                             ; connection is redirected to the proxy itself first
+ *                             ; (self_redirect(), backlog A5)
+ *   LogonNotify   = true      ; a logon notification (Save Session Info) to the client
+ *                             ; once the back-end session is up (logon_notify())
  */
 
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +75,7 @@
 
 #include <cjson/cJSON.h>
 
+#include <winpr/crypto.h>
 #include <winpr/string.h>
 #include <winpr/wlog.h>
 #include <winpr/sspi.h>
@@ -80,6 +89,7 @@
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
+#include <freerdp/redirection.h>
 #include <freerdp/session.h>
 #include <freerdp/settings.h>
 #include <freerdp/transport_io.h>
@@ -96,9 +106,11 @@
 #include "fastrdp_addr.h"
 #include "fastrdp_code.h"
 #include "fastrdp_frontdiag.h"
+#include "fastrdp_gfx.h"
 #include "fastrdp_inputtrace.h"
 #include "fastrdp_keylog.h"
 #include "fastrdp_panel.h"
+#include "fastrdp_redirect.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
 #if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
 #define FASTRDP_KDC_EVIDENCE 1
@@ -141,6 +153,13 @@ typedef struct
 	UINT32 target_connection_type; /* 0 = keep the client's */
 	char target_cert_sha256[65];   /* the back-end's certificate, lower-case hex */
 	void* screen; /* waitingScreen during the broker call: the picker's input callbacks */
+	/* SelfRedirect: input before the first Font List (self_redirect_count()), counted until
+	 * the decision */
+	fastrdpBurst burst;
+	BOOL burst_decided;
+	/* LogonNotify: who sent the client its logon notification (the back-end's comes on the
+	 * proxy's client thread) */
+	int logon_state; /* FASTRDP_LOGON_*, atomic */
 } fastrdpSession;
 
 static void wipe_free(char** s)
@@ -458,15 +477,49 @@ typedef struct
 	unsigned sent;  /* codes sent for this login */
 } wsCode;
 
+/* The waiting screen over the Graphics Pipeline ([FastRDP] WaitingScreenGfx; ws_gfx_start()) */
+typedef enum
+{
+	WS_GFX_OFF = 0,   /* not used: Bitmap Updates */
+	WS_GFX_CAPS,      /* DVC Capabilities Request sent */
+	WS_GFX_CREATE,    /* Create Request for the Graphics channel sent */
+	WS_GFX_ADVERTISE, /* channel open, waiting for the client's CapsAdvertise */
+	WS_GFX_READY,     /* surface mapped: the panel goes over GFX */
+	WS_GFX_CLOSING,   /* the module's Close sent, waiting for the client's */
+	WS_GFX_DONE       /* closed, or given up */
+} wsGfxState;
+
+typedef struct
+{
+	wsGfxState state;
+	BOOL reading; /* the module reads the client for it: input dropped, drdynvc data taken */
+	BOOL used;    /* the panel went over GFX in this wait */
+	BOOL created; /* the client accepted the Graphics channel */
+	BOOL closed;  /* the client closed it, or answered the module's Close */
+	const char* failed;
+	UINT16 drdynvc; /* the front's drdynvc static channel */
+	UINT32 dvc_version;
+	fastrdpGfxCaps caps;
+	UINT32 frame_id;
+	unsigned frames, acks, resets;
+	UINT32 last_ack;
+	BOOL suspended, behind;
+	fastrdpBuf chunk;    /* static channel chunks of one drdynvc PDU from the client */
+	fastrdpDvcReasm msg; /* the client's messages on the Graphics channel */
+	fastrdpBuf out;      /* the RDPGFX message being built */
+} wsGfx;
+
 /* The front connection while the broker works on the login ([FastRDP] WaitingScreen):
  * a panel with the broker's progress texts (MFA push, web approval with a QR code of the
  * approval URL, session start), drawn by fastrdp_panel.h and sent as Bitmap Updates
  * ([MS-RDPBCGR] 2.2.9.1.1.3.1.2), the one graphics output every client must accept.
  * This runs in the proxy's ServerPostConnect on the peer thread: the front connection is
  * active, the proxy's back-end client does not exist yet, so the module is the only
- * writer. Nothing else is possible then: GFX (drdynvc) starts only after PostConnect, and
- * the proxy turns off drawing orders and FreeRDP's automatic bitmap fields
- * (pf_server.c), so the module fills in every field of the bitmap data itself.
+ * writer. The back-end's GFX (drdynvc) starts only after PostConnect, and the proxy turns
+ * off drawing orders and FreeRDP's automatic bitmap fields (pf_server.c), so the module
+ * fills in every field of the bitmap data itself. A client that announced the Graphics
+ * Pipeline gets the same panel over GFX instead ([FastRDP] WaitingScreenGfx, ws_gfx_start()),
+ * as every other GFX-capable server draws its logon screen; Bitmap Updates are the fallback.
  * The desktop is cut into 64x64 tiles, compressed like the shadow server does it
  * (shadow_client_send_bitmap_update()): planar at 32 bpp, interleaved RLE at 15/16/24 bpp.
  * Before the hook returns a granted login, the panel is painted over in the screen colour,
@@ -510,9 +563,7 @@ typedef struct
 	unsigned refresh_rects, suppress_outputs;
 	pRefreshRect refresh_rect;       /* the proxy's, while observing */
 	pSuppressOutput suppress_output; /* the proxy's, while observing */
-	/* [FastRDP] WaitingScreenReactivate (lab, backlog A5): the first draw waits for
-	 * ws_reactivate() */
-	BOOL reactivate;
+	wsGfx gfx;
 } waitingScreen;
 
 static long ws_ms_until(const struct timespec* t)
@@ -634,13 +685,24 @@ static BOOL ws_add_tile(waitingScreen* ws, UINT32 x, UINT32 y)
 	return TRUE;
 }
 
-/* Sends every tile that overlaps r (desktop coordinates). */
+static BOOL ws_gfx_send(waitingScreen* ws, fastrdpRect c);
+
+/* Sends every tile that overlaps r (desktop coordinates): one GFX frame while the
+ * Graphics channel is up, else Bitmap Updates. */
 static BOOL ws_send(waitingScreen* ws, fastrdpRect r)
 {
 	const fastrdpRect desk = { 0, 0, ws->width, ws->height };
 	fastrdpRect c;
 	if (!ws->draw || ws->suppressed || !fastrdp_rect_intersect(r, desk, &c))
 		return TRUE;
+	if (ws->gfx.state == WS_GFX_READY)
+		return ws_gfx_send(ws, c);
+	if (ws->gfx.used)
+	{
+		/* never Bitmap Updates after GFX in one wait (backlog A5: mstsc may not show them) */
+		ws_stop(ws, "the Graphics channel is gone");
+		return FALSE;
+	}
 	for (UINT32 y = ((UINT32)c.y / WS_TILE) * WS_TILE; y < (UINT32)c.y + c.h; y += WS_TILE)
 		for (UINT32 x = ((UINT32)c.x / WS_TILE) * WS_TILE; x < (UINT32)c.x + c.w; x += WS_TILE)
 			if (!ws_add_tile(ws, x, y))
@@ -691,7 +753,8 @@ static void waiting_screen_free(waitingScreen* ws, BOOL clear)
 {
 	if (!ws)
 		return;
-	if (clear && ws->draw && ws->shown.w > 0)
+	/* over GFX the panel was cleared before the Graphics channel closed (ws_gfx_end()) */
+	if (clear && ws->draw && ws->shown.w > 0 && !ws->gfx.used)
 	{
 		ws->visible = FALSE;
 		if (ws_send(ws, ws->shown))
@@ -700,6 +763,9 @@ static void waiting_screen_free(waitingScreen* ws, BOOL clear)
 	if (ws->updates > 0)
 		WLog_INFO(TAG, "[%s] waiting screen: %u Bitmap Updates sent", ws->pdata->session_id,
 		          ws->updates);
+	fastrdp_buf_free(&ws->gfx.chunk);
+	fastrdp_buf_free(&ws->gfx.msg.buf);
+	fastrdp_buf_free(&ws->gfx.out);
 	fastrdp_code_wipe(&ws->code.field);
 	cJSON_Delete(ws->code.lines);
 	freerdp_bitmap_planar_context_free(ws->planar);
@@ -718,8 +784,9 @@ static void ws_status_info(waitingScreen* ws, UINT32 status)
 		          status);
 }
 
-/* NULL if neither [FastRDP] WaitingScreen nor StatusInfo applies to this client. Shows
- * the generic panel at once; the broker's progress messages replace its text. */
+/* NULL if neither [FastRDP] WaitingScreen nor StatusInfo applies to this client. The
+ * generic panel shows with ws_first_draw(); the broker's progress messages replace its
+ * text. */
 static waitingScreen* waiting_screen_new(proxyData* pdata)
 {
 	const rdpSettings* front = pdata->ps->settings;
@@ -776,9 +843,7 @@ static waitingScreen* waiting_screen_new(proxyData* pdata)
 	static const char* const generic[] = { WS_GENERIC_TEXT };
 	fastrdp_panel_init(ws->panel);
 	fastrdp_panel_set_text(ws->panel, generic, ARRAYSIZE(generic));
-	ws->reactivate = config_bool(pdata, "WaitingScreenReactivate", FALSE);
-	if (!ws->reactivate)
-		ws_redraw(ws, TRUE);
+	/* the first draw: ws_first_draw(), after the lab reactivation and the GFX set-up */
 	return ws;
 }
 
@@ -956,11 +1021,12 @@ static int ws_picker_next_ms(const waitingScreen* ws);
 static BOOL ws_picker_answer(waitingScreen* ws, int fd);
 static BOOL ws_code_answer(waitingScreen* ws, int fd);
 
-/* The module reads the front connection's input: the picker or the code field shows. */
+/* The module reads the front connection's input: the picker or the code field shows,
+ * WaitingScreenObserve, or the waiting screen over GFX (the client's answers on drdynvc). */
 static BOOL ws_reading(const waitingScreen* ws)
 {
 	return ws && (ws->picker.state == WS_PICKER_SHOWN || ws->code.state == WS_CODE_SHOWN ||
-	              ws->observing);
+	              ws->observing || ws->gfx.reading);
 }
 
 /* What the reading is for, in log lines. */
@@ -1500,6 +1566,9 @@ static BOOL ws_picker_sync(rdpInput* input, UINT32 flags)
 	return ws->picker.sync ? ws->picker.sync(input, flags) : TRUE;
 }
 
+static BOOL ws_gfx_channel_data(waitingScreen* ws, const BYTE* data, size_t size, UINT32 flags,
+                                size_t total);
+
 /* The peer's ReceiveChannelData while the picker reads the front connection: hands the data
  * to the proxy's hook (its queue for the not yet existing back-end), counting it; FALSE
  * (the read fails, the login is abandoned) once WS_PICKER_MAX_CHANNEL_BYTES is exceeded. */
@@ -1514,6 +1583,9 @@ static BOOL ws_picker_channel_data(freerdp_peer* peer, UINT16 channelId, const B
 	waitingScreen* ws = s ? (waitingScreen*)s->screen : NULL;
 	if (!ws || !ws->picker.receive_channel_data)
 		return FALSE;
+	/* the client's answers to the module's drdynvc use: never for the back-end */
+	if (ws->gfx.reading && channelId == ws->gfx.drdynvc)
+		return ws_gfx_channel_data(ws, data, size, flags, totalSize);
 	wsPicker* pk = &ws->picker;
 	pk->channel_bytes += size + WS_PICKER_CHUNK_COST;
 	if (pk->channel_bytes > WS_PICKER_MAX_CHANNEL_BYTES)
@@ -1622,6 +1694,8 @@ static void ws_input_restore(waitingScreen* ws)
 	wsPicker* pk = &ws->picker;
 	pk->armed = FALSE;
 	ws->observing = FALSE; /* the proxy reads again (after the picker or the code field) */
+	if (ws->gfx.reading)
+		return; /* until the Graphics channel is closed (ws_gfx_end()) */
 	if (pk->sync || pk->keyboard)
 	{
 		rdpInput* input = ws->pdata->ps->input;
@@ -1768,7 +1842,8 @@ static void ws_observe_end(waitingScreen* ws)
  * Experiment: mstsc showed the panel black after a connection that used GFX; does a
  * reactivation make it show legacy Bitmap Updates again? A client that does not answer
  * within WS_REACTIVATE_MS gets no panel (graphics before its Confirm Active would break
- * the sequence), the login goes on. */
+ * the sequence), the login goes on. The panel follows with ws_first_draw() (over GFX
+ * after the reactivation, as a Graphics channel must be opened after one). */
 static void ws_reactivate(waitingScreen* ws)
 {
 	proxyData* pdata = ws->pdata;
@@ -1778,7 +1853,6 @@ static void ws_reactivate(waitingScreen* ws)
 		WLog_WARN(TAG, "[%s] WaitingScreenReactivate ignored: needs the waiting screen and "
 		               "patches/freerdp/0007",
 		          sid);
-		ws_redraw(ws, TRUE);
 		return;
 	}
 	WLog_WARN(TAG, "[%s] WaitingScreenReactivate is on: the client is deactivated and "
@@ -1845,6 +1919,576 @@ static void ws_reactivate(waitingScreen* ws)
 	WLog_INFO(TAG, "[%s] WaitingScreenReactivate: reactivation completed in %ld ms, drawing the "
 	               "waiting screen",
 	          sid, ms);
+}
+
+/* ------------------------------------------------------ waiting screen over GFX */
+
+/* [FastRDP] WaitingScreenGfx (default on; backlog A5, A8): a client that announced the
+ * Graphics Pipeline ([MS-RDPEGFX]) gets the panel over it, not as Bitmap Updates. Every
+ * other GFX-capable server (Windows, xrdp, gnome-remote-desktop, FreeRDP's shadow server,
+ * ogon) holds legacy output back from such a client and draws even its logon screen over
+ * GFX, and mstsc has been seen to stick to whichever output path it got first; the black
+ * waiting screen on mstsc's next *Connect* (A5) may be that. Design and what does not fit:
+ * docs/a8-gfx-waiting-screen-feasibility.md. In short:
+ * - FreeRDP's WTS channel manager of the front stays unused for drdynvc in the proxy (it
+ *   tries once, before the client joined the channel), and the proxy passes the client's
+ *   drdynvc data to the back-end's queue. So the module speaks drdynvc itself on the static
+ *   channel (fastrdp_gfx.h): Capabilities Request version 1, Create Request for
+ *   FASTRDP_GFX_CHANNEL with WS_GFX_CHANNEL_ID, then RDPGFX CapsConfirm (the highest
+ *   documented version the client advertises, without AVC), ResetGraphics, CreateSurface,
+ *   MapSurfaceToOutput; each redraw is one frame (StartFrame, SolidFill for the screen
+ *   colour, WireToSurface1 with planar tiles of the panel, EndFrame). Frame
+ *   acknowledgements are counted, not waited for (one frame a second at most).
+ * - It reads the client for the whole wait, as the picker does (patches/freerdp/0007):
+ *   input is dropped unless the picker or the code field takes it, and every drdynvc byte
+ *   the client sends goes to ws_gfx_channel_data(), never to the proxy's queue for the
+ *   back-end, so the back-end's own drdynvc start later finds a clean channel.
+ * - Before the hook returns, the panel is cleared, the surface deleted and the Graphics
+ *   channel closed; the module waits up to WS_GFX_CLOSE_MS for the client's Close (ogon:
+ *   Microsoft clients fail unless the Graphics channel is closed and opened again around a
+ *   reactivation). The proxy's hand-over then reactivates the client and the back-end runs
+ *   its own drdynvc capabilities exchange and Graphics channel.
+ * - Bitmap Updates instead (logged) when the client did not announce GFX, [Channels]
+ *   GFX=false, drdynvc is not joined, patch 0007 is missing, or the client does not get to
+ *   CapsAdvertise within WS_GFX_SETUP_MS (a channel it accepted is closed first). Once a
+ *   frame went over GFX, no Bitmap Update follows in that wait.
+ * Not known (lab): whether mstsc accepts the second drdynvc capabilities exchange and the
+ * back-end's new Graphics channel in the same connection, and whether this cures A5. */
+
+#define WS_GFX_CHANNEL_ID 0x7D00 /* far from the ids back-ends count up from (1) */
+#define WS_GFX_SURFACE 1
+#define WS_GFX_SETUP_MS 2000           /* at most, until the client's CapsAdvertise */
+#define WS_GFX_CLOSE_MS 1000           /* at most, for the client's Close at the end */
+#define WS_GFX_GIVE_UP_MS 500          /* at most, for its Close after a failed set-up */
+#define WS_GFX_MAX_MESSAGE (64 * 1024) /* a drdynvc PDU or Graphics message from the client */
+#define WS_GFX_FLUSH (64 * 1024)       /* RDPGFX bytes per message the module sends */
+#define WS_GFX_BEHIND 16               /* frames not acknowledged before a log line */
+
+static const char* ws_gfx_state_name(wsGfxState st)
+{
+	switch (st)
+	{
+		case WS_GFX_CAPS:
+			return "waiting for the DVC capabilities";
+		case WS_GFX_CREATE:
+			return "waiting for the Graphics channel";
+		case WS_GFX_ADVERTISE:
+			return "waiting for CapsAdvertise";
+		case WS_GFX_READY:
+			return "ready";
+		case WS_GFX_CLOSING:
+			return "closing";
+		default:
+			return "off";
+	}
+}
+
+static int ws_gfx_send_pdu(void* ctx, const uint8_t* pdu, size_t len)
+{
+	waitingScreen* ws = ctx;
+	freerdp_peer* peer = ws->pdata->ps->peer;
+	return peer->SendChannelData(peer, ws->gfx.drdynvc, pdu, len) ? 1 : 0;
+}
+
+/* One drdynvc PDU of the module's own (Capabilities Request, Create Request, Close) */
+static BOOL ws_gfx_send_dvc(waitingScreen* ws, fastrdpBuf* b)
+{
+	const BOOL ok = !b->failed && ws_gfx_send_pdu(ws, b->data, b->len);
+	fastrdp_buf_free(b);
+	return ok;
+}
+
+/* ws->gfx.out as one RDPGFX message on the Graphics channel */
+static BOOL ws_gfx_flush(waitingScreen* ws)
+{
+	wsGfx* g = &ws->gfx;
+	if (g->out.len == 0 && !g->out.failed)
+		return TRUE;
+	fastrdpBuf seg = { 0 };
+	if (!g->out.failed)
+		fastrdp_zgfx_wrap(&seg, g->out.data, g->out.len);
+	const BOOL ok = !g->out.failed && !seg.failed &&
+	                fastrdp_dvc_send_message(WS_GFX_CHANNEL_ID, seg.data, seg.len, ws_gfx_send_pdu, ws);
+	fastrdp_buf_free(&seg);
+	g->out.len = 0;
+	g->out.failed = 0;
+	return ok;
+}
+
+/* The set-up failed or the channel ended: the reason (the first one) stays for the log; a
+ * panel that went over GFX stops (no Bitmap Updates after GFX in one wait). */
+static void ws_gfx_fail(waitingScreen* ws, const char* why)
+{
+	wsGfx* g = &ws->gfx;
+	if (!g->failed)
+		g->failed = why;
+	if (g->state == WS_GFX_READY)
+		ws_stop(ws, why);
+	g->state = WS_GFX_DONE;
+}
+
+/* CapsConfirm, ResetGraphics with the client's monitors (moved so that the desktop starts at
+ * 0,0, where the surface is mapped), CreateSurface, MapSurfaceToOutput */
+static BOOL ws_gfx_pipeline(waitingScreen* ws)
+{
+	wsGfx* g = &ws->gfx;
+	const rdpSettings* f = ws->pdata->ps->settings;
+	fastrdpGfxMonitor mon[FASTRDP_GFX_MAX_MONITORS];
+	unsigned n = 0;
+	INT32 minx = INT32_MAX, miny = INT32_MAX;
+	const UINT32 count = freerdp_settings_get_uint32(f, FreeRDP_MonitorCount);
+	for (UINT32 i = 0; i < count && n < ARRAYSIZE(mon); i++)
+	{
+		const rdpMonitor* m = freerdp_settings_get_pointer_array(f, FreeRDP_MonitorDefArray, i);
+		if (!m || m->width <= 0 || m->height <= 0)
+			continue;
+		mon[n++] = (fastrdpGfxMonitor){ m->x, m->y, m->x + m->width - 1, m->y + m->height - 1,
+			                            m->is_primary != 0 };
+		minx = MIN(minx, m->x);
+		miny = MIN(miny, m->y);
+	}
+	for (unsigned i = 0; i < n; i++)
+	{
+		mon[i].left -= minx;
+		mon[i].right -= minx;
+		mon[i].top -= miny;
+		mon[i].bottom -= miny;
+	}
+	if (n == 0)
+		mon[n++] = (fastrdpGfxMonitor){ 0, 0, (int32_t)ws->width - 1, (int32_t)ws->height - 1, 1 };
+	fastrdp_gfx_caps_confirm(&g->out, &g->caps);
+	fastrdp_gfx_reset_graphics(&g->out, ws->width, ws->height, mon, n);
+	fastrdp_gfx_create_surface(&g->out, WS_GFX_SURFACE, ws->width, ws->height);
+	fastrdp_gfx_map_surface(&g->out, WS_GFX_SURFACE, 0, 0);
+	return ws_gfx_flush(ws);
+}
+
+/* One frame for the desktop area c: the screen colour by SolidFill where the panel is not,
+ * the panel's pixels in WS_TILE tiles, planar (uncompressed if planar fails). */
+static BOOL ws_gfx_send(waitingScreen* ws, fastrdpRect c)
+{
+	wsGfx* g = &ws->gfx;
+	struct timespec now;
+	struct tm tm = { 0 };
+	clock_gettime(CLOCK_REALTIME, &now);
+	(void)gmtime_r(&now.tv_sec, &tm);
+	const UINT32 fid = ++g->frame_id;
+	fastrdp_gfx_start_frame(&g->out, fid, (unsigned)tm.tm_hour, (unsigned)tm.tm_min,
+	                        (unsigned)tm.tm_sec, (unsigned)(now.tv_nsec / 1000000));
+	fastrdpRect p = { 0 };
+	const BOOL panel = ws->visible && fastrdp_rect_intersect(c, ws->panel->rect, &p);
+	fastrdpGfxRect fill[4];
+	unsigned nfill = 0;
+	const unsigned cx0 = (unsigned)c.x, cy0 = (unsigned)c.y, cx1 = cx0 + c.w, cy1 = cy0 + c.h;
+	if (!panel)
+		fill[nfill++] = (fastrdpGfxRect){ cx0, cy0, cx1, cy1 };
+	else
+	{
+		const unsigned px0 = (unsigned)p.x, py0 = (unsigned)p.y, px1 = px0 + p.w, py1 = py0 + p.h;
+		if (py0 > cy0)
+			fill[nfill++] = (fastrdpGfxRect){ cx0, cy0, cx1, py0 };
+		if (cy1 > py1)
+			fill[nfill++] = (fastrdpGfxRect){ cx0, py1, cx1, cy1 };
+		if (px0 > cx0)
+			fill[nfill++] = (fastrdpGfxRect){ cx0, py0, px0, py1 };
+		if (cx1 > px1)
+			fill[nfill++] = (fastrdpGfxRect){ px1, py0, cx1, py1 };
+	}
+	if (nfill > 0)
+		fastrdp_gfx_solid_fill(&g->out, WS_GFX_SURFACE, FASTRDP_COLOR_SCREEN, fill, nfill);
+	BOOL ok = TRUE;
+	const fastrdpRect pr = ws->panel->rect;
+	for (unsigned y = 0; panel && ok && y < p.h; y += WS_TILE)
+		for (unsigned x = 0; ok && x < p.w; x += WS_TILE)
+		{
+			const UINT32 w = MIN(WS_TILE, p.w - x), h = MIN(WS_TILE, p.h - y);
+			const int dx = p.x + (int)x, dy = p.y + (int)y;
+			/* FreeRDP's planar encoder writes the rows bottom-up, as Bitmap Updates have them;
+			 * GFX planar is top-down: the tile goes in upside down */
+			for (UINT32 row = 0; row < h; row++)
+				memcpy(ws->tile + (size_t)(h - 1 - row) * w * 4,
+				       ws->img + ((size_t)(dy - pr.y + (int)row) * pr.w + (size_t)(dx - pr.x)) * 4,
+				       (size_t)w * 4);
+			const fastrdpGfxRect r = { (unsigned)dx, (unsigned)dy, (unsigned)dx + w, (unsigned)dy + h };
+			UINT32 size = 0;
+			BYTE* data = freerdp_bitmap_compress_planar(ws->planar, ws->tile, PIXEL_FORMAT_BGRX32,
+			                                            w, h, w * 4, NULL, &size);
+			if (data)
+				fastrdp_gfx_wire_to_surface1(&g->out, WS_GFX_SURFACE, FASTRDP_GFX_CODEC_PLANAR, &r,
+				                             data, size);
+			else
+			{
+				/* uncompressed, top-down; BGRX in memory is XRGB 8888 */
+				for (UINT32 row = 0; row < h; row++)
+					memcpy(ws->tile + (size_t)row * w * 4,
+					       ws->img +
+					           ((size_t)(dy - pr.y + (int)row) * pr.w + (size_t)(dx - pr.x)) * 4,
+					       (size_t)w * 4);
+				fastrdp_gfx_wire_to_surface1(&g->out, WS_GFX_SURFACE,
+				                             FASTRDP_GFX_CODEC_UNCOMPRESSED, &r, ws->tile,
+				                             (size_t)w * h * 4);
+			}
+			free(data);
+			if (g->out.len >= WS_GFX_FLUSH)
+				ok = ws_gfx_flush(ws);
+		}
+	fastrdp_gfx_end_frame(&g->out, fid);
+	ok = ok && ws_gfx_flush(ws);
+	if (!ok)
+	{
+		g->out.len = 0;
+		ws_stop(ws, "GFX frame not sent");
+		return FALSE;
+	}
+	g->frames++;
+	if (!g->suspended && !g->behind && g->frames - g->acks > WS_GFX_BEHIND)
+	{
+		g->behind = TRUE;
+		WLog_INFO(TAG, "[%s] waiting screen over GFX: %u frames sent, %u acknowledged (the client "
+		               "is behind; frames go on)",
+		          ws->pdata->session_id, g->frames, g->acks);
+	}
+	return TRUE;
+}
+
+/* One RDPGFX message from the client on the Graphics channel */
+static void ws_gfx_message(waitingScreen* ws, const uint8_t* msg, size_t len)
+{
+	wsGfx* g = &ws->gfx;
+	const char* sid = ws->pdata->session_id;
+	size_t off = 0;
+	unsigned cmd = 0;
+	const uint8_t* body = NULL;
+	size_t blen = 0;
+	int rc = 0;
+	while ((rc = fastrdp_gfx_next(msg, len, &off, &cmd, &body, &blen)) > 0)
+	{
+		switch (cmd)
+		{
+			case FASTRDP_GFX_CAPSADVERTISE:
+			{
+				if (g->state != WS_GFX_ADVERTISE && g->state != WS_GFX_READY)
+					break;
+				if (!fastrdp_gfx_choose_caps(body, blen, &g->caps))
+				{
+					ws_gfx_fail(ws, "no capability set the module knows in CapsAdvertise");
+					return;
+				}
+				const BOOL again = g->state == WS_GFX_READY;
+				if (!ws_gfx_pipeline(ws))
+				{
+					ws_gfx_fail(ws, "CapsConfirm or the surface not sent");
+					return;
+				}
+				g->state = WS_GFX_READY;
+				if (again)
+				{
+					/* [MS-RDPEGFX] 3.2.5.18: the client disregards everything before the new
+					 * CapsConfirm (mstsc's pipeline reset) */
+					g->resets++;
+					WLog_INFO(TAG, "[%s] waiting screen over GFX: CapsAdvertise again, pipeline reset",
+					          sid);
+					ws_redraw(ws, TRUE);
+				}
+				break;
+			}
+			case FASTRDP_GFX_FRAMEACKNOWLEDGE:
+			{
+				fastrdpGfxAck ack;
+				if (!fastrdp_gfx_frame_ack(body, blen, &ack))
+					break;
+				if (g->acks++ == 0)
+					WLog_DBG(TAG, "[%s] waiting screen over GFX: first frame acknowledged", sid);
+				g->last_ack = ack.frame_id;
+				g->suspended = ack.queue_depth == FASTRDP_GFX_SUSPEND_ACKS;
+				break;
+			}
+			case FASTRDP_GFX_CACHEIMPORTOFFER:
+				fastrdp_gfx_cache_import_reply(&g->out);
+				if (!ws_gfx_flush(ws))
+					WLog_DBG(TAG, "[%s] CacheImportReply not sent", sid);
+				break;
+			case FASTRDP_GFX_QOEFRAMEACKNOWLEDGE:
+				break;
+			default:
+				WLog_DBG(TAG, "[%s] waiting screen over GFX: client PDU 0x%04x ignored", sid, cmd);
+				break;
+		}
+	}
+	if (rc < 0)
+		WLog_DBG(TAG, "[%s] waiting screen over GFX: malformed message from the client", sid);
+}
+
+/* One drdynvc PDU from the client */
+static void ws_gfx_dvc_pdu(waitingScreen* ws, const uint8_t* p, size_t n)
+{
+	wsGfx* g = &ws->gfx;
+	const char* sid = ws->pdata->session_id;
+	fastrdpDvcPdu pdu;
+	if (!fastrdp_dvc_parse(p, n, &pdu))
+	{
+		WLog_DBG(TAG, "[%s] malformed drdynvc PDU from the client dropped", sid);
+		return;
+	}
+	switch (pdu.cmd)
+	{
+		case FASTRDP_DVC_CAPS:
+			if (g->state == WS_GFX_CAPS)
+			{
+				fastrdpBuf b = { 0 };
+				g->dvc_version = pdu.value;
+				fastrdp_dvc_create_request(&b, WS_GFX_CHANNEL_ID, FASTRDP_GFX_CHANNEL);
+				g->state = WS_GFX_CREATE;
+				if (!ws_gfx_send_dvc(ws, &b))
+					ws_gfx_fail(ws, "Create Request not sent");
+			}
+			return;
+		case FASTRDP_DVC_CREATE:
+			if (pdu.chid != WS_GFX_CHANNEL_ID || g->state != WS_GFX_CREATE)
+				return;
+			if ((INT32)pdu.value < 0)
+			{
+				WLog_INFO(TAG, "[%s] the client refused the Graphics channel (status 0x%08" PRIx32 ")",
+				          sid, pdu.value);
+				ws_gfx_fail(ws, "the client refused the Graphics channel");
+				return;
+			}
+			g->created = TRUE;
+			g->state = WS_GFX_ADVERTISE;
+			return;
+		case FASTRDP_DVC_CLOSE:
+			if (pdu.chid != WS_GFX_CHANNEL_ID)
+				return;
+			g->closed = TRUE;
+			if (g->state == WS_GFX_CLOSING)
+				g->state = WS_GFX_DONE;
+			else
+				ws_gfx_fail(ws, "the client closed the Graphics channel");
+			return;
+		case FASTRDP_DVC_DATA_FIRST:
+		case FASTRDP_DVC_DATA:
+		{
+			if (pdu.chid != WS_GFX_CHANNEL_ID || g->closed)
+				return;
+			const uint8_t* msg = NULL;
+			size_t len = 0;
+			const int rc = fastrdp_dvc_reasm(&g->msg, &pdu, WS_GFX_MAX_MESSAGE, &msg, &len);
+			if (rc > 0)
+				ws_gfx_message(ws, msg, len);
+			else if (rc < 0)
+				WLog_DBG(TAG, "[%s] Graphics channel message from the client dropped (malformed or "
+				              "larger than %d bytes)",
+				         sid, WS_GFX_MAX_MESSAGE);
+			return;
+		}
+		default:
+			WLog_DBG(TAG, "[%s] drdynvc command %u from the client dropped", sid, pdu.cmd);
+			return;
+	}
+}
+
+/* The client's drdynvc data while the module uses the channel: the static channel chunks
+ * of one PDU put together, then handled; never passed on to the proxy. */
+static BOOL ws_gfx_channel_data(waitingScreen* ws, const BYTE* data, size_t size, UINT32 flags,
+                                size_t total)
+{
+	wsGfx* g = &ws->gfx;
+	if (flags & CHANNEL_FLAG_FIRST)
+	{
+		g->chunk.len = 0;
+		g->chunk.failed = 0;
+	}
+	if (total > WS_GFX_MAX_MESSAGE || g->chunk.len + size > WS_GFX_MAX_MESSAGE)
+	{
+		WLog_DBG(TAG, "[%s] drdynvc PDU of more than %d bytes from the client dropped",
+		         ws->pdata->session_id, WS_GFX_MAX_MESSAGE);
+		g->chunk.failed = 1;
+	}
+	else
+		fastrdp_buf_put(&g->chunk, data, size);
+	if (!(flags & CHANNEL_FLAG_LAST))
+		return TRUE;
+	if (!g->chunk.failed)
+		ws_gfx_dvc_pdu(ws, g->chunk.data, g->chunk.len);
+	g->chunk.len = 0;
+	g->chunk.failed = 0;
+	return TRUE;
+}
+
+/* Reads the client up to ms milliseconds: until the set-up is over (ready or failed), or
+ * with for_close until its Close came. Input meanwhile is dropped. */
+static void ws_gfx_wait(waitingScreen* ws, long ms, BOOL for_close)
+{
+	wsGfx* g = &ws->gfx;
+	proxyData* pdata = ws->pdata;
+	freerdp_peer* peer = pdata->ps->peer;
+	struct timespec end;
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	end.tv_nsec += ms * 1000000L;
+	end.tv_sec += end.tv_nsec / 1000000000L;
+	end.tv_nsec %= 1000000000L;
+	while (for_close ? !g->closed : (g->state != WS_GFX_READY && g->state != WS_GFX_DONE))
+	{
+		const long left = ws_ms_until(&end);
+		if (left <= 0)
+			return;
+		struct pollfd fds[MAX_ABORT_FDS];
+		const nfds_t n = ws_picker_fds(ws, fds, ARRAYSIZE(fds));
+		const int pr = poll(fds, n, (int)left);
+		if (pr < 0 && errno == EINTR)
+			continue;
+		if (pr < 0)
+			return;
+		if (pr == 0)
+			continue;
+		if (pdata->abort_event && fds[0].fd == GetEventFileDescriptor(pdata->abort_event) &&
+		    fds[0].revents)
+		{
+			ws_gfx_fail(ws, "the proxy ends the session");
+			return;
+		}
+		if (!peer->CheckFileDescriptor(peer))
+		{
+			ws->picker.gone = TRUE;
+			ws_gfx_fail(ws, "the front connection failed");
+			return;
+		}
+	}
+}
+
+/* Before the first panel: opens the Graphics channel if the client can take the panel over
+ * GFX; otherwise (logged) the panel goes as Bitmap Updates. */
+static void ws_gfx_start(waitingScreen* ws)
+{
+	wsGfx* g = &ws->gfx;
+	proxyData* pdata = ws->pdata;
+	const char* sid = pdata->session_id;
+	const pServerContext* ps = (const pServerContext*)pdata->ps;
+	const rdpSettings* f = pdata->ps->settings;
+	freerdp_peer* peer = pdata->ps->peer;
+	const char* why = NULL;
+	if (!ws->draw || !config_bool(pdata, "WaitingScreenGfx", TRUE))
+		return;
+	if (!freerdp_settings_get_bool(f, FreeRDP_SupportGraphicsPipeline))
+		why = pdata->config->GFX ? "the client did not announce the Graphics Pipeline"
+		                         : "[Channels] GFX=false";
+	else if (!ps->vcm || !WTSVirtualChannelManagerIsChannelJoined(ps->vcm, "drdynvc"))
+		why = "the client did not join drdynvc";
+	else if (WTSVirtualChannelManagerGetDrdynvcState(ps->vcm) == DRDYNVC_STATE_READY)
+		why = "the proxy's own channel manager uses drdynvc";
+	else if (!ws->picker.offered)
+		why = "libfreerdp3 without patches/freerdp/0007";
+	else if (!peer->SendChannelData || (g->drdynvc = WTSChannelGetId(peer, "drdynvc")) == 0)
+		why = "no drdynvc channel id";
+	else if (!ws->planar &&
+	         !(ws->planar = freerdp_bitmap_planar_context_new(
+	               PLANAR_FORMAT_HEADER_NA | PLANAR_FORMAT_HEADER_RLE, WS_TILE, WS_TILE)))
+		why = "out of memory";
+	if (why)
+	{
+		WLog_INFO(TAG, "[%s] waiting screen as Bitmap Updates, not over GFX: %s", sid, why);
+		return;
+	}
+	struct timespec start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	const BOOL took = !ws->picker.keyboard; /* WaitingScreenObserve may read already */
+	ws_input_take(ws);
+	g->reading = TRUE;
+	g->state = WS_GFX_CAPS;
+	fastrdpBuf b = { 0 };
+	fastrdp_dvc_caps_request(&b);
+	if (!ws_gfx_send_dvc(ws, &b))
+		ws_gfx_fail(ws, "DVC Capabilities Request not sent");
+	ws_gfx_wait(ws, WS_GFX_SETUP_MS, FALSE);
+	const long ms = -ws_ms_until(&start);
+	if (g->state == WS_GFX_READY)
+	{
+		char version[16];
+		fastrdp_gfx_version_name(g->caps.version, version, sizeof(version));
+		g->used = TRUE;
+		WLog_INFO(TAG, "[%s] waiting screen over GFX: Graphics channel open in %ld ms (DVC version "
+		               "%" PRIu32 ", RDPGFX %s)",
+		          sid, ms, g->dvc_version, version);
+		return;
+	}
+	const wsGfxState state = g->state;
+	if (!g->failed)
+		g->failed = "no answer from the client in time";
+	if (g->created && !g->closed && !ws->picker.gone)
+	{
+		fastrdpBuf c = { 0 };
+		fastrdp_dvc_close(&c, WS_GFX_CHANNEL_ID);
+		g->state = WS_GFX_CLOSING;
+		if (ws_gfx_send_dvc(ws, &c))
+			ws_gfx_wait(ws, WS_GFX_GIVE_UP_MS, TRUE);
+	}
+	g->state = WS_GFX_DONE;
+	g->reading = FALSE;
+	if (took)
+		ws_input_restore(ws);
+	if (ws->picker.gone)
+	{
+		ws_stop(ws, "the front connection failed");
+		return;
+	}
+	WLog_WARN(TAG, "[%s] waiting screen over GFX not possible (%s; %s after %ld ms%s): Bitmap "
+	               "Updates instead",
+	          sid, g->failed, ws_gfx_state_name(state), ms,
+	          g->created ? ", the Graphics channel closed again" : "");
+}
+
+/* The end of the wait: the panel cleared (a granted login), the surface deleted, the
+ * Graphics channel closed; for a granted login up to WS_GFX_CLOSE_MS for the client's Close,
+ * so that it does not reach the back-end. Then the proxy reads the client again. */
+static void ws_gfx_end(waitingScreen* ws, BOOL granted)
+{
+	wsGfx* g = &ws->gfx;
+	const char* sid = ws->pdata->session_id;
+	if (!g->reading)
+		return;
+	struct timespec start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	const BOOL surface = g->state == WS_GFX_READY;
+	if (!ws->picker.gone && g->created && !g->closed)
+	{
+		if (surface && granted && ws->draw && ws->shown.w > 0)
+		{
+			ws->visible = FALSE;
+			(void)ws_send(ws, ws->shown);
+		}
+		if (surface)
+		{
+			fastrdp_gfx_delete_surface(&g->out, WS_GFX_SURFACE);
+			(void)ws_gfx_flush(ws);
+		}
+		fastrdpBuf c = { 0 };
+		fastrdp_dvc_close(&c, WS_GFX_CHANNEL_ID);
+		g->state = WS_GFX_CLOSING;
+		if (ws_gfx_send_dvc(ws, &c) && granted)
+			ws_gfx_wait(ws, WS_GFX_CLOSE_MS, TRUE);
+	}
+	const long ms = -ws_ms_until(&start);
+	if (g->closed)
+		WLog_INFO(TAG, "[%s] waiting screen over GFX: %u frames, %u acknowledged; Graphics channel "
+		               "closed (%ld ms)",
+		          sid, g->frames, g->acks, ms);
+	else
+		WLog_INFO(TAG, "[%s] waiting screen over GFX: %u frames, %u acknowledged; no Close from the "
+		               "client%s (a late one goes to the back-end, which does not know the channel)",
+		          sid, g->frames, g->acks, granted ? " in time" : "");
+	if (g->failed)
+		WLog_INFO(TAG, "[%s] waiting screen over GFX ended early: %s", sid, g->failed);
+	g->state = WS_GFX_DONE;
+	g->reading = FALSE;
+	ws_input_restore(ws);
+}
+
+/* The first panel: over GFX if possible, after the lab reactivation */
+static void ws_first_draw(waitingScreen* ws)
+{
+	if (!ws->draw)
+		return;
+	ws_gfx_start(ws);
 	ws_redraw(ws, TRUE);
 }
 
@@ -1925,6 +2569,24 @@ static BOOL fastrdp_save_session_info(rdpContext* context, UINT32 type, const vo
 		                                                   : ", without auto-reconnect cookie";
 	WLog_INFO(TAG, "[%s] back-end Save Session Info to the client: %s%s", sid,
 	          fastrdp_save_session_info_name(type), cookie);
+	/* LogonNotify (fastrdp_server_activate()): one logon notification per connection */
+	fastrdpSession* s = (ps && ps->pdata && fastrdp_mgr)
+	                        ? (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME,
+	                                                                     ps->pdata)
+	                        : NULL;
+	if (s && fastrdp_is_logon_notification(type))
+	{
+		int expected = FASTRDP_LOGON_NONE;
+		if (!__atomic_compare_exchange_n(&s->logon_state, &expected, FASTRDP_LOGON_BACKEND, FALSE,
+		                                 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) &&
+		    !fastrdp_logon_forward(type, expected))
+		{
+			WLog_INFO(TAG, "[%s] ... not forwarded: the proxy sent the client a logon notification "
+			               "already (LogonNotify)",
+			          sid);
+			return TRUE;
+		}
+	}
 	return fastrdp_save_session_info_orig ? fastrdp_save_session_info_orig(context, type, data)
 	                                      : FALSE;
 }
@@ -2428,6 +3090,290 @@ static BOOL fastrdp_remote_credentials(freerdp_peer* peer, KERB_TICKET_LOGON* lo
 	return rc;
 }
 
+/* -------------------------------------------------------- self-redirection */
+
+/* [FastRDP] SelfRedirect (default on; backlog A5, an experiment): mstsc showed the waiting
+ * screen black on the next *Connect* in the same process after a session, and such a
+ * connection is recognisable: its first activation looks like a reactivation, the client
+ * sends input (QoE timestamp, scancodes, synchronize, mouse) between Control Request and
+ * Font List (docs/a5-capture-2026-10-26.md, run 2). For such a client the module sends a
+ * Server Redirection PDU ([MS-RDPBCGR] 2.2.13.1, 3.2.5.13.1) pointing at the proxy itself:
+ * no target address, only a LoadBalanceInfo, so the client "MUST terminate the current
+ * connection ... and initiate a new connection" to the same server, with the
+ * LoadBalanceInfo as its X.224 routing token (fastrdp_redirect.h). Whether a new connection
+ * in the same mstsc process clears its state is not known.
+ * - Where: the input before the Font List arrives while FreeRDP runs the connection
+ *   sequence, before PostConnect; self_redirect_count() counts it (wrappers around the
+ *   proxy's input callbacks, installed at ServerSessionInitialize). The decision is the first
+ *   thing the target lookup (PostConnect) does after the credential checks, before the
+ *   broker sees the login: no second factor is asked on the redirected connection.
+ * - No loop: the redirected connection brings the token back and is never redirected
+ *   (FASTRDP_SR_TOKEN_TTL_S); at most one self-redirection per client address in
+ *   FASTRDP_SR_INTERVAL_S, in case a client drops the token.
+ * - Credentials: the PDU carries neither user name, domain nor password. The client logs
+ *   on again with what it has (mstsc: the credentials of the connection, as for a
+ *   Connection Broker redirection; with Kerberos NLA a new service ticket exchange); a
+ *   client without stored credentials may ask again. Nothing of it is logged.
+ * After the PDU the module waits up to SR_CLOSE_WAIT_MS for the client to close, then the
+ * connection ends without a Set Error Info. */
+
+#define SR_CLOSE_WAIT_MS 5000
+
+typedef enum
+{
+	SR_SYNC,
+	SR_KEY,
+	SR_UNICODE,
+	SR_MOUSE,
+	SR_QOE
+} srClass;
+
+/* the proxy's input callbacks (pf_input.c), the same for every session */
+static pSynchronizeEvent sr_sync_orig;
+static pKeyboardEvent sr_keyboard_orig;
+static pUnicodeKeyboardEvent sr_unicode_orig;
+static pMouseEvent sr_mouse_orig;
+static pExtendedMouseEvent sr_extended_mouse_orig;
+static pQoEEvent sr_qoe_orig;
+static pthread_mutex_t sr_lock = PTHREAD_MUTEX_INITIALIZER;
+static fastrdpSrLimit sr_limit; /* under sr_lock */
+
+/* Input before the first Font List: PostConnect has not run (peer->connected), the session
+ * has not decided yet. Counted, then handed to the proxy as before (it drops it). */
+static void self_redirect_count(rdpInput* input, srClass c)
+{
+	rdpContext* ctx = input ? input->context : NULL;
+	freerdp_peer* peer = ctx ? ctx->peer : NULL;
+	const pServerContext* ps = (const pServerContext*)ctx;
+	proxyData* pdata = ps ? ps->pdata : NULL;
+	if (!peer || peer->connected || !pdata || !fastrdp_mgr)
+		return;
+	fastrdpSession* s = (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata);
+	if (!s || s->burst_decided)
+		return;
+	switch (c)
+	{
+		case SR_SYNC:
+			s->burst.sync++;
+			break;
+		case SR_KEY:
+			s->burst.keys++;
+			break;
+		case SR_UNICODE:
+			s->burst.unicode++;
+			break;
+		case SR_MOUSE:
+			s->burst.mouse++;
+			break;
+		default:
+			s->burst.qoe++;
+			break;
+	}
+}
+
+static BOOL sr_sync(rdpInput* input, UINT32 flags)
+{
+	self_redirect_count(input, SR_SYNC);
+	return sr_sync_orig ? sr_sync_orig(input, flags) : TRUE;
+}
+
+static BOOL sr_keyboard(rdpInput* input, UINT16 flags, UINT8 code)
+{
+	self_redirect_count(input, SR_KEY);
+	return sr_keyboard_orig ? sr_keyboard_orig(input, flags, code) : TRUE;
+}
+
+static BOOL sr_unicode(rdpInput* input, UINT16 flags, UINT16 code)
+{
+	self_redirect_count(input, SR_UNICODE);
+	return sr_unicode_orig ? sr_unicode_orig(input, flags, code) : TRUE;
+}
+
+static BOOL sr_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
+{
+	self_redirect_count(input, SR_MOUSE);
+	return sr_mouse_orig ? sr_mouse_orig(input, flags, x, y) : TRUE;
+}
+
+static BOOL sr_extended_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
+{
+	self_redirect_count(input, SR_MOUSE);
+	return sr_extended_mouse_orig ? sr_extended_mouse_orig(input, flags, x, y) : TRUE;
+}
+
+static BOOL sr_qoe(rdpInput* input, UINT32 timestamp)
+{
+	self_redirect_count(input, SR_QOE);
+	return sr_qoe_orig ? sr_qoe_orig(input, timestamp) : TRUE;
+}
+
+/* ServerSessionInitialize: the wrappers in front of the proxy's input callbacks (registered
+ * just before, pf_server_initialize_peer_connection()). The waiting screen's own callbacks
+ * (ws_input_take()) save and restore these like the proxy's. */
+static void self_redirect_watch(rdpInput* input)
+{
+	if (!input || input->KeyboardEvent == sr_keyboard)
+		return;
+	pthread_mutex_lock(&sr_lock);
+	if (!sr_keyboard_orig)
+	{
+		sr_sync_orig = input->SynchronizeEvent;
+		sr_keyboard_orig = input->KeyboardEvent;
+		sr_unicode_orig = input->UnicodeKeyboardEvent;
+		sr_mouse_orig = input->MouseEvent;
+		sr_extended_mouse_orig = input->ExtendedMouseEvent;
+		sr_qoe_orig = input->QoEEvent;
+	}
+	pthread_mutex_unlock(&sr_lock);
+	if (input->KeyboardEvent != sr_keyboard_orig)
+		return; /* not the proxy's callbacks: leave them alone */
+	input->SynchronizeEvent = sr_sync;
+	input->KeyboardEvent = sr_keyboard;
+	input->UnicodeKeyboardEvent = sr_unicode;
+	input->MouseEvent = sr_mouse;
+	input->ExtendedMouseEvent = sr_extended_mouse;
+	input->QoEEvent = sr_qoe;
+}
+
+/* Waits up to ms for the front client to close the connection (as for the broker call: the
+ * peer's end of the socket, or the proxy's abort event). */
+static long wait_front_closed(proxyData* pdata, long ms)
+{
+	struct timespec start, end;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	end = start;
+	end.tv_nsec += ms * 1000000L;
+	end.tv_sec += end.tv_nsec / 1000000000L;
+	end.tv_nsec %= 1000000000L;
+	for (;;)
+	{
+		const long left = ws_ms_until(&end);
+		if (left <= 0)
+			return -1;
+		struct pollfd fds[MAX_ABORT_FDS];
+		const nfds_t n = abort_fds(pdata, fds, ARRAYSIZE(fds));
+		if (n == 0)
+			return -1;
+		const int pr = poll(fds, n, (int)left);
+		if (pr < 0 && errno == EINTR)
+			continue;
+		if (pr < 0)
+			return -1;
+		if (pr > 0)
+			return -ws_ms_until(&start);
+	}
+}
+
+/* TRUE if the client was sent a Server Redirection PDU to the proxy itself: the login ends
+ * here, without a Set Error Info. */
+static BOOL self_redirect(proxyData* pdata, fastrdpSession* s)
+{
+	const char* sid = pdata->session_id;
+	freerdp_peer* peer = pdata->ps->peer;
+	s->burst_decided = TRUE;
+	if (!config_bool(pdata, "SelfRedirect", TRUE))
+		return FALSE;
+	char counts[128];
+	fastrdp_burst_describe(&s->burst, counts, sizeof(counts));
+	const long long now = (long long)time(NULL);
+	DWORD tlen = 0;
+	const char* token = freerdp_nego_get_routing_token(pdata->ps, &tlen);
+	const long long age = fastrdp_sr_token_age(token, tlen, now);
+	if (age >= 0 && age <= FASTRDP_SR_TOKEN_TTL_S)
+	{
+		WLog_INFO(TAG, "[%s] self-redirection: this connection follows one %lld s ago, not "
+		               "redirected again (input before the first Font List: %s)",
+		          sid, age, counts);
+		return FALSE;
+	}
+	if (!fastrdp_burst_carryover(&s->burst))
+	{
+		if (fastrdp_burst_any(&s->burst))
+			WLog_INFO(TAG, "[%s] input before the first Font List (%s), no keyboard state: not "
+			               "redirected",
+			          sid, counts);
+		return FALSE;
+	}
+	const char* addr = peer->hostname[0] ? peer->hostname : "?";
+	long long ago = 0;
+	pthread_mutex_lock(&sr_lock);
+	const int allowed = fastrdp_sr_limit_take(&sr_limit, addr, now, FASTRDP_SR_INTERVAL_S, &ago);
+	pthread_mutex_unlock(&sr_lock);
+	if (!allowed)
+	{
+		WLog_WARN(TAG, "[%s] self-redirection: client %s carries state over (input before the "
+		               "first Font List: %s) but was redirected %lld s ago (at most once in %d s): "
+		               "not redirected",
+		          sid, addr, counts, ago, FASTRDP_SR_INTERVAL_S);
+		return FALSE;
+	}
+	char lb[FASTRDP_SR_TOKEN_MAX];
+	UINT64 nonce = 0;
+	(void)winpr_RAND(&nonce, sizeof(nonce));
+	rdpRedirection* r = redirection_new();
+	const BOOL sent =
+	    r && fastrdp_sr_token(lb, sizeof(lb), now, nonce) &&
+	    redirection_set_flags(r, LB_LOAD_BALANCE_INFO) && redirection_set_session_id(r, 0) &&
+	    redirection_set_byte_option(r, LB_LOAD_BALANCE_INFO, (const BYTE*)lb, strlen(lb)) &&
+	    peer->SendServerRedirection && peer->SendServerRedirection(peer, r);
+	redirection_free(r);
+	if (!sent)
+	{
+		WLog_WARN(TAG, "[%s] self-redirection: Server Redirection PDU not sent, the login goes on",
+		          sid);
+		return FALSE;
+	}
+	WLog_WARN(TAG, "[%s] self-redirection: client %s sent input before its first Font List (%s), "
+	               "it carries state over from an earlier connection (backlog A5); Server "
+	               "Redirection PDU to the proxy itself sent, no login on this connection",
+	          sid, addr, counts);
+	const long closed = wait_front_closed(pdata, SR_CLOSE_WAIT_MS);
+	if (closed >= 0)
+		WLog_INFO(TAG, "[%s] self-redirection: the client left after %ld ms", sid, closed);
+	else
+		WLog_WARN(TAG, "[%s] self-redirection: the client did not close the connection within %d "
+		               "ms, closing it",
+		          sid, SR_CLOSE_WAIT_MS);
+	return TRUE;
+}
+
+/* --------------------------------------------------------- logon notification */
+
+/* [FastRDP] LogonNotify (default on; backlog A5): a Save Session Info PDU with
+ * INFOTYPE_LOGON_PLAINNOTIFY ([MS-RDPBCGR] 2.2.10.1, 3.3.5.10.1: the server SHOULD notify
+ * the client of a logon) once the back-end session is up: at the first front activation
+ * after the proxy's client connected the back-end, i.e. when the client completed the
+ * hand-over's reactivation. None of fastrdp's back-ends sends one (xrdp's Xorg sessions,
+ * gnome-remote-desktop), and mstsc adds a server to its connection history only after
+ * one. The proxy forwards a back-end's own (fastrdp_save_session_info()); whichever comes
+ * first wins, the other logon notification is not sent (INFOTYPE_LOGON_EXTENDED_INF, the
+ * auto-reconnect cookie, always passes). The plain notification carries no data. */
+static BOOL fastrdp_server_activate(proxyPlugin* plugin, proxyData* pdata, void* custom)
+{
+	WINPR_UNUSED(custom);
+	fastrdpSession* s = get_session(plugin, pdata);
+	const pClientContext* pc = (const pClientContext*)pdata->pc;
+	if (!s || !pdata->ps)
+		return TRUE;
+	const int state = __atomic_load_n(&s->logon_state, __ATOMIC_ACQUIRE);
+	if (!fastrdp_logon_notify_due(config_bool(pdata, "LogonNotify", TRUE),
+	                              s->routed && pc && pc->connected, state))
+		return TRUE;
+	int expected = FASTRDP_LOGON_NONE;
+	if (!__atomic_compare_exchange_n(&s->logon_state, &expected, FASTRDP_LOGON_PROXY, FALSE,
+	                                 __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+		return TRUE; /* the back-end's came just now */
+	const pSaveSessionInfo send = fastrdp_save_session_info_orig
+	                                  ? fastrdp_save_session_info_orig
+	                                  : pdata->ps->update->SaveSessionInfo;
+	if (send && send(pdata->ps, INFO_TYPE_LOGON_PLAIN_NOTIFY, NULL))
+		WLog_INFO(TAG, "[%s] logon notification to the client (Save Session Info, plain notify)",
+		          pdata->session_id);
+	else
+		WLog_WARN(TAG, "[%s] logon notification to the client not sent", pdata->session_id);
+	return TRUE;
+}
+
 /* ------------------------------------------------------------------ hooks */
 
 static BOOL fastrdp_server_peer_logon(proxyPlugin* plugin, proxyData* pdata, void* param)
@@ -2635,6 +3581,14 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		}
 	}
 
+	/* [FastRDP] SelfRedirect: before the broker sees the login (no second factor asked on a
+	 * connection the client leaves at once) */
+	if (self_redirect(pdata, s))
+	{
+		errinfo = 0;
+		goto out;
+	}
+
 	cJSON* req = cJSON_CreateObject();
 	if (!req)
 		goto out;
@@ -2697,6 +3651,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 		}
 		if (config_bool(pdata, "WaitingScreenReactivate", FALSE))
 			ws_reactivate(screen);
+		ws_first_draw(screen); /* over GFX if the client can take it ([FastRDP] WaitingScreenGfx) */
 	}
 
 	long timeout = strtol(config_str(pdata, "Timeout", "180"), NULL, 10);
@@ -2705,7 +3660,7 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	const brokerCallResult called =
 	    broker_call(config_str(pdata, "BrokerSocket", DEFAULT_SOCKET), req, (int)timeout, pdata,
 	                screen, &reply);
-	if (!screen || !screen->observe)
+	if (!screen || (!screen->observe && !screen->gfx.used))
 	{
 		const unsigned long unread = front_unread_bytes(pdata);
 		if (unread > 0)
@@ -2770,10 +3725,13 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 	rc = TRUE;
 
 out:
+	if (screen)
+	{
+		ws_gfx_end(screen, rc); /* reads the client: before s->screen goes */
+		ws_observe_end(screen);
+	}
 	if (s)
 		s->screen = NULL;
-	if (screen)
-		ws_observe_end(screen);
 	/* a granted login: no trace of the panel before the back-end's first frame */
 	waiting_screen_free(screen, rc);
 	if (!rc)
@@ -3060,6 +4018,8 @@ static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, v
 	}
 	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
 	pdata->ps->peer->SspiNtlmHashCallback = fastrdp_ntlm_refused;
+	if (config_bool(pdata, "SelfRedirect", TRUE))
+		self_redirect_watch(pdata->ps->input);
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
 	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0) &&
 	       freerdp_settings_set_bool(front, FreeRDP_RemoteCredentialGuard,
@@ -3113,6 +4073,7 @@ FREERDP_API FREERDP_ENTRY_POINT(BOOL proxy_module_entry_point(proxyPluginsManage
 	plugin.ClientRedirect = fastrdp_client_redirect;
 	plugin.ClientX509Certificate = fastrdp_client_x509_refused;
 	plugin.ServerSessionInitialize = fastrdp_server_session_init;
+	plugin.ServerPeerActivate = fastrdp_server_activate;
 	plugin.ServerSessionEnd = fastrdp_session_end;
 	plugin.userdata = userdata;
 	return mgr->RegisterPlugin(mgr, &plugin);

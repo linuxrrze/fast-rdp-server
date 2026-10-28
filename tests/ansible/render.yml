@@ -382,6 +382,16 @@
         fastrdp_proxy_waiting_screen_reactivate: true
         fastrdp_proxy_tls_keylog: true
 
+    - name: Proxy.ini, the backlog A5 fixes switched off (waiting screen over GFX, self-redirection, logon notification)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"
+        dest: "{{ render_out }}/proxy-a5-off.ini"
+        mode: "0644"
+      vars:
+        fastrdp_proxy_waiting_screen_gfx: false
+        fastrdp_proxy_self_redirect: false
+        fastrdp_proxy_logon_notify: false
+
     - name: Proxy.ini, waiting screen switched off
       ansible.builtin.template:
         src: "{{ roles_dir }}/freerdp_proxy/templates/proxy.ini.j2"

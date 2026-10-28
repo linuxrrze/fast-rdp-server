@@ -208,6 +208,26 @@ fastrdp_proxy_waiting_screen_observe: false
 # session that used GFX; needs the waiting screen and fastrdp-freerdp3 with
 # patches/freerdp/0007. The proxy warns on every connection while it is on.
 fastrdp_proxy_waiting_screen_reactivate: false
+# Backlog A5 (mstsc shows a black window on the next Connect in the same mstsc process
+# after a session): three fixes, on by default, each switchable; none is confirmed with
+# mstsc yet (docs/auth-matrix.md#waiting-screen).
+# The waiting screen over the Graphics Pipeline (proxy.ini [FastRDP] WaitingScreenGfx):
+# for clients that announced GFX and joined drdynvc, the proxy opens the Graphics channel
+# itself and draws the panel over it, as every GFX-capable server draws its logon screen,
+# then closes the channel before the back-end takes over. Other clients, or a client that
+# does not answer within 2 s, get the Bitmap Updates. Needs fastrdp-freerdp3 with
+# patches/freerdp/0007 and [Channels] GFX on.
+fastrdp_proxy_waiting_screen_gfx: true
+# Self-redirection (proxy.ini [FastRDP] SelfRedirect): a client that sends input before
+# the first Font List of a new connection (mstsc carrying state over from its previous
+# connection) is sent a Server Redirection to the proxy itself before the login is checked,
+# so it opens a fresh connection; the redirected connection is never redirected again,
+# and an address at most once in 30 s. No credentials are put into the redirection.
+fastrdp_proxy_self_redirect: true
+# Logon notification (proxy.ini [FastRDP] LogonNotify): a Save Session Info PDU
+# (plain notify) to the client once the back-end session is up, unless the back-end sent
+# one; mstsc adds the server to its connection history only after one.
+fastrdp_proxy_logon_notify: true
 # LAB ONLY (proxy.ini [FastRDP] TlsKeyLogFile; backlog A5): the proxy appends the TLS
 # secrets of every client connection to /var/cache/fastrdp-proxy/tls-keylog.txt (mode
 # 0600), so Wireshark can decrypt a capture of the client's traffic: with the file, a

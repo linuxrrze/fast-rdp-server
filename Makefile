@@ -53,7 +53,11 @@ test-proxy-module:
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_keylog tests/proxy-module/test_keylog.c && \
 	  build/test_keylog && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_frontdiag tests/proxy-module/test_frontdiag.c && \
-	  build/test_frontdiag)
+	  build/test_frontdiag && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_gfx tests/proxy-module/test_gfx.c && \
+	  build/test_gfx && \
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_redirect tests/proxy-module/test_redirect.c && \
+	  build/test_redirect)
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report

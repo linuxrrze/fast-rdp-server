@@ -27,7 +27,7 @@ export LD_LIBRARY_PATH="$LIBDIR:$LIBDIR/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRAR
 gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
 gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \
-    "${LNK[@]}" -lfreerdp3 -lwinpr3
+    "${LNK[@]}" -lfreerdp-client3 -lfreerdp3 -lwinpr3
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
     -subj /CN=e2e -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
 
@@ -94,6 +94,14 @@ sed -i 's/^AllowTlsFrom=.*/&\nTlsKeyLogFile=tls-keys-relative.txt/' c.ini
 # I reactivates the client before the waiting screen (lab switch WaitingScreenReactivate,
 # backlog A5); its own fake broker as for F
 mkproxy i 23398 f.sock '127.0.0.0/8' deny WaitingScreenReactivate=true
+# backlog A5 fixes, own fake broker (j.log): J and L with the defaults (WaitingScreenGfx,
+# SelfRedirect, LogonNotify on; L for the redirect loop check, with its own rate limit),
+# K with all three off
+mkproxy j 23399 j.sock '127.0.0.0/8' deny
+mkproxy k 23400 j.sock '127.0.0.0/8' deny "WaitingScreenGfx=false
+SelfRedirect=false
+LogonNotify=false"
+mkproxy l 23401 j.sock '127.0.0.0/8' deny
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -102,6 +110,7 @@ export E2E_LOGIN_ID=k3Jq9vX2-PzR7wLm0aTb_Q
 python3 "$HERE/fake_broker.py" a.sock a.log 23390 > a.out 2>&1 &
 python3 "$HERE/fake_broker.py" b.sock b.log 23391 > b.out 2>&1 &
 python3 "$HERE/fake_broker.py" f.sock f.log 23390 > f.out 2>&1 &
+python3 "$HERE/fake_broker.py" j.sock j.log 23390 > j.out 2>&1 &
 # connection state transitions (core.rdp DEBUG) show whether multitransport was offered
 WLOG_FILTER="com.freerdp.core.rdp:DEBUG" LD_PRELOAD="$W/shim.so" "$PROXY" a.ini > proxy-a.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" b.ini > proxy-b.log 2>&1 &
@@ -112,7 +121,10 @@ LD_PRELOAD="$W/shim.so" "$PROXY" f.ini > proxy-f.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
 (umask 022 && LD_PRELOAD="$W/shim.so" exec "$PROXY" h.ini > proxy-h.log 2>&1) &
 LD_PRELOAD="$W/shim.so" "$PROXY" i.ini > proxy-i.log 2>&1 &
-for _ in $(seq 50); do grep -q ready a.out b.out f.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
+for p in j k l; do LD_PRELOAD="$W/shim.so" "$PROXY" $p.ini > proxy-$p.log 2>&1 & done
+for _ in $(seq 50); do grep -q ready a.out b.out f.out j.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23399) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23400) 2>/dev/null &&
+    (exec 3<>/dev/tcp/127.0.0.1/23401) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23395) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23397) 2>/dev/null &&
@@ -190,6 +202,29 @@ E2E_KEEP_S=5 E2E_EARLY_KEYS=1,2,3 timeout 30 ./client 127.0.0.1 23396 oldbroker 
 # 'progress', 3.5 s): Deactivate All and Demand Active before the first panel tile, the
 # panel after it, the login on to the back-end (which reactivates once more)
 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23398 reactivate good "" > reactivate.out 2>&1 || true
+# ... and with a GFX client: the reactivation first, then the Graphics channel
+E2E_GFX=1 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23398 reactivate good "" > reactivate-gfx.out 2>&1 || true
+# Backlog A5 fixes (proxies J, K, L; fake broker j.log). The waiting screen over GFX: a client
+# with FreeRDP's drdynvc and rdpgfx channels gets the MFA panel (as 'reactivate': QR code,
+# countdown, session start after 3.5 s) over the Graphics channel, which is closed before the
+# hand-over; then one logon notification. Proxy K (all three off): the same client gets
+# Bitmap Updates and no logon notification.
+E2E_GFX=1 E2E_KEEP_S=8 E2E_DUMP="$W/panelgfx.ppm" timeout 30 ./client 127.0.0.1 23399 reactivate good "" > gfx.out 2>&1 || true
+E2E_GFX=1 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23400 reactivate good "" > gfx-off.out 2>&1 || true
+# Self-redirection: input before the first Font List (like an mstsc that carries state over)
+# gets a Server Redirection to the proxy itself; FreeRDP's client follows it with the routing
+# token, the second connection logs in. The next such client from the same address within
+# 30 s is not redirected (rate limit); proxy K does not redirect; proxy L, a client that sends
+# the input on every connection: one redirection, the token stops a second.
+E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 redirect1 good "" > redirect1.out 2>&1 || true
+E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 ratelimited good "" > ratelimited.out 2>&1 || true
+E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23400 burstoff good "" > burstoff.out 2>&1 || true
+E2E_BURST=all E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23401 redirectall good "" > redirectall.out 2>&1 || true
+# the desktop picker and the code field over GFX (proxy J)
+E2E_GFX=1 E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23399 pickergfx good "" > pickergfx.out 2>&1 &
+gfxpick=$!
+E2E_GFX=1 E2E_KEEP_S=12 E2E_KEYS=1,2,3,4,5,6 timeout 30 ./client 127.0.0.1 23399 codegfx good "" > codegfx.out 2>&1 || true
+wait $gfxpick || true
 # Field report (A3/A5): the desktop picker with WaitingScreenObserve on (proxy F). Both read
 # the client during the wait; the picker must show, take the key and hand the input back
 E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23395 pickerobserve good "" > pickerobserve.out 2>&1 || true
@@ -266,10 +301,11 @@ expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not an
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 35 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
-# picker login through proxy F, the key-log login through proxy H and the reactivated
-# login through proxy I
-expect "back-end received the token, not the password" 'len(lb) == 35 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# 44 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
+# picker login through proxy F, the key-log login through proxy H, the reactivated logins
+# through proxy I (2), the GFX logins through proxies J and K, and the four
+# self-redirection logins (J, J, K, L), the picker and code field logins over GFX (J)
+expect "back-end received the token, not the password" 'len(lb) == 44 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -308,7 +344,7 @@ expect "picker: channel data below the cap passed on, the choice counts" 'chose(
 expect "picker: channel data above the cap: login abandoned, broker connection closed" \
     'pc["pickerflood"]["closed"] and pc["pickerflood"].get("line") is None'
 expect "picker: chosen logins reached the back-end, the abandoned one not (pickerobserve: proxy F)" \
-    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff", "pickerobserve"])'
+    'sorted(r["user"] for r in lb if r["user"].startswith("picker")) == sorted(["pickerdigit", "pickerkeys", "pickeresc", "pickertimeout", "pickermoved", "pickerclick", "pickerearly", "pickerkeypad", "pickerchan", "pickeroff", "pickerobserve", "pickergfx"])'
 expect "code field offered with the waiting screen, not without" \
     'all(r.get("code_entry") == 1 for r in la if r["user"].startswith("code") and r["user"] != "codeoff") and "code_entry" not in [r for r in la if r["user"] == "codeoff"][0] and not cc["codeoff"]["asked"]'
 expect "code field: six top-row digits sent as one code" 'codes("codeok") == ["123456"] and cc["codeok"]["accepted"]'
@@ -322,7 +358,7 @@ expect "code field closed by the approval page: a code typed then never reaches 
 expect "code field gone after too many wrong codes: the retyped code never reaches the broker" \
     'codes("codelock") == ["654321"] and not cc["codelock"]["closed"]'
 expect "code field: every code login reached the back-end" \
-    'sorted(r["user"] for r in lb if r["user"].startswith("code")) == ["codeenter", "codelock", "codeoff", "codeok", "codeunicode", "codeweb", "codewrong"]'
+    'sorted(r["user"] for r in lb if r["user"].startswith("code")) == ["codeenter", "codegfx", "codelock", "codeoff", "codeok", "codeunicode", "codeweb", "codewrong"]'
 expect "Shutdown Request during the session: session end reported, back-end connection closed" \
     'hold(a)[0]["closed"] is False and hold(b)[0]["closed"] and hold(b)[0]["waited"] < 2.9 and any(r["op"] == "end" and r["session_id"] in sid("holdsession") for r in a)'
 expect "Shutdown Request during the picker: login abandoned, broker connection closed" \
@@ -405,7 +441,7 @@ logged "picker: choice logged" proxy-e.log "desktop picker: gnome (click)"
 logged "code field shown with its length" proxy-e.log "code field shown (6 digits)"
 logged "code field until Enter shown" proxy-e.log "code field shown (0 digits)"
 logged "second code of a login sent" proxy-e.log "code 2 from the waiting screen sent to the broker"
-if ! grep -qE "123456|654321" proxy-a.log proxy-e.log; then
+if ! grep -qE "123456|654321" proxy-a.log proxy-e.log proxy-j.log; then
     echo "ok   codes never logged by the proxy"
 else
     echo "FAIL a code appears in the proxy log"; fail=1
@@ -502,6 +538,102 @@ readerr='tpkt_verify_header|got 0|transport_check_fds.*STATE_RUN_FAILED'
 if ! grep -qE "$readerr" proxy-i.log; then
     echo "ok   WaitingScreenReactivate: no read error after the reactivation"
 else echo "FAIL WaitingScreenReactivate: read error after the reactivation ($(grep -E "$readerr" proxy-i.log | head -3 | tr '\n' ' '))"; fail=1; fi
+# Backlog A5 fixes
+client_out() { # description client-output python-expression-over(out, t) with t(regex) -> int or -1
+    if python3 - "$2" "$3" <<'PY'
+import re, sys
+out = open(sys.argv[1]).read()
+def t(rx):
+    m = re.search(rx, out)
+    return int(m.group(1)) if m else -1
+sys.exit(0 if eval(sys.argv[2]) else 1)
+PY
+    then echo "ok   $1"; else echo "FAIL $1 ($(grep -E 'gfx|bitmap_updates|demand_active|save_session|redirected|burst' "$2" | tr '\n' ' '))"; fail=1; fi
+}
+client_out "WaitingScreenGfx: panel over GFX (caps 10.7 confirmed, one surface mapped, planar frames), no Bitmap Updates" gfx.out \
+    't(r"caps=0x000A0701 resets=1 surfaces=1 maps=1 frames=(\d+)") >= 6 and t(r"planar=(\d+)") > 0 and t(r"bitmap_updates=(\d+)") == 0 and 0 < t(r"first_frame_ms=(-?\d+)") <= 1000'
+client_out "WaitingScreenGfx: surface deleted and Graphics channel closed before the hand-over's reactivation" gfx.out \
+    't(r"deleted=(\d+)") >= 1 and 0 < t(r"gfx closed at (\d+) ms") <= t(r"demand_active #1 at (\d+) ms after 0 bitmap")'
+logged "WaitingScreenGfx: every frame acknowledged, the client's Close came" proxy-j.log "acknowledged; Graphics channel closed"
+if python3 - <<'PY'
+import re, sys
+m = re.search(r"waiting screen over GFX: (\d+) frames, (\d+) acknowledged; Graphics channel closed", open("proxy-j.log").read())
+sys.exit(0 if m and m.group(1) == m.group(2) and int(m.group(1)) >= 6 else 1)
+PY
+then echo "ok   ... all frames acknowledged"; else echo "FAIL WaitingScreenGfx frame acknowledgements"; fail=1; fi
+if grep -q '"user": "reactivate"' j.log && [ "$(grep -c '"user": "reactivate"' b.log)" -ge 4 ]; then
+    echo "ok   WaitingScreenGfx: the logins reached the back-end"
+else echo "FAIL WaitingScreenGfx: back-end not reached"; fail=1; fi
+# the decoded GFX screen: the card (white) and the screen colour, i.e. the panel was drawn
+if python3 - "panelgfx.ppm" <<'PY'
+import sys
+d = open(sys.argv[1], "rb").read()
+p = d.split(None, 4)[4]
+px = [p[i:i + 3] for i in range(0, len(p), 3 * 7)]
+white, screen = px.count(b"\xff\xff\xff"), px.count(b"\x1e\x1f\x24")
+sys.exit(0 if white > 5000 and screen > len(px) // 2 else 1)
+PY
+then echo "ok   WaitingScreenGfx: the decoded screen shows the panel"; else echo "FAIL WaitingScreenGfx: no panel on the decoded screen"; fail=1; fi
+if "$QRPY" -I -c 'import zxingcpp, PIL' 2>/dev/null; then
+    if "$QRPY" -I - "panelgfx.ppm" "$E2E_LOGIN_ID" <<'PY'
+import sys, zxingcpp
+from PIL import Image
+found = [r.text for r in zxingcpp.read_barcodes(Image.open(sys.argv[1]))]
+sys.exit(0 if found == ["https://rdp1.lab.example.com/web/approve?login=" + sys.argv[2]] else 1)
+PY
+    then echo "ok   QR code on the GFX screen decodes to the approval URL"
+    else echo "FAIL QR code on the GFX screen"; fail=1; fi
+else
+    echo "skip QR code on the GFX screen: no python3 with zxing-cpp and Pillow (E2E_QR_PYTHON)"
+fi
+client_out "LogonNotify: one Save Session Info (plain notify) after the hand-over" gfx.out \
+    'out.count("save_session_info type=2 ") == 1 and out.count("save_session_info") == 1 and t(r"save_session_info type=2 at (\d+) ms") >= t(r"demand_active #1 at (\d+) ms")'
+logged "LogonNotify: logged" proxy-j.log "logon notification to the client (Save Session Info, plain notify)"
+client_out "all three off (proxy K): a GFX client gets Bitmap Updates, no GFX frames, no logon notification" gfx-off.out \
+    't(r"bitmap_updates=(\d+)") >= 6 and t(r"frames=(\d+)") == 0 and "gfx open" not in out and "save_session_info" not in out'
+client_out "WaitingScreenReactivate with a GFX client: reactivation first, then the panel over GFX" reactivate-gfx.out \
+    '0 < t(r"demand_active #1 at (\d+) ms after 0 bitmap") <= t(r"gfx open at (\d+) ms") and t(r"frames=(\d+)") >= 1 and t(r"bitmap_updates=(\d+)") == 0'
+logged "fallback: a client without GFX gets Bitmap Updates, logged" proxy-e.log \
+    "waiting screen as Bitmap Updates, not over GFX: the client did not announce the Graphics Pipeline"
+jl() { # description python-expression-over(j, b): j.log logins, b.log logins
+    if python3 - "$2" <<'PY'
+import json, sys
+load = lambda f: [r for r in map(json.loads, open(f)) if r["op"] == "login"]
+j, b = load("j.log"), load("b.log")
+n = lambda log, user: sum(1 for r in log if r["user"] == user)
+sys.exit(0 if eval(sys.argv[1]) else 1)
+PY
+    then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
+}
+client_out "SelfRedirect: input before the first Font List, redirected once to the proxy itself" redirect1.out \
+    '"burst before Font List #1 sent=1" in out and out.count("redirected #") == 1'
+jl "SelfRedirect: one broker login (on the redirected connection), back-end reached" 'n(j, "redirect1") == 1 and n(b, "redirect1") == 1'
+logged "SelfRedirect: redirection logged" proxy-j.log "self-redirection: client 127.0.0.1 sent input before its first Font List (1 sync, 4 scancodes, 0 unicode, 1 mouse, 1 QoE)"
+logged "SelfRedirect: the redirected connection recognised by its routing token" proxy-j.log "self-redirection: this connection follows one "
+client_out "SelfRedirect: a client without the input is not redirected" gfx.out '"redirected #" not in out'
+client_out "SelfRedirect: a second client from the same address within 30 s is not redirected" ratelimited.out \
+    '"burst before Font List #1 sent=1" in out and "redirected #" not in out'
+logged "... rate limit logged" proxy-j.log "but was redirected "
+jl "... it logs in on the first connection" 'n(j, "ratelimited") == 1 and n(b, "ratelimited") == 1'
+client_out "SelfRedirect=false (proxy K): not redirected" burstoff.out '"burst before Font List #1 sent=1" in out and "redirected #" not in out'
+jl "... it logs in" 'n(j, "burstoff") == 1'
+client_out "SelfRedirect: no loop for a client that sends the input on every connection" redirectall.out \
+    '"burst before Font List #2 sent=1" in out and out.count("redirected #") == 1'
+jl "... one broker login, back-end reached" 'n(j, "redirectall") == 1 and n(b, "redirectall") == 1'
+if python3 - <<'PY'
+import json, sys
+j = [json.loads(l) for l in open("j.log")]
+pc = [r for r in j if r.get("op") == "pickerchoice" and r["user"] == "pickergfx"]
+cc = [r for r in j if r.get("op") == "codeentry" and r["user"] == "codegfx"]
+sys.exit(0 if pc and pc[0].get("line") == {"op": "choice", "desktop": "gnome"} and cc and cc[0]["accepted"] else 1)
+PY
+then echo "ok   WaitingScreenGfx: the desktop picker and the code field read their keys over GFX"
+else echo "FAIL WaitingScreenGfx: picker or code field ($(grep -h 'gfx\"' j.log | tr '\n' ' '))"; fail=1; fi
+client_out "... their panels over GFX, no Bitmap Updates" pickergfx.out 't(r"frames=(\d+)") >= 3 and t(r"bitmap_updates=(\d+)") == 0'
+client_out "... (code field)" codegfx.out 't(r"frames=(\d+)") >= 6 and t(r"bitmap_updates=(\d+)") == 0'
+logged "... the second connection kept by its token" proxy-l.log "self-redirection: this connection follows one "
+if ! grep -q "self-redirection" proxy-a.log proxy-e.log; then echo "ok   SelfRedirect: no other client redirected"
+else echo "FAIL SelfRedirect: a client without the input was redirected"; fail=1; fi
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&
@@ -514,5 +646,6 @@ if [ $fail -ne 0 ]; then
     echo "--- proxy A log:"; grep -E "fastrdp|ERROR" proxy-a.log | tail -20
     echo "--- proxy E log:"; grep -E "fastrdp|ERROR" proxy-e.log | tail -20
     echo "--- proxy I log:"; grep -E "fastrdp|ERROR" proxy-i.log | tail -20
+    echo "--- proxy J log:"; grep -E "fastrdp|ERROR" proxy-j.log | tail -30
 fi
 exit $fail

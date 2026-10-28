@@ -61,7 +61,8 @@ troubleshooting): [backends/](backends/README.md).
    ([auth-matrix.md](auth-matrix.md#code-on-the-waiting-screen)).
    While the module waits for the broker, the RDP connection is already active; with
    `[FastRDP] WaitingScreen` (default on) the module draws a panel into the client's
-   window (Bitmap Updates): what the login waits for, a countdown, for web approval the
+   window (over the Graphics Pipeline for clients that announced it, else Bitmap Updates;
+   [auth-matrix.md](auth-matrix.md#mstsc-reconnects-backlog-a5)): what the login waits for, a countdown, for web approval the
    approval URL and a QR code of the page for this login (`?login=<id>`). The broker
    sends these as progress lines before its reply
    ([auth-matrix.md](auth-matrix.md#waiting-screen)).

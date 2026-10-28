@@ -317,6 +317,9 @@
       - fastrdp_proxy_input_trace | string | lower in ['true', 'false']
       - fastrdp_proxy_waiting_screen_observe | string | lower in ['true', 'false']
       - fastrdp_proxy_waiting_screen_reactivate | string | lower in ['true', 'false']
+      - fastrdp_proxy_waiting_screen_gfx | string | lower in ['true', 'false']
+      - fastrdp_proxy_self_redirect | string | lower in ['true', 'false']
+      - fastrdp_proxy_logon_notify | string | lower in ['true', 'false']
       - fastrdp_proxy_tls_keylog | string | lower in ['true', 'false']
       - fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip | string | lower in ['true', 'false']
       - fastrdp_xorgxrdp_lab_gfxpro_fill_tiles | string | lower in ['true', 'false']
@@ -370,6 +373,7 @@
       fastrdp_accept_remote_guard is true or false (docs/windows-clients.md §3.11);
       fastrdp_proxy_waiting_screen, fastrdp_proxy_status_info, fastrdp_proxy_input_trace,
       fastrdp_proxy_waiting_screen_observe, fastrdp_proxy_waiting_screen_reactivate,
+      fastrdp_proxy_waiting_screen_gfx, fastrdp_proxy_self_redirect, fastrdp_proxy_logon_notify,
       fastrdp_proxy_tls_keylog, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip,
       fastrdp_xorgxrdp_lab_gfxpro_fill_tiles,
       fastrdp_ui_language_from_keyboard and fastrdp_ui_qr_code are true or false; fastrdp_ui_language is en, de or a language

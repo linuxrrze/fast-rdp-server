@@ -49,7 +49,7 @@ export LD_LIBRARY_PATH="${KRB5_SYSROOT:+$KRB5_SYSROOT/usr/lib/$MA:}$LIBDIR:$LIBD
 gcc -std=c11 -D_GNU_SOURCE -fPIC -shared -fvisibility=hidden -Wno-deprecated-declarations \
     "${INC[@]}" "$HERE/shim.c" -o "$W/shim.so" "${LNK[@]}" -lfreerdp-server-proxy3 -lfreerdp3 -lwinpr3 -lcjson
 gcc -std=c11 -D_GNU_SOURCE -Wno-deprecated-declarations "${INC[@]}" "$HERE/client.c" -o "$W/client" \
-    "${LNK[@]}" -lfreerdp3 -lwinpr3
+    "${LNK[@]}" -lfreerdp-client3 -lfreerdp3 -lwinpr3
 # AD-like KDC policy (krb5/kdcpolicy_plugin.h from libkrb5-dev)
 KRB5_CFLAGS=${KRB5_CFLAGS-$(pkg-config --cflags krb5 2>/dev/null || true)}
 # shellcheck disable=SC2086  # KRB5_CFLAGS: several flags
