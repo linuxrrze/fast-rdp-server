@@ -7,8 +7,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.10** (0.7.9 lacks the fill-tiles lab xorgxrdp
-      variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
+- [ ] Host on **fast-rdp-server 0.7.11** (0.7.10 lacks the three A5 mitigations of
+      item H, 0.7.9 also the fill-tiles lab xorgxrdp variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
       0.7.7 the reactivation switch of A5, 0.7.6 also the TLS key log),
       `fastrdp-freerdp3 3.32.2-8`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.
@@ -16,7 +16,10 @@ Tick an item when its results are attached; update the backlog row afterwards.
       `fastrdp_mfa_mode: code_or_web` with the Keycloak setup of
       [lab-waiting-screen-input.md §2](lab-waiting-screen-input.md#2-setup),
       `fastrdp_proxy_input_trace: true`, `fastrdp_proxy_waiting_screen_observe: false`,
-      `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on).
+      `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on);
+      `fastrdp_proxy_waiting_screen_gfx`, `fastrdp_proxy_self_redirect` and
+      `fastrdp_proxy_logon_notify` at their default `true` for item H, all three `false`
+      for items A, C and F (they look for the cause without the mitigations).
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
@@ -45,7 +48,7 @@ Done on 2026-10-26 (0.7.7/0.7.8, mstsc build 26100, Windows 11):
       Not conclusive yet: the xfce desktop of connection 1 was black itself (backlog A10)
       and nothing shows whether mstsc started GFX in connection 1.
 
-Next session (in this order; the first two decide whether backlog A8 is needed):
+Next session (in this order; H first, then A and B):
 
 - [ ] **Before every run:** restart mstsc; `fastrdp_proxy_tls_keylog: true`; on the proxy
       host `sudo tests/lab/a5-collect.sh start <run>` before connection 1 (tcpdump and the
@@ -71,6 +74,30 @@ Next session (in this order; the first two decide whether backlog A8 is needed):
       [a5-capture](a5-capture-2026-10-26.md#open-source-projects-2026-10-27)). If
       available, repeat connections 1 and 2 on a fully patched Windows 11 and with the
       Windows App.
+- [ ] **H. A5 mitigations of 0.7.11** (all three on by default; untested with mstsc;
+      [a5-capture](a5-capture-2026-10-26.md#mitigations-in-0711-2026-10-28),
+      [auth-matrix.md](auth-matrix.md#mstsc-reconnects-backlog-a5)):
+      1. Defaults (all on), GNOME or xfce: connection 1 into the session. If the first
+         login already fails or stays black after the hand-over, mstsc refuses the
+         back-end's second Graphics channel: `fastrdp_proxy_waiting_screen_gfx: false`,
+         deploy, repeat. Then X and *Connect* again in the same mstsc window: the panel,
+         or still black?
+      2. Proxy log per connection: `waiting screen over GFX: Graphics channel open in N ms`
+         or the fallback with its reason (`waiting screen as Bitmap Updates, not over GFX:
+         …`, `waiting screen over GFX not possible …`); note the delay before the broker
+         request.
+      3. On connection 2: `self-redirection: client … sent input before its first Font
+         List …` and the redirected connection right after it (`… not redirected again`);
+         whether mstsc asks for credentials again (saved credentials, and NLA with typed
+         ones) and whether the redirected connection shows the panel.
+      4. The Windows App (macOS, iOS) and Remmina, two connections each: no
+         `self-redirection:` line (a redirect there is a false positive; note the input
+         counts logged).
+      5. Isolation, each in its own run with the other two on:
+         `fastrdp_proxy_waiting_screen_gfx: false`, `fastrdp_proxy_self_redirect: false`,
+         `fastrdp_proxy_logon_notify: false` (deploy, restart mstsc): which switch makes
+         connection 2 black again. Also note mstsc's connection history after a login
+         (`fastrdp_proxy_logon_notify`).
 - [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
       `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
       desktop: connection 1 into the session (a black desktop is fine), X, connection 2.

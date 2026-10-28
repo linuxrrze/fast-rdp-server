@@ -1,3 +1,25 @@
+fast-rdp-server (0.7.11) unstable; urgency=medium
+
+  * Proxy module, backlog A5 (mstsc black on the next Connect in the same
+    process), three mitigations, on by default, each switchable, tested with
+    FreeRDP clients only, not yet with mstsc:
+    - [FastRDP] WaitingScreenGfx (fastrdp_proxy_waiting_screen_gfx, backlog
+      A8): the waiting screen over the proxy's own drdynvc and Graphics
+      channel (planar tiles, SolidFill), surface deleted and channel closed
+      before the hand-over; Bitmap Updates with a logged reason without GFX,
+      with [Channels] GFX=false or after a 2 s setup timeout.
+    - [FastRDP] SelfRedirect (fastrdp_proxy_self_redirect): a client that
+      sends input before its first Font List gets a Server Redirection to the
+      proxy itself with only a routing token, no credentials; never twice
+      within 120 s, one client address at most once in 30 s.
+    - [FastRDP] LogonNotify (fastrdp_proxy_logon_notify): a Save Session Info
+      logon notification after the hand-over, one per connection.
+  * Docs: auth-matrix (mstsc reconnects), rdp-spec-conformance (Save Session
+    Info, self-redirection, GFX on the waiting screen), backlog A5/A8,
+    a5-capture (mitigations in 0.7.11), lab checklist item H.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Wed, 28 Oct 2026 05:43:00 +0100
+
 fast-rdp-server (0.7.10) unstable; urgency=medium
 
   * xrdp role: lab-only fastrdp_xorgxrdp_lab_gfxpro_fill_tiles builds
