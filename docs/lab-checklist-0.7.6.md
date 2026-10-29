@@ -98,6 +98,27 @@ Next session (in this order; H first, then A and B):
          `fastrdp_proxy_logon_notify: false` (deploy, restart mstsc): which switch makes
          connection 2 black again. Also note mstsc's connection history after a login
          (`fastrdp_proxy_logon_notify`).
+      6. First result (2026-10-29, all on): mstsc closes when the session ends, after a
+         logout and after X alike, so step 1's *Connect* in the same window no longer
+         happens ([a5-capture](a5-capture-2026-10-26.md#first-0711-result-2026-10-29)).
+         - Exit or crash: Event Viewer → Windows Logs → Application, at that time,
+           *Application Error* (1000) or *Windows Error Reporting* (1001) for `mstsc.exe`
+           means a crash; nothing means a normal exit.
+         - [x] Cause: `fastrdp_proxy_logon_notify: false`, deploy, end a session. mstsc back at
+           its *Connect* dialog means the logon notification is the cause. Done
+           2026-10-29: mstsc stays open, and the second *Connect* in the same window is
+           not black, so `WaitingScreenGfx` or `SelfRedirect` fixes A5.
+         - Which of the two: with `fastrdp_proxy_logon_notify: false`, one run with
+           `fastrdp_proxy_self_redirect: false` and one with
+           `fastrdp_proxy_waiting_screen_gfx: false`; per run the proxy journal of
+           connection 2 (`self-redirection:` line, `waiting screen over GFX` or its
+           fallback) and whether mstsc asked for credentials again. With it on, the
+           proxy journal shows `... not forwarded: the proxy sent the client a logon
+           notification` when the back-end's own notice came second.
+         - With it on again, black or not: a saved .rdp file twice (log out in between);
+           two sessions in a row; mstsc's automatic reconnect after a short network drop
+           (cable or Wi-Fi off for about 10 s, or the laptop lid), the remaining
+           same-process path.
 - [ ] **A. GFX off, repeated with evidence:** `[Channels] GFX=false` in
       `/etc/fastrdp/proxy.ini`, proxy restart (the next role run puts it back), xfce
       desktop: connection 1 into the session (a black desktop is fine), X, connection 2.
