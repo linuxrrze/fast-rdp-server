@@ -108,11 +108,15 @@ Next session (in this order; H first, then A and B):
            its *Connect* dialog means the logon notification is the cause. Done
            2026-10-29: mstsc stays open, and the second *Connect* in the same window is
            not black, so `WaitingScreenGfx` or `SelfRedirect` fixes A5.
-         - Which of the two: with `fastrdp_proxy_logon_notify: false`, one run with
-           `fastrdp_proxy_self_redirect: false` and one with
-           `fastrdp_proxy_waiting_screen_gfx: false`; per run the proxy journal of
-           connection 2 (`self-redirection:` line, `waiting screen over GFX` or its
-           fallback) and whether mstsc asked for credentials again. With it on, the
+         - [x] Which of the two: done 2026-10-29 from the journal of the same run.
+           Connection 3 (20:21:40) was not redirected (30 s limit) and had only the GFX
+           waiting screen, and was fine: `WaitingScreenGfx` fixes A5. The redirected
+           connection sent the same input burst again, so the redirection does not
+           clear mstsc's state ([a5-capture](a5-capture-2026-10-26.md#first-0711-result-2026-10-29)).
+         - Confirmation: `fastrdp_proxy_logon_notify: false` and
+           `fastrdp_proxy_waiting_screen_gfx: false` (self-redirection on): connection 2
+           should be black again. Note whether mstsc asks for credentials after the
+           redirection. With `fastrdp_proxy_logon_notify` on, the
            proxy journal shows `... not forwarded: the proxy sent the client a logon
            notification` when the back-end's own notice came second.
          - With it on again, black or not: a saved .rdp file twice (log out in between);

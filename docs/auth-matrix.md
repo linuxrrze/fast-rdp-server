@@ -666,10 +666,10 @@ with FreeRDP clients only (`tests/proxy-e2e/run.sh`, proxies J, K and L).
   Bitmap Updates instead (logged: `waiting screen as Bitmap Updates, not over GFX: …`)
   for clients without GFX or `drdynvc`, with `[Channels] GFX=false`, without
   `fastrdp-freerdp3` 3.32.2-6 (patch 0007), or when the client does not get to its
-  capabilities within 2 s (`waiting screen over GFX not possible …`). Open with mstsc:
-  whether it accepts a second dynamic channel capabilities exchange and a second
-  Graphics channel in one connection, and whether a back-end that draws without GFX
-  then still shows.
+  capabilities within 2 s (`waiting screen over GFX not possible …`). Lab 2026-10-29
+  with mstsc: this fixes the black second *Connect*, and mstsc accepts the back-end's
+  second Graphics channel in the same connection. Open: whether a back-end that draws
+  without GFX then still shows.
 - **`fastrdp_proxy_self_redirect`** (`[FastRDP] SelfRedirect`, default `true`): mstsc
   that carries state over from its previous connection sends input (a synchronize event,
   keys) before the first Font List of the new connection
@@ -681,8 +681,9 @@ with FreeRDP clients only (`tests/proxy-e2e/run.sh`, proxies J, K and L).
   saved or just typed credentials does not ask again, as with a Connection Broker; a
   client without them may ask). A connection with the proxy's routing token (younger
   than 2 minutes) is never redirected, and one client address at most once in 30 s.
-  Logged: `self-redirection: client … sent input before its first Font List …`. Whether
-  a new connection in the same mstsc process starts clean is not known.
+  Logged: `self-redirection: client … sent input before its first Font List …`. Lab
+  2026-10-29: mstsc follows it at once but does not start clean (the new connection
+  sends the same input), so it does not help A5; the GFX waiting screen does.
 - **`fastrdp_proxy_logon_notify`** (`[FastRDP] LogonNotify`, default `true`): once the
   back-end session is up (the client completed the hand-over's reactivation) the proxy
   sends a logon notification (Save Session Info, plain notify; the server SHOULD send
