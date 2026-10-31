@@ -5,7 +5,7 @@ set -e
 
 #DEBHELPER#
 
-# /etc/fastrdp/proxy.ini (fastrdp-defaults(8)); after #DEBHELPER#: the file belongs to
+# /etc/fastrdp/proxy.ini (fastrdp-defaults(8)); after the debhelper snippets: the file belongs to
 # group _fastrdp-proxy, which the sysusers snippet creates.
 if [ "$1" = configure ]; then
     "$DPKG_ROOT/usr/sbin/fastrdp-defaults" install fastrdp-proxy-module

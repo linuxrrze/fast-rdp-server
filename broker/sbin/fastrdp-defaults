@@ -74,13 +74,27 @@ state_set() {
     mv "$f.new" "$f"
 }
 
+# owner_id passwd|group NAME: the id of NAME; with DPKG_ROOT from the target's files
+# (systemd-sysusers --root writes them there), the name itself otherwise
+owner_id() {
+    if [ -z "$ROOT" ]; then echo "$2"; return 0; fi
+    id=$(awk -F: -v n="$2" '$1 == n { print $3; exit }' "$ROOT/etc/$1" 2>/dev/null)
+    [ -n "$id" ] || { echo "fastrdp-defaults: no $1 entry $2 in $ROOT/etc/$1" >&2; return 1; }
+    echo "$id"
+}
+
 put() {   # put SOURCE DEST MODE OWNER GROUP
     mkdir -p "$(dirname "$2")"
     tmp=$2.fastrdp-new
     cp "$1" "$tmp"
     chmod "$3" "$tmp"
-    # maintainer scripts run as root; the tests do not
-    if [ "$(id -u)" = 0 ]; then chown "$4:$5" "$tmp"; fi
+    # maintainer scripts run as root; the tests mostly do not
+    if [ "$(id -u)" = 0 ]; then
+        if ! { u=$(owner_id passwd "$4") && g=$(owner_id group "$5") && chown "$u:$g" "$tmp"; }; then
+            rm -f "$tmp"
+            return 1
+        fi
+    fi
     mv -f "$tmp" "$2"
 }
 

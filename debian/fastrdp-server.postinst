@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 set -e
 
-# Before #DEBHELPER#, which starts fastrdp-firewall.service: it loads
+# Before the debhelper snippets, which start fastrdp-firewall.service: it loads
 # /etc/nftables.d/fastrdp.nft. Also when sssd arrives later (fastrdp-server.triggers).
 case "$1" in
     configure|triggered)

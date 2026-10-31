@@ -20,6 +20,10 @@ XRDP_SITE="/etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini /etc/xrdp/gfx.toml /etc/xrdp/
 payload() {
     local r=$1 p
     install -D -m 0755 "$REPO/broker/sbin/fastrdp-defaults" "$r/usr/sbin/fastrdp-defaults"
+    # the target's accounts (as root, fastrdp-defaults chowns by them; CI runs as root)
+    mkdir -p "$r/etc"
+    printf 'root:x:0:0:root:/root:/bin/sh\n_fastrdp-proxy:x:990:990::/nonexistent:/usr/sbin/nologin\n' > "$r/etc/passwd"
+    printf 'root:x:0:\n_fastrdp-proxy:x:990:\n' > "$r/etc/group"
     for p in fastrdp-broker fastrdp-proxy-module fastrdp-session fastrdp-server; do
         install -D -m 0644 "$REPO/packaging/defaults/$p.list" "$r/usr/share/$p/defaults.list"
         mkdir -p "$r/usr/share/$p/defaults"
@@ -44,6 +48,14 @@ xrdp_postinst() {
 }
 run() { local r=$1 s=$2; shift 2; env DPKG_ROOT="$r" sh "$DEB/$s" "$@"; }
 mode() { stat -c %a "$1"; }
+
+# dh_installdeb replaces every #DEBHELPER# token, also one in a comment (0.7.11 CI:
+# "postinst: 36: ,: not found"): exactly one per script, on a line of its own
+for f in "$DEB"/*.postinst "$DEB"/*.postrm "$DEB"/*.preinst "$DEB"/*.prerm; do
+    [ -e "$f" ] || continue
+    check "$(basename "$f"): one #DEBHELPER# line" \
+        test "$(grep -c DEBHELPER "$f"):$(grep -cx '#DEBHELPER#' "$f")" = 1:1
+done
 
 # --- fresh install, fastrdp-xrdp configured first (its postinst copies upstream's files)
 R=$T/a
