@@ -8,10 +8,12 @@ a signed APT repository on GitHub Pages.
 
 | Source package | Binary package | Contents |
 |---|---|---|
-| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, example `broker.toml`; group `_fastrdp-broker`; TERMSRV keytab helpers `/usr/sbin/fastrdp-termsrv-check` and `/usr/sbin/fastrdp-termsrv-keytab` (`broker/sbin/`), their settings `/etc/fastrdp/termsrv.conf` (conffile, all commented out), `fastrdp-termsrv-keytab.path` + `.service` (AD machine-password rotation) |
-| | `fastrdp-proxy-module` | `/opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so`, `fastrdp-proxy.service` (runs `/opt/fastrdp/bin/freerdp-proxy`); user `_fastrdp-proxy` |
+| `fast-rdp-server` (`debian/`) | `fastrdp-broker` | `/usr/lib/fastrdp/python/fastrdp_broker`, `/usr/sbin/fastrdp-brokerd`, `/usr/sbin/fastrdpctl`, `fastrdp-brokerd.service`, `/etc/pam.d/fastrdp`, `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, example `broker.toml`, default `/etc/fastrdp/broker.toml` (fastrdp-defaults, below); group `_fastrdp-broker`; `/usr/sbin/fastrdp-defaults`, `/usr/sbin/fastrdp-check-host` (`tests/smoke/check-host.sh`); TERMSRV keytab helpers `/usr/sbin/fastrdp-termsrv-check` and `/usr/sbin/fastrdp-termsrv-keytab` (`broker/sbin/`), their settings `/etc/fastrdp/termsrv.conf` (conffile, all commented out), `fastrdp-termsrv-keytab.path` + `.service` (AD machine-password rotation) |
+| | `fastrdp-proxy-module` | `/opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so`, `fastrdp-proxy.service` (runs `/opt/fastrdp/bin/freerdp-proxy`; a missing front certificate is created first, `/usr/sbin/fastrdp-front-cert`); user `_fastrdp-proxy`; default `/etc/fastrdp/proxy.ini` |
 | | `libpam-fastrdp-token` | `/usr/lib/<triplet>/security/pam_fastrdp_token.so` |
-| | `fastrdp-session` | `/usr/libexec/fastrdp/*` (startwm.sh, session-plasma, kwin-wayland-launch, wlroots-in-x, clipboard-bridge), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in in `/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf`, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, and the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman` |
+| | `fastrdp-session` | `/usr/libexec/fastrdp/*` (startwm.sh, session-plasma, kwin-wayland-launch, wlroots-in-x, clipboard-bridge), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in in `/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf`, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack in `/usr/share/fastrdp-session/pam.d/xrdp-sesman`; with `fastrdp-xrdp` (dpkg trigger) fastrdp's xrdp site configuration in place of upstream's |
+| | `fastrdp-server` | the whole host: depends on every package of a server and the base packages, recommends the directory packages; `fastrdp-firewall.service` (enabled; loads `/etc/nftables.d/fastrdp.nft`); `/usr/lib/sysctl.d/{60-fastrdp,61-fastrdp-tcp}.conf`, `/usr/lib/modules-load.d/fastrdp-bbr.conf`, resource-limit drop-ins in `/usr/lib/systemd/system/*.d/50-fastrdp.conf`, `/usr/share/polkit-1/rules.d/40-fastrdp-power.rules`; defaults `/etc/nftables.d/fastrdp.nft`, `/etc/krb5.conf.d/fastrdp`, `/etc/sssd/conf.d/50-fastrdp.conf` (with sssd, dpkg trigger) |
+| | `fastrdp-archive-keyring` | the repository key `/usr/share/keyrings/fast-rdp-server-archive-keyring.asc` (`packaging/apt/`); `postinst` adds `/etc/apt/sources.list.d/fast-rdp-server.sources` (`<codename>-stable`) unless a source names the repository |
 | | `fastrdp-webgate` | `/usr/lib/fastrdp/python/fastrdp_webgate`, `fastrdp-webgate.service`, example `webgate.toml`; user `_fastrdp-web`; depends on `python3-cryptography` |
 | `fastrdp-freerdp3` (`packaging/freerdp/debian/`) | `fastrdp-freerdp3` | fastrdp's FreeRDP build under `/opt/fastrdp`: libraries, `freerdp-proxy`, the `xfreerdp` client (H.264 via FFmpeg), headers and pkg-config files |
 | `fastrdp-xrdp` (`packaging/xrdp/debian/`) | `fastrdp-xrdp` | patched xrdp + xorgxrdp (prefix `/usr`, config in `/etc/xrdp`); `Conflicts/Replaces/Provides: xrdp, xorgxrdp`; user `xrdp`; upstream's versions of the site configuration in `/usr/share/fastrdp-xrdp/default-config/` (below) |
@@ -26,10 +28,22 @@ The paths, users and modes are the ones the Ansible roles create; differences:
   same attributes as the roles (system account, `/nonexistent`, `nologin`).
 - All daemons (`fastrdp-brokerd`, `fastrdp-proxy`, `fastrdp-webgate`, `xrdp`,
   `xrdp-sesman`) are installed **disabled and stopped**: they need a site
-  configuration first (`/etc/fastrdp/*.toml`, `proxy.ini`, `/etc/xrdp`; stock
-  `xrdp.ini` would listen on 3389 on all addresses). The roles write the
-  configuration and enable them; without Ansible, do the same by hand
-  ([manual-setup.md](manual-setup.md)).
+  (domain join, TERMSRV keytab, desktops) first, and stock `xrdp.ini` would listen on
+  3389 on all addresses until fastrdp's replaces it. The roles enable them; without
+  Ansible, see [manual-setup.md](manual-setup.md). Only `fastrdp-firewall.service`
+  (`fastrdp-server`) is enabled and started at once: it protects the back-end ports.
+- **Default configuration (fastrdp-defaults).** The packages ship the configuration the
+  roles write with their defaults, rendered from the role templates into
+  `packaging/defaults/<package>/` by `make defaults` (`packaging/defaults/render.yml`;
+  `test-ansible` fails when the committed files are outdated). Files in `/etc` are no
+  conffiles, for the reason below: `/usr/sbin/fastrdp-defaults` (`broker/sbin/`), called
+  by the package scripts, installs them as listed in `/usr/share/<package>/defaults.list`
+  (`packaging/defaults/<package>.list`) where a file is missing, unchanged since it last
+  installed it (checksums in `/var/lib/fastrdp/defaults/`) or upstream's default, and
+  otherwise leaves the file alone and names the new version once. Purge removes the
+  unchanged ones. Files a role writes (with the Ansible `apt` method) are therefore kept.
+  Host-wide settings of `fastrdp-server` live in `/usr/lib` and `/usr/share/polkit-1`
+  instead, overridden by the same name in `/etc`.
 - The X session entries of all three wlroots desktops are installed (the role
   installs only the selected ones).
 - `fastrdp-xrdp` creates the loopback TLS key/certificate and `rsakeys.ini` in
@@ -44,7 +58,9 @@ The paths, users and modes are the ones the Ansible roles create; differences:
   therefore installs upstream's versions to
   `/usr/share/fastrdp-xrdp/default-config/<path>` and never overwrites existing
   files, in the package and in the Ansible `build` path alike; `postinst` copies a
-  default only where the file is missing, and purge removes the files. Upgrading from
+  default only where the file is missing, and purge removes the files.
+  `fastrdp-session` then replaces those copies with fastrdp's versions
+  (fastrdp-defaults, `also=` upstream's file) in either installation order. Upgrading from
   `0.10.6.1+xorgxrdp0.10.5-1`, where they were conffiles: dpkg keeps them as obsolete
   conffiles, without asking. The other `/etc/xrdp` files (keymaps, `reconnectwm.sh`,
   `pulse/`, ...) stay conffiles; fastrdp does not change them.
@@ -226,7 +242,7 @@ architecture `amd64`:
 | `resolute-stable` / `trixie-stable` | latest release tag |
 | `resolute-testing` / `trixie-testing` | latest build of `main` |
 
-Each suite contains all seven packages built for that distro release (the
+Each suite contains all nine packages built for that distro release (the
 vendored FreeRDP/xrdp and the proxy module are linked against that release's
 libraries, so Debian and Ubuntu binaries cannot be shared). The pool is shared;
 the `~<distro>` version suffix keeps file names apart.
@@ -320,6 +336,21 @@ the clients' `Signed-By` file), then switch the secrets.
 
 ### Client setup
 
+The keyring package brings the key and the APT source (`<codename>-stable` of the
+running release; it adds none if a source already names the repository). `publish.sh`
+puts its newest version at a fixed name and refuses to publish when its key is not the
+signing key (the key is `packaging/apt/fast-rdp-server-archive-keyring.asc`; a new
+signing key needs a new copy there first):
+
+```sh
+curl -fsSLO https://linuxrrze.github.io/fast-rdp-server/fastrdp-archive-keyring.deb
+sudo apt install ./fastrdp-archive-keyring.deb
+sudo apt update
+sudo apt install fastrdp-server                # + fastrdp-webgate for browser access
+```
+
+By hand instead:
+
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -fsSLo /etc/apt/keyrings/fast-rdp-server.asc \
@@ -341,9 +372,13 @@ Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
 
 ```sh
 sudo apt update
-sudo apt install fastrdp-broker libpam-fastrdp-token fastrdp-proxy-module \
-    fastrdp-session fastrdp-xrdp            # + fastrdp-webgate for browser access
+sudo apt install fastrdp-server
 ```
+
+`fastrdp-server` installs the components with their default configuration; the
+site-specific steps are in [manual-setup.md](manual-setup.md). The single packages
+(`fastrdp-broker libpam-fastrdp-token fastrdp-proxy-module fastrdp-session
+fastrdp-xrdp`) are what the Ansible roles install.
 
 No backports or pinning are needed on Debian 13: the proxy module uses
 `fastrdp-freerdp3`, not the distribution's FreeRDP.

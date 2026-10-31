@@ -1,30 +1,35 @@
 # Manual setup (without Ansible)
 
-**Ansible remains the recommended and tested path** ([quickstart.md](quickstart.md)):
-the roles check the site settings, are idempotent, and `make preflight` and CI test them.
-This guide does the same work by hand on a host that installs the packages from the
-APT repository ([packaging.md](packaging.md)). It mirrors the roles **as of 0.2.0**
-(`main`; v0.1.0 differs in the TERMSRV helpers, the `krb5.conf` layout and the xrdp
-configuration files) with `fastrdp_install_method: apt`. Every file below was rendered from the role
-template with the role defaults and the example values in the next table. If you
-update fastrdp, compare the role files in the table below with your host.
+**Ansible remains the tested path for fleets** ([quickstart.md](quickstart.md)): the
+roles check the site settings, are idempotent, and `make preflight` and CI test them.
+This guide sets up a single host by hand from the APT repository
+([packaging.md](packaging.md)). Most of the work is done by the packages:
+`fastrdp-server` pulls in every component and installs the same configuration the
+roles write with their defaults (rendered from the role templates,
+`packaging/defaults/`). What is left are the site-specific steps: the domain join,
+the desktops, a real certificate and starting the services.
 
-| Section | Role files it mirrors |
-|---|---|
-| [1 Prerequisites](#1-prerequisites) | `ansible/preflight.yml` |
-| [2 Base system and packages](#2-base-system-and-packages) | `roles/base/tasks/main.yml`, `roles/base/tasks/apt_repo.yml`; package tasks of `broker`, `freerdp_proxy`, `xrdp` |
-| [3 Kerberos, SSSD, domain join](#3-kerberos-sssd-domain-join) | `roles/identity/tasks/{main,ad,ipa,ipa_krb5,none}.yml`, `roles/identity/templates/*`, `roles/identity/defaults/main.yml`; `broker/sbin/*` (TERMSRV helpers) |
-| [4 Front TLS certificate](#4-front-tls-certificate) | `roles/base/tasks/main.yml` (certificate tasks), `roles/base/defaults/main.yml` (`fastrdp_front_cert_san`) |
-| [5 Firewall and kernel settings](#5-firewall-and-kernel-settings) | `roles/base/templates/nftables-fastrdp.nft.j2`, `roles/base/templates/40-fastrdp-power.rules.j2` (power actions), `roles/base/tasks/main.yml`, `roles/freerdp_proxy/tasks/main.yml` (front placeholder) |
-| [6 GPU](#6-gpu) | `roles/gpu/tasks/main.yml`, `roles/gpu/defaults/main.yml` |
-| [7 Desktops](#7-desktops) | `roles/desktops/*`, `roles/gnome_rd/*`, `roles/plasma_krdp/*` |
-| [8 Tuning](#8-tuning) | `roles/tuning/*` |
-| [9 Broker](#9-broker) | `roles/broker/tasks/main.yml`, `roles/broker/templates/broker.toml.j2` |
-| [10 xrdp](#10-xrdp) | `roles/xrdp/tasks/main.yml`, `roles/xrdp/templates/*`, `roles/xrdp/defaults/main.yml` |
-| [11 Proxy](#11-proxy) | `roles/freerdp_proxy/tasks/main.yml`, `roles/freerdp_proxy/templates/proxy.ini.j2` |
-| [12 Start the services](#12-start-the-services) | service tasks of all roles, order of `ansible/site.yml` |
-| [13 Verify](#13-verify), [14 First connection](#14-first-connection) | `tests/smoke/check-host.sh`, quickstart step 4 |
-| [15 Optional parts](#15-optional-parts) | `roles/mfa_privacyidea`, `roles/web_gateway`, `roles/identity/tasks/nfs_krb5.yml` |
+| Step | What you do | Role it mirrors |
+|---|---|---|
+| [1 Prerequisites](#1-prerequisites) | `fastrdp-check-host --preflight` | `ansible/preflight.yml` |
+| [2 Packages](#2-packages) | keyring package, `apt install fastrdp-server` | `roles/base`, package tasks of all roles |
+| [3 Kerberos, SSSD, domain join](#3-kerberos-sssd-domain-join) | `krb5.conf`, join, `sssd.conf`, TERMSRV keytab | `roles/identity` |
+| [4 Front TLS certificate](#4-front-tls-certificate) | production: your CA certificate | `roles/base` (certificate tasks) |
+| [5 Firewall and kernel settings](#5-firewall-and-kernel-settings) | check; your inbound policy for 3389 | `roles/base` |
+| [6 GPU](#6-gpu) | GPU hosts only | `roles/gpu`, `roles/xrdp` |
+| [7 Desktops](#7-desktops) | install the desktops | `roles/desktops`, `roles/gnome_rd`, `roles/plasma_krdp` |
+| [8 Tuning](#8-tuning) | optional | `roles/tuning` |
+| [9 Broker](#9-broker) | groups, desktops in `broker.toml` | `roles/broker` |
+| [10 xrdp](#10-xrdp) | optional (audio) | `roles/xrdp` |
+| [11 Proxy](#11-proxy) | optional | `roles/freerdp_proxy` |
+| [12 Start the services](#12-start-the-services) | `systemctl enable --now` | order of `ansible/site.yml` |
+| [13 Verify](#13-verify), [14 First connection](#14-first-connection) | `fastrdp-check-host alice` | `tests/smoke/check-host.sh`, quickstart step 4 |
+| [15 Optional parts](#15-optional-parts) | MFA, web access, NFS/SMB homes, ... | `roles/mfa_privacyidea`, `roles/web_gateway`, `roles/identity` |
+
+This guide matches the packages and roles of the same release. The file contents shown
+below are rendered from the role templates with the example values of the next table;
+`tests/ansible/test_templates.py` (`ManualSetupDoc`) fails when one of them no longer
+matches its template.
 
 ## Example values
 
@@ -53,34 +58,50 @@ Do not repeat these steps; the rest of this guide covers what the packages leave
 
 | Package | Provides |
 |---|---|
-| `fastrdp-broker` | broker code, `fastrdp-brokerd` and `fastrdpctl` in `/usr/sbin`, `fastrdp-brokerd.service` (disabled), `/etc/pam.d/fastrdp` and `/etc/pam.d/fastrdp-tgt`, `/etc/fastrdp/`, group `_fastrdp-broker`, example `broker.toml` in `/usr/share/doc/fastrdp-broker/examples/`; TERMSRV keytab helpers `fastrdp-termsrv-check` and `fastrdp-termsrv-keytab` in `/usr/sbin`, their settings `/etc/fastrdp/termsrv.conf`, `fastrdp-termsrv-keytab.path`/`.service` (disabled) |
-| `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab` and `WLOG_APPENDER=JOURNALD`, [logs](#12-start-the-services)), user `_fastrdp-proxy` |
+| `fastrdp-server` | depends on all packages below and the base packages (chrony, nftables, openssl, polkitd, ...), recommends the SSSD/Kerberos/realmd packages of section 3; `fastrdp-firewall.service` (**enabled**: loads the nftables table of section 5 without touching `/etc/nftables.conf`); in `/usr/lib`: back-end ports kept out of the ephemeral range and TCP tuning (`sysctl.d`), BBR (`modules-load.d`), per-user resource limits (systemd drop-ins); the polkit rule against power actions from RDP sessions (`/usr/share/polkit-1/rules.d`); fastrdp-defaults files `/etc/nftables.d/fastrdp.nft`, `/etc/krb5.conf.d/fastrdp` and, with sssd, `/etc/sssd/conf.d/50-fastrdp.conf` |
+| `fastrdp-broker` | broker code, `fastrdp-brokerd` and `fastrdpctl` in `/usr/sbin`, `fastrdp-brokerd.service` (disabled), `/etc/pam.d/fastrdp` and `/etc/pam.d/fastrdp-tgt`, group `_fastrdp-broker`, `/etc/fastrdp/broker.toml` (fastrdp-defaults); TERMSRV keytab helpers `fastrdp-termsrv-check` and `fastrdp-termsrv-keytab`, their settings `/etc/fastrdp/termsrv.conf`, `fastrdp-termsrv-keytab.path`/`.service` (disabled); `fastrdp-check-host` (sections 1, 13) and `fastrdp-defaults` |
+| `fastrdp-proxy-module` | proxy module, `fastrdp-proxy.service` (disabled; sets `KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab` and `WLOG_APPENDER=JOURNALD`, [logs](#12-start-the-services); creates a self-signed front certificate at its first start, section 4), user `_fastrdp-proxy`, `/etc/fastrdp/proxy.ini` (fastrdp-defaults), `fastrdp-front-cert` |
 | `fastrdp-freerdp3` | FreeRDP in `/opt/fastrdp` (`freerdp-proxy`, `xfreerdp`) |
 | `libpam-fastrdp-token` | `pam_fastrdp_token.so` |
-| `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the token-only xrdp PAM stack as a template in `/usr/share/fastrdp-session/pam.d/xrdp-sesman`, the Kerberos login reminder `/usr/libexec/fastrdp/tgt-notify` with `/etc/xdg/autostart/fastrdp-tgt-notify.desktop` |
-| `fastrdp-xrdp` | xrdp + xorgxrdp (replaces the distribution `xrdp`/`xorgxrdp`), units (disabled), user `xrdp`; `postinst` creates `/etc/xrdp/cert.pem`, `/etc/xrdp/key.pem` (`root:xrdp 0640`) and `rsakeys.ini`, and the files of section 10 from upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/` where they are missing (they are not conffiles: replace them, dpkg never asks about them) |
+| `fastrdp-session` | `/usr/libexec/fastrdp/*` (`startwm.sh`, Plasma and wlroots launchers), `fastrdp-plasma@.service`, `/etc/pam.d/fastrdp-session`, KWin user drop-in, `/usr/share/xsessions/fastrdp-{sway,labwc,wayfire}.desktop`, the Kerberos login reminder `/usr/libexec/fastrdp/tgt-notify` with `/etc/xdg/autostart/fastrdp-tgt-notify.desktop`; with `fastrdp-xrdp` the fastrdp-defaults files `/etc/xrdp/{xrdp.ini,sesman.ini,gfx.toml,startwm.sh}`, `/etc/X11/xrdp/xorg.conf` and the token-only `/etc/pam.d/xrdp-sesman` |
+| `fastrdp-xrdp` | xrdp + xorgxrdp (replaces the distribution `xrdp`/`xorgxrdp`), units (disabled), user `xrdp`; `postinst` creates `/etc/xrdp/cert.pem`, `/etc/xrdp/key.pem` (`root:xrdp 0640`) and `rsakeys.ini`; upstream's versions of the site configuration in `/usr/share/fastrdp-xrdp/default-config/` |
+| `fastrdp-archive-keyring` | the repository's signing key in `/usr/share/keyrings`, and `/etc/apt/sources.list.d/fast-rdp-server.sources` if no source names the repository yet |
 | `fastrdp-webgate` | web gateway code and unit (disabled), user `_fastrdp-web` |
 
-Every daemon is installed **disabled and stopped**. The stock `/etc/xrdp/xrdp.ini`
-listens on 3389 on all addresses, so do not start xrdp before section 10.
+Every daemon except `fastrdp-firewall` is installed **disabled and stopped**.
+
+**fastrdp-defaults files.** The configuration files in `/etc` named above are not dpkg
+conffiles (the Ansible roles write the same files). `fastrdp-defaults` (`man
+fastrdp-defaults`) installs fastrdp's version where a file is missing, still unchanged
+since the last installation, or upstream's default; **a file you changed is never
+overwritten**, and the upgrade says once where the new version is. Edit them in place:
+
+```sh
+fastrdp-defaults status            # every file: fastrdp default / changed locally / missing
+fastrdp-defaults diff              # your changes against fastrdp's version
+```
+
+The files in `/usr/lib` and `/usr/share/polkit-1` are overridden by a file of the same
+name in the matching `/etc` directory (`/etc/sysctl.d`, `/etc/modules-load.d`,
+`/etc/systemd/system/<unit>.d`, `/etc/polkit-1/rules.d`); a symlink to `/dev/null`
+there switches one off (polkit: an empty file).
 
 ---
 
 ## 1. Prerequisites
 
-Supported: **Ubuntu 26.04** or **Debian 13**, amd64. Check by hand what
-`make preflight` checks:
+Supported: **Ubuntu 26.04** or **Debian 13**, amd64. The host name is the FQDN:
 
 ```sh
-hostnamectl set-hostname rdp1.example.com      # the FQDN is the hostname
-hostname -f                                    # -> rdp1.example.com
-getent ahosts rdp1.example.com                 # the real address, not 127.0.1.1
+hostnamectl set-hostname rdp1.example.com      # hostname -f -> rdp1.example.com
 grep 127.0.1.1 /etc/hosts                      # remove a "127.0.1.1 rdp1.example.com" line
-getent hosts <host address>                    # PTR record (recommended)
-dig +short SRV _kerberos._tcp.example.com      # KDCs (apt install bind9-dnsutils)
-dig +short SRV _ldap._tcp.example.com          # AD / FreeIPA
-ss -ltn 'sport = :3389 or sport = :3390'       # both free
 ```
+
+`fastrdp-check-host --preflight` checks the rest (after section 2; before it, run
+`tests/smoke/check-host.sh --preflight` from the repository): the release, the FQDN and
+that it resolves to the real address, the short name's length, DNS SRV records of the
+KDCs (needs `dig`, `apt install bind9-dnsutils`), time synchronisation and that 3389 and
+3390 are free. `FAIL` lines must be fixed first, `warn` lines checked by hand.
 
 - **Names:** clients must connect to the FQDN (Kerberos asks for `TERMSRV/<fqdn>`).
   AD: the short name has at most 15 characters (the computer account is truncated).
@@ -96,32 +117,25 @@ ss -ltn 'sport = :3389 or sport = :3390'       # both free
 - **Port 3389:** nothing else may listen there (a distribution `xrdp` or a
   system-wide `gnome-remote-desktop`).
 
-## 2. Base system and packages
+## 2. Packages
 
-Role `base`:
+The keyring package adds the repository's key and an APT source for this release's
+stable channel (`<codename>-stable`; `-testing` follows `main`, change `Suites:` in
+`/etc/apt/sources.list.d/fast-rdp-server.sources`):
 
 ```sh
+apt install curl
+curl -fsSLO https://linuxrrze.github.io/fast-rdp-server/fastrdp-archive-keyring.deb
+apt install ./fastrdp-archive-keyring.deb
 apt update
-apt install chrony nftables openssl python3 ca-certificates dbus-user-session polkitd
-systemctl enable --now chrony
-chronyc tracking | grep 'Leap status'        # Normal
-install -d -o root -g root -m 0755 /etc/fastrdp
+apt install fastrdp-server             # fastrdp-webgate too for web access (15.2)
+fastrdp-check-host --preflight
 ```
 
-APT repository (`roles/base/tasks/apt_repo.yml`, client setup in
-[packaging.md](packaging.md#client-setup)). Suite: `resolute-stable` (Ubuntu 26.04)
-or `trixie-stable` (Debian 13); `-testing` follows `main`.
-
-```sh
-apt install curl gpg                            # for the next commands
-install -d -m 0755 /etc/apt/keyrings
-curl -fsSLo /etc/apt/keyrings/fast-rdp-server.asc \
-    https://linuxrrze.github.io/fast-rdp-server/fast-rdp-server-archive-keyring.asc
-chmod 0644 /etc/apt/keyrings/fast-rdp-server.asc
-gpg --show-keys /etc/apt/keyrings/fast-rdp-server.asc     # compare the fingerprint
-```
-
-`/etc/apt/sources.list.d/fast-rdp-server.sources` (`root:root 0644`):
+By hand instead of the keyring package ([packaging.md](packaging.md#client-setup)):
+the key from `https://linuxrrze.github.io/fast-rdp-server/fast-rdp-server-archive-keyring.asc`
+in `/etc/apt/keyrings/fast-rdp-server.asc` (compare the fingerprint with
+`gpg --show-keys`), and `/etc/apt/sources.list.d/fast-rdp-server.sources`:
 
 ```
 Types: deb
@@ -132,14 +146,13 @@ Architectures: amd64
 Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
 ```
 
-Packages (the `apt` blocks of the roles `broker`, `freerdp_proxy`, `xrdp`;
-`fastrdp-webgate` only for web access):
+`apt install fastrdp-server` also installs chrony, nftables, openssl, polkitd and the
+recommended directory packages of section 3.1, and enables chrony. Check:
 
 ```sh
-apt update
-apt install fastrdp-broker libpam-fastrdp-token fastrdp-freerdp3 fastrdp-proxy-module \
-    fastrdp-session fastrdp-xrdp
+chronyc tracking | grep 'Leap status'        # Normal
 systemctl is-enabled fastrdp-brokerd fastrdp-proxy xrdp xrdp-sesman    # all: disabled
+fastrdp-defaults status                      # the default configuration files
 ```
 
 `fastrdp-xrdp` removes a distribution `xrdp`/`xorgxrdp`. Switching a host that was
@@ -154,30 +167,14 @@ Role `identity`. The order matters: the TERMSRV keys come from the join.
 
 ### 3.1 Packages and krb5.conf
 
-```sh
-apt install sssd sssd-kcm sssd-tools libnss-sss libpam-sss krb5-user adcli realmd packagekit
-```
+`fastrdp-server` recommends the directory packages, so apt has installed them (with
+`--no-install-recommends`: `apt install sssd sssd-kcm sssd-tools libnss-sss libpam-sss
+krb5-user adcli realmd packagekit`).
 
-fastrdp's own Kerberos client settings are a snippet, the same for every directory
-(`krb5-fastrdp.conf.j2`). Files in `/etc/krb5.conf.d` are read first and win over
-`/etc/krb5.conf`:
-
-```sh
-install -d -o root -g root -m 0755 /etc/krb5.conf.d
-```
-
-`/etc/krb5.conf.d/fastrdp` (`root:root 0644`):
-
-```ini
-# fastrdp's Kerberos client settings, for every identity provider. /etc/krb5.conf
-# includes this directory before its own [libdefaults], so these values win over it
-# (also over FreeIPA's default_ccache_name = KEYRING:...).
-[libdefaults]
-    # One credential cache per login, shared by all processes of that session.
-    default_ccache_name = KCM:
-    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
-    renew_lifetime = 7d
-```
+fastrdp's own Kerberos client settings (one credential cache per login in KCM,
+renewable tickets) are `/etc/krb5.conf.d/fastrdp` from `fastrdp-server`, the same for
+every directory (`krb5-fastrdp.conf.j2`). Files in `/etc/krb5.conf.d` are read first
+and win over `/etc/krb5.conf`.
 
 AD and provider `none`: `/etc/krb5.conf` (`root:root 0644`, from `krb5.conf.j2`; realm
 and domain are **site**). FreeIPA: skip it, `ipa-client-install` writes this file (3.6).
@@ -363,23 +360,15 @@ fastrdp-termsrv-keytab
 
 ### 3.5 Ticket renewal, final checks, sssd
 
-All providers. `/etc/sssd/conf.d` (`root:root 0711`), file
-`/etc/sssd/conf.d/50-fastrdp.conf` (`root:root 0600`, `sssd-fastrdp.conf.j2`):
+All providers. sssd-kcm renews the renewable TGTs in KCM, also those from `kinit` in a
+session: `/etc/sssd/conf.d/50-fastrdp.conf` (`root:root 0600`, `sssd-fastrdp.conf.j2`)
+from `fastrdp-server` sets `[kcm] tgt_renewal = true`, `krb5_renew_interval = 1h` and
+`krb5_renewable_lifetime = 7d`. It is installed when sssd is.
 
-```ini
-# Ticket renewal for terminal-server sessions (docs/nfs-kerberos-homes.md, Q4).
-
-# sssd-kcm renews every renewable TGT in KCM, including those from `kinit` in a
-# session, which sssd's domain renewal does not know (sssd-kcm(8), RENEWALS).
-# Options here, not tgt_renewal_inherit: they work for every identity provider.
-[kcm]
-tgt_renewal = true
-krb5_renew_interval = 1h
-krb5_renewable_lifetime = 7d
-```
-
-FreeIPA only: append the domain options that `ipa-client-install` does not write (AD
-has them in `sssd.conf`):
+FreeIPA only: the domain options that `ipa-client-install` does not write (AD has them
+in `sssd.conf`), in a file of their own, `/etc/sssd/conf.d/51-fastrdp-ipa.conf`
+(`root:root 0600`; the role puts them into `50-fastrdp.conf`, which stays the packaged
+default here):
 
 ```ini
 # ipa-client-install writes sssd.conf without these (AD: sssd-ad.conf.j2 has them).
@@ -392,7 +381,7 @@ use_fully_qualified_names = false
 ```
 
 Snippets in `conf.d` override the same keys in `sssd.conf`, later files (by name) the
-earlier ones, so this one wins over what `ipa-client-install` wrote.
+earlier ones, so these win over what `ipa-client-install` wrote.
 FreeIPA, optional, in the same section: `override_homedir = /home/%u` for local homes
 instead of the directory's (`fastrdp_sssd_override_homedir`); for automount maps from
 FreeIPA (`fastrdp_autofs: sssd`) `autofs_provider = ipa` and
@@ -400,7 +389,6 @@ FreeIPA (`fastrdp_autofs: sssd`) `autofs_provider = ipa` and
 the enrolment's `sssd.conf` and the autofs steps of 3.3.
 
 ```sh
-install -d -m 0711 /etc/sssd/conf.d             # then write 50-fastrdp.conf
 fastrdp-termsrv-check TERMSRV/rdp1.example.com TERMSRV/RDP1    # FreeIPA, none: the FQDN only
 systemctl enable sssd
 systemctl restart sssd sssd-kcm.service
@@ -418,7 +406,7 @@ ipa-client-install --mkhomedir --domain=example.com --realm=EXAMPLE.COM --princi
 
 `ipa-client-install` writes its own `/etc/krb5.conf` and `/etc/sssd/sssd.conf`. Keep
 both: the `krb5.conf` carries FreeIPA's PKINIT anchors and sssd's include directory, and
-fastrdp only adds `/etc/krb5.conf.d/fastrdp` (3.1, written before the enrolment) and
+fastrdp only adds `/etc/krb5.conf.d/fastrdp` (3.1, there before the enrolment) and
 `conf.d/50-fastrdp.conf` for sssd (3.5). `ipa-client-install` adds
 `includedir /etc/krb5.conf.d/` at the top only if the directory exists when it runs; check
 it afterwards (the role adds the line if it is missing):
@@ -469,7 +457,7 @@ the RDP users for the PAM services `fastrdp`, `xrdp-sesman` and `fastrdp-session
   same (`false` for qualified names, section 9). The role reads your files (`sssd.conf`,
   then `conf.d/*.conf`; the last setting wins, else `default_domain_suffix` qualifies
   names) and fails if they disagree with `fastrdp_sssd_fully_qualified_names`.
-  only when `sssd.conf` exists. The home paths it reports must exist on this host:
+  The home paths it reports must exist on this host:
   `override_homedir = /home/%u` in its domain section for local homes, or autofs
   ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#where-homes-are)).
 
@@ -510,15 +498,13 @@ install -o root -g _fastrdp-proxy -m 0644 rdp1.example.com.fullchain.pem /etc/fa
 install -o root -g _fastrdp-proxy -m 0640 rdp1.example.com.key /etc/fastrdp/front.key
 ```
 
-**Self-signed (lab only):** SAN = FQDN, short name and aliases (`fastrdp_front_cert_san`).
-The role does not replace an existing `front.crt`.
+**Self-signed (lab only):** nothing to do. When neither file exists,
+`fastrdp-proxy.service` runs `fastrdp-front-cert --if-missing` before it starts and
+gets a certificate for the FQDN and the short name (clients warn about it). With DNS
+aliases (3.8), or after renaming the host, create it again:
 
 ```sh
-openssl req -x509 -newkey rsa:3072 -nodes -days 825 \
-    -subj "/CN=rdp1.example.com" -addext "subjectAltName=DNS:rdp1.example.com,DNS:rdp1" \
-    -addext "extendedKeyUsage=serverAuth" \
-    -keyout /etc/fastrdp/front.key -out /etc/fastrdp/front.crt
-chown root:_fastrdp-proxy /etc/fastrdp/front.key && chmod 0640 /etc/fastrdp/front.key
+fastrdp-front-cert --force rdp.example.com      # SAN: FQDN, short name, the aliases given
 ```
 
 After replacing the certificate later: `systemctl restart fastrdp-proxy` (and
@@ -536,61 +522,24 @@ proxy (and root) may connect to them.
 | TCP 3390, 33900-34899 | proxy → back-ends, loopback | nftables table `inet fastrdp` below |
 | outbound | KDC (88), LDAP (389/636, AD 3268), DNS, NTP; privacyIDEA/IdP (443) | as needed |
 
-`/etc/nftables.d/fastrdp.nft` (`root:root 0644`, `nftables-fastrdp.nft.j2`; ports from
-`fastrdp_xrdp_port` and `fastrdp_backend_port_range`):
-
-```
-# Back-end RDP servers (xrdp, g-r-d, KRdp) listen on loopback with broker-issued
-# credentials. Only the proxy (and root) may connect to them; nothing from outside.
-table inet fastrdp
-delete table inet fastrdp
-table inet fastrdp {
-    set backend_ports {
-        type inet_service
-        flags interval
-        elements = { 3390, 33900-34899 }
-    }
-
-    chain input {
-        type filter hook input priority filter; policy accept;
-        # only new connections: replies to outgoing connections may use these ports too
-        iifname != "lo" tcp dport @backend_ports ct state new drop
-    }
-
-    chain output {
-        type filter hook output priority filter; policy accept;
-        oifname "lo" tcp dport @backend_ports ct state new meta skuid != { "_fastrdp-proxy", "root" } reject with tcp reset
-    }
-}
-```
-
-`/etc/nftables.d/fastrdp-front.nft` (`root:root 0644`, role `freerdp_proxy`; written
-once, then yours) is a placeholder for the inbound policy on 3389:
-
-```
-# Placeholder: add your site's inbound policy for TCP 3389 here
-# (e.g. only from the VPN/NetBird range). The fastrdp table only restricts back-end ports.
-```
-
-Back-end ports must never be picked by the kernel as ephemeral ports.
-`/etc/sysctl.d/60-fastrdp.conf` (`root:root 0644`):
-
-```
-# Back-end ports are allocated by fastrdp-brokerd, never by the kernel.
-net.ipv4.ip_local_reserved_ports = 3390,33900-34899
-```
+The table `inet fastrdp` (`nftables-fastrdp.nft.j2`) is `/etc/nftables.d/fastrdp.nft`
+from `fastrdp-server`; `fastrdp-firewall.service` (enabled) loads it at boot and again
+after every start or reload of `nftables.service`, whose `/etc/nftables.conf` begins
+with `flush ruleset`. It needs no `include` there, and it works next to ufw or firewalld,
+which keep their own tables. The back-end ports are kept out of the kernel's ephemeral
+range (`/usr/lib/sysctl.d/60-fastrdp.conf`: `net.ipv4.ip_local_reserved_ports =
+3390,33900-34899`). Other ports than the defaults: change both files (the `.nft` in
+place, the sysctl one as `/etc/sysctl.d/60-fastrdp.conf`), then
+`systemctl restart fastrdp-firewall systemd-sysctl`.
 
 ```sh
-install -d -m 0755 /etc/nftables.d                # then write the two .nft files
-grep -qxF 'include "/etc/nftables.d/*.nft"' /etc/nftables.conf ||
-    echo 'include "/etc/nftables.d/*.nft"' >> /etc/nftables.conf
-systemctl enable --now nftables && systemctl reload nftables
-nft list table inet fastrdp
-sysctl -p /etc/sysctl.d/60-fastrdp.conf
+nft list table inet fastrdp                       # the table is loaded
+sysctl net.ipv4.ip_local_reserved_ports           # 3390,33900-34899
 ```
 
-The distribution's `/etc/nftables.conf` starts with `flush ruleset`: if ufw or
-firewalld manages the host firewall, load the fastrdp table through it instead.
+The inbound policy for 3389 is yours: the role writes a placeholder
+`/etc/nftables.d/fastrdp-front.nft` for it; by hand, add your rule (e.g. only from the
+VPN range) to your firewall.
 
 Optional (`fastrdp_proc_hidepid: true`): hide other users' processes. Put
 `proc /proc proc defaults,hidepid=invisible 0 0` into `/etc/fstab` (replacing an
@@ -598,61 +547,13 @@ existing `proc /proc` line), then `mount -o remount /proc`.
 
 No power off, reboot, suspend, hibernate or halt from RDP sessions (`fastrdp_block_power_actions:
 true`, the default; [desktop-matrix.md](desktop-matrix.md#host-safety-power-actions)). Without this
-rule every desktop offers these actions, and an admin's password is all it takes. Write
-`/etc/polkit-1/rules.d/40-fastrdp-power.rules` (`root:root 0644`, `40-fastrdp-power.rules.j2`;
-`adminGroups` from `fastrdp_power_admin_groups`, `allowLocalConsole` from
-`fastrdp_power_allow_local_console`). polkitd picks it up without a restart:
-
-```
-// fastrdp: users in RDP sessions must not power off, reboot, suspend, hibernate or halt
-// the shared host (fastrdp_block_power_actions; docs/desktop-matrix.md#host-safety-power-actions).
-// logind's power actions are refused (polkit NO: CanPowerOff and friends answer "no",
-// desktops hide or grey out the entries) except for:
-//   - root: polkit authorizes uid 0 before any rule (sudo systemctl poweroff works);
-//   - members of fastrdp_power_admin_groups: they authenticate as an admin, as before;
-//   - with fastrdp_power_allow_local_console: active sessions on a seat (the console).
-// Log out, lock, inhibitors and every other action keep their defaults.
-// ES5 only: polkitd evaluates rules with duktape.
-polkit.addRule(function (action, subject) {
-    var actions = [
-        "org.freedesktop.login1.power-off",
-        "org.freedesktop.login1.power-off-multiple-sessions",
-        "org.freedesktop.login1.power-off-ignore-inhibit",
-        "org.freedesktop.login1.reboot",
-        "org.freedesktop.login1.reboot-multiple-sessions",
-        "org.freedesktop.login1.reboot-ignore-inhibit",
-        "org.freedesktop.login1.halt",
-        "org.freedesktop.login1.halt-multiple-sessions",
-        "org.freedesktop.login1.halt-ignore-inhibit",
-        "org.freedesktop.login1.suspend",
-        "org.freedesktop.login1.suspend-multiple-sessions",
-        "org.freedesktop.login1.suspend-ignore-inhibit",
-        "org.freedesktop.login1.hibernate",
-        "org.freedesktop.login1.hibernate-multiple-sessions",
-        "org.freedesktop.login1.hibernate-ignore-inhibit",
-        "org.freedesktop.login1.set-reboot-parameter",
-        "org.freedesktop.login1.set-reboot-to-firmware-setup",
-        "org.freedesktop.login1.set-reboot-to-boot-loader-menu",
-        "org.freedesktop.login1.set-reboot-to-boot-loader-entry"
-    ];
-    var adminGroups = ["sudo"];
-    var allowLocalConsole = false;
-    var i;
-
-    if (actions.indexOf(action.id) < 0 || subject.user === "root") {
-        return polkit.Result.NOT_HANDLED;
-    }
-    if (allowLocalConsole && subject.local && subject.active) {
-        return polkit.Result.NOT_HANDLED;
-    }
-    for (i = 0; i < adminGroups.length; i++) {
-        if (subject.isInGroup(adminGroups[i])) {
-            return polkit.Result.AUTH_ADMIN_KEEP;
-        }
-    }
-    return polkit.Result.NO;
-});
-```
+rule every desktop offers these actions, and an admin's password is all it takes.
+`fastrdp-server` installs `/usr/share/polkit-1/rules.d/40-fastrdp-power.rules`
+(`40-fastrdp-power.rules.j2`): only root and members of `sudo` (who authenticate as an
+admin) may. Other admin groups (`fastrdp_power_admin_groups`) or the local console
+(`fastrdp_power_allow_local_console`): copy the file to `/etc/polkit-1/rules.d/` and
+change `adminGroups` or `allowLocalConsole` there; an empty file of that name turns the
+rule off. polkitd picks it up without a restart:
 
 ```sh
 journalctl -u polkit -b | grep -i 40-fastrdp-power    # no "Error compiling script"
@@ -730,7 +631,73 @@ apt install /var/cache/fastrdp-virtualgl_3.1.5_amd64.deb
 export VGL_DISPLAY=egl
 ```
 
-The xrdp files that depend on the GPU stack are in section 10 (`gfx.toml`, `xorg.conf`).
+The packaged xrdp files are for the stack `none` (x264 on the CPU, software rendering).
+With a GPU, edit two of them (`fastrdp_xrdp_h264_encoder: auto`, `fastrdp_xorgxrdp_glamor`):
+
+`/etc/xrdp/gfx.toml`: the FFmpeg encoder comes first, `h264_vaapi` for Intel/AMD
+(`mesa`), `h264_nvenc` for NVIDIA. Replace the `h264_encoder = "x264"` line with the
+block below and keep the x264 sections (the fallback). `[ffmpeg.autodetect]` repeats the
+profile of `xrdp_autodetect_profile` (here `wan`):
+
+```toml
+# FFmpeg hardware encoder (fastrdp xrdp patch); falls back to libx264 at start-up
+# if the GPU, driver or library is not usable.
+h264_encoder = "ffmpeg"
+
+[ffmpeg]
+encoder = "h264_vaapi"
+device = "/dev/dri/renderD128"
+fallback = "libx264"
+
+[ffmpeg.default]
+qp = 23
+gop = 300
+fps_num = 60
+fps_den = 1
+
+[ffmpeg.lan]
+
+[ffmpeg.wan]
+bitrate = 12_000
+max_bitrate = 15_000
+
+[ffmpeg.broadband_high]
+bitrate = 6_000
+max_bitrate = 8_000
+
+[ffmpeg.satellite]
+bitrate = 4_000
+max_bitrate = 5_000
+
+[ffmpeg.broadband_low]
+bitrate = 1_400
+max_bitrate = 1_600
+
+[ffmpeg.modem]
+bitrate = 1_000
+max_bitrate = 1_200
+
+[ffmpeg.autodetect]
+bitrate = 12_000
+max_bitrate = 15_000
+```
+
+`/etc/X11/xrdp/xorg.conf`, Intel/AMD (`mesa`, glamor): add three options to the
+`Device` section. NVIDIA keeps software rendering in Xorg (VirtualGL, above) unless you
+try the experimental `fastrdp_xorgxrdp_nvidia_glamor`, which adds ` nvidia-drm` to the
+allow list:
+
+```
+Section "Device"
+    Identifier "Video Card (xrdpdev)"
+    Driver "xrdpdev"
+    Option "DRMDevice" "/dev/dri/renderD128"
+    Option "DRI3" "1"
+    Option "DRMAllowList" "amdgpu i915 xe msm radeon"
+EndSection
+```
+
+Then `systemctl restart xrdp-sesman xrdp` (once they run, section 12).
 
 ## 7. Desktops
 
@@ -843,43 +810,22 @@ The commands and the reasons are in
 ## 8. Tuning
 
 Role `tuning`, defaults ([performance.md](performance.md#tuning-knobs-ansible-role-tuning)).
+`fastrdp-server` installs them; nothing to do unless you want other values.
 
-```sh
-echo tcp_bbr > /etc/modules-load.d/fastrdp-bbr.conf
-modprobe tcp_bbr
-```
+| File (`fastrdp-server`) | Content | Override |
+|---|---|---|
+| `/usr/lib/modules-load.d/fastrdp-bbr.conf` | `tcp_bbr` | `/etc/modules-load.d/fastrdp-bbr.conf` |
+| `/usr/lib/sysctl.d/61-fastrdp-tcp.conf` | `fq`, `bbr`, no slow start after idle, `tcp_notsent_lowat = 131072`, 16 MiB socket buffers | `/etc/sysctl.d/61-fastrdp-tcp.conf` |
+| `/usr/lib/systemd/system/user-.slice.d/50-fastrdp.conf` | `[Slice]`, `CPUWeight=100`, `TasksMax=4096` | `/etc/systemd/system/user-.slice.d/50-fastrdp.conf` |
+| `/usr/lib/systemd/system/fastrdp-plasma@.service.d/50-fastrdp.conf` | `[Service]`, `CPUWeight=100`, `TasksMax=4096` | same below `/etc/systemd/system` |
+| `/usr/lib/systemd/system/xrdp.service.d/50-fastrdp.conf` | `[Service]`, `CPUWeight=100` | same below `/etc/systemd/system` |
 
-`/etc/sysctl.d/61-fastrdp-tcp.conf` (`root:root 0644`), then
-`sysctl -p /etc/sysctl.d/61-fastrdp-tcp.conf`:
-
-```
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_notsent_lowat = 131072
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-```
-
-Resource limits (`limits.conf.j2`): three drop-ins named `50-fastrdp.conf`
-(`root:root 0644`), then `systemctl daemon-reload`. Add `CPUQuota=` / `MemoryMax=` lines
-for per-user limits (`fastrdp_user_cpu_quota`, `fastrdp_user_memory_max`) or the xrdp
-daemon cap (`fastrdp_xrdp_cpu_quota`, `fastrdp_xrdp_memory_max`).
-
-| File | Content |
-|---|---|
-| `/etc/systemd/system/user-.slice.d/50-fastrdp.conf` | `[Slice]`, `CPUWeight=100`, `TasksMax=4096` |
-| `/etc/systemd/system/fastrdp-plasma@.service.d/50-fastrdp.conf` | `[Service]`, `CPUWeight=100`, `TasksMax=4096` |
-| `/etc/systemd/system/xrdp.service.d/50-fastrdp.conf` | `[Service]`, `CPUWeight=100` |
-
-For example the first one:
-
-```ini
-# Every user-UID.slice: all processes of a user's xrdp/X11 and GNOME sessions.
-[Slice]
-CPUWeight=100
-TasksMax=4096
-```
+For per-user limits (`fastrdp_user_cpu_quota`, `fastrdp_user_memory_max`) or the xrdp
+daemon cap (`fastrdp_xrdp_cpu_quota`, `fastrdp_xrdp_memory_max`), copy a drop-in to
+`/etc/systemd/system/<unit>.d/` and add `CPUQuota=` / `MemoryMax=` lines, then
+`systemctl daemon-reload`. Without the TCP tuning (`fastrdp_tcp_tuning: false`):
+`ln -s /dev/null /etc/sysctl.d/61-fastrdp-tcp.conf` and the same for
+`/etc/modules-load.d/fastrdp-bbr.conf`.
 
 `/etc/fastrdp/session.env` (`root:root 0644`, read by the Plasma launcher): with the
 defaults it has only comments. `fastrdp_krdp_encoder` and `fastrdp_krdp_quality` become
@@ -887,91 +833,26 @@ defaults it has only comments. `fastrdp_krdp_encoder` and `fastrdp_krdp_quality`
 
 ## 9. Broker
 
-Role `broker`. `/etc/fastrdp/broker.toml` (`root:root 0600`, `broker.toml.j2`):
+Role `broker`. `/etc/fastrdp/broker.toml` (`root:root 0600`, `broker.toml.j2`) comes
+with `fastrdp-broker`: the role's defaults, XFCE as the only desktop, every directory
+user allowed. `[auth] realms` and `domains` are left out: the broker then takes the
+`default_realm` of `/etc/krb5.conf` and the `[sssd] domains` of `sssd.conf` (section 3)
+and logs them at the start. Set them when they differ, e.g. a FreeIPA domain that is not
+the realm. Show the effective values and your changes against the default:
 
-```toml
-[broker]
-proxy_user = "_fastrdp-proxy"
-socket_group = "_fastrdp-broker"
-port_range = [33900, 34899]
-session_tgt = "auto"
-# Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
-home_create_roots = ["/home"]
-# Desktop picker on the proxy's waiting screen (fastrdp_desktop_picker)
-desktop_picker = "never"
-desktop_picker_timeout = 10
-desktop_picker_when_running = "preselect"
-
-[auth]
-realms = ["EXAMPLE.COM"]
-# false = SSSD names are "alice@example.com" (fastrdp_sssd_fully_qualified_names):
-# that name first, so a local account "alice" never shadows the directory user.
-strip_realm = true
-domains = ["example.com"]
-pam_service = "fastrdp"
-allow_groups = []
-allow_tls_password_login = true
-
-[mfa]
-mode = "none"
-exempt_groups = []
-otp_lengths = [6]
-yubikey_otp = true
-nla_kdc_enforced = false
-kdc_evidence_as_mfa = []
-reconnect_grace = 0
-reconnect_grace_same_address = true
-
-[mfa.privacyidea]
-url = ""
-realm = ""
-ca_file = ""
-verify_tls = true
-service_user = ""
-service_password_file = "/etc/fastrdp/privacyidea-service.secret"
-
-[network]
-# Connection type the proxy sends to xrdp (encoder profile) for clients that ask for
-# auto-detection or send none: lan inside lan_networks, else xrdp_autodetect_profile.
-lan_networks = []
-xrdp_autodetect_profile = "wan"
-
-[defaults]
-desktop ="xfce"
-geometry = "1920x1080"
-
-[defaults.groups]
-
-[desktops.xfce]
-backend = "xrdp"
-xsession = "xfce"
-
-[web]
-enabled = false
-gateway_user = "_fastrdp-web"
-# guacd runs with host networking and connects to the proxy via loopback
-allowed_clients = ["127.0.0.1", "::1"]
-
-# Texts of the proxy's waiting screen (fastrdp_proxy_waiting_screen)
-[ui]
-language = "en"
-language_from_keyboard = true
-approve_url = ""
-qr_code = true
-
-[backends.xrdp]
-port = 3390
-listener_user = "root"   # xrdp binds as root, then drops to runtime_user
+```sh
+fastrdp-brokerd --check                  # "[auth] realms not set: EXAMPLE.COM (/etc/krb5.conf default_realm)"
+fastrdp-defaults diff /etc/fastrdp/broker.toml
 ```
 
 Values to change:
 
 | Key | Role variable | Notes |
 |---|---|---|
-| `[auth] realms` | `fastrdp_realm` (upper case) | **site** |
+| `[auth] realms` | `fastrdp_realm` (upper case) | **site**; not set = `default_realm` of `krb5.conf`; `[]` = every realm |
 | `[auth] allow_groups` | `fastrdp_allow_groups` | e.g. `["rdp-users"]`; `[]` = every user who can authenticate |
 | `[auth] strip_realm` | `fastrdp_sssd_fully_qualified_names` (inverted) | `true`: SSSD short names (`alice` is tried before `alice@example.com`); `false`: SSSD `use_fully_qualified_names = true` (the qualified name first). Must match `sssd.conf` (section 3) |
-| `[auth] domains` | `fastrdp_domain` (lower case) | SSSD domain names: qualified names are tried with them as well as with the realms (FreeIPA domains may differ from the realm). Group names without `@` in this file also match `group@<domain>` |
+| `[auth] domains` | `fastrdp_domain` (lower case) | not set = `[sssd] domains` of `sssd.conf`. SSSD domain names: qualified names are tried with them as well as with the realms (FreeIPA domains may differ from the realm). Group names without `@` in this file also match `group@<domain>` |
 | `[auth] allow_tls_password_login` | `fastrdp_allow_tls_logins` | `false` = NLA only; keep `ServerTlsSecurity`/`AllowTls` in `proxy.ini` consistent (section 11) |
 | `[broker] session_tgt` | `fastrdp_session_tgt` | `auto`, `required`, `off` ([nfs-kerberos-homes.md](nfs-kerberos-homes.md)) |
 | `[broker.session_tgt_groups]` | `fastrdp_session_tgt_groups` | `session_tgt` per group, lines like `"nfs-homes" = "required"` (table only rendered when not empty): members of listed groups get the strictest mode of their groups (`required` > `auto` > `off`), everybody else `session_tgt`; group names as in `allow_groups` ([nfs-kerberos-homes.md](nfs-kerberos-homes.md#c-require-a-typed-password-for-users-with-kerberized-homes)) |
@@ -988,339 +869,28 @@ Values to change:
 | `port_range`, `[backends.xrdp] port` | `fastrdp_backend_port_range`, `fastrdp_xrdp_port` | must match nftables, sysctl and `xrdp.ini` |
 
 Other keys and their defaults: `broker/brokerd/fastrdp_broker/config.py` and the
-example in `/usr/share/doc/fastrdp-broker/examples/`. Validate:
-
-```sh
-fastrdp-brokerd --check
-```
+example in `/usr/share/doc/fastrdp-broker/examples/`. Validate after every change with
+`fastrdp-brokerd --check`.
 
 ## 10. xrdp
 
-Role `xrdp`. The `postinst` of `fastrdp-xrdp` has already created the loopback
-certificate; the role enforces its modes:
+Role `xrdp`. Nothing to do for the defaults: `fastrdp-xrdp`'s `postinst` created the
+loopback certificate (`/etc/xrdp/cert.pem`, `key.pem` `root:xrdp 0640`), and
+`fastrdp-session` installed fastrdp's site configuration in place of upstream's
+(fastrdp-defaults files; upstream's versions stay in
+`/usr/share/fastrdp-xrdp/default-config/`):
 
-```sh
-chown root:xrdp /etc/xrdp/key.pem /etc/xrdp/cert.pem
-chmod 0640 /etc/xrdp/key.pem && chmod 0644 /etc/xrdp/cert.pem
-```
+| File | Template | Role variables in it |
+|---|---|---|
+| `/etc/xrdp/xrdp.ini` | `xrdp.ini.j2` | `port` = `fastrdp_xrdp_port` (3390, loopback); `h264_frame_interval` = 1000 / `fastrdp_x264_fps`; `rdpsnd` = `fastrdp_audio` |
+| `/etc/xrdp/sesman.ini` | `sesman.ini.j2` | `MaxSessions` = `fastrdp_xrdp_max_sessions` (100); `DisconnectedTimeLimit` = 60 × `fastrdp_xrdp_disconnected_time_limit` (0 = never); `FASTRDP_AUDIO_INPUT` = `fastrdp_audio_input` |
+| `/etc/xrdp/gfx.toml` | `gfx.toml.j2` | x264 profiles per connection type; GPU encoders: section 6 |
+| `/etc/X11/xrdp/xorg.conf` | `xorg.conf.j2` | software rendering; glamor: section 6 |
+| `/etc/xrdp/startwm.sh` | `/usr/libexec/fastrdp/startwm.sh` | starts the desktop the broker chose |
+| `/etc/pam.d/xrdp-sesman` | `/usr/share/fastrdp-session/pam.d/xrdp-sesman` | accepts only broker tokens |
 
-The four files below are `root:root 0644`. `fastrdp-xrdp` does not ship them as
-conffiles (xrdp has no drop-in directory for them): its `postinst` creates them from
-upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/` only where they are
-missing, so package upgrades never overwrite your versions and dpkg never asks. The same
-holds for `startwm.sh` and `/etc/pam.d/xrdp-sesman` further down.
-
-`/etc/xrdp/xrdp.ini` (`xrdp.ini.j2`; `port` = `fastrdp_xrdp_port`, `h264_frame_interval` = 1000 / `fastrdp_x264_fps`):
-
-```ini
-; xrdp is an internal back-end: loopback only, reached through freerdp-proxy,
-; which logs in with a one-time broker token (no login screen, no fallbacks).
-[Globals]
-ini_version=1
-fork=true
-port=tcp://127.0.0.1:3390
-runtime_user=xrdp
-runtime_group=xrdp
-tcp_nodelay=true
-tcp_keepalive=true
-security_layer=tls
-crypt_level=high
-certificate=/etc/xrdp/cert.pem
-key_file=/etc/xrdp/key.pem
-ssl_protocols=TLSv1.2, TLSv1.3
-autorun=Xorg
-require_credentials=true
-hidelogwindow=true
-allow_channels=true
-allow_multimon=true
-bitmap_cache=true
-bitmap_compression=true
-bulk_compression=true
-max_bpp=32
-new_cursors=true
-use_fastpath=both
-
-[Logging]
-LogFile=xrdp.log
-LogLevel=INFO
-EnableSyslog=true
-
-[Channels]
-rdpdr=true
-; audio out (fastrdp_audio); the microphone is AUDIO_INPUT inside drdynvc
-rdpsnd=true
-drdynvc=true
-cliprdr=true
-rail=true
-xrdpvr=true
-
-[Xorg]
-name=Xorg
-lib=libxup.so
-username=ask
-password=ask
-port=-1
-code=20
-; Frame capture interval (ms): 16 = up to 60 fps for H.264
-h264_frame_interval=16
-rfx_frame_interval=32
-normal_frame_interval=40
-```
-
-`/etc/xrdp/sesman.ini` (`sesman.ini.j2`; `MaxSessions` = `fastrdp_xrdp_max_sessions`,
-`DisconnectedTimeLimit` = 60 × `fastrdp_xrdp_disconnected_time_limit` minutes, 0 = never):
-
-```ini
-[Globals]
-; The broker decides the desktop; users cannot override it with ~/startwm.sh.
-EnableUserWindowManager=false
-UserWindowManager=startwm.sh
-DefaultWindowManager=startwm.sh
-ReconnectScript=reconnectwm.sh
-
-[Security]
-AllowRootLogin=false
-MaxLoginRetry=1
-; Group checks happen in the broker (fastrdp_allow_groups) and in SSSD.
-AlwaysGroupCheck=false
-RestrictOutboundClipboard=none
-RestrictInboundClipboard=none
-
-[Sessions]
-X11DisplayOffset=10
-MaxSessions=100
-KillDisconnected=false
-DisconnectedTimeLimit=0
-IdleTimeLimit=0
-; Default: one session per user and colour depth; reconnects resize it.
-Policy=Default
-
-[Logging]
-LogFile=xrdp-sesman.log
-LogLevel=INFO
-EnableSyslog=true
-
-[Xorg]
-; The real server binary, not the setuid wrapper: no Xwrapper.config needed.
-param=/usr/lib/xorg/Xorg
-param=-config
-param=xrdp/xorg.conf
-param=-noreset
-param=-nolisten
-param=tcp
-param=-logfile
-param=.xorgxrdp.%s.log
-
-[Chansrv]
-FuseMountName=thinclient_drives
-FileUmask=077
-
-[ChansrvLogging]
-LogLevel=INFO
-EnableSyslog=true
-
-[SessionVariables]
-; Microphone (fastrdp_audio_input): false = /usr/libexec/fastrdp/xrdp-audio loads the
-; PipeWire xrdp module sink-only (docs/audio.md). PULSE_SCRIPT of xrdp's default
-; belongs to the PulseAudio module, which fastrdp does not use.
-FASTRDP_AUDIO_INPUT=true
-```
-
-`/etc/xrdp/gfx.toml` (`gfx.toml.j2`), GPU stack `none` (encoder `x264`):
-
-```toml
-# GFX pipeline codecs for xrdp, see gfx.toml(5). H.264 first (AVC420), RFX fallback.
-[codec]
-order = [ "H.264", "RFX" ]
-h264_encoder = "x264"
-
-# x264: always configured, it is also the software path when H.264 is x264
-[x264.default]
-preset = "ultrafast"
-tune = "zerolatency"
-profile = "main"
-vbv_max_bitrate = 0
-vbv_buffer_size = 0
-fps_num = 60
-fps_den = 1
-threads = 2
-
-# Per connection type (client "network:" setting, or the broker's choice for auto-detect)
-
-[x264.lan]
-
-[x264.wan]
-vbv_max_bitrate = 15_000
-vbv_buffer_size = 1_500
-
-[x264.broadband_high]
-preset = "superfast"
-vbv_max_bitrate = 8_000
-vbv_buffer_size = 800
-
-[x264.satellite]
-preset = "superfast"
-vbv_max_bitrate = 5_000
-vbv_buffer_size = 500
-
-[x264.broadband_low]
-preset = "veryfast"
-vbv_max_bitrate = 1_600
-vbv_buffer_size = 66
-
-[x264.modem]
-preset = "fast"
-vbv_max_bitrate = 1_200
-vbv_buffer_size = 50
-
-# Auto-detect (type 7, mstsc's default) = the wan profile
-# (fastrdp_xrdp_autodetect_profile). xrdp 0.10.6.1 does not read this section: it
-# encodes type 7 like lan. The proxy therefore sends xrdp the profile's own type instead
-# (broker.toml [network]); this copy keeps an xrdp that honours it consistent.
-[x264.autodetect]
-vbv_max_bitrate = 15_000
-vbv_buffer_size = 1_500
-```
-
-With a GPU (`fastrdp_xrdp_h264_encoder: auto`) the FFmpeg encoder comes first:
-`h264_vaapi` for Intel/AMD (`mesa`), `h264_nvenc` for NVIDIA. Replace the
-`h264_encoder = "x264"` line with the block below and keep the x264 sections (the
-fallback). `[ffmpeg.autodetect]` repeats the profile of `xrdp_autodetect_profile`
-(here `wan`):
-
-```toml
-# FFmpeg hardware encoder (fastrdp xrdp patch); falls back to libx264 at start-up
-# if the GPU, driver or library is not usable.
-h264_encoder = "ffmpeg"
-
-[ffmpeg]
-encoder = "h264_vaapi"
-device = "/dev/dri/renderD128"
-fallback = "libx264"
-
-[ffmpeg.default]
-qp = 23
-gop = 300
-fps_num = 60
-fps_den = 1
-
-[ffmpeg.lan]
-
-[ffmpeg.wan]
-bitrate = 12_000
-max_bitrate = 15_000
-
-[ffmpeg.broadband_high]
-bitrate = 6_000
-max_bitrate = 8_000
-
-[ffmpeg.satellite]
-bitrate = 4_000
-max_bitrate = 5_000
-
-[ffmpeg.broadband_low]
-bitrate = 1_400
-max_bitrate = 1_600
-
-[ffmpeg.modem]
-bitrate = 1_000
-max_bitrate = 1_200
-
-[ffmpeg.autodetect]
-bitrate = 12_000
-max_bitrate = 15_000
-```
-
-`/etc/X11/xrdp/xorg.conf` (`xorg.conf.j2`), software rendering:
-
-```
-# xorgxrdp virtual X server (software rendering)
-Section "ServerLayout"
-    Identifier "X11 Server"
-    Screen "Screen (xrdpdev)"
-    InputDevice "xrdpMouse" "CorePointer"
-    InputDevice "xrdpKeyboard" "CoreKeyboard"
-EndSection
-
-Section "ServerFlags"
-    Option "DefaultServerLayout" "X11 Server"
-    Option "DontVTSwitch" "on"
-    Option "AutoAddDevices" "off"
-    Option "AutoAddGPU" "off"
-EndSection
-
-Section "Module"
-    Load "dbe"
-    Load "ddc"
-    Load "extmod"
-    Load "glx"
-    Load "int10"
-    Load "record"
-    Load "vbe"
-    Load "xorgxrdp"
-    Load "fb"
-EndSection
-
-Section "InputDevice"
-    Identifier "xrdpKeyboard"
-    Driver "xrdpkeyb"
-EndSection
-
-Section "InputDevice"
-    Identifier "xrdpMouse"
-    Driver "xrdpmouse"
-EndSection
-
-Section "Monitor"
-    Identifier "Monitor"
-    Option "DPMS"
-    HorizSync 30-80
-    VertRefresh 60-75
-    ModeLine "1920x1080" 138.500 1920 1968 2000 2080 1080 1083 1088 1111 +hsync -vsync
-    ModeLine "1280x720" 74.25 1280 1720 1760 1980 720 725 730 750 +HSync +VSync
-    Modeline "1368x768" 72.25 1368 1416 1448 1528 768 771 781 790 +hsync -vsync
-    Modeline "1600x900" 119.00 1600 1696 1864 2128 900 901 904 932 -hsync +vsync
-EndSection
-
-Section "Device"
-    Identifier "Video Card (xrdpdev)"
-    Driver "xrdpdev"
-EndSection
-
-Section "Screen"
-    Identifier "Screen (xrdpdev)"
-    Device "Video Card (xrdpdev)"
-    GPUDevice ""
-    Monitor "Monitor"
-    DefaultDepth 24
-    SubSection "Display"
-        Depth 24
-        Modes "640x480" "800x600" "1024x768" "1280x720" "1280x1024" "1600x900" "1920x1080"
-    EndSubSection
-EndSection
-```
-
-Intel/AMD (`mesa`, glamor): add three options to the `Device` section. NVIDIA keeps
-software rendering in Xorg (VirtualGL, section 6) unless you try the experimental
-`fastrdp_xorgxrdp_nvidia_glamor`, which adds ` nvidia-drm` to the allow list:
-
-```
-Section "Device"
-    Identifier "Video Card (xrdpdev)"
-    Driver "xrdpdev"
-    Option "DRMDevice" "/dev/dri/renderD128"
-    Option "DRI3" "1"
-    Option "DRMAllowList" "amdgpu i915 xe msm radeon"
-EndSection
-```
-
-Session start script and token-only PAM stack, copied from `fastrdp-session`. Copy
-them again after `fastrdp-session` upgrades (the role does it on every run):
-
-```sh
-install -o root -g root -m 0755 /usr/libexec/fastrdp/startwm.sh /etc/xrdp/startwm.sh
-install -o root -g root -m 0644 /usr/share/fastrdp-session/pam.d/xrdp-sesman /etc/pam.d/xrdp-sesman
-```
+`startwm.sh` and the PAM stack follow `fastrdp-session` upgrades as long as you do not
+change them (`fastrdp-defaults status`).
 
 The PAM stacks of the broker (`/etc/pam.d/fastrdp`, `fastrdp-tgt`) and of Plasma
 sessions (`fastrdp-session`) come with the packages and need no change; they call
@@ -1345,111 +915,11 @@ Without audio: `rdpsnd=false` in `xrdp.ini` and none of these packages.
 
 ## 11. Proxy
 
-Role `freerdp_proxy`. `/etc/fastrdp/proxy.ini` (`root:_fastrdp-proxy 0640`, `proxy.ini.j2`):
-
-```ini
-; freerdp-proxy3 front-end. Every login goes through the fastrdp module:
-; NLA (Kerberos) or TLS credentials -> fastrdp-brokerd (account, groups, MFA,
-; session start) -> back-end chosen by the broker.
-[Server]
-Host=0.0.0.0
-Port=3389
-
-[Target]
-; Targets come from the broker (ServerFetchTargetAddr), never from client routing tokens.
-FixedTarget=false
-; Back-ends are loopback-only; the broker checks the listener's uid before routing
-; and nftables lets only this service connect to them. The fastrdp module pins each
-; back-end's TLS certificate to the one the broker names (xrdp: /etc/xrdp/cert.pem,
-; GNOME/Plasma: the user's certificate); deny refuses every other one, so a local
-; user who binds a back-end port while the back-end is down cannot pose as it.
-; The module refuses to route with any other policy.
-CertificatePolicy=deny
-TlsSecLevel=1
-SmartcardAuth=false
-
-[Codecs]
-RFX=true
-NSC=true
-
-[Channels]
-GFX=true
-DisplayControl=true
-Clipboard=true
-AudioInput=true
-AudioOutput=true
-DeviceRedirection=true
-VideoRedirection=true
-CameraRedirection=true
-RemoteApp=false
-PassthroughIsBlacklist=true
-Passthrough=
-Intercept=
-
-[Input]
-Keyboard=true
-Mouse=true
-Multitouch=true
-
-[Security]
-ServerNlaSecurity=true
-ServerTlsSecurity=true
-ServerRdpSecurity=false
-ServerExtSecurity=false
-; per-target values are set by the module (TLS for xrdp, NLA for g-r-d/KRdp)
-ClientNlaSecurity=true
-ClientTlsSecurity=true
-ClientRdpSecurity=false
-ClientExtSecurity=false
-ClientAllowFallbackToTls=false
-
-[Plugins]
-Modules=fastrdp
-Required=fastrdp
-
-[Certificates]
-CertificateFile=/etc/fastrdp/front.crt
-PrivateKeyFile=/etc/fastrdp/front.key
-
-[FastRDP]
-BrokerSocket=/run/fastrdp/broker.sock
-Timeout=180
-; TLS logins are needed for password+OTP clients and for the web path (guacd has no
-; Kerberos); the broker decides which credentials it accepts on them.
-AllowTls=true
-; TLS logins only from these peers (addresses/CIDRs, empty = any): loopback only when TLS
-; is there just for guacd (web path without fastrdp_allow_tls_logins).
-AllowTlsFrom=
-; Remote Credential Guard (mstsc /remoteGuard): false = not offered (the client gets a
-; negotiation response without support and reports it); true = accepted identity only,
-; the forwarded Kerberos tickets are discarded (no session TGT, like Restricted Admin).
-AcceptRemoteGuard=false
-; While the broker works on a login (push, web approval, session start), show what it
-; waits for: a panel, texts from the broker's [ui]; over the Graphics Pipeline for clients
-; that announced it (WaitingScreenGfx), else as Bitmap Updates. StatusInfo:
-; also Server Status Info PDUs, to clients that ask for them.
-WaitingScreen=true
-StatusInfo=false
-; Lab only: log the class of each input event the waiting screen reads (code field,
-; desktop picker), never a value (docs/lab-waiting-screen-input.md).
-InputTrace=false
-; Lab only: read the client during the whole MFA wait, answer Refresh Rect and Suppress
-; Output on the waiting screen and log them (docs/backlog.md A5).
-WaitingScreenObserve=false
-; Lab only: deactivate and reactivate the client before the first waiting screen panel
-; (Deactivate All, Demand Active), for mstsc's black window (docs/backlog.md A5).
-WaitingScreenReactivate=false
-; Backlog A5 fixes (docs/auth-matrix.md#waiting-screen): the waiting screen over GFX for
-; GFX clients; a logon notification (Save Session Info) to the client once the back-end
-; session is up. Off: a client carrying state over from its previous connection (input
-; before its first Font List) redirected to the proxy itself once (did not help mstsc).
-WaitingScreenGfx=true
-SelfRedirect=false
-LogonNotify=true
-; Lab only: append the TLS secrets of every client connection to this file (empty: none),
-; for Wireshark (docs/backlog.md A5). Anyone with the file can decrypt a capture.
-TlsKeyLogFile=
-```
+Role `freerdp_proxy`. `/etc/fastrdp/proxy.ini` (`root:_fastrdp-proxy 0640`,
+`proxy.ini.j2`) comes with `fastrdp-proxy-module`: port 3389 on all addresses, the
+front certificate of section 4, NLA and TLS logins, every channel but RemoteApp, the
+waiting screen on. Read it (every key has a comment) and change it in place if needed;
+restart `fastrdp-proxy` afterwards.
 
 `ServerTlsSecurity` and `AllowTls` are `true` if TLS logins (`allow_tls_password_login`)
 **or** web access are enabled, else `false`. `AllowTlsFrom` (`fastrdp_tls_login_sources`)
@@ -1517,18 +987,15 @@ systemctl edit fastrdp-proxy.service                # debug: [Service] Environme
 
 ## 13. Verify
 
-`tests/smoke/check-host.sh` from the repository works on a manually set up host. It
-needs root, `fastrdp-termsrv-check` (3.2) and the tools installed above
-(`ss`, `nft`, `klist`, `chronyc`, `runuser`, `ldd`, `python3`). It reads the ports from
-`proxy.ini` and `broker.toml`.
+`fastrdp-check-host` (from `fastrdp-broker`; `tests/smoke/check-host.sh` in the
+repository) checks the host as root. It reads the ports from `proxy.ini` and
+`broker.toml`.
 
 ```sh
-# the tag of your release instead of main
-curl -fsSLO https://raw.githubusercontent.com/linuxrrze/fast-rdp-server/main/tests/smoke/check-host.sh
-bash check-host.sh alice                         # alice: a directory user who may log in
+fastrdp-check-host alice                         # alice: a directory user who may log in
 ```
 
-Every line must say `ok`; then it prints `fastrdpctl status`. Checks: services
+Every line must say `ok`; then it prints `fastrdp-defaults status` and `fastrdpctl status`. Checks: services
 active, proxy on 3389, xrdp on loopback only, broker and token sockets, nftables
 table, TERMSRV AES keys and keytab readable by the proxy, proxy module and FreeRDP from
 `/opt/fastrdp`, PAM token module, xrdp with x264, `broker.toml` valid, time sync,
@@ -1707,14 +1174,15 @@ and the client settings: [web-access.md](web-access.md#kdc-proxy).
 - `apt upgrade` updates the packages. Then restart the fastrdp daemons
   (`systemctl restart fastrdp-brokerd fastrdp-proxy`, and `xrdp-sesman xrdp` in a
   maintenance window) and check them with `systemctl status`.
-- The xrdp files of section 10 are yours; upgrades of `fastrdp-xrdp` only update
-  upstream's defaults in `/usr/share/fastrdp-xrdp/default-config/`. Compare them after an
-  xrdp version change:
+- The fastrdp-defaults files you did not change follow the new defaults by themselves.
+  For the ones you changed, the upgrade prints `kept <file> (changed locally)` once;
+  merge the new version by hand:
 
   ```sh
-  cd /usr/share/fastrdp-xrdp/default-config && for f in $(find . -type f); do diff -u "$f" "/$f"; done
+  fastrdp-defaults status            # "changed locally" files
+  fastrdp-defaults diff              # your changes against the new fastrdp version
   ```
-- After a `fastrdp-session` upgrade copy `startwm.sh` and the PAM stack again (section 10).
-- Before upgrading to a new fastrdp release, compare the role files listed at the top
-  between the two tags (`git diff v0.1.0 <new tag> -- ansible/roles`) and apply the
-  changes here and on your hosts.
+- Upstream's xrdp defaults (`/usr/share/fastrdp-xrdp/default-config/`) change with xrdp
+  versions; fastrdp's versions in `fastrdp-session` follow them.
+- Read the release notes (`/usr/share/doc/fastrdp-broker/changelog.Debian.gz`) for steps
+  outside these files.

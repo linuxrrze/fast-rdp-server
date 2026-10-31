@@ -73,6 +73,17 @@ sudo tests/smoke/check-host.sh alice                         # on the host
 xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /gfx:avc444
 ```
 
+Without Ansible, on a single host ([docs/manual-setup.md](docs/manual-setup.md)): the
+packages bring the default configuration, the guide covers the join, desktops and
+services:
+
+```sh
+curl -fsSLO https://linuxrrze.github.io/fast-rdp-server/fastrdp-archive-keyring.deb
+sudo apt install ./fastrdp-archive-keyring.deb && sudo apt update
+sudo apt install fastrdp-server
+sudo fastrdp-check-host --preflight
+```
+
 Every role variable has a default (site-wide ones in `ansible/roles/common`); an
 inventory needs only `fastrdp_realm` and `fastrdp_domain` plus what differs. The
 `common` role refuses inconsistent settings before anything is changed.

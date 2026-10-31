@@ -1,0 +1,46 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Renders role templates with the example values of docs/manual-setup.md ("Example
+# values") and the role defaults, for test_templates.py (ManualSetupDoc), which passes
+# the templates the guide shows in full:
+#   ansible-playbook -i localhost, tests/ansible/render-doc.yml -e render_out=DIR \
+#       -e '{"doc_templates": [{"role": "identity", "src": "krb5.conf.j2"}]}'
+# Output: DIR/<src without .j2>; the ansible_managed line is "# DOC-MANAGED".
+- name: Render the templates shown in docs/manual-setup.md
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../ansible/roles/common/defaults/main.yml
+    - ../../ansible/roles/desktops/defaults/main.yml
+    - ../../ansible/roles/xrdp/defaults/main.yml
+    - ../../ansible/roles/freerdp_proxy/defaults/main.yml
+    - ../../ansible/roles/web_gateway/defaults/main.yml
+    - ../../ansible/roles/tuning/defaults/main.yml
+    - ../../ansible/roles/identity/defaults/main.yml
+    - ../../ansible/roles/base/defaults/main.yml
+    - ../../ansible/roles/gpu/defaults/main.yml
+  vars:
+    roles_dir: "{{ playbook_dir }}/../../ansible/roles"
+    ansible_managed: DOC-MANAGED
+  tasks:
+    # set_fact: play vars would lose against the role defaults in vars_files
+    - name: Example values of docs/manual-setup.md (host names are facts in a real run)
+      ansible.builtin.set_fact:
+        fastrdp_realm: EXAMPLE.COM
+        fastrdp_domain: example.com
+        fastrdp_identity_provider: ad
+        fastrdp_join_user: Administrator
+        fastrdp_desktops: [xfce]
+        fastrdp_gpu_effective: none
+        fastrdp_fqdn: rdp1.example.com
+        fastrdp_hostname: rdp1
+
+    - name: Templates
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ item.src | regex_replace('\\.j2$', '') }}"
+        mode: "0644"
+      loop: "{{ doc_templates }}"

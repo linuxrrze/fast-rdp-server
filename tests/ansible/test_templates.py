@@ -2173,5 +2173,149 @@ class HandlerFlush(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertNotIn("after-flush", res.stdout)
 
+
+class PackagedDefaults(unittest.TestCase):
+    """packaging/defaults/<package>/ (the configuration the packages ship) is what
+    packaging/defaults/render.yml renders from the current templates and role defaults:
+    after changing either, run `make defaults` and commit the result."""
+
+    DEFAULTS = REPO / "packaging/defaults"
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="fastrdp-defaults.")
+        cls.out = Path(cls._tmp.name)
+        env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
+                   ANSIBLE_PYTHON_INTERPRETER=sys.executable)
+        env.pop("ANSIBLE_CONFIG", None)
+        res = subprocess.run([shutil.which("ansible-playbook"), "-i", "localhost,",
+                              str(cls.DEFAULTS / "render.yml"), "-e", f"render_out={cls.out}"],
+                             env=env, capture_output=True, text=True, cwd=HERE)
+        if res.returncode != 0:
+            raise RuntimeError(f"render.yml failed:\n{res.stdout[-4000:]}\n{res.stderr[-2000:]}")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def tree(root):
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                      if p.is_file() and p.parent != root)
+
+    def test_committed_files_are_current(self):
+        rendered = self.tree(self.out)
+        self.assertEqual(self.tree(self.DEFAULTS), rendered, "run make defaults")
+        for rel in rendered:
+            with self.subTest(rel):
+                self.assertEqual((self.DEFAULTS / rel).read_text(), (self.out / rel).read_text(),
+                                 f"packaging/defaults/{rel} is outdated: run make defaults")
+
+    def test_lists_name_shipped_files(self):
+        """Every SOURCE below /usr/share/<package>/defaults/ is one of the rendered files;
+        every rendered /etc file is in its package's list."""
+        for lst in sorted(self.DEFAULTS.glob("*.list")):
+            pkg = lst.stem
+            listed = set()
+            for line in lst.read_text().splitlines():
+                line = line.split("#", 1)[0].split()
+                if not line:
+                    continue
+                dest, mode, owner, group, src, *opts = line
+                with self.subTest(pkg=pkg, dest=dest):
+                    self.assertRegex(mode, r"^0[0-7]{3}$")
+                    self.assertTrue(all(o.startswith(("if=", "also=")) for o in opts), opts)
+                    prefix = f"/usr/share/{pkg}/defaults/"
+                    if src.startswith(prefix):
+                        self.assertEqual(src[len(prefix):], dest.lstrip("/"))
+                        self.assertTrue((self.DEFAULTS / pkg / dest.lstrip("/")).is_file())
+                    listed.add(dest)
+            etc = {"/" + str(p.relative_to(self.DEFAULTS / pkg)) for p in (self.DEFAULTS / pkg / "etc").rglob("*")
+                   if p.is_file()} if (self.DEFAULTS / pkg / "etc").is_dir() else set()
+            self.assertLessEqual(etc, listed, f"{pkg}: rendered /etc files missing from {lst.name}")
+
+    def test_defaults_are_valid(self):
+        d = self.DEFAULTS
+        cfg = broker_config.parse(tomllib.loads((d / "fastrdp-broker/etc/fastrdp/broker.toml").read_text()))
+        self.assertEqual(cfg.auth.realms, [])          # left out: the broker reads krb5.conf
+        self.assertEqual(cfg.backends["xrdp"].port, 3390)
+        cp = configparser.ConfigParser(interpolation=None, comment_prefixes=(";", "#"))
+        cp.optionxform = str
+        cp.read(d / "fastrdp-proxy-module/etc/fastrdp/proxy.ini")
+        self.assertEqual(cp["Server"]["Port"], "3389")
+        self.assertEqual(cp["Plugins"]["Required"], "fastrdp")
+        self.assertEqual(cp["FastRDP"]["AllowTls"], "true")
+        gfx = tomllib.loads((d / "fastrdp-session/etc/xrdp/gfx.toml").read_text())
+        self.assertEqual(gfx["codec"]["h264_encoder"], "x264")
+        nft = (d / "fastrdp-server/etc/nftables.d/fastrdp.nft").read_text()
+        self.assertIn("3390, 33900-34899", nft)
+        for f in d.rglob("*"):
+            if f.is_file() and f.parent != d:
+                with self.subTest(str(f.relative_to(d))):
+                    self.assertNotIn("Ansible managed", f.read_text())
+                    self.assertNotIn("lab.example.com", f.read_text())
+
+
+class ManualSetupDoc(unittest.TestCase):
+    """docs/manual-setup.md shows some files in full, introduced as
+    "`/path` (`owner mode`, `<template>.j2`...)": each such block must be what the
+    template renders with the guide's example values (render-doc.yml)."""
+
+    DOC = REPO / "docs/manual-setup.md"
+    INTRO = re.compile(r"`(/[^`]+)` \((?:[^()]|\([^)]*\))*?`([\w.-]+\.j2)`")
+
+    @classmethod
+    def blocks(cls):
+        """(file, template, block text) for every fenced block whose paragraph right
+        before it introduces a file from a template; shell blocks are commands."""
+        lines = cls.DOC.read_text().splitlines()
+        found, para, ended, i = [], [], False, 0
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("```"):
+                lang = line[3:].strip()
+                j = i + 1
+                while not lines[j].startswith("```"):
+                    j += 1
+                m = cls.INTRO.search(" ".join(para))
+                if m and lang not in ("sh", "bat"):
+                    found.append((m.group(1), m.group(2), "\n".join(lines[i + 1:j]) + "\n"))
+                para, i = [], j + 1
+                continue
+            if not line.strip():
+                ended = True           # the paragraph before a block may end in a blank line
+            elif line.startswith("#"):
+                para = []
+            else:
+                para = [line] if ended else para + [line]
+                ended = False
+            i += 1
+        return found
+
+    def test_blocks_match_the_templates(self):
+        blocks = self.blocks()
+        names = sorted({t for _, t, _ in blocks})
+        self.assertGreaterEqual(len(names), 2, f"expected file blocks in {self.DOC.name}: {blocks}")
+        roles = {}
+        for t in names:
+            hits = list((REPO / "ansible/roles").glob(f"*/templates/{t}"))
+            self.assertEqual(len(hits), 1, f"{t}: no or several role templates")
+            roles[t] = hits[0].parent.parent.name
+        with tempfile.TemporaryDirectory(prefix="fastrdp-doc.") as tmp:
+            env = dict(os.environ, ANSIBLE_LOCALHOST_WARNING="false", ANSIBLE_NOCOLOR="1",
+                       ANSIBLE_PYTHON_INTERPRETER=sys.executable)
+            env.pop("ANSIBLE_CONFIG", None)
+            extra = json.dumps({"doc_templates": [{"role": roles[t], "src": t} for t in names]})
+            res = subprocess.run([shutil.which("ansible-playbook"), "-i", "localhost,",
+                                  str(HERE / "render-doc.yml"), "-e", f"render_out={tmp}", "-e", extra],
+                                 env=env, capture_output=True, text=True, cwd=HERE)
+            self.assertEqual(res.returncode, 0, res.stdout[-4000:])
+            for path, t, text in blocks:
+                with self.subTest(path=path, template=t):
+                    rendered = Path(tmp, t[:-3]).read_text()
+                    rendered = "".join(l for l in rendered.splitlines(keepends=True)
+                                       if "DOC-MANAGED" not in l)
+                    self.assertEqual(text, rendered, f"{self.DOC.name}: block for {path} differs from {t}")
+
 if __name__ == "__main__":
     unittest.main()
