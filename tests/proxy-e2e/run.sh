@@ -223,7 +223,7 @@ E2E_BURST=all E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23401 redirectall good 
 # the desktop picker and the code field over GFX (proxy J)
 E2E_GFX=1 E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23399 pickergfx good "" > pickergfx.out 2>&1 &
 gfxpick=$!
-E2E_GFX=1 E2E_KEEP_S=12 E2E_KEYS=1,2,3,4,5,6 timeout 30 ./client 127.0.0.1 23399 codegfx good "" > codegfx.out 2>&1 || true
+E2E_GFX=1 E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 E2E_KEYS=1,2,3,4,5,6 timeout 30 ./client 127.0.0.1 23399 codegfx good "" > codegfx.out 2>&1 || true
 wait $gfxpick || true
 # Field report (A3/A5): the desktop picker with WaitingScreenObserve on (proxy F). Both read
 # the client during the wait; the picker must show, take the key and hand the input back
@@ -257,18 +257,22 @@ picker pickerflood E2E_CHANNEL_DATA=6291456 & pids+=($!)
 E2E_KEEP_S=6 timeout 30 ./client 127.0.0.1 23389 pickeroff good "" > pickeroff.out 2>&1 & pids+=($!)
 # Code field ([mfa] code_or_web, backlog W5 (b); proxy E): the fake broker prompts 1.5 s after
 # the login with a field for 6 digits (codeenter: until Enter) and takes 123456; the clients
-# type 2.5 s after connecting, a second batch at 5 s.
+# type 4.5 s after connecting, a second batch at 7 s (not 2.5 and 5 s: the prompt came about
+# 2 s after connecting on CI hosts, as for the picker). They stay 16 s: after a code that is
+# not accepted the broker still listens CODE_STRAY (5) s for codes typed too late.
 code() { # user [VAR=value ...]
     local u=$1; shift
-    env E2E_KEEP_S=12 "$@" timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
+    env E2E_KEEP_S=16 E2E_INPUT_AT_MS=4500 E2E_INPUT2_AT_MS=7000 "$@" \
+        timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
 }
 code codeok E2E_KEYS=1,2,3,4,5,6 & pids+=($!)
 code codewrong E2E_KEYS=6,5,4,3,2,1 E2E_KEYS2=1,2,3,4,5,6 & pids+=($!)
 # keys typed before the prompt do not count; keypad with NumLock, Backspace, Enter
 code codeenter E2E_EARLY_KEYS=9,9 E2E_NUMLOCK=1 E2E_KEYS=kp1,kp2,kp3,kp4,kp5,kp7,bksp,kp6,enter & pids+=($!)
 code codeunicode E2E_KEYS=u1,u2,u3,u4,u5,u6 & pids+=($!)
-# the approval page answers 1.5 s after the prompt, the code is typed after that
-code codeweb E2E_KEYS=1,2,3,4,5,6 E2E_INPUT_AT_MS=4500 & pids+=($!)
+# the approval page answers 1.5 s after the prompt (3.5 to 5 s after connecting), the code
+# is typed after that, still inside the broker's 5 s for stray codes
+code codeweb E2E_KEYS=1,2,3,4,5,6 E2E_INPUT_AT_MS=6500 & pids+=($!)
 # a wrong code, then too many: the broker's next prompt has no field, the retyped code stays
 code codelock E2E_KEYS=6,5,4,3,2,1 E2E_KEYS2=1,2,3,4,5,6 & pids+=($!)
 # proxy A without the waiting screen: no field offered
