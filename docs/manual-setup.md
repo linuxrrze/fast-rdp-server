@@ -70,7 +70,7 @@ Do not repeat these steps; the rest of this guide covers what the packages leave
 
 Every daemon except `fastrdp-firewall` is installed **disabled and stopped**.
 
-**fastrdp-defaults files.** The configuration files in `/etc` named above are not dpkg
+**fastrdp-defaults files.** The configuration files in /etc named above are not dpkg
 conffiles (the Ansible roles write the same files). `fastrdp-defaults` (`man
 fastrdp-defaults`) installs fastrdp's version where a file is missing, still unchanged
 since the last installation, or upstream's default; **a file you changed is never
@@ -82,7 +82,7 @@ fastrdp-defaults diff              # your changes against fastrdp's version
 ```
 
 The files in `/usr/lib` and `/usr/share/polkit-1` are overridden by a file of the same
-name in the matching `/etc` directory (`/etc/sysctl.d`, `/etc/modules-load.d`,
+name in the matching /etc directory (`/etc/sysctl.d`, `/etc/modules-load.d`,
 `/etc/systemd/system/<unit>.d`, `/etc/polkit-1/rules.d`); a symlink to `/dev/null`
 there switches one off (polkit: an empty file).
 
