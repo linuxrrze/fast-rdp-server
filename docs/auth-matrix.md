@@ -650,9 +650,10 @@ untested.
 #### mstsc reconnects (backlog A5)
 
 mstsc showed the waiting screen black on its next *Connect* in the same process after a
-session ([backlog A5](backlog.md#sessions)). Three changes aim at it; each is on by
-default and has its own switch. **None is confirmed with mstsc yet**; they are tested
-with FreeRDP clients only (`tests/proxy-e2e/run.sh`, proxies J, K and L).
+session ([backlog A5](backlog.md#sessions)). Three changes aim at it, each with its own
+switch; tested with FreeRDP clients in `tests/proxy-e2e/run.sh` (proxies J, K and L).
+With mstsc (lab 2026-10-29) the waiting screen over GFX fixes it; the self-redirection
+does not help and is off by default since 0.7.12; the other two are on.
 
 - **`fastrdp_proxy_waiting_screen_gfx`** (`[FastRDP] WaitingScreenGfx`, default `true`):
   a client that announced the Graphics Pipeline and joined `drdynvc` gets the panel over
@@ -670,7 +671,7 @@ with FreeRDP clients only (`tests/proxy-e2e/run.sh`, proxies J, K and L).
   with mstsc: this fixes the black second *Connect*, and mstsc accepts the back-end's
   second Graphics channel in the same connection. Open: whether a back-end that draws
   without GFX then still shows.
-- **`fastrdp_proxy_self_redirect`** (`[FastRDP] SelfRedirect`, default `true`): mstsc
+- **`fastrdp_proxy_self_redirect`** (`[FastRDP] SelfRedirect`, default `false`): mstsc
   that carries state over from its previous connection sends input (a synchronize event,
   keys) before the first Font List of the new connection
   ([a5-capture-2026-10-26.md](a5-capture-2026-10-26.md#run-2-reactivation-before-the-panel)).

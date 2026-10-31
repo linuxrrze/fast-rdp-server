@@ -17,9 +17,10 @@ Tick an item when its results are attached; update the backlog row afterwards.
       [lab-waiting-screen-input.md §2](lab-waiting-screen-input.md#2-setup),
       `fastrdp_proxy_input_trace: true`, `fastrdp_proxy_waiting_screen_observe: false`,
       `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on);
-      `fastrdp_proxy_waiting_screen_gfx`, `fastrdp_proxy_self_redirect` and
-      `fastrdp_proxy_logon_notify` at their default `true` for item H, all three `false`
-      for items A, C and F (they look for the cause without the mitigations).
+      `fastrdp_proxy_waiting_screen_gfx` and `fastrdp_proxy_logon_notify` at their
+      default `true` for item H (`fastrdp_proxy_self_redirect` is off by default since
+      0.7.12; on only where an item says so), all three `false` for items A, C and F
+      (they look for the cause without the mitigations).
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
@@ -114,7 +115,7 @@ Next session (in this order; H first, then A and B):
            connection sent the same input burst again, so the redirection does not
            clear mstsc's state ([a5-capture](a5-capture-2026-10-26.md#first-0711-result-2026-10-29)).
          - Confirmation: `fastrdp_proxy_logon_notify: false` and
-           `fastrdp_proxy_waiting_screen_gfx: false` (self-redirection on): connection 2
+           `fastrdp_proxy_waiting_screen_gfx: false`, `fastrdp_proxy_self_redirect: true`: connection 2
            should be black again. Note whether mstsc asks for credentials after the
            redirection. With `fastrdp_proxy_logon_notify` on, the
            proxy journal shows `... not forwarded: the proxy sent the client a logon

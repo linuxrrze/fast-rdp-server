@@ -1440,11 +1440,11 @@ WaitingScreenObserve=false
 ; (Deactivate All, Demand Active), for mstsc's black window (docs/backlog.md A5).
 WaitingScreenReactivate=false
 ; Backlog A5 fixes (docs/auth-matrix.md#waiting-screen): the waiting screen over GFX for
-; GFX clients; a client carrying state over from its previous connection (input before its
-; first Font List) redirected to the proxy itself once; a logon notification (Save Session
-; Info) to the client once the back-end session is up.
+; GFX clients; a logon notification (Save Session Info) to the client once the back-end
+; session is up. Off: a client carrying state over from its previous connection (input
+; before its first Font List) redirected to the proxy itself once (did not help mstsc).
 WaitingScreenGfx=true
-SelfRedirect=true
+SelfRedirect=false
 LogonNotify=true
 ; Lab only: append the TLS secrets of every client connection to this file (empty: none),
 ; for Wireshark (docs/backlog.md A5). Anyone with the file can decrypt a capture.

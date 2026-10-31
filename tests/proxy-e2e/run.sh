@@ -94,14 +94,14 @@ sed -i 's/^AllowTlsFrom=.*/&\nTlsKeyLogFile=tls-keys-relative.txt/' c.ini
 # I reactivates the client before the waiting screen (lab switch WaitingScreenReactivate,
 # backlog A5); its own fake broker as for F
 mkproxy i 23398 f.sock '127.0.0.0/8' deny WaitingScreenReactivate=true
-# backlog A5 fixes, own fake broker (j.log): J and L with the defaults (WaitingScreenGfx,
-# SelfRedirect, LogonNotify on; L for the redirect loop check, with its own rate limit),
-# K with all three off
-mkproxy j 23399 j.sock '127.0.0.0/8' deny
+# backlog A5 fixes, own fake broker (j.log): J and L with all three on (WaitingScreenGfx,
+# LogonNotify by default, SelfRedirect switched on; L for the redirect loop check, with its
+# own rate limit), K with all three off
+mkproxy j 23399 j.sock '127.0.0.0/8' deny SelfRedirect=true
 mkproxy k 23400 j.sock '127.0.0.0/8' deny "WaitingScreenGfx=false
 SelfRedirect=false
 LogonNotify=false"
-mkproxy l 23401 j.sock '127.0.0.0/8' deny
+mkproxy l 23401 j.sock '127.0.0.0/8' deny SelfRedirect=true
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256

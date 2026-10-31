@@ -223,7 +223,9 @@ fastrdp_proxy_waiting_screen_gfx: true
 # connection) is sent a Server Redirection to the proxy itself before the login is checked,
 # so it opens a fresh connection; the redirected connection is never redirected again,
 # and an address at most once in 30 s. No credentials are put into the redirection.
-fastrdp_proxy_self_redirect: true
+# Off: in the lab (2026-10-29) mstsc sent the same input after the redirection, and the
+# GFX waiting screen alone fixed its black window (docs/backlog.md A5).
+fastrdp_proxy_self_redirect: false
 # Logon notification (proxy.ini [FastRDP] LogonNotify): a Save Session Info PDU
 # (plain notify) to the client once the back-end session is up, unless the back-end sent
 # one; mstsc adds the server to its connection history only after one.

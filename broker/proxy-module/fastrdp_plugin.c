@@ -53,7 +53,7 @@
  *                             ; (fastrdp_inputtrace.h, ws_trace())
  *   WaitingScreenGfx = true   ; draw the waiting screen over the Graphics Pipeline for
  *                             ; clients that announced it (ws_gfx_start(), backlog A5/A8)
- *   SelfRedirect  = true      ; a client that carries state over from its previous
+ *   SelfRedirect  = false     ; a client that carries state over from its previous
  *                             ; connection is redirected to the proxy itself first
  *                             ; (self_redirect(), backlog A5)
  *   LogonNotify   = true      ; a logon notification (Save Session Info) to the client
@@ -3092,7 +3092,7 @@ static BOOL fastrdp_remote_credentials(freerdp_peer* peer, KERB_TICKET_LOGON* lo
 
 /* -------------------------------------------------------- self-redirection */
 
-/* [FastRDP] SelfRedirect (default on; backlog A5, an experiment): mstsc showed the waiting
+/* [FastRDP] SelfRedirect (default off; backlog A5, an experiment): mstsc showed the waiting
  * screen black on the next *Connect* in the same process after a session, and such a
  * connection is recognisable: its first activation looks like a reactivation, the client
  * sends input (QoE timestamp, scancodes, synchronize, mouse) between Control Request and
@@ -3271,7 +3271,7 @@ static BOOL self_redirect(proxyData* pdata, fastrdpSession* s)
 	const char* sid = pdata->session_id;
 	freerdp_peer* peer = pdata->ps->peer;
 	s->burst_decided = TRUE;
-	if (!config_bool(pdata, "SelfRedirect", TRUE))
+	if (!config_bool(pdata, "SelfRedirect", FALSE))
 		return FALSE;
 	char counts[128];
 	fastrdp_burst_describe(&s->burst, counts, sizeof(counts));
@@ -4018,7 +4018,7 @@ static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, v
 	}
 	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
 	pdata->ps->peer->SspiNtlmHashCallback = fastrdp_ntlm_refused;
-	if (config_bool(pdata, "SelfRedirect", TRUE))
+	if (config_bool(pdata, "SelfRedirect", FALSE))
 		self_redirect_watch(pdata->ps->input);
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
 	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0) &&
