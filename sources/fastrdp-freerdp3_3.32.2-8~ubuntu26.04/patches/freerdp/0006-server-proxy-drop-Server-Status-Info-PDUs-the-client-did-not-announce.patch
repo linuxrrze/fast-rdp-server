@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Thu, 22 Oct 2026 18:00:00 +0200
+Subject: [PATCH] [server,proxy] drop Server Status Info PDUs the front client
+ did not announce
+
+pf_client_server_status_info() forwarded every Server Status Info PDU
+([MS-RDPBCGR] 2.2.5.2) of the back-end to the front client. A client
+announces support with RNS_UD_CS_SUPPORT_STATUSINFO_PDU in the
+earlyCapabilityFlags of its Client Core Data (2.2.1.3.2), and 3.3.5.7.2
+says that the server MUST NOT send the PDU otherwise.
+
+On the front, FreeRDP_SupportStatusInfoPdu holds exactly that: TRUE by
+default in server mode, cleared by updateEarlyClientCaps() when the
+client did not set the flag. The back-end hop starts from a copy of the
+front settings and advertises the same flag, so a conforming back-end
+stays quiet. A back-end that sends the PDU anyway, or a back-end hop
+whose settings a module changed, made the proxy break the rule towards
+its client.
+
+Check the front's setting before forwarding and drop the PDU with a
+debug message when the client did not announce support. Forwarding is
+unchanged otherwise.
+---
+ server/proxy/pf_update.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/server/proxy/pf_update.c b/server/proxy/pf_update.c
+index ce88322..f49b62f 100644
+--- a/server/proxy/pf_update.c
++++ b/server/proxy/pf_update.c
+@@ -346,6 +346,18 @@ static BOOL pf_client_server_status_info(rdpContext* context, UINT32 status)
+ 	WINPR_ASSERT(ps->context.update->ServerStatusInfo);
+
+ 	WLog_DBG(TAG, "called");
++
++	/* [MS-RDPBCGR] 3.3.5.7.2: the server MUST NOT send a Server Status Info PDU
++	 * unless the client set RNS_UD_CS_SUPPORT_STATUSINFO_PDU in its Client Core Data. */
++	if (!freerdp_settings_get_bool(ps->context.settings, FreeRDP_SupportStatusInfoPdu))
++	{
++		PROXY_LOG_DBG(TAG, pc,
++		              "dropping server status info 0x%08" PRIx32
++		              ": front client did not announce RNS_UD_CS_SUPPORT_STATUSINFO_PDU",
++		              status);
++		return TRUE;
++	}
++
+ 	return ps->context.update->ServerStatusInfo(&ps->context, status);
+ }
+

@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Fri, 23 Oct 2026 20:31:49 +0200
+Subject: [PATCH] [core,peer] deny a client's Shutdown Request once the session
+ runs
+
+A client that wants to close the connection may first send a Shutdown
+Request PDU ([MS-RDPBCGR] 2.2.2.2); mstsc does so when the user clicks
+the X in its connection bar. [MS-RDPBCGR] 1.3.1.4.1: if a logged-on
+user account is associated with the session, the server always denies
+the request with a Shutdown Request Denied PDU (2.2.2.3); the client
+then sends a Disconnect Provider Ultimatum with reason "user
+requested" and closes the connection itself. Only without a logged-on
+user does the server close the connection at once.
+
+peer_recv_data_pdu() always took the second path: it sent a
+Disconnect Provider Ultimatum with reason "provider initiated" and
+quit. To mstsc that is the server ending a session it asked to leave
+cleanly. In the field, the next connection from the same mstsc
+process did not show what the server drew while the login waited
+(a second factor), until mstsc was restarted.
+
+Once PostConnect has accepted the client (client->connected), answer
+with a Shutdown Request Denied PDU and keep the connection; the
+client's Disconnect Provider Ultimatum ends it as before. Before that
+(PostConnect running or not yet reached: no session) the connection
+is closed at once, as until now.
+---
+ libfreerdp/core/peer.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/libfreerdp/core/peer.c b/libfreerdp/core/peer.c
+index d8e8595..af65a56 100644
+--- a/libfreerdp/core/peer.c
++++ b/libfreerdp/core/peer.c
+@@ -327,6 +327,19 @@ static BOOL freerdp_peer_check_fds(freerdp_peer* peer)
+ 	return (status >= 0);
+ }
+ 
++/* [MS-RDPBCGR] 2.2.2.3 Server Shutdown Request Denied PDU: a Share Data Header only. */
++WINPR_ATTR_NODISCARD
++static BOOL rdp_send_server_shutdown_denied_pdu(rdpRdp* rdp)
++{
++	UINT16 sec_flags = 0;
++	wStream* s = rdp_data_pdu_init(rdp, &sec_flags);
++	if (!s)
++		return FALSE;
++
++	WINPR_ASSERT(rdp->mcs);
++	return rdp_send_data_pdu(rdp, s, DATA_PDU_TYPE_SHUTDOWN_DENIED, rdp->mcs->userId, sec_flags);
++}
++
+ static state_run_t peer_recv_data_pdu(freerdp_peer* client, wStream* s,
+                                       WINPR_ATTR_UNUSED UINT16 totalLength)
+ {
+@@ -388,6 +401,17 @@ static state_run_t peer_recv_data_pdu(freerdp_peer* client, wStream* s,
+ 			return STATE_RUN_CONTINUE; // State changed, trigger rerun
+ 
+ 		case DATA_PDU_TYPE_SHUTDOWN_REQUEST:
++			/* [MS-RDPBCGR] 1.3.1.4.1: with a logged-on user (here: PostConnect accepted the
++			 * client) the server always denies, and the client ends the connection itself
++			 * with a "user requested" Disconnect Provider Ultimatum. Without one the server
++			 * closes the connection at once. */
++			if (client->connected)
++			{
++				if (!rdp_send_server_shutdown_denied_pdu(rdp))
++					return STATE_RUN_FAILED;
++				WLog_DBG(TAG, "shutdown request denied, the client disconnects itself");
++				break;
++			}
+ 			mcs_send_disconnect_provider_ultimatum(rdp->mcs,
+ 			                                       Disconnect_Ultimatum_provider_initiated);
+ 			WLog_WARN(TAG, "disconnect provider ultimatum sent to peer, closing connection");

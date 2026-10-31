@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Fri, 23 Oct 2026 20:30:00 +0200
+Subject: [PATCH] [winpr,wlog] make WITH_SYSTEMD reach config.h (journald
+ appender)
+
+With WITH_SYSTEMD, winpr/libwinpr/utils/CMakeLists.txt compiles
+JournaldAppender.c and links libsystemd, and sets WINPR_HAVE_JOURNALD_H
+for winpr/config.h. That header is configured in winpr/include, which
+winpr/CMakeLists.txt adds after libwinpr: a sibling directory. A plain
+variable set in libwinpr/utils lives in that directory's scope only, so
+config.h always says "#undef WINPR_HAVE_JOURNALD_H". wlog.c and
+Appender.c test that macro, so WLOG_APPENDER=JOURNALD is silently
+ignored and the console appender stays, although the appender is
+compiled in.
+
+Set the variable as an internal cache entry, which every later scope
+reads, and remove that entry when WITH_SYSTEMD is off, so a reconfigure
+without systemd does not keep a stale define.
+---
+ winpr/libwinpr/utils/CMakeLists.txt | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/winpr/libwinpr/utils/CMakeLists.txt b/winpr/libwinpr/utils/CMakeLists.txt
+index b42bf43..0cc8427 100644
+--- a/winpr/libwinpr/utils/CMakeLists.txt
++++ b/winpr/libwinpr/utils/CMakeLists.txt
+@@ -119,12 +119,14 @@ option(WITH_SYSTEMD "allows to export wLog to systemd journal" ${libsystemd_FOUN
+ if(WITH_SYSTEMD)
+   find_package(libsystemd REQUIRED)
+   winpr_pc_add_requires_private("libsystemd")
+-  set(WINPR_HAVE_JOURNALD_H TRUE)
++  # config.h is configured in winpr/include, outside this directory's scope: a plain
++  # variable set here never reaches it, and wlog.c would not offer the appender
++  set(WINPR_HAVE_JOURNALD_H TRUE CACHE INTERNAL "WLog journald appender")
+   set(JOURNALD_SRCS wlog/JournaldAppender.c wlog/JournaldAppender.h)
+   winpr_system_include_directory_add(${LIBSYSTEMD_INCLUDE_DIR})
+   winpr_library_add_private(${LIBSYSTEMD_LIBRARY})
+ else()
+-  unset(WINPR_HAVE_JOURNALD_H)
++  unset(WINPR_HAVE_JOURNALD_H CACHE)
+ endif()
+ 
+ set(WLOG_SRCS

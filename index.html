@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>fast-rdp-server APT repository</title></head>
+<body>
+<h1>fast-rdp-server APT repository</h1>
+<p>Setup: see docs/packaging.md in the
+<a href="https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/packaging.md">source repository</a>.</p>
+<pre>
+# key + APT source (stable channel of this release) in one package:
+curl -fsSLO https://linuxrrze.github.io/fast-rdp-server/fastrdp-archive-keyring.deb
+sudo apt install ./fastrdp-archive-keyring.deb &amp;&amp; sudo apt update
+</pre>
+<p>Or by hand:</p>
+<pre>
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/fast-rdp-server.asc https://linuxrrze.github.io/fast-rdp-server/fast-rdp-server-archive-keyring.asc
+# /etc/apt/sources.list.d/fast-rdp-server.sources
+Types: deb
+URIs: https://linuxrrze.github.io/fast-rdp-server
+Suites: &lt;codename&gt;-stable
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/fast-rdp-server.asc
+</pre>
+<h2>Suites</h2>
+<ul>
+<li><code>resolute-stable</code>: fast-rdp-server for Ubuntu 26.04 (resolute), stable channel (release tags)</li>
+<li><code>resolute-testing</code>: fast-rdp-server for Ubuntu 26.04 (resolute), testing channel (main branch)</li>
+<li><code>trixie-stable</code>: fast-rdp-server for Debian 13 (trixie), stable channel (release tags)</li>
+<li><code>trixie-testing</code>: fast-rdp-server for Debian 13 (trixie), testing channel (main branch)</li>
+</ul>
+<p>Corresponding source of the vendored FreeRDP and xrdp packages (patched upstream
+source, packaging, build scripts, pristine upstream releases, patches):
+<a href="sources/">sources/</a>. Licensing: docs/licensing.md in the source repository.</p>
+<p>Signing key: <a href="fast-rdp-server-archive-keyring.asc">fast-rdp-server-archive-keyring.asc</a>
+(fingerprint <code>D226CF9C3D771BBE86746D88F7930BCDA7F642DD</code>)</p>
+</body></html>

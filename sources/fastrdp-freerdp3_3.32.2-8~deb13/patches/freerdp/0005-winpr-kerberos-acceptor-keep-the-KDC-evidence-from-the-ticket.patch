@@ -1,0 +1,478 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Thu, 22 Oct 2026 10:00:00 +0200
+Subject: [PATCH] [winpr,kerberos] acceptor: keep the KDC's evidence from the
+ accepted ticket
+
+A server that accepts a Kerberos service ticket cannot tell how the
+client authenticated to the KDC: krb5_rd_req() decrypted the ticket and
+WinPR threw it away. The KDC says so in the ticket's authorization data:
+
+- MIT krb5 and FreeIPA put authentication indicators ("pkinit",
+  "passkey", "otp", "hardened", ...) into a CAMMAC (RFC 7751,
+  AD-AUTHENTICATION-INDICATOR inside AD-CAMMAC inside AD-IF-RELEVANT);
+- Active Directory, Samba and FreeIPA put the client's groups into the
+  PAC ([MS-PAC] PAC_LOGON_INFO). AD adds S-1-18-3 (PKINIT with
+  freshness), S-1-18-4 (key trust, Windows Hello for Business) and
+  Authentication Mechanism Assurance groups for certificate logons.
+
+Keep them on the acceptor context and offer them as two new context
+attributes. Only what the KDC signed for this service counts, because a
+client may add authorization data to its TGS-REQ and KDCs copy it into
+the ticket: indicators only from a CAMMAC whose svc-verifier checks out,
+the PAC only when its server signature does (krb5_pac_verify()), both
+with the key that decrypted the ticket (the user-to-user key, or a
+keytab key of the ticket's encryption type). Extraction never fails the
+authentication; without verified evidence the attributes are empty.
+MIT krb5 only; with Heimdal both attributes stay empty.
+
+  SECPKG_ATTR_KERBEROS_AUTH_INDICATORS (1900)
+  SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO  (1901)
+
+pBuffer is a caller-allocated SecBuffer (no FreeContextBuffer needed):
+indicators as NUL-terminated printable strings (at most 16 of 64
+bytes), the PAC_LOGON_INFO buffer as is (at most 64 KiB, NDR, to be
+parsed by the caller). Ids 1900-1999 are fastrdp's; not upstream.
+---
+ winpr/include/winpr/sspi.h              |  12 ++++++++++++
+ winpr/libwinpr/sspi/Kerberos/kerberos.c | 349 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 360 insertions(+), 1 deletion(-)
+
+diff --git a/winpr/include/winpr/sspi.h b/winpr/include/winpr/sspi.h
+--- a/winpr/include/winpr/sspi.h
++++ b/winpr/include/winpr/sspi.h
+@@ -1501,6 +1501,18 @@
+ 
+ #define SECPKG_CRED_ATTR_TICKET_LOGON 1200
+ 
++/* fastrdp (patches/freerdp/0005, not upstream): what the KDC asserted about the client in
++ * the service ticket a Kerberos acceptor accepted, verified with the service key.
++ * pBuffer is a caller-allocated SecBuffer: pvBuffer, capacity in cbBuffer. On SEC_E_OK
++ * cbBuffer is the length (0: none); on SEC_E_BUFFER_TOO_SMALL the length needed.
++ *   AUTH_INDICATORS: authentication indicators (MIT krb5/FreeIPA CAMMAC with a valid
++ *     svc-verifier), each a NUL-terminated printable ASCII string
++ *   PAC_LOGON_INFO: the PAC_LOGON_INFO buffer (KERB_VALIDATION_INFO, NDR, [MS-PAC]
++ *     2.5) of a PAC whose server signature verified
++ * Ids 1900-1999 are left to fastrdp. */
++#define SECPKG_ATTR_KERBEROS_AUTH_INDICATORS 1900
++#define SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO 1901
++
+ 	typedef struct
+ 	{
+ 		char User[256 + 1];
+diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+--- a/winpr/libwinpr/sspi/Kerberos/kerberos.c
++++ b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+@@ -122,6 +122,11 @@
+ 	struct krb5glue_keyset keyset;
+ 	BOOL u2u;
+ 	char* targetHost;
++	/* acceptor: what the KDC asserted in the accepted ticket (kerberos_keep_evidence()) */
++	BYTE* authIndicators; /* NUL-terminated strings, one after the other */
++	size_t authIndicatorsLength;
++	BYTE* pacLogonInfo; /* PAC_LOGON_INFO (KERB_VALIDATION_INFO, NDR) */
++	size_t pacLogonInfoLength;
+ };
+ 
+ static const WinPrAsn1_OID kerberos_OID = { 9, (void*)"\x2a\x86\x48\x86\xf7\x12\x01\x02\x02" };
+@@ -202,6 +207,10 @@
+ 
+ 	free(ctx->targetHost);
+ 	ctx->targetHost = nullptr;
++	free(ctx->authIndicators);
++	ctx->authIndicators = nullptr;
++	free(ctx->pacLogonInfo);
++	ctx->pacLogonInfo = nullptr;
+ 
+ 	if (ctx->credentials)
+ 	{
+@@ -1595,6 +1604,296 @@
+ }
+ #endif
+ 
++#if defined(WITH_KRB5_MIT)
++/*
++ * What the KDC asserted about the client in an accepted service ticket, kept for
++ * SECPKG_ATTR_KERBEROS_AUTH_INDICATORS and SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO. Only
++ * authorization data the KDC signed for this service counts: a client can put arbitrary
++ * authorization data into a TGS-REQ (enc-authorization-data), and KDCs copy it into the
++ * ticket. So authentication indicators are taken only from a CAMMAC whose svc-verifier
++ * checks out with the key that decrypted the ticket (RFC 7751; MIT krb5 >= 1.16 issues
++ * them), and the PAC only when its server signature does (krb5_pac_verify()).
++ */
++#define KERBEROS_EVIDENCE_MAX_KEYS 32
++#define KERBEROS_EVIDENCE_MAX_INDICATORS 16
++#define KERBEROS_EVIDENCE_MAX_INDICATOR_LEN 64
++#define KERBEROS_EVIDENCE_MAX_PAC_LOGON_INFO (64 * 1024)
++
++typedef struct
++{
++	krb5_keyblock* keys[KERBEROS_EVIDENCE_MAX_KEYS];
++	size_t count;
++} kerberos_evidence_keys;
++
++static void kerberos_evidence_keys_free(krb5_context ctx, kerberos_evidence_keys* keys)
++{
++	for (size_t i = 0; i < keys->count; i++)
++		krb5_free_keyblock(ctx, keys->keys[i]);
++	keys->count = 0;
++}
++
++/* The keys that may have encrypted the ticket: the user-to-user key, or the keytab
++ * entries of the ticket's encryption type (any of them: krb5_rd_req() does not say which
++ * one decrypted it, and every key in the keytab is a secret shared with the KDC only). */
++static void kerberos_evidence_keys_get(KRB_CREDENTIALS* credentials, const krb5_ticket* ticket,
++                                       krb5_keyblock* u2u_key, kerberos_evidence_keys* keys)
++{
++	krb5_kt_cursor cur = WINPR_C_ARRAY_INIT;
++	krb5_keytab_entry entry = WINPR_C_ARRAY_INIT;
++
++	if (u2u_key)
++	{
++		if (krb5_copy_keyblock(credentials->ctx, u2u_key, &keys->keys[0]) == 0)
++			keys->count = 1;
++		return;
++	}
++	if (!credentials->keytab ||
++	    krb5_kt_start_seq_get(credentials->ctx, credentials->keytab, &cur) != 0)
++		return;
++	while ((keys->count < KERBEROS_EVIDENCE_MAX_KEYS) &&
++	       krb5_kt_next_entry(credentials->ctx, credentials->keytab, &entry, &cur) == 0)
++	{
++		if ((entry.key.enctype == ticket->enc_part.enctype) &&
++		    krb5_copy_keyblock(credentials->ctx, &entry.key, &keys->keys[keys->count]) == 0)
++			keys->count++;
++		(void)krb5glue_free_keytab_entry_contents(credentials->ctx, &entry);
++		memset(&entry, 0, sizeof(entry));
++	}
++	(void)krb5_kt_end_seq_get(credentials->ctx, credentials->keytab, &cur);
++}
++
++/* Checksum ::= SEQUENCE { cksumtype [0] Int32, checksum [1] OCTET STRING } inside
++ * Verifier-MAC ::= SEQUENCE { identifier [0] OPTIONAL, kvno [1] OPTIONAL,
++ * enctype [2] OPTIONAL, mac [3] Checksum } (RFC 7751 2). */
++static BOOL kerberos_cammac_read_mac(WinPrAsn1Decoder* verifier, krb5_checksum* cksum)
++{
++	WinPrAsn1Decoder seq = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder field = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder ck = WinPrAsn1Decoder_init();
++	WinPrAsn1_tagId id = 0;
++	BOOL error = FALSE;
++	WinPrAsn1_INTEGER type = 0;
++	WinPrAsn1_OctetString value = WINPR_C_ARRAY_INIT;
++
++	if (!WinPrAsn1DecReadSequence(verifier, &seq))
++		return FALSE;
++	do
++	{
++		if (!WinPrAsn1DecReadContextualTag(&seq, &id, &field))
++			return FALSE;
++	} while (id != 3);
++	if (!WinPrAsn1DecReadSequence(&field, &ck) ||
++	    !WinPrAsn1DecReadContextualInteger(&ck, 0, &error, &type) ||
++	    !WinPrAsn1DecReadContextualOctetString(&ck, 1, &error, &value, FALSE) ||
++	    (value.len > UINT32_MAX))
++		return FALSE;
++	cksum->checksum_type = type;
++	cksum->length = (unsigned int)value.len;
++	cksum->contents = value.data;
++	return TRUE;
++}
++
++/* AD-AUTHENTICATION-INDICATOR ::= SEQUENCE OF UTF8String: append the printable ones to s
++ * as NUL-terminated strings. */
++static void kerberos_cammac_indicators(const BYTE* data, size_t len, wStream* s, size_t* count)
++{
++	WinPrAsn1Decoder dec = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder seq = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder str = WinPrAsn1Decoder_init();
++	WinPrAsn1_tag tag = 0;
++	size_t slen = 0;
++
++	WinPrAsn1Decoder_InitMem(&dec, WINPR_ASN1_DER, data, len);
++	if (!WinPrAsn1DecReadSequence(&dec, &seq))
++		return;
++	while (WinPrAsn1DecReadTagLenValue(&seq, &tag, &slen, &str))
++	{
++		const wStream v = WinPrAsn1DecGetStream(&str);
++		const char* ind = (const char*)Stream_ConstPointer(&v);
++		BOOL printable = (tag == 0x0C) && (slen > 0) &&
++		                 (slen <= KERBEROS_EVIDENCE_MAX_INDICATOR_LEN);
++		for (size_t i = 0; printable && (i < slen); i++)
++			printable = (ind[i] > 0x20) && (ind[i] < 0x7f);
++		if (!printable)
++		{
++			WLog_WARN(TAG, "ignoring an authentication indicator that is not a short "
++			               "printable string");
++			continue;
++		}
++		if (*count >= KERBEROS_EVIDENCE_MAX_INDICATORS)
++		{
++			WLog_WARN(TAG, "more than %d authentication indicators, ignoring the rest",
++			          KERBEROS_EVIDENCE_MAX_INDICATORS);
++			return;
++		}
++		if (!Stream_EnsureRemainingCapacity(s, slen + 1))
++			return;
++		Stream_Write(s, ind, slen);
++		Stream_Write_UINT8(s, 0);
++		(*count)++;
++	}
++}
++
++/* CAMMAC ::= SEQUENCE { elements [0] AuthorizationData, kdc-verifier [1] OPTIONAL,
++ * svc-verifier [2] Verifier-MAC OPTIONAL, other-verifiers [3] OPTIONAL } (RFC 7751 2).
++ * The indicators of a CAMMAC whose svc-verifier one of keys verifies. */
++static void kerberos_cammac(krb5_context ctx, const krb5_authdata* ad,
++                            const kerberos_evidence_keys* keys, wStream* s, size_t* count)
++{
++	WinPrAsn1Decoder dec = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder seq = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder elements = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder field = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder list = WinPrAsn1Decoder_init();
++	WinPrAsn1Decoder item = WinPrAsn1Decoder_init();
++	WinPrAsn1_tagId id = 0;
++	krb5_checksum cksum = WINPR_C_ARRAY_INIT;
++	BOOL have_mac = FALSE;
++	krb5_boolean valid = FALSE;
++
++	WinPrAsn1Decoder_InitMem(&dec, WINPR_ASN1_DER, ad->contents, ad->length);
++	if (!WinPrAsn1DecReadSequence(&dec, &seq) ||
++	    !WinPrAsn1DecReadContextualTag(&seq, &id, &elements) || (id != 0))
++		return;
++	while (!have_mac && WinPrAsn1DecReadContextualTag(&seq, &id, &field))
++	{
++		if (id == 2)
++			have_mac = kerberos_cammac_read_mac(&field, &cksum);
++	}
++	if (!have_mac)
++		return;
++
++	/* the MAC is over the DER encoding of elements, the content of [0] */
++	const wStream der = WinPrAsn1DecGetStream(&elements);
++	const krb5_data der_elements = { .magic = KV5M_DATA,
++		                             .length = (unsigned int)Stream_GetRemainingLength(&der),
++		                             .data = (char*)Stream_ConstPointer(&der) };
++	for (size_t i = 0; !valid && (i < keys->count); i++)
++	{
++		if (krb5_c_verify_checksum(ctx, keys->keys[i], KRB5_KEYUSAGE_CAMMAC, &der_elements,
++		                           &cksum, &valid) != 0)
++			valid = FALSE;
++	}
++	if (!valid)
++	{
++		WLog_WARN(TAG, "ignoring a CAMMAC in the ticket whose svc-verifier does not verify");
++		return;
++	}
++
++	/* AuthorizationData ::= SEQUENCE OF SEQUENCE { ad-type [0] Int32, ad-data [1] OCTET
++	 * STRING } */
++	if (!WinPrAsn1DecReadSequence(&elements, &list))
++		return;
++	while (WinPrAsn1DecReadSequence(&list, &item))
++	{
++		BOOL error = FALSE;
++		WinPrAsn1_INTEGER type = 0;
++		WinPrAsn1_OctetString data = WINPR_C_ARRAY_INIT;
++		if (!WinPrAsn1DecReadContextualInteger(&item, 0, &error, &type) ||
++		    !WinPrAsn1DecReadContextualOctetString(&item, 1, &error, &data, FALSE))
++			return;
++		if (type == KRB5_AUTHDATA_AUTH_INDICATOR)
++			kerberos_cammac_indicators(data.data, data.len, s, count);
++	}
++}
++
++static BOOL kerberos_evidence_store(BYTE** dst, size_t* dstlen, const void* src, size_t len)
++{
++	free(*dst);
++	*dst = nullptr;
++	*dstlen = 0;
++	if (len == 0)
++		return TRUE;
++	*dst = malloc(len);
++	if (!*dst)
++		return FALSE;
++	memcpy(*dst, src, len);
++	*dstlen = len;
++	return TRUE;
++}
++
++/* The verified authentication indicators and PAC logon information of ticket onto
++ * context. Never fails the authentication: without verified evidence the attributes are
++ * empty and the caller treats the login as before. */
++static void kerberos_keep_evidence(KRB_CONTEXT* context, KRB_CREDENTIALS* credentials,
++                                   const krb5_ticket* ticket, krb5_keyblock* u2u_key)
++{
++	krb5_context ctx = credentials->ctx;
++	kerberos_evidence_keys keys = WINPR_C_ARRAY_INIT;
++	krb5_authdata** found = nullptr;
++	krb5_pac pac = nullptr;
++	krb5_data logon_info = WINPR_C_ARRAY_INIT;
++	wStream* s = nullptr;
++	size_t count = 0;
++
++	if (!ticket || !ticket->enc_part2 || !ticket->enc_part2->authorization_data)
++		return;
++	krb5_authdata* const* authdata = ticket->enc_part2->authorization_data;
++
++	kerberos_evidence_keys_get(credentials, ticket, u2u_key, &keys);
++	if (keys.count == 0)
++	{
++		WLog_WARN(TAG, "no key to verify the ticket's authorization data with");
++		return;
++	}
++
++	/* authentication indicators (MIT krb5, FreeIPA): CAMMACs, inside AD-IF-RELEVANT */
++	s = Stream_New(nullptr, 256);
++	if (s && krb5_find_authdata(ctx, authdata, nullptr, KRB5_AUTHDATA_CAMMAC, &found) == 0 &&
++	    found)
++	{
++		for (size_t i = 0; found[i]; i++)
++			kerberos_cammac(ctx, found[i], &keys, s, &count);
++	}
++	if (s && !kerberos_evidence_store(&context->authIndicators, &context->authIndicatorsLength,
++	                                  Stream_Buffer(s), Stream_GetPosition(s)))
++		WLog_WARN(TAG, "out of memory keeping the ticket's authentication indicators");
++	Stream_Free(s, TRUE);
++	krb5_free_authdata(ctx, found);
++	found = nullptr;
++
++	/* PAC (Active Directory, Samba, FreeIPA): exactly one, with a valid server signature */
++	if (krb5_find_authdata(ctx, authdata, nullptr, KRB5_AUTHDATA_WIN2K_PAC, &found) != 0 ||
++	    !found)
++		goto out;
++	if (found[1])
++	{
++		WLog_WARN(TAG, "ignoring the PAC: the ticket has more than one");
++		goto out;
++	}
++	if (krb5_pac_parse(ctx, found[0]->contents, found[0]->length, &pac) != 0)
++	{
++		WLog_WARN(TAG, "ignoring a PAC that does not parse");
++		goto out;
++	}
++	{
++		BOOL verified = FALSE;
++		for (size_t i = 0; !verified && (i < keys.count); i++)
++			verified = krb5_pac_verify(ctx, pac, 0, nullptr, keys.keys[i], nullptr) == 0;
++		if (!verified)
++		{
++			WLog_WARN(TAG, "ignoring a PAC whose server signature does not verify");
++			goto out;
++		}
++	}
++	if (krb5_pac_get_buffer(ctx, pac, KRB5_PAC_LOGON_INFO, &logon_info) != 0)
++		goto out; /* e.g. MIT's minimal PAC: signatures and client info only */
++	if (logon_info.length > KERBEROS_EVIDENCE_MAX_PAC_LOGON_INFO)
++		WLog_WARN(TAG, "ignoring PAC logon information of %u bytes (at most %d)",
++		          logon_info.length, KERBEROS_EVIDENCE_MAX_PAC_LOGON_INFO);
++	else if (!kerberos_evidence_store(&context->pacLogonInfo, &context->pacLogonInfoLength,
++	                                  logon_info.data, logon_info.length))
++		WLog_WARN(TAG, "out of memory keeping the PAC logon information");
++
++out:
++	krb5_free_data_contents(ctx, &logon_info);
++	if (pac)
++		krb5_pac_free(ctx, pac);
++	krb5_free_authdata(ctx, found);
++	kerberos_evidence_keys_free(ctx, &keys);
++}
++#endif /* WITH_KRB5_MIT */
++
+ WINPR_ATTR_NODISCARD
+ static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
+     WINPR_ATTR_UNUSED PCredHandle phCredential, WINPR_ATTR_UNUSED PCtxtHandle phContext,
+@@ -1617,6 +1916,8 @@
+ 	char* target = nullptr;
+ 	krb5_keytab_entry entry = WINPR_C_ARRAY_INIT;
+ 	krb5_creds creds = WINPR_C_ARRAY_INIT;
++	krb5_ticket* ticket = nullptr;
++	krb5_keyblock* u2u_key = nullptr;
+ 
+ 	/* behave like windows SSPIs that don't want empty context */
+ 	if (phContext && !phContext->dwLower && !phContext->dwUpper)
+@@ -1681,8 +1982,15 @@
+ 	}
+ 	else if (context->state == KERBEROS_STATE_AP_REQ && tok_id == TOK_ID_AP_REQ)
+ 	{
++#if defined(WITH_KRB5_MIT)
++		/* user-to-user: the ticket is encrypted with the session key of our TGT, set as
++		 * the user-user key above; krb5_rd_req() replaces it with the ticket's session key */
++		if (context->u2u && context->auth_ctx &&
++		    krb5_auth_con_getkey(credentials->ctx, context->auth_ctx, &u2u_key) != 0)
++			u2u_key = nullptr;
++#endif
+ 		if (krb_log_exec(krb5_rd_req, credentials->ctx, &context->auth_ctx, &input_token, nullptr,
+-		                 credentials->keytab, &ap_flags, nullptr))
++		                 credentials->keytab, &ap_flags, &ticket))
+ 			goto cleanup;
+ 
+ 		if (krb_log_exec(krb5_auth_con_setflags, credentials->ctx, context->auth_ctx,
+@@ -1732,6 +2040,9 @@
+ 		                 &context->keyset))
+ 			goto cleanup;
+ 
++#if defined(WITH_KRB5_MIT)
++		kerberos_keep_evidence(context, credentials, ticket, u2u_key);
++#endif
+ 		context->state = KERBEROS_STATE_FINAL;
+ 	}
+ 	else
+@@ -1745,6 +2056,10 @@
+ 
+ cleanup:
+ 	free(target);
++	if (ticket)
++		krb5_free_ticket(credentials->ctx, ticket);
++	if (u2u_key)
++		krb5_free_keyblock(credentials->ctx, u2u_key);
+ 	if (output_token.data)
+ 		krb5glue_free_data_contents(credentials->ctx, &output_token);
+ 	if (entry.principal)
+@@ -2106,6 +2421,30 @@
+ 	return ret;
+ }
+ 
++/* SECPKG_ATTR_KERBEROS_AUTH_INDICATORS, SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO: copy into
++ * the caller's SecBuffer (pvBuffer, capacity cbBuffer); cbBuffer is set to the length,
++ * 0 if the ticket carried none. Acceptor contexts only, after the AP-REQ. */
++WINPR_ATTR_NODISCARD
++static SECURITY_STATUS kerberos_ATTR_TICKET_EVIDENCE(const KRB_CONTEXT* context, const BYTE* data,
++                                                     size_t length, SecBuffer* out)
++{
++	if (!context->acceptor || (context->state != KERBEROS_STATE_FINAL))
++		return SEC_E_INVALID_HANDLE;
++	if (length > out->cbBuffer)
++	{
++		out->cbBuffer = (ULONG)length; /* at most 64 KiB, kerberos_keep_evidence() */
++		return SEC_E_BUFFER_TOO_SMALL;
++	}
++	if (length > 0)
++	{
++		if (!out->pvBuffer)
++			return SEC_E_INVALID_PARAMETER;
++		memcpy(out->pvBuffer, data, length);
++	}
++	out->cbBuffer = (ULONG)length;
++	return SEC_E_OK;
++}
++
+ #endif /* WITH_KRB5 */
+ 
+ WINPR_ATTR_NODISCARD
+@@ -2137,6 +2476,14 @@
+ 		case SECPKG_CRED_ATTR_TICKET_LOGON:
+ 			return kerberos_ATTR_TICKET_LOGON(context, credentials, (KERB_TICKET_LOGON*)pBuffer);
+ 
++		case SECPKG_ATTR_KERBEROS_AUTH_INDICATORS:
++			return kerberos_ATTR_TICKET_EVIDENCE(context, context->authIndicators,
++			                                     context->authIndicatorsLength, (SecBuffer*)pBuffer);
++
++		case SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO:
++			return kerberos_ATTR_TICKET_EVIDENCE(context, context->pacLogonInfo,
++			                                     context->pacLogonInfoLength, (SecBuffer*)pBuffer);
++
+ 		default:
+ 			WLog_ERR(TAG, "TODO: QueryContextAttributes implement ulAttribute=0x%08" PRIx32,
+ 			         ulAttribute);

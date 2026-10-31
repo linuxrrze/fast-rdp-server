@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Thu, 22 Oct 2026 16:47:32 +0200
+Subject: [PATCH] [core,peer] input during PostConnect: no second PostConnect
+
+The server runs the peer's PostConnect callback once the connection
+is active ([MS-RDPBCGR] 1.3.1.1): after the client's Font List PDU, in
+rdp_peer_handle_state_active(), with client->connected still FALSE
+until the callback returns. The client may send input from then on
+(1.3: input after the Confirm Active PDU).
+
+A callback that takes long (a login screen, an authorisation that
+waits for the user, a broker that asks which session to start) may
+want to read that input itself: GetEventHandles() and
+CheckFileDescriptor() from inside PostConnect. Every PDU read there
+lands in rdp_peer_handle_state_active() again, finds connected still
+FALSE and calls PostConnect a second time, nested in the first.
+
+Remember in rdpRdp that PostConnect is running and treat a PDU read
+meanwhile as input of the active connection (STATE_RUN_ACTIVE, as
+after PostConnect): input callbacks, channel data, Refresh Rect and
+the like. Activate still runs once, after PostConnect returned.
+freerdp_peer_in_post_connect() tells the callback that this FreeRDP
+handles it (FREERDP_PEER_IN_POST_CONNECT marks the function in
+peer.h). Nothing changes for callbacks that do not read the
+connection.
+
+A callback may also start a reactivation (Deactivate All, Demand
+Active) and read the client's answer the same way. Its Font List PDU
+brings the state back to CONNECTION_STATE_ACTIVE, and the state
+machine reruns on the same stream, which that PDU has consumed: the
+active state's read of the empty stream failed (a tpkt warning and a
+failed transport_check_fds). During PostConnect that rerun now ends
+without a read.
+---
+ include/freerdp/peer.h | 16 ++++++++++++++++
+ libfreerdp/core/peer.c | 28 +++++++++++++++++++++++++++-
+ libfreerdp/core/rdp.h  |  1 +
+ 3 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/include/freerdp/peer.h b/include/freerdp/peer.h
+index 6144e70..2603283 100644
+--- a/include/freerdp/peer.h
++++ b/include/freerdp/peer.h
+@@ -243,6 +243,22 @@ extern "C"
+ 	FREERDP_API BOOL freerdp_peer_set_local_and_hostname(freerdp_peer* client,
+ 	                                                     const struct sockaddr_storage* peer_addr);
+
++/** freerdp_peer_in_post_connect() exists (fastrdp patch, see below) */
++#define FREERDP_PEER_IN_POST_CONNECT 1
++
++	/**
++	 * @brief TRUE while the peer's PostConnect callback runs.
++	 *
++	 * PostConnect runs once the connection is active ([MS-RDPBCGR] 1.3.1.1), and the
++	 * client may send input from then on. A callback that takes long (a login screen, an
++	 * authorisation that waits for the user) can read that input itself with
++	 * GetEventHandles() and CheckFileDescriptor() while this returns TRUE: the PDUs are
++	 * handled as in the active state (input callbacks, channel data) and do not run
++	 * PostConnect again. Activate runs only after PostConnect returned.
++	 */
++	WINPR_ATTR_NODISCARD
++	FREERDP_API BOOL freerdp_peer_in_post_connect(const freerdp_peer* client);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/libfreerdp/core/peer.c b/libfreerdp/core/peer.c
+index d214e28..94db4aa 100644
+--- a/libfreerdp/core/peer.c
++++ b/libfreerdp/core/peer.c
+@@ -744,13 +744,24 @@ static state_run_t rdp_peer_handle_state_active(freerdp_peer* client)
+ 	WINPR_ASSERT(client);
+ 	WINPR_ASSERT(client->context);
+
++	rdpRdp* rdp = client->context->rdp;
++	WINPR_ASSERT(rdp);
++
++	/* PostConnect may read the connection itself (freerdp_peer_in_post_connect()): a PDU
++	 * that arrives meanwhile is input of the active connection, not a reason to run
++	 * PostConnect a second time. */
++	if (rdp->in_post_connect)
++		return STATE_RUN_ACTIVE;
++
+ 	if (!client->connected)
+ 	{
+ 		/**
+ 		 * PostConnect should only be called once and should not
+ 		 * be called after a reactivation sequence.
+ 		 */
++		rdp->in_post_connect = TRUE;
+ 		IFCALLRET(client->PostConnect, client->connected, client);
++		rdp->in_post_connect = FALSE;
+ 	}
+ 	if (!client->connected)
+ 	{
+@@ -1152,7 +1163,15 @@ static state_run_t peer_recv_callback_internal(WINPR_ATTR_UNUSED rdpTransport* t
+ 		case CONNECTION_STATE_ACTIVE:
+ 			ret = rdp_peer_handle_state_active(client);
+ 			if (ret >= STATE_RUN_ACTIVE)
+-				ret = peer_recv_pdu(client, s);
++			{
++				/* A reactivation that PostConnect started and read: its Font List PDU,
++				 * already handled, brought the state here and this is the rerun of the
++				 * same, now empty stream. Nothing to read. */
++				if (rdp->in_post_connect && (Stream_GetRemainingLength(s) == 0))
++					ret = STATE_RUN_SUCCESS;
++				else
++					ret = peer_recv_pdu(client, s);
++			}
+ 			break;
+
+ 			/* States that must not happen in server state machine */
+@@ -1459,6 +1478,13 @@ const char* freerdp_peer_os_minor_type_string(freerdp_peer* client)
+ 	return os_minor_type_to_string((UINT16)osMinorType);
+ }
+
++BOOL freerdp_peer_in_post_connect(const freerdp_peer* client)
++{
++	if (!client || !client->context || !client->context->rdp)
++		return FALSE;
++	return client->context->rdp->in_post_connect;
++}
++
+ freerdp_peer* freerdp_peer_new(int sockfd)
+ {
+ 	freerdp_peer* client = (freerdp_peer*)calloc(1, sizeof(freerdp_peer));
+diff --git a/libfreerdp/core/rdp.h b/libfreerdp/core/rdp.h
+index 654f110..d3d1cec 100644
+--- a/libfreerdp/core/rdp.h
++++ b/libfreerdp/core/rdp.h
+@@ -202,6 +202,7 @@ struct rdp_rdp
+
+ 	BOOL monitor_layout_pdu;
+ 	BOOL was_deactivated;
++	BOOL in_post_connect; /* server: freerdp_peer::PostConnect is running */
+ 	UINT32 deactivated_width;
+ 	UINT32 deactivated_height;
+

@@ -1,0 +1,5 @@
+f33c084996bb95d6e71f5a54ddd026fecbc94c68a8c9c09d0d5fc39f6dc266ba  ./fastrdp-xrdp_0.10.6.1+xorgxrdp0.10.5-2~ubuntu26.04.source.tar.xz
+038fd727e18ddea2936b7571b2844acfc4fcf1789b8cc4bd8805984e0d4674bf  ./patches/xrdp/0001-Add-FFmpeg-H.264-encoder-VA-API-NVENC-QSV.patch
+fc10699b4dc39a1917c3838ef5957b031ceef8ab6d54fa7b276a568e1a7bb1d7  ./patches/xrdp/series
+a5d03435f0ef48bf3d5010e63d9264f2334e7063cba3ecd8d4c0a15616a4f712  ./upstream/xorgxrdp-0.10.5.tar.gz
+2f7beb5a3b2529c8d72dc0df9b8cdca31ab0e0c14d1e3421210f5e6ec0ab3b75  ./upstream/xrdp-0.10.6.1.tar.gz
