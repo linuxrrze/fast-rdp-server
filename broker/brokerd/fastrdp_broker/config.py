@@ -13,6 +13,8 @@ from pathlib import Path
 from . import conntype
 
 DEFAULT_CONFIG_PATH = Path("/etc/fastrdp/broker.toml")
+KRB5_CONF = Path("/etc/krb5.conf")
+SSSD_CONF = Path("/etc/sssd/sssd.conf")
 
 
 class ConfigError(Exception):
@@ -245,6 +247,8 @@ class Config:
     default_desktop: str
     default_geometry: str
     group_defaults: dict[str, str]
+    # [auth] keys not in the file, taken from the host (load()): key -> (value, source)
+    detected: dict[str, tuple[list[str], str]] = field(default_factory=dict)
 
 
 VALID_BACKENDS = ("xrdp", "gnome", "plasma")
@@ -338,9 +342,109 @@ def _parse_geometry(value: str) -> str:
     return value.lower()
 
 
-def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+def load(path: Path = DEFAULT_CONFIG_PATH, *, krb5_conf: Path | None = None,
+         sssd_conf: Path = SSSD_CONF) -> Config:
+    """broker.toml; [auth] realms and domains, when absent, from the host: the default
+    realm of krb5.conf and the domains of sssd.conf (the packaged default leaves them out)."""
     with open(path, "rb") as fh:
-        return parse(tomllib.load(fh))
+        raw = tomllib.load(fh)
+    auth = raw.get("auth", {})
+    detected: dict[str, tuple[list[str], str]] = {}
+    if isinstance(auth, dict) and "realms" not in auth:
+        krb5 = krb5_conf or _krb5_conf_path()
+        realm = krb5_default_realm(krb5)
+        detected["realms"] = ([realm] if realm else [], f"{krb5} default_realm")
+    if isinstance(auth, dict) and "domains" not in auth:
+        domains = [d for d in sssd_domains(sssd_conf) if DOMAIN_NAME.fullmatch(d)]
+        detected["domains"] = (domains, f"{sssd_conf} [sssd] domains")
+    if detected:
+        raw = dict(raw)
+        raw["auth"] = {**auth, **{k: v for k, (v, _) in detected.items()}}
+    cfg = parse(raw)
+    cfg.detected = {k: (getattr(cfg.auth, k), src) for k, (_, src) in detected.items()}
+    return cfg
+
+
+def _krb5_conf_path() -> Path:
+    """The first file of KRB5_CONFIG (colon-separated) that exists, else /etc/krb5.conf."""
+    for p in os.environ.get("KRB5_CONFIG", "").split(":"):
+        if p and os.path.exists(p):
+            return Path(p)
+    return KRB5_CONF
+
+
+# includedir: MIT krb5 reads files named [A-Za-z0-9_-]+ or ending in .conf
+_KRB5_INCLUDEDIR_NAME = re.compile(r"[A-Za-z0-9_-]+|.*\.conf")
+
+
+def krb5_default_realm(path: Path, _depth: int = 0) -> str | None:
+    """[libdefaults] default_realm of a krb5.conf, with include/includedir followed in
+    place; the first value wins (MIT profile lookup). None if unset or unreadable."""
+    if _depth > 8:
+        return None
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    section = None
+    for line in lines:
+        line = line.strip()
+        if not line or line[0] in "#;":
+            continue
+        word, _, arg = line.partition(" ")
+        arg = arg.strip()
+        if word == "include" and arg:
+            found = krb5_default_realm(Path(arg), _depth + 1)
+        elif word == "includedir" and arg:
+            found = None
+            try:
+                names = sorted(os.listdir(arg))
+            except OSError:
+                names = []
+            for name in names:
+                if _KRB5_INCLUDEDIR_NAME.fullmatch(name) and os.path.isfile(os.path.join(arg, name)):
+                    found = krb5_default_realm(Path(arg, name), _depth + 1)
+                    if found:
+                        break
+        elif line.startswith("["):
+            section = line.strip("[]* \t").lower()
+            continue
+        else:
+            key, eq, value = line.partition("=")
+            if eq and section == "libdefaults" and key.strip() == "default_realm":
+                value = value.strip().strip('"')
+                if value:
+                    return value.upper()
+            continue
+        if found:
+            return found
+    return None
+
+
+def sssd_domains(path: Path = SSSD_CONF) -> list[str]:
+    """[sssd] domains of sssd.conf and its conf.d/*.conf (later files win), lower case;
+    [] if unset or unreadable (sssd.conf is root-only)."""
+    files = [Path(path), *sorted(Path(path).parent.joinpath("conf.d").glob("*.conf"))]
+    value = None
+    for f in files:
+        try:
+            lines = f.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        section = None
+        for line in lines:
+            line = line.strip()
+            if not line or line[0] in "#;":
+                continue
+            if line.startswith("["):
+                section = line.strip("[] \t").lower()
+            elif section == "sssd":
+                key, eq, v = line.partition("=")
+                if eq and key.strip() == "domains":
+                    value = v
+    if not value:
+        return []
+    return list(dict.fromkeys(d.strip().lower() for d in value.split(",") if d.strip()))
 
 
 def parse(raw: dict) -> Config:

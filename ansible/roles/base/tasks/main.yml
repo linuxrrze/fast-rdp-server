@@ -125,12 +125,9 @@
   notify: Reload nftables
 
 - name: Keep back-end ports out of the ephemeral port range
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: sysctl-fastrdp.conf.j2
     dest: /etc/sysctl.d/60-fastrdp.conf
-    content: |
-      # Ansible managed (fast-rdp-server): local changes are overwritten
-      # Back-end ports are allocated by fastrdp-brokerd, never by the kernel.
-      net.ipv4.ip_local_reserved_ports = {{ fastrdp_xrdp_port }},{{ fastrdp_backend_port_range[0] }}-{{ fastrdp_backend_port_range[1] }}
     owner: root
     group: root
     mode: "0644"

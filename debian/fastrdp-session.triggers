@@ -1,0 +1,2 @@
+# fastrdp-xrdp installed or upgraded: fastrdp's xrdp configuration (fastrdp-session.list)
+interest-noawait /usr/share/fastrdp-xrdp/default-config

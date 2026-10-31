@@ -1,7 +1,7 @@
 #!/usr/bin/make -f
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
-# fast-rdp-server: one source package, five binary packages.
+# fast-rdp-server: one source package, seven binary packages.
 #   proxy module   -> CMake (broker/proxy-module)
 #   PAM module     -> plain Makefile (broker/pam_fastrdp_token)
 #   Python parts   -> copied to the private dir /usr/lib/fastrdp/python
@@ -55,15 +55,25 @@ override_dh_auto_clean:
 	dh_auto_clean
 	dh_auto_clean --buildsystem=makefile --sourcedirectory=$(PAMSRC)
 
+DEFAULTS_PACKAGES := fastrdp-broker fastrdp-proxy-module fastrdp-session fastrdp-server
+
 # User-unit drop-in (the Ansible role puts the same file under /etc/systemd/user).
+# fastrdp-defaults lists (packaging/defaults/<package>.list, fastrdp-defaults(8)).
+# The host check of tests/smoke as fastrdp-check-host.
 execute_after_dh_install:
 	install -D -m 0644 broker/session/user-dropins/plasma-kwin_wayland-fastrdp.conf \
 		debian/fastrdp-session/usr/lib/systemd/user/plasma-kwin_wayland.service.d/fastrdp.conf
+	for p in $(DEFAULTS_PACKAGES); do \
+		install -D -m 0644 packaging/defaults/$$p.list debian/$$p/usr/share/$$p/defaults.list || exit 1; \
+	done
+	install -D -m 0755 tests/smoke/check-host.sh debian/fastrdp-broker/usr/sbin/fastrdp-check-host
 
-# The daemons need a configuration first (/etc/fastrdp/*.toml, proxy.ini);
-# install them disabled and let the admin (or the Ansible roles) enable them.
+# The daemons need a configuration first (/etc/fastrdp/*.toml, proxy.ini, the TERMSRV
+# keytab); install them disabled and let the admin (or the Ansible roles) enable them.
+# fastrdp-server's firewall unit protects the back-end ports at once: enabled, started.
 override_dh_installsystemd:
-	dh_installsystemd --no-enable --no-start
+	dh_installsystemd -Nfastrdp-server --no-enable --no-start
+	dh_installsystemd -pfastrdp-server
 
 # libfreerdp*.so live in /opt/fastrdp/lib (fastrdp-freerdp3, no shlibs file for
 # private libraries): the dependency on exactly that FreeRDP release is explicit.

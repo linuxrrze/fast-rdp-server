@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Installed as /usr/share/fastrdp-session/defaults.list; read by fastrdp-defaults(8):
+#   DEST MODE OWNER GROUP SOURCE [if=PATH] [also=FILE]
+# xrdp's site configuration, only with fastrdp-xrdp (trigger on /usr/share/fastrdp-xrdp/default-config):
+# replaces upstream's version that fastrdp-xrdp's postinst put there
+/etc/xrdp/xrdp.ini 0644 root root /usr/share/fastrdp-session/defaults/etc/xrdp/xrdp.ini if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/xrdp/xrdp.ini
+/etc/xrdp/sesman.ini 0644 root root /usr/share/fastrdp-session/defaults/etc/xrdp/sesman.ini if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/xrdp/sesman.ini
+/etc/xrdp/gfx.toml 0644 root root /usr/share/fastrdp-session/defaults/etc/xrdp/gfx.toml if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/xrdp/gfx.toml
+/etc/X11/xrdp/xorg.conf 0644 root root /usr/share/fastrdp-session/defaults/etc/X11/xrdp/xorg.conf if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/X11/xrdp/xorg.conf
+/etc/xrdp/startwm.sh 0755 root root /usr/libexec/fastrdp/startwm.sh if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/xrdp/startwm.sh
+/etc/pam.d/xrdp-sesman 0644 root root /usr/share/fastrdp-session/pam.d/xrdp-sesman if=/usr/share/fastrdp-xrdp/default-config also=/usr/share/fastrdp-xrdp/default-config/etc/pam.d/xrdp-sesman

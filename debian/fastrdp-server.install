@@ -1,0 +1,6 @@
+packaging/defaults/fastrdp-server/etc usr/share/fastrdp-server/defaults/
+packaging/defaults/fastrdp-server/usr/lib/sysctl.d/* usr/lib/sysctl.d/
+packaging/defaults/fastrdp-server/usr/lib/modules-load.d/* usr/lib/modules-load.d/
+packaging/defaults/fastrdp-server/usr/lib/systemd/system/*.d usr/lib/systemd/system/
+packaging/defaults/fastrdp-server/usr/share/polkit-1/rules.d/* usr/share/polkit-1/rules.d/
+broker/session/systemd/fastrdp-firewall.service usr/lib/systemd/system/

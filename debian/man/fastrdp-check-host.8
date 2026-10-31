@@ -1,0 +1,42 @@
+.TH FASTRDP-CHECK-HOST 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-check-host \- check a fastrdp host
+.SH SYNOPSIS
+.B fastrdp-check-host
+.RB [ \-\-preflight ]
+.br
+.B fastrdp-check-host
+.RI [ user ]
+.br
+.B fastrdp-check-host \-\-ports
+.SH DESCRIPTION
+Prints one line per check:
+.B ok
+or
+.B FAIL
+(and
+.B warn
+for what to check by hand). Run it as root. The exit status is 1 when a check failed.
+.TP
+.B \-\-preflight
+Before the setup: supported release, the host name is the FQDN and resolves to the
+real address, DNS SRV records of the KDCs (with dig), time synchronisation, ports
+3389 and 3390 free, fastrdp-server and its nftables table, and
+.BR "fastrdp-defaults status" .
+.TP
+.I user
+On a set-up host: services, listeners (xrdp on loopback only), broker and token
+sockets, nftables table, TERMSRV keys, Kerberos and SSSD ticket renewal, proxy module and
+FreeRDP, xrdp, the broker configuration, time; with a directory
+.I user
+also NSS, the PAM account check and the user's ticket. Then
+.B fastrdp-defaults status
+and
+.BR "fastrdpctl status" .
+.TP
+.B \-\-ports
+Print the proxy and xrdp ports read from the configuration.
+.SH SEE ALSO
+.BR fastrdp-defaults (8),
+.BR fastrdpctl (8),
+docs/manual-setup.md

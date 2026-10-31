@@ -1,0 +1,49 @@
+// fastrdp default (fastrdp-server, ansible/roles/base/templates/40-fastrdp-power.rules.j2): override with a file of the same name below /etc, do not edit
+// fastrdp: users in RDP sessions must not power off, reboot, suspend, hibernate or halt
+// the shared host (fastrdp_block_power_actions; docs/desktop-matrix.md#host-safety-power-actions).
+// logind's power actions are refused (polkit NO: CanPowerOff and friends answer "no",
+// desktops hide or grey out the entries) except for:
+//   - root: polkit authorizes uid 0 before any rule (sudo systemctl poweroff works);
+//   - members of fastrdp_power_admin_groups: they authenticate as an admin, as before;
+//   - with fastrdp_power_allow_local_console: active sessions on a seat (the console).
+// Log out, lock, inhibitors and every other action keep their defaults.
+// ES5 only: polkitd evaluates rules with duktape.
+polkit.addRule(function (action, subject) {
+    var actions = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.power-off-ignore-inhibit",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.reboot-ignore-inhibit",
+        "org.freedesktop.login1.halt",
+        "org.freedesktop.login1.halt-multiple-sessions",
+        "org.freedesktop.login1.halt-ignore-inhibit",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.suspend-ignore-inhibit",
+        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.hibernate-multiple-sessions",
+        "org.freedesktop.login1.hibernate-ignore-inhibit",
+        "org.freedesktop.login1.set-reboot-parameter",
+        "org.freedesktop.login1.set-reboot-to-firmware-setup",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-menu",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-entry"
+    ];
+    var adminGroups = ["sudo"];
+    var allowLocalConsole = false;
+    var i;
+
+    if (actions.indexOf(action.id) < 0 || subject.user === "root") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (allowLocalConsole && subject.local && subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    for (i = 0; i < adminGroups.length; i++) {
+        if (subject.isInGroup(adminGroups[i])) {
+            return polkit.Result.AUTH_ADMIN_KEEP;
+        }
+    }
+    return polkit.Result.NO;
+});

@@ -1,0 +1,2 @@
+# sssd installed later: the ticket-renewal snippet in /etc/sssd/conf.d (fastrdp-server.list)
+interest-noawait /usr/sbin/sssd

@@ -62,7 +62,7 @@ test-proxy-module:
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report
 
-test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/ci/*.sh, TERMSRV helpers, base role's package check; dpkg-dev curl patch xz-utils git
+test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, fastrdp-defaults + maintainer scripts, packaging/ci/*.sh, TERMSRV helpers, base role's package check; dpkg-dev curl patch xz-utils git
 	tests/packaging/test_fetch.sh
 	tests/packaging/test_build_key.sh
 	tests/packaging/test_ci_scripts.sh
@@ -70,6 +70,7 @@ test-scripts:   # fetch.sh, build-key.sh, build-xrdp.sh site config, packaging/c
 	tests/packaging/test_check_pages_live.sh
 	tests/ansible/test_outdated_packages.sh
 	tests/packaging/test_xrdp_site_config.sh
+	tests/packaging/test_defaults.sh
 	python3 -m unittest -v tests/identity/test_termsrv_helpers.py
 
 test-publish:   # packaging/apt/publish.sh + apt-get update; reprepro gnupg dpkg-dev apt
@@ -151,11 +152,18 @@ lint:   # ansible-lint, shellcheck (missing: SKIP, or FAIL with FASTRDP_TESTS_ST
 		broker/pam_fastrdp_token/test/run_test.sh docs/examples/keycloak-mfa/fastrdp-mfa-kcadm.sh && \
 	  shellcheck -e SC1090$(comma)SC2015 tests/wlroots/run.sh && \
 	  shellcheck packaging/ci/*.sh packaging/apt/*.sh debian/bin/* broker/sbin/fastrdp-termsrv-* ansible/roles/base/files/*.sh \
+		broker/sbin/fastrdp-defaults broker/sbin/fastrdp-front-cert debian/*.postinst debian/*.postrm \
 		packaging/xrdp/debian/fastrdp-xrdp.postinst packaging/xrdp/debian/fastrdp-xrdp.postrm)
 	packaging/ci/check-build-deps.sh
 
 lint-ci:   # actionlint (https://github.com/rhysd/actionlint)
 	actionlint .github/workflows/*.yml
+
+# The default configuration the packages ship (packaging/defaults/, fastrdp-defaults(8)),
+# rendered from the role templates and defaults; test-ansible fails when it is outdated.
+.PHONY: defaults
+defaults:   # ansible-core
+	ANSIBLE_LOCALHOST_WARNING=false ansible-playbook -i localhost, packaging/defaults/render.yml
 
 deb:   # Debian/Ubuntu packages into ..; build deps: apt-get build-dep ./ (docs/packaging.md)
 	dpkg-buildpackage -us -uc -b

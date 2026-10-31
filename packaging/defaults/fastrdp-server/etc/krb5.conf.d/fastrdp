@@ -1,0 +1,9 @@
+# fastrdp default (fastrdp-server, ansible/roles/identity/templates/krb5-fastrdp.conf.j2): your changes are kept on upgrades, see fastrdp-defaults(8)
+# fastrdp's Kerberos client settings, for every identity provider. /etc/krb5.conf
+# includes this directory before its own [libdefaults], so these values win over it
+# (also over FreeIPA's default_ccache_name = KEYRING:...).
+[libdefaults]
+    # One credential cache per login, shared by all processes of that session.
+    default_ccache_name = KCM:
+    # kinit asks for renewable tickets too, so sssd-kcm can renew them ([kcm] tgt_renewal).
+    renew_lifetime = 7d

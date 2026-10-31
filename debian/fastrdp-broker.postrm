@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+# The unchanged fastrdp-defaults files of this package (fastrdp-defaults purge; the
+# command may be gone with fastrdp-broker, so the same steps here).
+purge_defaults() {
+    state="$DPKG_ROOT/var/lib/fastrdp/defaults/$1"
+    [ -f "$state" ] || return 0
+    while read -r inst _ dest; do
+        if [ "$inst" != - ] && [ -f "$DPKG_ROOT$dest" ] &&
+            [ "$(sha256sum < "$DPKG_ROOT$dest" | cut -d" " -f1)" = "$inst" ]; then
+            rm -f "$DPKG_ROOT$dest"
+        fi
+    done < "$state"
+    rm -f "$state"
+    rmdir "$DPKG_ROOT/var/lib/fastrdp/defaults" "$DPKG_ROOT/var/lib/fastrdp" 2>/dev/null || true
+}
+
+#DEBHELPER#
+
+if [ "$1" = purge ]; then
+    purge_defaults fastrdp-broker
+fi

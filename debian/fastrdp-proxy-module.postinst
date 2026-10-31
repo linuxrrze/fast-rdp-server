@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+#DEBHELPER#
+
+# /etc/fastrdp/proxy.ini (fastrdp-defaults(8)); after #DEBHELPER#: the file belongs to
+# group _fastrdp-proxy, which the sysusers snippet creates.
+if [ "$1" = configure ]; then
+    "$DPKG_ROOT/usr/sbin/fastrdp-defaults" install fastrdp-proxy-module
+fi

@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Installed as /usr/share/fastrdp-broker/defaults.list; read by fastrdp-defaults(8):
+#   DEST MODE OWNER GROUP SOURCE [if=PATH] [also=FILE]
+/etc/fastrdp/broker.toml 0600 root root /usr/share/fastrdp-broker/defaults/etc/fastrdp/broker.toml

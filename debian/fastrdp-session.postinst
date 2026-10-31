@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+#DEBHELPER#
+
+# fastrdp's xrdp configuration once fastrdp-xrdp is there (also its trigger,
+# fastrdp-session.triggers): in place of upstream's versions, local changes kept.
+case "$1" in
+    configure|triggered)
+        "$DPKG_ROOT/usr/sbin/fastrdp-defaults" install fastrdp-session
+        ;;
+esac

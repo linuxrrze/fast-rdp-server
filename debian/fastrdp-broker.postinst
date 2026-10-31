@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+#DEBHELPER#
+
+# Default configuration (/usr/share/fastrdp-broker/defaults.list): missing or unchanged
+# files get fastrdp's version, local changes are kept (fastrdp-defaults(8)).
+if [ "$1" = configure ]; then
+    "$DPKG_ROOT/usr/sbin/fastrdp-defaults" install fastrdp-broker
+fi

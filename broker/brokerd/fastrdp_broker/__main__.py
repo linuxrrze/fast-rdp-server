@@ -36,6 +36,12 @@ def daemon_main(argv: list[str] | None = None) -> int:
     except (OSError, config_mod.ConfigError) as exc:
         logging.error("config: %s", exc)
         return 2
+    for key, (value, source) in cfg.detected.items():
+        if value:
+            logging.info("[auth] %s not set: %s (%s)", key, ", ".join(value), source)
+        elif key == "realms":
+            logging.warning("[auth] realms not set and no %s: NLA logins from every realm are "
+                            "accepted; set [auth] realms", source)
     if args.check:
         # A warning only: the broker runs without the webgate's account (Broker.web_gateway_uid),
         # and a deployment may install fastrdp-webgate after validating this config.

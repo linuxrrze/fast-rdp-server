@@ -16,6 +16,9 @@ Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
 # Without journald support in libwinpr3 WLog falls back to the console.
 Environment=WLOG_APPENDER=JOURNALD
 Environment=WLOG_JOURNALD_ID=fastrdp-proxy
+# No front certificate yet: a self-signed one for the FQDN, as root ("+"; lab only,
+# fastrdp-front-cert(8)). "-": installs without the helper (build method) start anyway.
+ExecStartPre=-+/usr/sbin/fastrdp-front-cert --if-missing
 # fastrdp's own FreeRDP build (fastrdp-freerdp3 / third_party/build-freerdp.sh)
 ExecStart=/opt/fastrdp/bin/freerdp-proxy /etc/fastrdp/proxy.ini
 Restart=on-failure

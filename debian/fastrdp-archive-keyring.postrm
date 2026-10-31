@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+#DEBHELPER#
+
+SOURCES=$DPKG_ROOT/etc/apt/sources.list.d/fast-rdp-server.sources
+# only the file postinst wrote (its first line), not one of the Ansible role or your own
+if [ "$1" = purge ] && [ -f "$SOURCES" ] &&
+    [ "$(head -n 1 "$SOURCES")" = "# fastrdp-archive-keyring: written at installation, removed on purge." ]; then
+    rm -f "$SOURCES"
+fi

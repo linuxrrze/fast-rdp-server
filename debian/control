@@ -47,14 +47,17 @@ Description: session broker for the fastrdp multi-user RDP terminal server
  .
  This package contains fastrdp-brokerd (Python, standard library only),
  the fastrdpctl admin command, the systemd unit, the PAM service used for
- password and account checks, and an example configuration. It also has
+ password and account checks, and a default /etc/fastrdp/broker.toml (realm
+ and SSSD domains from the host's krb5.conf and sssd.conf). It also has
  the TERMSRV keytab helpers: fastrdp-termsrv-check (AES keys for NLA) and
  fastrdp-termsrv-keytab with a path unit that copies the TERMSRV keys for
- the proxy whenever Active Directory rotates the machine password.
+ the proxy whenever Active Directory rotates the machine password, the host
+ check fastrdp-check-host and fastrdp-defaults, which installs the default
+ configuration of the fastrdp packages and keeps local changes on upgrades.
  .
- The services are installed disabled; configure /etc/fastrdp/broker.toml,
+ The services are installed disabled; check /etc/fastrdp/broker.toml,
  then enable fastrdp-brokerd.service (and on AD hosts
- fastrdp-termsrv-keytab.path).
+ fastrdp-termsrv-keytab.path). Install fastrdp-server for the whole server.
 
 Package: fastrdp-proxy-module
 Architecture: any
@@ -70,7 +73,9 @@ Description: freerdp-proxy3 module that asks the fastrdp broker
  This package contains the proxy module (loaded with "Modules = fastrdp"),
  which asks fastrdp-brokerd before letting a client in and routes it to its
  back-end session, plus the fastrdp-proxy.service unit that runs
- /opt/fastrdp/bin/freerdp-proxy as the unprivileged _fastrdp-proxy user.
+ /opt/fastrdp/bin/freerdp-proxy as the unprivileged _fastrdp-proxy user, a
+ default /etc/fastrdp/proxy.ini and fastrdp-front-cert, which creates a
+ self-signed front certificate at the first start when none is there.
  .
  The module is built against fastrdp's own FreeRDP build (fastrdp-freerdp3,
  /opt/fastrdp) and requires exactly that FreeRDP release.
@@ -94,11 +99,11 @@ Description: PAM module that accepts one-time fastrdp broker tokens
 Package: fastrdp-session
 Architecture: all
 Depends:
+ fastrdp-broker (= ${source:Version}),
  python3,
  ${misc:Depends},
  ${python3:Depends},
 Recommends:
- fastrdp-broker,
  libnotify-bin,
 Suggests:
  pipewire-module-xrdp,
@@ -111,9 +116,10 @@ Description: session launchers and units for fastrdp back ends
   - the KWin virtual-backend drop-in for plasma-kwin_wayland.service,
   - the wlroots-in-x launcher, clipboard bridge and X session entries for
     Sway, labwc and Wayfire,
-  - the xrdp-sesman PAM stack that accepts only broker tokens (installed
-    as a template under /usr/share/fastrdp-session; copy it to
-    /etc/pam.d/xrdp-sesman, the deployment roles do this),
+  - with fastrdp-xrdp: fastrdp's xrdp configuration (xrdp.ini, sesman.ini,
+    gfx.toml, xorg.conf, startwm.sh) and the xrdp-sesman PAM stack that
+    accepts only broker tokens, installed by fastrdp-defaults in place of
+    upstream's versions (local changes are kept),
   - tgt-notify, started in every desktop session (XDG autostart): a desktop
     notification before the session's Kerberos login can no longer be
     renewed (settings: /etc/fastrdp/tgt-notify.conf),
@@ -142,3 +148,65 @@ Description: browser access gateway for fastrdp (OIDC login to Guacamole)
  .
  The service is installed disabled; configure /etc/fastrdp/webgate.toml,
  then enable fastrdp-webgate.service.
+
+Package: fastrdp-server
+Architecture: all
+Depends:
+ ca-certificates,
+ chrony,
+ dbus-user-session,
+ fastrdp-broker (= ${source:Version}),
+ fastrdp-proxy-module (>= ${source:Version}),
+ fastrdp-proxy-module (<< ${source:Version}.1~),
+ fastrdp-session (= ${source:Version}),
+ fastrdp-xrdp,
+ libpam-fastrdp-token (>= ${source:Version}),
+ libpam-fastrdp-token (<< ${source:Version}.1~),
+ nftables,
+ openssl,
+ polkitd,
+ python3,
+ ${misc:Depends},
+Recommends:
+ adcli,
+ krb5-user,
+ libnss-sss,
+ libpam-sss,
+ packagekit,
+ realmd,
+ sssd,
+ sssd-kcm,
+ sssd-tools,
+Suggests:
+ fastrdp-webgate,
+Description: fastrdp multi-user RDP terminal server (complete host)
+ fastrdp turns a Linux host into a multi-user RDP terminal server:
+ freerdp-proxy3 is the single front end, a session broker decides which
+ back end (xrdp, GNOME Remote Desktop, KRdp) a user gets.
+ .
+ Installing this package sets up the host as the Ansible roles do with their
+ defaults: all fastrdp packages and the base packages, fastrdp-firewall.service
+ (nftables: only the proxy may reach the back-end ports), the back-end ports
+ kept out of the ephemeral range, TCP tuning (BBR), no power actions from RDP
+ sessions (polkit), per-user resource limits, and the Kerberos (KCM, renewable
+ tickets) and SSSD (ticket renewal) client settings. The files in /usr can be
+ overridden with the same name below /etc; those in /etc are fastrdp-defaults
+ files (local changes are kept).
+ .
+ The remaining steps (domain join, desktops, starting the services) are in
+ docs/manual-setup.md; fastrdp-check-host --preflight checks the host first.
+
+Package: fastrdp-archive-keyring
+Architecture: all
+Section: misc
+Depends:
+ ${misc:Depends},
+Description: OpenPGP key and APT source of the fast-rdp-server repository
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ This package contains the key that signs the fast-rdp-server APT repository
+ (https://linuxrrze.github.io/fast-rdp-server) in /usr/share/keyrings and, when
+ no source for it is configured yet, adds
+ /etc/apt/sources.list.d/fast-rdp-server.sources for this release's stable
+ channel. Download it once from the repository and install it with apt; later
+ key changes then arrive as updates.

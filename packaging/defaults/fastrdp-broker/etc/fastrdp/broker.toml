@@ -1,0 +1,83 @@
+# fastrdp default (fastrdp-broker, ansible/roles/broker/templates/broker.toml.j2): your changes are kept on upgrades, see fastrdp-defaults(8)
+[broker]
+proxy_user = "_fastrdp-proxy"
+socket_group = "_fastrdp-broker"
+port_range = [33900, 34899]
+session_tgt = "auto"
+# Missing homes are created only below these (fastrdp_home_create_roots; [] = never).
+home_create_roots = ["/home"]
+# Desktop picker on the proxy's waiting screen (fastrdp_desktop_picker)
+desktop_picker = "never"
+desktop_picker_timeout = 10
+desktop_picker_when_running = "preselect"
+
+[auth]
+# realms: not set = default_realm of /etc/krb5.conf (fastrdp-brokerd --check shows it)
+# false = SSSD names are "alice@example.com" (fastrdp_sssd_fully_qualified_names):
+# that name first, so a local account "alice" never shadows the directory user.
+strip_realm = true
+# domains: not set = the domains of /etc/sssd/sssd.conf ([sssd] domains)
+pam_service = "fastrdp"
+allow_groups = []
+allow_tls_password_login = true
+
+[mfa]
+mode = "none"
+exempt_groups = []
+otp_lengths = [6]
+yubikey_otp = true
+nla_kdc_enforced = false
+kdc_evidence_as_mfa = []
+reconnect_grace = 0
+reconnect_grace_same_address = true
+# mode web / push_or_web / code_or_web: users approve their logins on the web gateway (/web/approve)
+web_approval_timeout = 90
+web_approval_max_auth_age = 30
+web_approval_single_pending = true
+# mode code_or_web: the code on the waiting screen, checked by Keycloak ([mfa.keycloak])
+code_attempts = 3
+code_user_failures = 10
+code_failure_window = 900
+
+[mfa.privacyidea]
+url = ""
+realm = ""
+ca_file = ""
+verify_tls = true
+service_user = ""
+service_password_file = "/etc/fastrdp/privacyidea-service.secret"
+
+[network]
+# Connection type the proxy sends to xrdp (encoder profile) for clients that ask for
+# auto-detection or send none: lan inside lan_networks, else xrdp_autodetect_profile.
+lan_networks = []
+xrdp_autodetect_profile = "wan"
+
+[defaults]
+desktop ="xfce"
+geometry = "1920x1080"
+
+[defaults.groups]
+
+[desktops.xfce]
+backend = "xrdp"
+xsession = "xfce"
+
+[web]
+enabled = false
+gateway_user = "_fastrdp-web"
+# guacd runs with host networking and connects to the proxy via loopback
+allowed_clients = ["127.0.0.1", "::1"]
+
+# Texts of the proxy's waiting screen (fastrdp_proxy_waiting_screen)
+[ui]
+language = "en"
+language_from_keyboard = true
+approve_url = ""
+qr_code = true
+
+[backends.xrdp]
+port = 3390
+listener_user = "root"   # xrdp binds as root, then drops to runtime_user
+# xrdp.ini "certificate": the proxy accepts only this certificate from xrdp
+certificate = "/etc/xrdp/cert.pem"

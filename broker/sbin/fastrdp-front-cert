@@ -1,0 +1,58 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# fastrdp-front-cert: self-signed certificate for the proxy's front end (lab only), as
+# the base role creates it when fastrdp_front_cert_src is empty.
+#
+#   fastrdp-front-cert [--if-missing] [--force] [ALIAS...]
+#
+# Writes /etc/fastrdp/front.crt and front.key (root:_fastrdp-proxy, key 0640). SAN: the
+# FQDN (hostname -f), the short name and the ALIASes (DNS names clients may use,
+# fastrdp_termsrv_aliases). --if-missing: do nothing when either file exists
+# (fastrdp-proxy.service runs it so before the start); without it an existing
+# certificate is only replaced with --force.
+# Production: put the CA's certificate (full chain) and key there instead.
+set -eu
+DIR=${FASTRDP_FRONT_DIR:-/etc/fastrdp}
+GROUP=${FASTRDP_FRONT_GROUP:-_fastrdp-proxy}
+if_missing='' force=''
+while [ $# -gt 0 ]; do
+    case $1 in
+        --if-missing) if_missing=1 ;;
+        --force) force=1 ;;
+        -h|--help) sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) echo "fastrdp-front-cert: unknown option $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+    shift
+done
+crt=$DIR/front.crt key=$DIR/front.key
+if [ -e "$crt" ] || [ -e "$key" ]; then
+    [ -z "$if_missing" ] || exit 0
+    if [ -z "$force" ]; then
+        echo "fastrdp-front-cert: $crt or $key exists (--force replaces them)" >&2
+        exit 1
+    fi
+fi
+fqdn=${FASTRDP_FQDN:-$(hostname -f)}
+short=${fqdn%%.*}
+case $fqdn in
+    *.*) ;;
+    *) echo "fastrdp-front-cert: warning: host name '$fqdn' is not a FQDN; clients connect to the FQDN (docs/manual-setup.md, 1)" >&2 ;;
+esac
+san=
+for n in "$fqdn" "$short" "$@"; do
+    case ",$san," in *",DNS:$n,"*) continue ;; esac
+    san=${san:+$san,}DNS:$n
+done
+umask 077
+mkdir -p "$DIR"
+openssl req -x509 -newkey rsa:3072 -nodes -days 825 -subj "/CN=$fqdn" \
+    -addext "subjectAltName=$san" -addext "extendedKeyUsage=serverAuth" \
+    -keyout "$key.new" -out "$crt.new" 2>/dev/null
+chmod 0644 "$crt.new"
+chmod 0640 "$key.new"
+if [ "$(id -u)" = 0 ]; then chown "root:$GROUP" "$crt.new" "$key.new"; fi
+mv -f "$key.new" "$key"
+mv -f "$crt.new" "$crt"
+echo "fastrdp-front-cert: self-signed certificate for $san in $crt (lab only: clients warn; use a CA certificate in production)" >&2

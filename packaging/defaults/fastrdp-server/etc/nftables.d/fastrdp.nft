@@ -1,0 +1,23 @@
+# fastrdp default (fastrdp-server, ansible/roles/base/templates/nftables-fastrdp.nft.j2): your changes are kept on upgrades, see fastrdp-defaults(8)
+# Back-end RDP servers (xrdp, g-r-d, KRdp) listen on loopback with broker-issued
+# credentials. Only the proxy (and root) may connect to them; nothing from outside.
+table inet fastrdp
+delete table inet fastrdp
+table inet fastrdp {
+    set backend_ports {
+        type inet_service
+        flags interval
+        elements = { 3390, 33900-34899 }
+    }
+
+    chain input {
+        type filter hook input priority filter; policy accept;
+        # only new connections: replies to outgoing connections may use these ports too
+        iifname != "lo" tcp dport @backend_ports ct state new drop
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        oifname "lo" tcp dport @backend_ports ct state new meta skuid != { "_fastrdp-proxy", "root" } reject with tcp reset
+    }
+}

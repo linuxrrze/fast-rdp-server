@@ -5,3 +5,4 @@ broker/session/pam/xrdp-sesman usr/share/fastrdp-session/pam.d/
 broker/session/xsessions/*.desktop usr/share/xsessions/
 broker/session/autostart/fastrdp-tgt-notify.desktop etc/xdg/autostart/
 broker/session/autostart/fastrdp-xrdp-audio.desktop etc/xdg/autostart/
+packaging/defaults/fastrdp-session/etc usr/share/fastrdp-session/defaults/

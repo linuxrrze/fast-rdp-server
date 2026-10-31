@@ -1,0 +1,55 @@
+.TH FASTRDP-DEFAULTS 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-defaults \- default configuration files of the fastrdp packages
+.SH SYNOPSIS
+.B fastrdp-defaults status
+.RI [ package ...]
+.br
+.B fastrdp-defaults diff
+.RI [ file ...]
+.br
+.B fastrdp-defaults install
+.I package
+.br
+.B fastrdp-defaults purge
+.I package
+.SH DESCRIPTION
+The fastrdp packages ship a working default for each configuration file in
+.I /etc
+that fastrdp needs (for example
+.IR /etc/fastrdp/broker.toml ,
+.IR /etc/fastrdp/proxy.ini ,
+.IR /etc/xrdp/xrdp.ini ).
+They are not dpkg conffiles: the Ansible roles of fast-rdp-server write the same files,
+and dpkg would ask about them on every upgrade.
+.PP
+The package scripts run
+.B install
+for each package. A file gets fastrdp's version when it is missing, when it is still
+the version installed last time (unchanged since), or when it is upstream's default
+(xrdp). A file you changed is never touched; the command then says once per new
+fastrdp version where fastrdp's version is.
+.B purge
+(on
+.BR "apt purge" )
+removes the files that are still unchanged.
+.PP
+.B status
+prints every file with its state:
+.I fastrdp default
+(as shipped),
+.I changed locally
+or
+.IR missing .
+.B diff
+shows your changes against fastrdp's version (diff \-u).
+.SH FILES
+.TP
+.I /usr/share/<package>/defaults.list
+The files of a package: DEST MODE OWNER GROUP SOURCE [if=PATH] [also=FILE].
+.TP
+.I /var/lib/fastrdp/defaults/<package>
+Checksums of the installed and the shipped version of each file.
+.SH SEE ALSO
+.BR fastrdp-check-host (8),
+docs/manual-setup.md

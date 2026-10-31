@@ -109,6 +109,23 @@ done
 gpg --armor --export "$APT_SIGNING_KEY_ID" > "$out/fast-rdp-server-archive-keyring.asc"
 gpg --export "$APT_SIGNING_KEY_ID" > "$out/fast-rdp-server-archive-keyring.gpg"
 [ -s "$out/fast-rdp-server-archive-keyring.gpg" ] || { echo "public key export failed" >&2; exit 1; }
+fpr=$(gpg --with-colons --fingerprint "$APT_SIGNING_KEY_ID" | awk -F: '/^fpr:/ {print $10; exit}')
+
+# fastrdp-archive-keyring: the key in every version in the pool must be the signing key
+# (clients that install it trust only that key). The newest one also goes to a fixed
+# name, the download that bootstraps a client (docs/packaging.md).
+keyring=
+for deb in $(find "$out/pool" -name 'fastrdp-archive-keyring_*.deb' | sort -V); do
+    dpkg-deb --fsys-tarfile "$deb" | tar -xO ./usr/share/keyrings/fast-rdp-server-archive-keyring.asc > "$work/keyring.asc"
+    k=$(gpg --show-keys --with-colons "$work/keyring.asc" 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}')
+    if [ "$k" != "$fpr" ]; then
+        echo "$(basename "$deb") has key ${k:-none}, the repository is signed with $fpr:" \
+            "update packaging/apt/fast-rdp-server-archive-keyring.asc" >&2
+        exit 1
+    fi
+    keyring=$deb
+done
+[ -z "$keyring" ] || cp "$keyring" "$out/fastrdp-archive-keyring.deb"
 
 url=${APT_REPO_URL:-https://linuxrrze.github.io/fast-rdp-server}
 touch "$out/.nojekyll"
@@ -120,6 +137,12 @@ touch "$out/.nojekyll"
 <h1>fast-rdp-server APT repository</h1>
 <p>Setup: see docs/packaging.md in the
 <a href="https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/packaging.md">source repository</a>.</p>
+<pre>
+# key + APT source (stable channel of this release) in one package:
+curl -fsSLO $url/fastrdp-archive-keyring.deb
+sudo apt install ./fastrdp-archive-keyring.deb &amp;&amp; sudo apt update
+</pre>
+<p>Or by hand:</p>
 <pre>
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -fsSLo /etc/apt/keyrings/fast-rdp-server.asc $url/fast-rdp-server-archive-keyring.asc
@@ -145,7 +168,7 @@ EOF
 source, packaging, build scripts, pristine upstream releases, patches):
 <a href="sources/">sources/</a>. Licensing: docs/licensing.md in the source repository.</p>
 <p>Signing key: <a href="fast-rdp-server-archive-keyring.asc">fast-rdp-server-archive-keyring.asc</a>
-(fingerprint <code>$(gpg --with-colons --fingerprint "$APT_SIGNING_KEY_ID" | awk -F: '/^fpr:/ {print $10; exit}')</code>)</p>
+(fingerprint <code>$fpr</code>)</p>
 </body></html>
 EOF
 } > "$out/index.html"

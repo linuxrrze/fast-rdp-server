@@ -1,0 +1,30 @@
+.TH FASTRDP-FRONT-CERT 8 "October 2026" "fast-rdp-server" "System Administration"
+.SH NAME
+fastrdp-front-cert \- self-signed front certificate for the fastrdp proxy
+.SH SYNOPSIS
+.B fastrdp-front-cert
+.RB [ \-\-if\-missing ]
+.RB [ \-\-force ]
+.RI [ alias ...]
+.SH DESCRIPTION
+Writes a self-signed certificate and key to
+.I /etc/fastrdp/front.crt
+and
+.I /etc/fastrdp/front.key
+(group _fastrdp-proxy, key mode 0640). The subject alternative names are the FQDN
+(\fBhostname \-f\fR), the short name and the given aliases (other DNS names clients
+use). Clients warn about a self-signed certificate: use it in a lab only and install a
+CA certificate (full chain) in production.
+.PP
+fastrdp-proxy.service runs it with
+.B \-\-if\-missing
+before every start, so a first start without a certificate gets one.
+.SH OPTIONS
+.TP
+.B \-\-if\-missing
+Do nothing when front.crt or front.key exists.
+.TP
+.B \-\-force
+Replace an existing certificate (e.g. after a rename or for new aliases).
+.SH SEE ALSO
+.BR fastrdp-check-host (8)

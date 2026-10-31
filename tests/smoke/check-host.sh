@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
 # Smoke checks on a deployed fastrdp host (run as root). Prints ok/FAIL per check.
+# Packaged as fastrdp-check-host (fastrdp-broker).
 #   sudo tests/smoke/check-host.sh [test-user]
+#   sudo tests/smoke/check-host.sh --preflight   before the setup: name, DNS, time, ports
 #   tests/smoke/check-host.sh --ports      print the ports read from the configuration
 # With a test user, also checks NSS/group resolution and the TGT in the user's default
 # cache (fastrdpctl tickets: renewable), and asks the broker for status.
@@ -30,12 +32,83 @@ if [ "${1:-}" = --ports ]; then
     echo "proxy=$PROXY_PORT xrdp=$XRDP_PORT"
     exit 0
 fi
-USER_TO_TEST=${1:-}
 CTL=$(command -v /usr/local/sbin/fastrdpctl /usr/sbin/fastrdpctl | head -1)
 fail=0
 ok()   { echo "ok   $*"; }
 bad()  { echo "FAIL $*"; fail=1; }
+warn() { echo "warn $*"; }
 chk()  { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+
+# --preflight: what docs/manual-setup.md section 1 (and make preflight) checks before
+# the setup. Read-only; FAIL = fix before going on, warn = check by hand.
+if [ "${1:-}" = --preflight ]; then
+    OS_RELEASE=${FASTRDP_OS_RELEASE:-/etc/os-release}
+    os_value() { sed -n "s/^$1=//p" "$OS_RELEASE" 2>/dev/null | tr -d '"' | head -1; }
+    os_id=$(os_value ID) os_ver=$(os_value VERSION_ID)
+    case $os_id:$(printf '%s\n' "$os_ver" 26.04 | sort -V | head -1):${os_ver%%.*} in
+        ubuntu:26.04:*) ok "Ubuntu $os_ver (26.04 or later)" ;;
+        debian:*:1[3-9]|debian:*:[2-9][0-9]) ok "Debian $os_ver (13 or later)" ;;
+        *) bad "supported OS (Ubuntu 26.04 or Debian 13 and later), not '${os_id:-unknown} $os_ver'" ;;
+    esac
+    fqdn=$(hostname -f 2>/dev/null || true)
+    short=${fqdn%%.*}
+    domain=${fqdn#*.}
+    if [ "$fqdn" = "$short" ]; then
+        bad "host name is a FQDN (hostname -f: '$fqdn'; hostnamectl set-hostname rdp1.example.com)"
+    else
+        ok "host name is a FQDN ($fqdn)"
+        if [ "${#short}" -le 15 ]; then
+            ok "short name $short has at most 15 characters (AD computer account)"
+        else
+            warn "short name $short has more than 15 characters: AD truncates the computer account"
+        fi
+        addrs=$(getent ahosts "$fqdn" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+        if [ -z "$addrs" ]; then
+            bad "$fqdn resolves (getent ahosts)"
+        elif grep -Eq '(^| )(127\.|::1)' <<<" $addrs"; then
+            bad "$fqdn resolves to the real address, not loopback ($addrs; remove '127.0.1.1 $fqdn' from /etc/hosts)"
+        else
+            ok "$fqdn resolves to $addrs"
+        fi
+        if command -v dig >/dev/null 2>&1; then
+            for srv in _kerberos._tcp _ldap._tcp; do
+                if [ -n "$(dig +short SRV "$srv.$domain" 2>/dev/null)" ]; then
+                    ok "DNS SRV $srv.$domain"
+                else
+                    warn "no DNS SRV $srv.$domain: krb5.conf finds the KDCs through DNS only (FreeIPA/AD DNS as resolver)"
+                fi
+            done
+        else
+            warn "dig missing (apt install bind9-dnsutils): DNS SRV records of $domain not checked"
+        fi
+    fi
+    if command -v chronyc >/dev/null 2>&1; then
+        chk "time in sync (chronyc tracking: Leap status Normal)" bash -c "chronyc tracking | grep -q 'Leap status *: Normal'"
+    else
+        bad "chrony installed (Kerberos needs the time within 5 minutes)"
+    fi
+    for port in "$PROXY_PORT" "$XRDP_PORT"; do
+        who=$(ss -Hltnp "sport = :$port" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | sed 's/.*"//')
+        case $who in
+            "") ok "port $port free" ;;
+            freerdp-proxy|xrdp) ok "port $port used by fastrdp ($who)" ;;
+            *) bad "port $port free (used by $who: a distribution xrdp or gnome-remote-desktop?)" ;;
+        esac
+    done
+    if dpkg-query -W -f='${Status}' fastrdp-server 2>/dev/null | grep -q 'ok installed'; then
+        ok "fastrdp-server installed"
+        chk "nftables fastrdp table loaded (fastrdp-firewall.service)" nft list table inet fastrdp
+    else
+        warn "fastrdp-server not installed (apt install fastrdp-server, docs/manual-setup.md 2)"
+    fi
+    if command -v fastrdp-defaults >/dev/null 2>&1; then
+        echo "--- fastrdp default configuration (fastrdp-defaults status)"
+        fastrdp-defaults status 2>/dev/null || true
+    fi
+    exit $fail
+fi
+
+USER_TO_TEST=${1:-}
 
 for u in fastrdp-brokerd fastrdp-proxy xrdp-sesman xrdp sssd; do
     chk "service $u active" systemctl is-active --quiet "$u"
@@ -136,6 +209,10 @@ print(t.get("state"), str(t.get("renewable", False)).lower(), t.get("renew_until
         none) echo "skip TGT of $USER_TO_TEST: none in the default cache (log in over RDP with a password first)" ;;
         *) bad "TGT of $USER_TO_TEST: $tgt_state (renewable=$tgt_renewable, renew until $tgt_until) $tgt_error" ;;
     esac
+fi
+if command -v fastrdp-defaults >/dev/null 2>&1; then
+    echo "--- fastrdp default configuration (fastrdp-defaults status)"
+    fastrdp-defaults status 2>/dev/null || true
 fi
 echo "--- broker status"; "${CTL:-fastrdpctl}" status 2>/dev/null | head -40 || true
 exit $fail

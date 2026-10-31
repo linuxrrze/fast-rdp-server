@@ -2,3 +2,5 @@ debian/man/fastrdp-brokerd.8
 debian/man/fastrdpctl.8
 debian/man/fastrdp-termsrv-check.8
 debian/man/fastrdp-termsrv-keytab.8
+debian/man/fastrdp-defaults.8
+debian/man/fastrdp-check-host.8

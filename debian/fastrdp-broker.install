@@ -9,3 +9,5 @@ broker/sbin/fastrdp-termsrv-keytab usr/sbin/
 broker/sbin/termsrv.conf etc/fastrdp/
 broker/session/systemd/fastrdp-termsrv-keytab.path usr/lib/systemd/system/
 broker/session/systemd/fastrdp-termsrv-keytab.service usr/lib/systemd/system/
+broker/sbin/fastrdp-defaults usr/sbin/
+packaging/defaults/fastrdp-broker/etc usr/share/fastrdp-broker/defaults/

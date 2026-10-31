@@ -1,2 +1,4 @@
 opt/fastrdp/lib/freerdp3/proxy/libproxy-fastrdp-plugin.so
 broker/session/systemd/fastrdp-proxy.service usr/lib/systemd/system/
+broker/sbin/fastrdp-front-cert usr/sbin/
+packaging/defaults/fastrdp-proxy-module/etc usr/share/fastrdp-proxy-module/defaults/

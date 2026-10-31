@@ -1,0 +1,112 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# The default configuration the packages ship (packaging/defaults/<package>/<path>):
+# the role templates rendered with the role defaults only, no inventory. Regenerate after
+# changing a template or a default:
+#   make defaults                (= ansible-playbook -i localhost, packaging/defaults/render.yml)
+# tests/ansible/test_templates.py (PackagedDefaults) fails when the committed files differ.
+# Site values the roles require (fastrdp_realm, fastrdp_domain) stay empty: the broker
+# then reads them from krb5.conf and sssd.conf.
+- name: Render the packaged default configuration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../../ansible/roles/common/defaults/main.yml
+    - ../../ansible/roles/desktops/defaults/main.yml
+    - ../../ansible/roles/xrdp/defaults/main.yml
+    - ../../ansible/roles/freerdp_proxy/defaults/main.yml
+    - ../../ansible/roles/web_gateway/defaults/main.yml
+    - ../../ansible/roles/tuning/defaults/main.yml
+    - ../../ansible/roles/identity/defaults/main.yml
+    - ../../ansible/roles/base/defaults/main.yml
+    - ../../ansible/roles/gpu/defaults/main.yml
+  vars:
+    roles_dir: "{{ playbook_dir }}/../../ansible/roles"
+    render_out: "{{ playbook_dir }}"
+    etc_header: >-
+      fastrdp default ({{ pkg }}, ansible/roles/{{ item.role }}/templates/{{ item.src }}):
+      your changes are kept on upgrades, see fastrdp-defaults(8)
+    vendor_header: >-
+      fastrdp default ({{ pkg }}, ansible/roles/{{ item.role }}/templates/{{ item.src }}):
+      override with a file of the same name below /etc, do not edit
+  tasks:
+    # set_fact: play vars would lose against the role defaults in vars_files
+    - name: Values the roles take from facts or the inventory
+      ansible.builtin.set_fact:
+        # no GPU: x264 and software rendering (docs/manual-setup.md, 6 GPU)
+        fastrdp_gpu_effective: none
+        fastrdp_identity_provider: none
+        # only reached by values the defaults do not use (web access off)
+        fastrdp_fqdn: rdp1.example.com
+        fastrdp_hostname: rdp1
+
+    - name: Output directories
+      ansible.builtin.file:
+        path: "{{ render_out }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: >-
+        {{ ['fastrdp-broker/etc/fastrdp', 'fastrdp-proxy-module/etc/fastrdp', 'fastrdp-session/etc/xrdp',
+            'fastrdp-session/etc/X11/xrdp', 'fastrdp-server/etc/nftables.d', 'fastrdp-server/usr/lib/sysctl.d',
+            'fastrdp-server/usr/share/polkit-1/rules.d', 'fastrdp-server/usr/lib/modules-load.d',
+            'fastrdp-server/etc/krb5.conf.d', 'fastrdp-server/etc/sssd/conf.d']
+           + (fastrdp_limit_units | map(attribute='unit') | map('regex_replace', '^(.*)$', 'fastrdp-server/usr/lib/systemd/system/\1.d') | list) }}
+
+    - name: Files in /etc (fastrdp-defaults installs them, keeps local changes)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
+        dest: "{{ render_out }}/{{ pkg }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        pkg: "{{ item.pkg }}"
+        ansible_managed: "{{ etc_header }}"
+      loop:
+        - {pkg: fastrdp-broker, role: broker, src: broker.toml.j2, dest: etc/fastrdp/broker.toml}
+        - {pkg: fastrdp-proxy-module, role: freerdp_proxy, src: proxy.ini.j2, dest: etc/fastrdp/proxy.ini}
+        - {pkg: fastrdp-session, role: xrdp, src: xrdp.ini.j2, dest: etc/xrdp/xrdp.ini}
+        - {pkg: fastrdp-session, role: xrdp, src: sesman.ini.j2, dest: etc/xrdp/sesman.ini}
+        - {pkg: fastrdp-session, role: xrdp, src: gfx.toml.j2, dest: etc/xrdp/gfx.toml}
+        - {pkg: fastrdp-session, role: xrdp, src: xorg.conf.j2, dest: etc/X11/xrdp/xorg.conf}
+        - {pkg: fastrdp-server, role: base, src: nftables-fastrdp.nft.j2, dest: etc/nftables.d/fastrdp.nft}
+        - {pkg: fastrdp-server, role: identity, src: krb5-fastrdp.conf.j2, dest: etc/krb5.conf.d/fastrdp}
+        # AD and provider none (FreeIPA adds a [domain/...] section: docs/manual-setup.md, 3.6)
+        - {pkg: fastrdp-server, role: identity, src: sssd-fastrdp.conf.j2, dest: etc/sssd/conf.d/50-fastrdp.conf}
+
+    - name: BBR congestion control module at boot (tuning role)
+      ansible.builtin.copy:
+        content: "tcp_bbr\n"
+        dest: "{{ render_out }}/fastrdp-server/usr/lib/modules-load.d/fastrdp-bbr.conf"
+        mode: "0644"
+
+    - name: Vendor files (overridden by the same name in /etc)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/{{ item.role }}/templates/{{ item.src }}"
+        dest: "{{ render_out }}/fastrdp-server/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        pkg: fastrdp-server
+        ansible_managed: "{{ vendor_header }}"
+      loop:
+        - {role: base, src: sysctl-fastrdp.conf.j2, dest: usr/lib/sysctl.d/60-fastrdp.conf}
+        - {role: tuning, src: sysctl-fastrdp-tcp.conf.j2, dest: usr/lib/sysctl.d/61-fastrdp-tcp.conf}
+        - {role: base, src: 40-fastrdp-power.rules.j2, dest: usr/share/polkit-1/rules.d/40-fastrdp-power.rules}
+
+    - name: Resource limits (systemd drop-ins, as the tuning role writes them)
+      ansible.builtin.template:
+        src: "{{ roles_dir }}/tuning/templates/limits.conf.j2"
+        dest: "{{ render_out }}/fastrdp-server/usr/lib/systemd/system/{{ item.unit }}.d/50-fastrdp.conf"
+        mode: "0644"
+      vars:
+        pkg: fastrdp-server
+        ansible_managed: "{{ vendor_header }}"
+        limits_section: "{{ item.section }}"
+        limits_comment: "{{ item.comment }}"
+        limits_cpu_quota: "{{ item.cpu_quota }}"
+        limits_memory_max: "{{ item.memory_max }}"
+        limits_tasks_max: "{{ item.tasks_max }}"
+      loop: "{{ fastrdp_limit_units | map('combine', {'role': 'tuning', 'src': 'limits.conf.j2'}) | list }}"
+      loop_control:
+        label: "{{ item.unit }}"

@@ -1,0 +1,26 @@
+[Unit]
+Description=fastrdp: only the proxy may reach the back-end ports (nftables table inet fastrdp)
+Documentation=file:///usr/share/doc/fastrdp/manual-setup.md
+# The table loads on its own, without an include in /etc/nftables.conf. nftables.service
+# flushes the whole ruleset when it starts or reloads: load again after it.
+# Early, like nftables.service: before any network is up. The table names the user
+# _fastrdp-proxy (sysusers, /etc/passwd).
+DefaultDependencies=no
+After=local-fs.target systemd-sysusers.service nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+Before=network-pre.target fastrdp-proxy.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=/etc/nftables.d/fastrdp.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# the file deletes and recreates its own table only (fastrdp-defaults: /etc/nftables.d/fastrdp.nft)
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/fastrdp.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/fastrdp.nft
+ExecStop=-/usr/sbin/nft delete table inet fastrdp
+
+[Install]
+WantedBy=sysinit.target

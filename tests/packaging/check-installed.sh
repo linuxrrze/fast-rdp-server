@@ -53,12 +53,39 @@ check "xrdp-audio installed" test -x /usr/libexec/fastrdp/xrdp-audio
 check "xrdp-audio autostart entry is a conffile of fastrdp-session" \
     bash -c 'dpkg-query -W -f="\${Conffiles}\n" fastrdp-session | grep -q " /etc/xdg/autostart/fastrdp-xrdp-audio.desktop "'
 check "xrdp-audio does nothing outside xrdp sessions" env -u XRDP_SESSION /usr/libexec/fastrdp/xrdp-audio --autostart
-for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman fastrdp-termsrv-keytab; do
+for u in fastrdp-brokerd fastrdp-proxy fastrdp-webgate xrdp xrdp-sesman fastrdp-termsrv-keytab fastrdp-firewall; do
     check "$u.service shipped" test -f "/usr/lib/systemd/system/$u.service"
 done
 check "fastrdp-termsrv-keytab.path shipped" test -f /usr/lib/systemd/system/fastrdp-termsrv-keytab.path
+# fastrdp-firewall (fastrdp-server) is enabled: it protects the back-end ports
 check "units installed disabled (no enablement links)" \
-    bash -c '! ls /etc/systemd/system/*.wants/ 2>/dev/null | grep -E "^(fastrdp-|xrdp)"'
+    bash -c '! ls /etc/systemd/system/*.wants/ 2>/dev/null | grep -E "^(fastrdp-|xrdp)" | grep -vx fastrdp-firewall.service'
+check "fastrdp-firewall.service enabled" test -L /etc/systemd/system/sysinit.target.wants/fastrdp-firewall.service
+
+# Default configuration (fastrdp-defaults): installed by the package scripts, as shipped
+check "fastrdp-defaults status" /usr/sbin/fastrdp-defaults status
+cp "$T_OUT" "$T/defaults-status"
+for f in /etc/fastrdp/broker.toml /etc/fastrdp/proxy.ini /etc/nftables.d/fastrdp.nft /etc/krb5.conf.d/fastrdp \
+    /etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini /etc/xrdp/gfx.toml /etc/X11/xrdp/xorg.conf \
+    /etc/xrdp/startwm.sh /etc/pam.d/xrdp-sesman; do
+    check "$f: fastrdp default" grep -Eq "^[^ ]+ +$f +fastrdp default\$" "$T/defaults-status"
+done
+check "/etc/fastrdp/broker.toml root-only" bash -c '[ "$(stat -c %a:%U /etc/fastrdp/broker.toml)" = 600:root ]'
+check "/etc/fastrdp/proxy.ini readable by the proxy" \
+    bash -c '[ "$(stat -c %a:%U:%G /etc/fastrdp/proxy.ini)" = 640:root:_fastrdp-proxy ]'
+check "/etc/xrdp/startwm.sh executable" test -x /etc/xrdp/startwm.sh
+check "fastrdp-brokerd --check accepts the default broker.toml" /usr/sbin/fastrdp-brokerd --check
+for f in /usr/lib/sysctl.d/60-fastrdp.conf /usr/lib/sysctl.d/61-fastrdp-tcp.conf \
+    /usr/lib/modules-load.d/fastrdp-bbr.conf /usr/share/polkit-1/rules.d/40-fastrdp-power.rules \
+    /usr/lib/systemd/system/user-.slice.d/50-fastrdp.conf; do
+    check "fastrdp-server: $f" test -f "$f"
+done
+check "fastrdp-check-host --ports" /usr/sbin/fastrdp-check-host --ports
+output_has "fastrdp-check-host reads the default ports" "^proxy=3389 xrdp=3390$"
+check "fastrdp-front-cert installed" test -x /usr/sbin/fastrdp-front-cert
+check "proxy unit creates a missing front certificate" \
+    grep -qx 'ExecStartPre=-+/usr/sbin/fastrdp-front-cert --if-missing' /usr/lib/systemd/system/fastrdp-proxy.service
+check "archive key in /usr/share/keyrings" test -s /usr/share/keyrings/fast-rdp-server-archive-keyring.asc
 
 # TERMSRV keytab helpers (fastrdp-broker): packaged in /usr/sbin, settings in /etc/fastrdp
 for s in fastrdp-termsrv-check fastrdp-termsrv-keytab; do
@@ -76,15 +103,13 @@ expect_exit 1 "fastrdp-termsrv-keytab: missing host keytab fails" \
 output_has "fastrdp-termsrv-keytab: names the missing keytab" "cannot read /nonexistent"
 
 # xrdp site configuration (fastrdp-xrdp): not conffiles (no dpkg prompts on upgrades),
-# created from upstream's defaults by postinst
+# upstream's defaults in default-config; fastrdp-session put fastrdp's versions there
 XRDP_SITE="/etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini /etc/xrdp/gfx.toml /etc/xrdp/startwm.sh
 /etc/X11/xrdp/xorg.conf /etc/pam.d/xrdp-sesman"
 conffiles=$(dpkg-query -W -f='${Conffiles}\n' fastrdp-xrdp)
 for f in $XRDP_SITE; do
     check "$f: not a conffile of fastrdp-xrdp" bash -c '! grep -q " $1 " <<<"$2"' _ "$f" "$conffiles"
     check "$f: default in /usr/share/fastrdp-xrdp/default-config" test -f "/usr/share/fastrdp-xrdp/default-config$f"
-    check "$f: created by postinst" cmp "$f" "/usr/share/fastrdp-xrdp/default-config$f"
 done
-check "startwm.sh executable" test -x /etc/xrdp/startwm.sh
 check "other xrdp files stay conffiles (km-*.ini)" bash -c 'grep -q " /etc/xrdp/km-00000407.ini " <<<"$1"' _ "$conffiles"
 finish

@@ -21,11 +21,19 @@ desktop_picker_when_running = "{{ fastrdp_desktop_picker_when_running }}"
 {% endif %}
 
 [auth]
+{% if fastrdp_realm | length > 0 %}
 realms = ["{{ fastrdp_realm | upper }}"]
-# false = SSSD names are "alice@{{ fastrdp_domain | lower }}" (fastrdp_sssd_fully_qualified_names):
+{% else %}
+# realms: not set = default_realm of /etc/krb5.conf (fastrdp-brokerd --check shows it)
+{% endif %}
+# false = SSSD names are "alice@{{ (fastrdp_domain or 'example.com') | lower }}" (fastrdp_sssd_fully_qualified_names):
 # that name first, so a local account "alice" never shadows the directory user.
 strip_realm = {{ (not (fastrdp_sssd_fully_qualified_names | bool)) | lower }}
+{% if fastrdp_domain | length > 0 %}
 domains = ["{{ fastrdp_domain | lower }}"]
+{% else %}
+# domains: not set = the domains of /etc/sssd/sssd.conf ([sssd] domains)
+{% endif %}
 pam_service = "fastrdp"
 allow_groups = {{ fastrdp_allow_groups | to_json }}
 allow_tls_password_login = {{ fastrdp_allow_tls_logins | bool | lower }}

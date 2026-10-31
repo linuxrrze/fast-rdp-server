@@ -35,11 +35,20 @@ mkdeb() {  # mkdeb OUTDIR NAME VERSION ARCH
         "$2" "$3" "$4" > "$d/DEBIAN/control"
     dpkg-deb --root-owner-group -Zxz --build "$d" "$1/$2_$3_$4.deb" >/dev/null
 }
+mkkeyring() {  # mkkeyring OUTDIR VERSION KEY: fastrdp-archive-keyring with KEY
+    local d=$T/build/keyring_$2_$3
+    mkdir -p "$d/DEBIAN" "$d/usr/share/keyrings" "$1"
+    gpg --armor --export "$3" > "$d/usr/share/keyrings/fast-rdp-server-archive-keyring.asc"
+    printf 'Package: fastrdp-archive-keyring\nVersion: %s\nArchitecture: all\nSection: misc\nPriority: optional\nMaintainer: Test <test@example.invalid>\nDescription: test keyring\n' \
+        "$2" > "$d/DEBIAN/control"
+    dpkg-deb --root-owner-group -Zxz --build "$d" "$1/fastrdp-archive-keyring_$2_all.deb" >/dev/null
+}
 mkset() {  # mkset DIR FASTRDP_VERSION FREERDP_VERSION [nosource-for-xrdp]
     local cn sfx
     for cn in resolute:ubuntu26.04 trixie:deb13; do
         sfx=${cn#*:} cn=${cn%:*}
         mkdeb "$1/$cn" fastrdp-broker "$2~$sfx" all
+        mkkeyring "$1/$cn" "$2~$sfx" "$KEY"
         mkdeb "$1/$cn" fastrdp-freerdp3 "$3~$sfx" amd64
         mkdeb "$1/$cn" fastrdp-freerdp3-dbgsym "$3~$sfx" amd64
         # an unchanged vendored build: the identical file in every set (CI cache hit)
@@ -86,8 +95,9 @@ expect_exit 0 "stable: publish into an empty site" "$PUB" stable "$T/debs1" "$T/
 S1=$T/site1
 for cn in resolute trixie; do
     sfx=$([ $cn = trixie ] && echo deb13 || echo ubuntu26.04)
-    check "stable: $cn-stable has broker, freerdp3, xrdp" test "$(pkgs "$S1" $cn-stable)" = "$(printf '%s\n' \
-        "fastrdp-broker 0.2.0~$sfx" "fastrdp-freerdp3 3.32.2-1~$sfx" "fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-1~$sfx")"
+    check "stable: $cn-stable has keyring, broker, freerdp3, xrdp" test "$(pkgs "$S1" $cn-stable)" = "$(printf '%s\n' \
+        "fastrdp-archive-keyring 0.2.0~$sfx" "fastrdp-broker 0.2.0~$sfx" "fastrdp-freerdp3 3.32.2-1~$sfx" \
+        "fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-1~$sfx")"
     check "stable: $cn-testing is empty" test -z "$(pkgs "$S1" $cn-testing)"
 done
 check "stable: no dbgsym packages in the pool" test -z "$(find "$S1/pool" -name '*dbgsym*')"
@@ -100,6 +110,9 @@ check "stable: sources for both vendored packages per distro" test "$(find "$S1/
 check "stable: index.html names the URL and fingerprint" \
     bash -c 'grep -q "https://example.invalid/repo/fast-rdp-server-archive-keyring.asc" "$1" && grep -q "$2" "$1"' _ "$S1/index.html" "$KEY"
 check "stable: .nojekyll" test -f "$S1/.nojekyll"
+check "stable: keyring package under its fixed name" \
+    bash -c 'dpkg-deb -f "$1" Package | grep -qx fastrdp-archive-keyring' _ "$S1/fastrdp-archive-keyring.deb"
+check "stable: index.html shows the keyring bootstrap" grep -q "apt install ./fastrdp-archive-keyring.deb" "$S1/index.html"
 
 # --- 2. testing publish from main: stable carried over unchanged
 mkset "$T/debs2" 0.2.0+git20261020120000.abcdef1 3.32.3-1
@@ -149,6 +162,11 @@ cp -a "$T/debs1/resolute/source" "$T/debs5/resolute/"
 expect_exit 1 "refused: no packages for one distro" "$PUB" stable "$T/debs5" "$T/old4" "$T/site5"
 output_has "refusal names the suite" "no packages for trixie-stable"
 expect_exit 2 "refused: unknown channel" "$PUB" nightly "$T/debs1" "$T/old4" "$T/site5"
+cp -a "$T/debs1" "$T/debs6"
+rm "$T/debs6/trixie/fastrdp-archive-keyring_"*.deb
+mkkeyring "$T/debs6/trixie" 0.2.0~deb13 "$OTHER"
+expect_exit 1 "refused: keyring package with another key" "$PUB" stable "$T/debs6" "$T/old4" "$T/site6"
+output_has "refusal names the keyring package" "fastrdp-archive-keyring_0.2.0~deb13_all.deb has key $OTHER"
 expect_exit nonzero "refused: no signing key id" env -u APT_SIGNING_KEY_ID "$PUB" stable "$T/debs1" "$T/old4" "$T/site5"
 expect_exit nonzero "refused: wrong passphrase" env APT_SIGNING_KEY_PASSPHRASE=wrong "$PUB" stable "$T/debs1" "$T/old4" "$T/site5"
 

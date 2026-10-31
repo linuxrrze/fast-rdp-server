@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+set -e
+
+# Before #DEBHELPER#, which starts fastrdp-firewall.service: it loads
+# /etc/nftables.d/fastrdp.nft. Also when sssd arrives later (fastrdp-server.triggers).
+case "$1" in
+    configure|triggered)
+        "$DPKG_ROOT/usr/sbin/fastrdp-defaults" install fastrdp-server
+        ;;
+esac
+
+#DEBHELPER#
+
+# Apply the sysctl and module settings now (they are read at every boot); by name, so
+# an override of the same name in /etc wins. Not possible in containers: no error.
+if [ "$1" = configure ] && [ -z "$DPKG_ROOT" ] && [ -d /run/systemd/system ]; then
+    modprobe -q tcp_bbr 2>/dev/null || true
+    /usr/lib/systemd/systemd-sysctl 60-fastrdp.conf 61-fastrdp-tcp.conf 2>/dev/null || true
+fi

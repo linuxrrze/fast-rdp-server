@@ -1,0 +1,174 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# fastrdp-defaults: fastrdp's default configuration files, kept like conffiles but
+# without dpkg's questions (the Ansible roles replace the same files).
+#
+#   fastrdp-defaults install PACKAGE     (maintainer scripts) install/update the defaults
+#   fastrdp-defaults purge PACKAGE       (postrm purge) remove the unchanged ones
+#   fastrdp-defaults status [PACKAGE...] state of every file
+#   fastrdp-defaults diff [FILE...]      changes against fastrdp's version (diff -u)
+#
+# Each package lists its files in /usr/share/PACKAGE/defaults.list:
+#   DEST MODE OWNER GROUP SOURCE [if=PATH] [also=FILE]
+# DEST gets SOURCE (mode, owner, group) when it is missing, when it still is the version
+# installed last time (unchanged since), or when it equals FILE (also=: e.g. upstream's
+# default that an older package copied there). A changed DEST is never touched; the
+# command says once per new fastrdp version where fastrdp's version is. if=: only when
+# PATH exists (files for an optional component).
+# State: /var/lib/fastrdp/defaults/PACKAGE, lines "INSTALLED-SHA256 SHIPPED-SHA256 DEST"
+# (INSTALLED "-": the file there was not ours). DPKG_ROOT is honoured.
+set -eu
+
+ROOT=${DPKG_ROOT:-}
+LISTDIR=${FASTRDP_DEFAULTS_LISTDIR:-/usr/share}
+STATEDIR=$ROOT/var/lib/fastrdp/defaults
+
+usage() {
+    echo "usage: fastrdp-defaults install|purge PACKAGE | status [PACKAGE...] | diff [FILE...]" >&2
+    exit 2
+}
+
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
+
+# entries PACKAGE: the list without comments, one entry per line
+entries() {
+    list=$ROOT$LISTDIR/$1/defaults.list
+    [ -f "$list" ] || { echo "fastrdp-defaults: no $LISTDIR/$1/defaults.list" >&2; return 1; }
+    sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$list"
+}
+
+# packages: every package with a defaults.list
+packages() {
+    for l in "$ROOT$LISTDIR"/*/defaults.list; do
+        [ -f "$l" ] || continue
+        basename "$(dirname "$l")"
+    done
+}
+
+# parse_opts OPTS...: sets cond and also
+parse_opts() {
+    cond='' also=''
+    for o in "$@"; do
+        case $o in
+            if=*) cond=${o#if=} ;;
+            also=*) also=${o#also=} ;;
+            *) echo "fastrdp-defaults: unknown option $o" >&2; return 1 ;;
+        esac
+    done
+}
+
+# state_get PACKAGE DEST: "INSTALLED SHIPPED" or nothing
+state_get() {
+    [ -f "$STATEDIR/$1" ] || return 0
+    awk -v d="$2" '$3 == d { print $1, $2; exit }' "$STATEDIR/$1"
+}
+
+# state_set PACKAGE DEST INSTALLED SHIPPED
+state_set() {
+    mkdir -p "$STATEDIR"
+    f=$STATEDIR/$1
+    touch "$f"
+    awk -v d="$2" '$3 != d' "$f" > "$f.new"
+    echo "$3 $4 $2" >> "$f.new"
+    mv "$f.new" "$f"
+}
+
+put() {   # put SOURCE DEST MODE OWNER GROUP
+    mkdir -p "$(dirname "$2")"
+    tmp=$2.fastrdp-new
+    cp "$1" "$tmp"
+    chmod "$3" "$tmp"
+    # maintainer scripts run as root; the tests do not
+    if [ "$(id -u)" = 0 ]; then chown "$4:$5" "$tmp"; fi
+    mv -f "$tmp" "$2"
+}
+
+cmd_install() {
+    pkg=$1
+    entries "$pkg" | while read -r dest mode owner group src opts; do
+        # shellcheck disable=SC2086 # options are separate words
+        parse_opts $opts
+        [ -z "$cond" ] || [ -e "$ROOT$cond" ] || continue
+        new=$(sha "$ROOT$src")
+        st=$(state_get "$pkg" "$dest")
+        inst=${st% *} shipped=${st#* }
+        if [ ! -e "$ROOT$dest" ] && [ ! -L "$ROOT$dest" ]; then
+            put "$ROOT$src" "$ROOT$dest" "$mode" "$owner" "$group"
+            echo "fastrdp-defaults: installed $dest"
+            state_set "$pkg" "$dest" "$new" "$new"
+            continue
+        fi
+        cur=$(sha "$ROOT$dest")
+        if [ "$cur" = "$new" ]; then
+            state_set "$pkg" "$dest" "$new" "$new"
+        elif [ "$cur" = "$inst" ] || { [ -n "$also" ] && [ -f "$ROOT$also" ] && [ "$cur" = "$(sha "$ROOT$also")" ]; }; then
+            put "$ROOT$src" "$ROOT$dest" "$mode" "$owner" "$group"
+            echo "fastrdp-defaults: updated $dest"
+            state_set "$pkg" "$dest" "$new" "$new"
+        else
+            if [ "$shipped" != "$new" ]; then
+                echo "fastrdp-defaults: kept $dest (changed locally); fastrdp's version: $src (fastrdp-defaults diff $dest)"
+            fi
+            state_set "$pkg" "$dest" "${inst:--}" "$new"
+        fi
+    done
+}
+
+cmd_purge() {
+    pkg=$1
+    [ -f "$STATEDIR/$pkg" ] || return 0
+    while read -r inst _ dest; do
+        if [ "$inst" != - ] && [ -f "$ROOT$dest" ] && [ "$(sha "$ROOT$dest")" = "$inst" ]; then
+            rm -f "$ROOT$dest"
+            echo "fastrdp-defaults: removed $dest"
+        fi
+    done < "$STATEDIR/$pkg"
+    rm -f "$STATEDIR/$pkg"
+    rmdir "$STATEDIR" 2>/dev/null || true
+}
+
+cmd_status() {
+    # shellcheck disable=SC2046 # package names have no spaces
+    [ $# -gt 0 ] || set -- $(packages)
+    for pkg in "$@"; do
+        entries "$pkg" | while read -r dest _ _ _ src opts; do
+            # shellcheck disable=SC2086
+            parse_opts $opts
+            if [ -n "$cond" ] && [ ! -e "$ROOT$cond" ]; then
+                state="not used ($cond missing)"
+            elif [ ! -e "$ROOT$dest" ]; then
+                state="missing"
+            elif [ "$(sha "$ROOT$dest")" = "$(sha "$ROOT$src")" ]; then
+                state="fastrdp default"
+            else
+                state="changed locally (fastrdp-defaults diff $dest)"
+            fi
+            printf '%-16s %-34s %s\n' "$pkg" "$dest" "$state"
+        done
+    done
+}
+
+cmd_diff() {
+    for pkg in $(packages); do
+        entries "$pkg" | while read -r dest _ _ _ src opts; do
+            if [ $# -gt 0 ]; then
+                want=
+                for f in "$@"; do [ "$f" = "$dest" ] && want=1; done
+                [ -n "$want" ] || continue
+            fi
+            [ -e "$ROOT$dest" ] || continue
+            diff -u --label "$src (fastrdp)" --label "$dest" "$ROOT$src" "$ROOT$dest" || true
+        done
+    done
+}
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+    install|purge) [ $# -eq 1 ] || usage; "cmd_$cmd" "$1" ;;
+    status|diff) "cmd_$cmd" "$@" ;;
+    -h|--help) sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) usage ;;
+esac

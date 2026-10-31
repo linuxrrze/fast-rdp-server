@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Marcel Ritter <marcel@linux-ng.de>
+# Installed as /usr/share/fastrdp-proxy-module/defaults.list; read by fastrdp-defaults(8):
+#   DEST MODE OWNER GROUP SOURCE [if=PATH] [also=FILE]
+/etc/fastrdp/proxy.ini 0640 root _fastrdp-proxy /usr/share/fastrdp-proxy-module/defaults/etc/fastrdp/proxy.ini
