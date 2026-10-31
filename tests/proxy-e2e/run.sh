@@ -221,19 +221,21 @@ E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 ratelimited good ""
 E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23400 burstoff good "" > burstoff.out 2>&1 || true
 E2E_BURST=all E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23401 redirectall good "" > redirectall.out 2>&1 || true
 # the desktop picker and the code field over GFX (proxy J)
-E2E_GFX=1 E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23399 pickergfx good "" > pickergfx.out 2>&1 &
+E2E_GFX=1 E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23399 pickergfx good "" > pickergfx.out 2>&1 &
 gfxpick=$!
 E2E_GFX=1 E2E_KEEP_S=12 E2E_KEYS=1,2,3,4,5,6 timeout 30 ./client 127.0.0.1 23399 codegfx good "" > codegfx.out 2>&1 || true
 wait $gfxpick || true
 # Field report (A3/A5): the desktop picker with WaitingScreenObserve on (proxy F). Both read
 # the client during the wait; the picker must show, take the key and hand the input back
-E2E_KEEP_S=12 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23395 pickerobserve good "" > pickerobserve.out 2>&1 || true
+E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23395 pickerobserve good "" > pickerobserve.out 2>&1 || true
 # Desktop picker (proxy E): the fake broker prompts 1.5 s after the login (the MFA wait),
-# the clients answer 2.5 s after connecting, in parallel. Keys typed before the prompt and
-# a key released that went down before it do not count.
+# the clients answer 4.5 s after connecting, in parallel. Keys typed before the prompt and
+# a key released that went down before it do not count. With some 25 clients starting at
+# once, CI hosts showed the prompt about 2 s after connecting: answers at 2.5 s
+# sometimes came before it and were dropped as early keys (pickerearly, 2026-10-31).
 picker() { # user [VAR=value ...]
     local u=$1; shift
-    env E2E_KEEP_S=12 "$@" timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
+    env E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 "$@" timeout 30 ./client 127.0.0.1 23394 "$u" good "" > "$u.out" 2>&1 || true
 }
 pids=()
 picker pickerdigit E2E_KEYS=2 & pids+=($!)
@@ -244,9 +246,9 @@ picker pickermoved E2E_KEYS=down & pids+=($!)
 picker pickerclick E2E_CLICK=+1 & pids+=($!)
 picker pickerearly E2E_EARLY_KEYS=3,enter,d4 E2E_KEYS=r4,u2 & pids+=($!)
 picker pickerkeypad E2E_NUMLOCK=1 E2E_KEYS=kp3 & pids+=($!)
-picker pickergone E2E_GIVE_UP_S=3 & pids+=($!)
+picker pickergone E2E_GIVE_UP_S=4 & pids+=($!)
 # a Shutdown Request while the picker shows (no session yet): the proxy closes at once
-picker pickershutdown E2E_SHUTDOWN_AT_MS=2500 & pids+=($!)
+picker pickershutdown E2E_SHUTDOWN_AT_MS=4500 & pids+=($!)
 # static channel data read during the picker: passed on below the module's cap (4 MiB),
 # the login abandoned above it (the proxy's queue for the back-end has no limit)
 picker pickerchan E2E_CHANNEL_DATA=65536 E2E_KEYS=2 & pids+=($!)
