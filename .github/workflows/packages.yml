@@ -244,18 +244,18 @@ jobs:
             gcc libc6-dev libcjson-dev libkrb5-dev openssl python3 \
             krb5-kdc krb5-admin-server krb5-user krb5-pkinit softhsm2 opensc p11-kit p11-kit-modules
       - name: TLS (run.sh)
-        run: tests/proxy-e2e/run.sh
+        run: tests/annotate.sh tests/proxy-e2e/run.sh
       - name: Kerberos NLA (run_nla.sh)
         if: ${{ !cancelled() }}
-        run: tests/proxy-e2e/run_nla.sh
+        run: tests/annotate.sh tests/proxy-e2e/run_nla.sh
       - name: Smartcard PKINIT via p11-kit (run_smartcard.sh)
         if: ${{ !cancelled() }}
-        run: tests/proxy-e2e/run_smartcard.sh
+        run: tests/annotate.sh tests/proxy-e2e/run_smartcard.sh
       - name: Smartcard PKINIT via SoftHSM directly (slot id fix, patches/freerdp)
         if: ${{ !cancelled() }}
         env:
           SC_MODULE: softhsm
-        run: tests/proxy-e2e/run_smartcard.sh
+        run: tests/annotate.sh tests/proxy-e2e/run_smartcard.sh
 
   # Informational: is the distribution's MIT krb5 affected by the SPNEGO mechListMIC
   # regression (docs/vendoring.md)? "Affected" is a warning; any other failure fails.
