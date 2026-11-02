@@ -18,9 +18,9 @@ Tick an item when its results are attached; update the backlog row afterwards.
       `fastrdp_proxy_input_trace: true`, `fastrdp_proxy_waiting_screen_observe: false`,
       `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on);
       `fastrdp_proxy_waiting_screen_gfx` and `fastrdp_proxy_logon_notify` at their
-      default `true` for item H (`fastrdp_proxy_self_redirect` is off by default since
-      0.7.12 and gone with the module built against `fastrdp-freerdp3` 3.33.0), all
-      `false` for items A, C and F (they look for the cause without the mitigations).
+      default `true` for items H and I, both `false` for items A, C and F (they look for
+      the cause without the mitigations). Remove `fastrdp_proxy_self_redirect` from the
+      inventory: gone since 0.7.13, the role ignores it.
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
@@ -29,8 +29,10 @@ Tick an item when its results are attached; update the backlog row afterwards.
 - [ ] Logs: `journalctl -o short-precise -u fastrdp-proxy -u fastrdp-brokerd
       -u xrdp -u xrdp-sesman` per test, `/var/log/xrdp.log`; on Windows the event log
       *Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational*.
-- [ ] `sudo tests/smoke/check-host.sh TESTUSER`: all `ok` (includes the A7 template
-      check and the Kerberos settings of K2).
+- [ ] `sudo fastrdp-check-host TESTUSER` (since 0.7.12 in `fastrdp-broker`; on a host
+      deployed with `fastrdp_install_method: build`, `sudo tests/smoke/check-host.sh
+      TESTUSER` from the checkout): all `ok` (includes the A7 template check and the
+      Kerberos settings of K2).
 
 ## 1. A5: mstsc reconnect in the same process (priority)
 
@@ -49,7 +51,7 @@ Done on 2026-10-26 (0.7.7/0.7.8, mstsc build 26100, Windows 11):
       Not conclusive yet: the xfce desktop of connection 1 was black itself (backlog A10)
       and nothing shows whether mstsc started GFX in connection 1.
 
-Next session (in this order; H first, then A and B):
+Next session (in this order; I and H first, then A and B):
 
 - [ ] **Before every run:** restart mstsc; `fastrdp_proxy_tls_keylog: true`; on the proxy
       host `sudo tests/lab/a5-collect.sh start <run>` before connection 1 (tcpdump and the
@@ -75,10 +77,30 @@ Next session (in this order; H first, then A and B):
       [a5-capture](a5-capture-2026-10-26.md#open-source-projects-2026-10-27)). If
       available, repeat connections 1 and 2 on a fully patched Windows 11 and with the
       Windows App.
-- [ ] **H. A5 mitigations of 0.7.11** (all three on by default; untested with mstsc;
+- [ ] **I. FreeRDP 3.33.0 (0.7.13) with mstsc:** the proxy now runs on FreeRDP 3.33.0
+      (13 security fixes, [vendoring.md](vendoring.md)); e2e passes with FreeRDP clients
+      only. mstsc on Windows 11, defaults:
+      1. A TLS login with the waiting screen (code field or web approval), a Kerberos NLA
+         login (with AD: user-to-user, K10) and, if set up, a smart card login: each
+         reaches its desktop.
+      2. The desktop picker and the code field take mstsc's keys (one round of
+         [lab-waiting-screen-input.md §4](lab-waiting-screen-input.md) R1 and F1).
+      3. A5 still fixed: connection 1 into the session, X, *Connect* again in the same
+         window: the waiting screen, not black. The proxy journal of connection 2 now
+         shows FreeRDP's `Input event before activation, ignoring` for mstsc's input
+         burst (expected, harmless); note how many.
+      4. Session end: since 0.7.13 the proxy's Disconnect Provider Ultimatum says
+         "provider initiated", before always "user requested" (FreeRDP #13873,
+         [rdp-spec-conformance.md](rdp-spec-conformance.md#5-session-end-refusals-and-error-info)).
+         Log out inside the session, and separately let the back-end end it
+         (`loginctl terminate-session`): note mstsc's message and whether it stays open
+         (compare item H step 5), and the error code in mstsc's event log.
+      5. X in the connection bar during a session: mstsc's own disconnect dialog
+         (Shutdown Request Denied, `patches/freerdp/0008`, refreshed for 3.33.0).
+- [ ] **H. A5 mitigations** (0.7.11: three; since 0.7.13 two, both on by default;
       [a5-capture](a5-capture-2026-10-26.md#mitigations-in-0711-2026-10-28),
       [auth-matrix.md](auth-matrix.md#mstsc-reconnects-backlog-a5)):
-      1. Defaults (all on), GNOME or xfce: connection 1 into the session. If the first
+      1. Defaults (both on), GNOME or xfce: connection 1 into the session. If the first
          login already fails or stays black after the hand-over, mstsc refuses the
          back-end's second Graphics channel: `fastrdp_proxy_waiting_screen_gfx: false`,
          deploy, repeat. Then X and *Connect* again in the same mstsc window: the panel,
@@ -87,19 +109,15 @@ Next session (in this order; H first, then A and B):
          or the fallback with its reason (`waiting screen as Bitmap Updates, not over GFX:
          …`, `waiting screen over GFX not possible …`); note the delay before the broker
          request.
-      3. (0.7.11 only; no self-redirection since `fastrdp-freerdp3` 3.33.0) On connection 2: `self-redirection: client … sent input before its first Font
-         List …` and the redirected connection right after it (`… not redirected again`);
-         whether mstsc asks for credentials again (saved credentials, and NLA with typed
-         ones) and whether the redirected connection shows the panel.
-      4. The Windows App (macOS, iOS) and Remmina, two connections each: no
-         `self-redirection:` line (a redirect there is a false positive; note the input
-         counts logged).
-      5. Isolation, each in its own run with the other two on:
-         `fastrdp_proxy_waiting_screen_gfx: false`, `fastrdp_proxy_self_redirect: false`,
-         `fastrdp_proxy_logon_notify: false` (deploy, restart mstsc): which switch makes
-         connection 2 black again. Also note mstsc's connection history after a login
-         (`fastrdp_proxy_logon_notify`).
-      6. First result (2026-10-29, all on): mstsc closes when the session ends, after a
+      3. The Windows App (macOS, iOS) and Remmina, two connections each: the panel over
+         GFX (or the logged fallback), and the second connection not black.
+      4. Isolation, each in its own run with the other on:
+         `fastrdp_proxy_waiting_screen_gfx: false`, `fastrdp_proxy_logon_notify: false`
+         (deploy, restart mstsc): which switch makes connection 2 black again. Also note
+         mstsc's connection history after a login (`fastrdp_proxy_logon_notify`).
+         (0.7.11 had a third switch, the self-redirection; the 2026-10-29 run below
+         showed it did not help, and 0.7.13 removed it.)
+      5. First result (2026-10-29, 0.7.11, all three on): mstsc closes when the session ends, after a
          logout and after X alike, so step 1's *Connect* in the same window no longer
          happens ([a5-capture](a5-capture-2026-10-26.md#first-0711-result-2026-10-29)).
          - Exit or crash: Event Viewer → Windows Logs → Application, at that time,
@@ -135,7 +153,7 @@ Next session (in this order; H first, then A and B):
       Then **after the black connection 2, *Connect* again in the very same window** (do
       not close mstsc) and note the process id of each connection in the event log: a
       panel there means a connection without a session clears mstsc's state (the basis of
-      the self-redirection idea, [a5-capture](a5-capture-2026-10-26.md#spec-check-2026-10-27));
+      the self-redirection idea, dropped in 0.7.13, [a5-capture](a5-capture-2026-10-26.md#spec-check-2026-10-27));
       black again means only a new mstsc process does. With item G's codec settings the
       xfce desktop of connection 1 is probably visible too.
 - [ ] **B. Reconnect grace (mitigation, any cause):** `fastrdp_mfa_reconnect_grace: 900`
@@ -207,8 +225,29 @@ Next session (in this order; H first, then A and B):
 - [ ] Bring back: proxy and broker journals, captures, `ss` logs, key logs, mstsc's event
       logs, the notes.
 
-## 2. Fixes of 0.7.5 / 0.7.6
+## 2. Fixes of 0.7.5 / 0.7.6, packages of 0.7.12
 
+- [ ] **Manual setup with the packages** (0.7.12: default configuration, `fastrdp-server`,
+      `fastrdp-archive-keyring`; [manual-setup.md](manual-setup.md)), on a fresh
+      Debian 13 or Ubuntu 26.04 VM without Ansible:
+      1. `fastrdp-archive-keyring.deb` from the repository's start page, `apt install
+         ./fastrdp-archive-keyring.deb`: `/etc/apt/sources.list.d/fast-rdp-server.sources`
+         names `<codename>-stable`; `apt update` verifies the signature.
+      2. `fastrdp-check-host --preflight` (before and after the domain join): every line
+         `ok` or an expected `warn`; note false alarms.
+      3. `apt install fastrdp-server`: `fastrdp-defaults status` lists every file as
+         `fastrdp default`; `systemctl is-enabled fastrdp-firewall` → `enabled`;
+         `nft list table inet fastrdp`; every other daemon disabled.
+      4. The manual-setup sections up to *14 First connection*: a login from mstsc.
+         Note every step that needed more than the doc says.
+      5. Upgrade: change one default file (e.g. a comment in `/etc/xrdp/sesman.ini`),
+         install the next build (testing or the next release): the file is kept,
+         `fastrdp-defaults status` says `changed locally` and `fastrdp-defaults diff`
+         shows the difference; if the new build ships a different default for it, apt
+         prints `kept … (changed locally)` once.
+- [ ] **Ansible host upgraded to 0.7.13:** `dpkg -l 'fast*'` after the deploy; on a host
+      with `fastrdp_install_method: apt`, `fastrdp-defaults status` reports the
+      Ansible-written files as `changed locally` (kept, never replaced).
 - [ ] **A7** (X11 via xrdp): log in to xfce and to the wlroots desktop end to end. `ls -ld
       /run/xrdp/<uid>` shows group `xrdp`; no `Permission denied` in `/var/log/xrdp.log`.
 - [ ] **A6** (GNOME beside X11): with an xfce session running, the picker marks xfce
