@@ -7,8 +7,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.11** (0.7.10 lacks the three A5 mitigations of
-      item H, 0.7.9 also the fill-tiles lab xorgxrdp variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
+- [ ] Host on **fast-rdp-server 0.7.12** (0.7.11 has `SelfRedirect` on by default,
+      0.7.10 lacks the three A5 mitigations of item H, 0.7.9 also the fill-tiles lab xorgxrdp variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
       0.7.7 the reactivation switch of A5, 0.7.6 also the TLS key log),
       `fastrdp-freerdp3 3.32.2-8`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.

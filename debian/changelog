@@ -1,3 +1,40 @@
+fast-rdp-server (0.7.12) unstable; urgency=medium
+
+  * Proxy module: [FastRDP] SelfRedirect (fastrdp_proxy_self_redirect) off
+    by default. Lab 2026-10-29 with mstsc: WaitingScreenGfx alone fixes A5
+    (the second Connect in the same mstsc is no longer black); a
+    self-redirected mstsc sends the same input burst, so the redirection
+    does not help. LogonNotify makes mstsc close after a logout or X.
+  * Packages ship a working default configuration: fastrdp-defaults(8)
+    installs broker.toml, proxy.ini and the xrdp, Xorg and PAM files where
+    missing, updates unchanged files on upgrades, keeps local changes (with
+    a pointer to "fastrdp-defaults diff") and removes unchanged files on
+    purge; the defaults are the Ansible role templates rendered with the
+    role defaults (make defaults).
+  * New package fastrdp-server: depends on all fastrdp packages, chrony,
+    nftables and polkit, recommends realmd/sssd/adcli; ships the nftables
+    table with its own unit (fastrdp-firewall.service), sysctl and BBR
+    settings, resource limits for user slices and sessions, the polkit
+    power rule, and krb5/sssd snippets.
+  * New package fastrdp-archive-keyring: the APT signing key and a
+    deb822 source for <codename>-stable (trixie, resolute); publish.sh
+    checks that the packaged key is the signing key.
+  * fastrdp-proxy-module: fastrdp-front-cert(8) creates a self-signed
+    front certificate where none exists (also before the proxy starts).
+  * Broker: Kerberos realms and AD domains default to krb5.conf's
+    default_realm and sssd.conf's domains when broker.toml has none.
+  * fastrdp-broker: tests/smoke/check-host.sh as fastrdp-check-host(8),
+    with --preflight: OS, FQDN and short name, DNS and SRV records, time
+    sync, ports, the firewall table and the default configuration's status.
+  * Docs: manual-setup.md rewritten around the packages and their
+    defaults; its configuration blocks are compared with the templates in
+    the tests.
+  * Tests and CI: desktop picker and code field e2e clients send input
+    later (flaky against a slow prompt); e2e FAIL lines as annotations;
+    actions/checkout v7.0.1.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 02 Nov 2026 07:05:21 +0100
+
 fast-rdp-server (0.7.11) unstable; urgency=medium
 
   * Proxy module, backlog A5 (mstsc black on the next Connect in the same
