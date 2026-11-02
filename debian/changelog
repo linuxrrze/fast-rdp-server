@@ -1,3 +1,19 @@
+fast-rdp-server (0.7.13) unstable; urgency=medium
+
+  * fastrdp-freerdp3 3.33.0-1: FreeRDP 3.33.0 with fixes for 13 security
+    advisories; the patch series still applies (0008 refreshed).
+  * Proxy module: [FastRDP] SelfRedirect (fastrdp_proxy_self_redirect)
+    removed. FreeRDP 3.33.0 drops input before activation, which it keyed
+    on, and the lab showed it did not help A5. An inventory that still sets
+    fastrdp_proxy_self_redirect is ignored.
+  * Proxy module: the Disconnect Provider Ultimatum now carries "provider
+    initiated" when the proxy ends a connection (FreeRDP #13873; before,
+    every Ultimatum said "user requested").
+  * Docs and tests follow (e2e: a client with input before its first Font
+    List logs in normally).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 02 Nov 2026 14:44:33 +0100
+
 fast-rdp-server (0.7.12) unstable; urgency=medium
 
   * Proxy module: [FastRDP] SelfRedirect (fastrdp_proxy_self_redirect) off
