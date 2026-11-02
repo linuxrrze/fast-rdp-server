@@ -1,0 +1,19 @@
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: trixie-testing
+Date: Mon, 02 Nov 2026 16:00:23 UTC
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Debian 13 (trixie), testing channel (main branch)
+MD5Sum:
+ 72c0b63f27683968f52b5a99e269998f 14226 main/binary-amd64/Packages
+ ebaa23888ce6cf44dbbe0feb851d278e 4863 main/binary-amd64/Packages.gz
+ 1507971fd486af14555d8155d763c3cd 166 main/binary-amd64/Release
+SHA1:
+ 8a3372d0ad519bf30225fa880b93633d7ee75d8d 14226 main/binary-amd64/Packages
+ 66d9a1bf68c2c3ce42e2475e061460f067a8463a 4863 main/binary-amd64/Packages.gz
+ e3360acb7e80220bf110bfd3bd35e67995cf937f 166 main/binary-amd64/Release
+SHA256:
+ 227d96a414aeebf927d38358e686e21ce14e215736bfe461ded1d181a698bca8 14226 main/binary-amd64/Packages
+ 9d40c3a4518eb7ee5a715ae74e4508d485d4c5cd788b2be5fabdb1742d79c699 4863 main/binary-amd64/Packages.gz
+ 71fdb2e38a02ca14759059d073cad7f5aa15c702d521e0b63ca474151bafa21e 166 main/binary-amd64/Release
