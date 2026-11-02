@@ -271,8 +271,9 @@ wait "${pids[@]}"
 sleep 1
 
 fail=0
-expect() { # description python-expression-over(a,b)
-    if python3 - "$2" <<'PY'
+expect() { # description python-expression-over(a,b) [python-expression shown on failure]
+    local detail
+    if detail=$(python3 - "$2" "${3:-}" <<'PY'
 import json, sys
 load = lambda f: [json.loads(l) for l in open(f)] if __import__("os").path.exists(f) else []
 a, b = load("a.log"), load("b.log")
@@ -287,9 +288,15 @@ sid = lambda user: [r["session_id"] for r in la if r["user"] == user]
 cc = {r["user"]: r for r in a if r["op"] == "codeentry"}
 codes = lambda user: [c.get("code") for c in cc.get(user, {}).get("codes", [])]
 chose = lambda user: (pc[user].get("line") or {}).get("desktop", "none") if pc.get(user, {}).get("line") else "none"
-sys.exit(0 if eval(sys.argv[1]) else 1)
+sent = lambda user: [l.split("client: ")[-1].strip() for l in open(user + ".out") if "sent keys" in l] if __import__("os").path.exists(user + ".out") else []
+if eval(sys.argv[1]):
+    sys.exit(0)
+if sys.argv[2]:
+    print(eval(sys.argv[2]))
+sys.exit(1)
 PY
-    then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
+    )
+    then echo "ok   $1"; else echo "FAIL $1${detail:+ ($detail)}"; fail=1; fi
 }
 expect "front broker saw the expected logins"         'len(la) == 48'
 expect "pinned certificate accepted, wrong pin refused" '[r["user"] for r in la][:3] == ["alice", "mallory", "pinned"]'
@@ -347,14 +354,15 @@ expect "code field: six top-row digits sent as one code" 'codes("codeok") == ["1
 expect "code field: a wrong code, a new field, then the right code" \
     'codes("codewrong") == ["654321", "123456"] and cc["codewrong"]["accepted"]'
 expect "code field until Enter: keys from before the prompt ignored, keypad with NumLock, Backspace" \
-    'codes("codeenter") == ["123456"] and cc["codeenter"]["accepted"]'
+    'codes("codeenter") == ["123456"] and cc["codeenter"]["accepted"]' '(cc.get("codeenter"), sent("codeenter"))'
 expect "code field: Unicode digits"                    'codes("codeunicode") == ["123456"] and cc["codeunicode"]["accepted"]'
 expect "code field closed by the approval page: a code typed then never reaches the broker" \
     'cc["codeweb"]["codes"] == [] and not cc["codeweb"]["closed"]'
 expect "code field gone after too many wrong codes: the retyped code never reaches the broker" \
     'codes("codelock") == ["654321"] and not cc["codelock"]["closed"]'
 expect "code field: every code login reached the back-end" \
-    'sorted(r["user"] for r in lb if r["user"].startswith("code")) == ["codeenter", "codegfx", "codelock", "codeoff", "codeok", "codeunicode", "codeweb", "codewrong"]'
+    'sorted(r["user"] for r in lb if r["user"].startswith("code")) == ["codeenter", "codegfx", "codelock", "codeoff", "codeok", "codeunicode", "codeweb", "codewrong"]' \
+    'sorted(r["user"] for r in lb if r["user"].startswith("code"))'
 expect "Shutdown Request during the session: session end reported, back-end connection closed" \
     'hold(a)[0]["closed"] is False and hold(b)[0]["closed"] and hold(b)[0]["waited"] < 2.9 and any(r["op"] == "end" and r["session_id"] in sid("holdsession") for r in a)'
 expect "Shutdown Request during the picker: login abandoned, broker connection closed" \
