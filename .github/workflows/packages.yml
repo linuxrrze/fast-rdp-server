@@ -55,9 +55,9 @@ jobs:
           echo /opt/lint/bin >> "$GITHUB_PATH"
       # = test-broker test-webgate test-pam test-gpu lint test-scripts test-publish test-ansible
       - name: make test-all
-        run: make test-all
+        run: tests/annotate.sh make test-all
       - name: make test-docs (FreeRDP switches in the client docs vs. the vendored FreeRDP source)
-        run: make test-docs
+        run: tests/annotate.sh make test-docs
       - name: actionlint
         if: matrix.codename == 'resolute'
         run: |
