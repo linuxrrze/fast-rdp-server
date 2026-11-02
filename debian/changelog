@@ -1,3 +1,17 @@
+fast-rdp-server (0.7.14) unstable; urgency=medium
+
+  * No change to the packages' contents apart from the version.
+  * Tests: the intermittent "make test-all" failure found and fixed:
+    test_totp's subprocess check failed in the last second of a 30 s TOTP
+    step (totp.py --seconds-left rightly prints 0 there).
+  * CI: unittest, make and e2e failures appear as error annotations, so
+    they can be read without the job log; the code field e2e check shows
+    what the broker received and when the client sent its keys.
+  * Docs: lab checklist for 0.7.13/0.7.14 (FreeRDP 3.33.0 with mstsc, the
+    two remaining A5 switches, the manual setup with the 0.7.12 packages).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 02 Nov 2026 16:49:32 +0100
+
 fast-rdp-server (0.7.13) unstable; urgency=medium
 
   * fastrdp-freerdp3 3.33.0-1: FreeRDP 3.33.0 with fixes for 13 security
