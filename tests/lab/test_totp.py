@@ -242,7 +242,8 @@ class Cli(unittest.TestCase):
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         code, left = r.stdout.splitlines()
         self.assertRegex(code, r"^\d{6}$")
-        self.assertTrue(0 < int(left) <= 30)
+        # whole seconds: 0 in the last second of a step (the real clock, once in 30 runs)
+        self.assertTrue(0 <= int(left) <= 30, left)
 
 
 if __name__ == "__main__":
