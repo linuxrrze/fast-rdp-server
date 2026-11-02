@@ -39,9 +39,10 @@ parsed by the caller). Ids 1900-1999 are fastrdp's; not upstream.
  2 files changed, 360 insertions(+), 1 deletion(-)
 
 diff --git a/winpr/include/winpr/sspi.h b/winpr/include/winpr/sspi.h
+index a11484b..52df859 100644
 --- a/winpr/include/winpr/sspi.h
 +++ b/winpr/include/winpr/sspi.h
-@@ -1501,6 +1501,18 @@
+@@ -1507,6 +1507,18 @@ extern "C"
  
  #define SECPKG_CRED_ATTR_TICKET_LOGON 1200
  
@@ -61,9 +62,10 @@ diff --git a/winpr/include/winpr/sspi.h b/winpr/include/winpr/sspi.h
  	{
  		char User[256 + 1];
 diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+index 9d8d80a..5784086 100644
 --- a/winpr/libwinpr/sspi/Kerberos/kerberos.c
 +++ b/winpr/libwinpr/sspi/Kerberos/kerberos.c
-@@ -122,6 +122,11 @@
+@@ -121,6 +121,11 @@ struct s_KRB_CONTEXT
  	struct krb5glue_keyset keyset;
  	BOOL u2u;
  	char* targetHost;
@@ -75,7 +77,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  };
  
  static const WinPrAsn1_OID kerberos_OID = { 9, (void*)"\x2a\x86\x48\x86\xf7\x12\x01\x02\x02" };
-@@ -202,6 +207,10 @@
+@@ -201,6 +206,10 @@ static void kerberos_ContextFree(KRB_CONTEXT* ctx, BOOL allocated)
  
  	free(ctx->targetHost);
  	ctx->targetHost = nullptr;
@@ -86,7 +88,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  
  	if (ctx->credentials)
  	{
-@@ -1595,6 +1604,296 @@
+@@ -1610,6 +1619,296 @@ out:
  }
  #endif
  
@@ -383,7 +385,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  WINPR_ATTR_NODISCARD
  static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
      WINPR_ATTR_UNUSED PCredHandle phCredential, WINPR_ATTR_UNUSED PCtxtHandle phContext,
-@@ -1617,6 +1916,8 @@
+@@ -1632,6 +1931,8 @@ static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
  	char* target = nullptr;
  	krb5_keytab_entry entry = WINPR_C_ARRAY_INIT;
  	krb5_creds creds = WINPR_C_ARRAY_INIT;
@@ -392,7 +394,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  
  	/* behave like windows SSPIs that don't want empty context */
  	if (phContext && !phContext->dwLower && !phContext->dwUpper)
-@@ -1681,8 +1982,15 @@
+@@ -1696,8 +1997,15 @@ static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
  	}
  	else if (context->state == KERBEROS_STATE_AP_REQ && tok_id == TOK_ID_AP_REQ)
  	{
@@ -409,7 +411,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  			goto cleanup;
  
  		if (krb_log_exec(krb5_auth_con_setflags, credentials->ctx, context->auth_ctx,
-@@ -1732,6 +2040,9 @@
+@@ -1747,6 +2055,9 @@ static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
  		                 &context->keyset))
  			goto cleanup;
  
@@ -419,7 +421,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  		context->state = KERBEROS_STATE_FINAL;
  	}
  	else
-@@ -1745,6 +2056,10 @@
+@@ -1760,6 +2071,10 @@ static SECURITY_STATUS SEC_ENTRY kerberos_AcceptSecurityContext(
  
  cleanup:
  	free(target);
@@ -430,7 +432,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  	if (output_token.data)
  		krb5glue_free_data_contents(credentials->ctx, &output_token);
  	if (entry.principal)
-@@ -2106,6 +2421,30 @@
+@@ -2121,6 +2436,30 @@ out:
  	return ret;
  }
  
@@ -461,7 +463,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  #endif /* WITH_KRB5 */
  
  WINPR_ATTR_NODISCARD
-@@ -2137,6 +2476,14 @@
+@@ -2152,6 +2491,14 @@ static SECURITY_STATUS SEC_ENTRY kerberos_QueryContextAttributesCommon(
  		case SECPKG_CRED_ATTR_TICKET_LOGON:
  			return kerberos_ATTR_TICKET_LOGON(context, credentials, (KERB_TICKET_LOGON*)pBuffer);
  

@@ -1,3 +1,22 @@
+fastrdp-freerdp3 (3.33.0-1) unstable; urgency=medium
+
+  * New upstream release 3.33.0, with fixes for 13 security advisories
+    (GHSA-hhfh-fvm7-7w65, GHSA-pq35-c472-69w2, GHSA-v7hr-xh82-79p7,
+    GHSA-9r9q-9r7p-4mr6, GHSA-76c4-7552-ffhv, GHSA-j5pq-cm28-qm6v,
+    GHSA-2hm9-2h5q-x525, GHSA-hj6g-r86h-wrcg, GHSA-fw6x-h8gw-778w,
+    GHSA-q8p6-8mmj-j4ph, GHSA-r664-f94r-rgg6, GHSA-4g67-jhpc-q5xp,
+    GHSA-8m87-jj8p-2fqc).
+  * patches/freerdp: all nine still needed; 0008 refreshed (new context in
+    peer.c), the others only moved.
+  * Upstream changes the fastrdp proxy module sees: fast-path input before
+    activation is dropped (#13889; the module's SelfRedirect relied on it
+    and is removed); the Disconnect Provider Ultimatum carries the reason
+    it is sent with (#13873, "provider initiated" instead of always "user
+    requested"); the proxy forwards input and Refresh Rect / Suppress
+    Output through its client thread (#13896).
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Mon, 02 Nov 2026 14:23:06 +0100
+
 fastrdp-freerdp3 (3.32.2-8) unstable; urgency=medium
 
   * patches/freerdp: core/peer (0007): a reactivation that the peer's

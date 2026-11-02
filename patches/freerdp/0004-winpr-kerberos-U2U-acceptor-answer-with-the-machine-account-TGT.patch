@@ -33,9 +33,10 @@ When neither works, say what the keytab is missing.
  1 file changed, 68 insertions(+), 23 deletions(-)
 
 diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerberos/kerberos.c
+index aee9457..9d8d80a 100644
 --- a/winpr/libwinpr/sspi/Kerberos/kerberos.c
 +++ b/winpr/libwinpr/sspi/Kerberos/kerberos.c
-@@ -1472,6 +1472,43 @@
+@@ -1487,6 +1487,43 @@ cleanup:
  	return ret;
  }
  
@@ -79,7 +80,7 @@ diff --git a/winpr/libwinpr/sspi/Kerberos/kerberos.c b/winpr/libwinpr/sspi/Kerbe
  WINPR_ATTR_NODISCARD
  static BOOL retrieveSomeTgt(KRB_CREDENTIALS* credentials, const char* target, krb5_creds* creds)
  {
-@@ -1511,35 +1548,43 @@
+@@ -1526,35 +1563,43 @@ static BOOL retrieveSomeTgt(KRB_CREDENTIALS* credentials, const char* target, kr
  #endif
  
  	/*

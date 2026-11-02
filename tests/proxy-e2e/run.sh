@@ -94,14 +94,11 @@ sed -i 's/^AllowTlsFrom=.*/&\nTlsKeyLogFile=tls-keys-relative.txt/' c.ini
 # I reactivates the client before the waiting screen (lab switch WaitingScreenReactivate,
 # backlog A5); its own fake broker as for F
 mkproxy i 23398 f.sock '127.0.0.0/8' deny WaitingScreenReactivate=true
-# backlog A5 fixes, own fake broker (j.log): J and L with all three on (WaitingScreenGfx,
-# LogonNotify by default, SelfRedirect switched on; L for the redirect loop check, with its
-# own rate limit), K with all three off
-mkproxy j 23399 j.sock '127.0.0.0/8' deny SelfRedirect=true
+# backlog A5 fixes, own fake broker (j.log): J with both on (WaitingScreenGfx, LogonNotify,
+# the defaults), K with both off
+mkproxy j 23399 j.sock '127.0.0.0/8' deny
 mkproxy k 23400 j.sock '127.0.0.0/8' deny "WaitingScreenGfx=false
-SelfRedirect=false
 LogonNotify=false"
-mkproxy l 23401 j.sock '127.0.0.0/8' deny SelfRedirect=true
 # proxy B is proxy A's back-end and presents cert.pem: its fingerprint goes into the targets
 E2E_CERT_SHA256=$(openssl x509 -in cert.pem -outform DER | sha256sum | cut -d' ' -f1)
 export E2E_CERT_SHA256
@@ -121,10 +118,9 @@ LD_PRELOAD="$W/shim.so" "$PROXY" f.ini > proxy-f.log 2>&1 &
 LD_PRELOAD="$W/shim.so" "$PROXY" g.ini > proxy-g.log 2>&1 &
 (umask 022 && LD_PRELOAD="$W/shim.so" exec "$PROXY" h.ini > proxy-h.log 2>&1) &
 LD_PRELOAD="$W/shim.so" "$PROXY" i.ini > proxy-i.log 2>&1 &
-for p in j k l; do LD_PRELOAD="$W/shim.so" "$PROXY" $p.ini > proxy-$p.log 2>&1 & done
+for p in j k; do LD_PRELOAD="$W/shim.so" "$PROXY" $p.ini > proxy-$p.log 2>&1 & done
 for _ in $(seq 50); do grep -q ready a.out b.out f.out j.out 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23390) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23399) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23400) 2>/dev/null &&
-    (exec 3<>/dev/tcp/127.0.0.1/23401) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23392) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23393) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23394) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23395) 2>/dev/null &&
     (exec 3<>/dev/tcp/127.0.0.1/23396) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/23397) 2>/dev/null &&
@@ -204,22 +200,16 @@ E2E_KEEP_S=5 E2E_EARLY_KEYS=1,2,3 timeout 30 ./client 127.0.0.1 23396 oldbroker 
 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23398 reactivate good "" > reactivate.out 2>&1 || true
 # ... and with a GFX client: the reactivation first, then the Graphics channel
 E2E_GFX=1 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23398 reactivate good "" > reactivate-gfx.out 2>&1 || true
-# Backlog A5 fixes (proxies J, K, L; fake broker j.log). The waiting screen over GFX: a client
+# Backlog A5 fixes (proxies J, K; fake broker j.log). The waiting screen over GFX: a client
 # with FreeRDP's drdynvc and rdpgfx channels gets the MFA panel (as 'reactivate': QR code,
 # countdown, session start after 3.5 s) over the Graphics channel, which is closed before the
-# hand-over; then one logon notification. Proxy K (all three off): the same client gets
+# hand-over; then one logon notification. Proxy K (both off): the same client gets
 # Bitmap Updates and no logon notification.
 E2E_GFX=1 E2E_KEEP_S=8 E2E_DUMP="$W/panelgfx.ppm" timeout 30 ./client 127.0.0.1 23399 reactivate good "" > gfx.out 2>&1 || true
 E2E_GFX=1 E2E_KEEP_S=8 timeout 30 ./client 127.0.0.1 23400 reactivate good "" > gfx-off.out 2>&1 || true
-# Self-redirection: input before the first Font List (like an mstsc that carries state over)
-# gets a Server Redirection to the proxy itself; FreeRDP's client follows it with the routing
-# token, the second connection logs in. The next such client from the same address within
-# 30 s is not redirected (rate limit); proxy K does not redirect; proxy L, a client that sends
-# the input on every connection: one redirection, the token stops a second.
-E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 redirect1 good "" > redirect1.out 2>&1 || true
-E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 ratelimited good "" > ratelimited.out 2>&1 || true
-E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23400 burstoff good "" > burstoff.out 2>&1 || true
-E2E_BURST=all E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23401 redirectall good "" > redirectall.out 2>&1 || true
+# Input before the first Font List (like an mstsc that carries state over from its previous
+# connection): FreeRDP 3.33 drops it before activation, the login goes on as for any client.
+E2E_BURST=1 E2E_KEEP_S=4 timeout 30 ./client 127.0.0.1 23399 burst good "" > burst.out 2>&1 || true
 # the desktop picker and the code field over GFX (proxy J)
 E2E_GFX=1 E2E_KEEP_S=12 E2E_INPUT_AT_MS=4500 E2E_KEYS=2 timeout 30 ./client 127.0.0.1 23399 pickergfx good "" > pickergfx.out 2>&1 &
 gfxpick=$!
@@ -307,11 +297,11 @@ expect "RemoteApp and TLS smartcard-PIN logins never reached the broker" 'not an
 expect "front login carries TLS credentials + hints"   'la[0]["method"] == "tls" and la[0]["user"] == "alice" and la[0]["password"] == "good" and la[0]["desktop_hint"] == "fastrdp:gnome" and (la[0]["width"], la[0]["height"]) == (2560, 1440)'
 expect "client address is the socket peer, not the claimed one" 'la[0]["client_address"] == "127.0.0.1"'
 expect "TLS logins carry no KDC evidence"              'not any("kdc_evidence" in r for r in la + lb)'
-# 44 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
+# 41 logins reach proxy B: 31 through proxy A, the unread-keys login through proxy G, the
 # picker login through proxy F, the key-log login through proxy H, the reactivated logins
-# through proxy I (2), the GFX logins through proxies J and K, and the four
-# self-redirection logins (J, J, K, L), the picker and code field logins over GFX (J)
-expect "back-end received the token, not the password" 'len(lb) == 44 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
+# through proxy I (2), the GFX logins through proxies J and K, the login with input before
+# the first Font List (J), the picker and code field logins over GFX (J)
+expect "back-end received the token, not the password" 'len(lb) == 41 and all(r["password"] == "fastrdp1:TOKEN" for r in lb) and lb[0]["user"] == "alice"'
 expect "client shell request not forwarded"            'lb[0]["desktop_hint"] is None'
 expect "refused login never reached the back-end"      'all(r["user"] != "mallory" for r in lb)'
 expect "back-end with the broker's certificate reached (pin matched)" 'any(r["user"] == "alice" for r in lb)'
@@ -464,9 +454,9 @@ if grep -q "disconnected itself after the denied shutdown request" shutdown.out 
 else
     echo "FAIL Shutdown Request during the session ($(grep -E 'shutdown|closed|errinfo' shutdown.out | tr '\n' ' '))"; fail=1
 fi
-# FreeRDP's mcs_send_disconnect_provider_ultimatum() writes reason 3 ("user requested")
-# whatever it is asked for, so dpu=3 here although the proxy logs "provider initiated"
-if grep -q "errinfo=0x00000400" backendend.out && grep -q "server_end: deactivate_all=1 dpu=3" backendend.out; then
+# the Ultimatum's reason as the proxy sends it, "provider initiated" (1); FreeRDP before
+# 3.33.0 wrote 3 ("user requested") for every reason (FreeRDP #13873)
+if grep -q "errinfo=0x00000400" backendend.out && grep -q "server_end: deactivate_all=1 dpu=1" backendend.out; then
     echo "ok   back-end ended the session: code forwarded, Deactivate All and Disconnect Provider Ultimatum to the client"
 else
     echo "FAIL back-end ended the session ($(grep -E 'errinfo|server_end' backendend.out | tr '\n' ' '))"; fail=1
@@ -611,21 +601,10 @@ sys.exit(0 if eval(sys.argv[1]) else 1)
 PY
     then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi
 }
-client_out "SelfRedirect: input before the first Font List, redirected once to the proxy itself" redirect1.out \
-    '"burst before Font List #1 sent=1" in out and out.count("redirected #") == 1'
-jl "SelfRedirect: one broker login (on the redirected connection), back-end reached" 'n(j, "redirect1") == 1 and n(b, "redirect1") == 1'
-logged "SelfRedirect: redirection logged" proxy-j.log "self-redirection: client 127.0.0.1 sent input before its first Font List (1 sync, 4 scancodes, 0 unicode, 1 mouse, 1 QoE)"
-logged "SelfRedirect: the redirected connection recognised by its routing token" proxy-j.log "self-redirection: this connection follows one "
-client_out "SelfRedirect: a client without the input is not redirected" gfx.out '"redirected #" not in out'
-client_out "SelfRedirect: a second client from the same address within 30 s is not redirected" ratelimited.out \
+client_out "input before the first Font List: not redirected, the login goes on" burst.out \
     '"burst before Font List #1 sent=1" in out and "redirected #" not in out'
-logged "... rate limit logged" proxy-j.log "but was redirected "
-jl "... it logs in on the first connection" 'n(j, "ratelimited") == 1 and n(b, "ratelimited") == 1'
-client_out "SelfRedirect=false (proxy K): not redirected" burstoff.out '"burst before Font List #1 sent=1" in out and "redirected #" not in out'
-jl "... it logs in" 'n(j, "burstoff") == 1'
-client_out "SelfRedirect: no loop for a client that sends the input on every connection" redirectall.out \
-    '"burst before Font List #2 sent=1" in out and out.count("redirected #") == 1'
-jl "... one broker login, back-end reached" 'n(j, "redirectall") == 1 and n(b, "redirectall") == 1'
+jl "... one broker login, back-end reached" 'n(j, "burst") == 1 and n(b, "burst") == 1'
+logged "... FreeRDP dropped the input (before activation)" proxy-j.log "Input event before activation, ignoring"
 if python3 - <<'PY'
 import json, sys
 j = [json.loads(l) for l in open("j.log")]
@@ -637,9 +616,6 @@ then echo "ok   WaitingScreenGfx: the desktop picker and the code field read the
 else echo "FAIL WaitingScreenGfx: picker or code field ($(grep -h 'gfx\"' j.log | tr '\n' ' '))"; fail=1; fi
 client_out "... their panels over GFX, no Bitmap Updates" pickergfx.out 't(r"frames=(\d+)") >= 3 and t(r"bitmap_updates=(\d+)") == 0'
 client_out "... (code field)" codegfx.out 't(r"frames=(\d+)") >= 6 and t(r"bitmap_updates=(\d+)") == 0'
-logged "... the second connection kept by its token" proxy-l.log "self-redirection: this connection follows one "
-if ! grep -q "self-redirection" proxy-a.log proxy-e.log; then echo "ok   SelfRedirect: no other client redirected"
-else echo "FAIL SelfRedirect: a client without the input was redirected"; fail=1; fi
 logged "Remote Credential Guard required: client got a negotiation response, not a dropped connection" \
     rcg.out "remote credential guard requested but not supported"
 if grep -q -- "--> CONNECTION_STATE_CAPABILITIES_EXCHANGE_DEMAND_ACTIVE" proxy-a.log &&

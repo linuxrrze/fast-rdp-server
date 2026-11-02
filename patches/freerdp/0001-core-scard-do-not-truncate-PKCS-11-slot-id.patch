@@ -16,10 +16,10 @@ Print the full value with PRIu32.
  1 file changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/libfreerdp/core/smartcardlogon.c b/libfreerdp/core/smartcardlogon.c
-index 70a1731..67fb46f 100644
+index bd86878..d09dd87 100644
 --- a/libfreerdp/core/smartcardlogon.c
 +++ b/libfreerdp/core/smartcardlogon.c
-@@ -271,11 +271,11 @@ static BOOL build_pkinit_args(NCRYPT_PROV_HANDLE provider, SmartcardCertInfo* sc
+@@ -296,11 +296,11 @@ static BOOL build_pkinit_args(NCRYPT_PROV_HANDLE provider, SmartcardCertInfo* sc
  
  	if (certId && *certId)
  		return (winpr_asprintf(&scCert->pkinitArgs, &size,

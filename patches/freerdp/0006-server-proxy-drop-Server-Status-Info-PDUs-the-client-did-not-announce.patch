@@ -26,10 +26,10 @@ unchanged otherwise.
  1 file changed, 12 insertions(+)
 
 diff --git a/server/proxy/pf_update.c b/server/proxy/pf_update.c
-index ce88322..f49b62f 100644
+index da170e1..2b26ee2 100644
 --- a/server/proxy/pf_update.c
 +++ b/server/proxy/pf_update.c
-@@ -346,6 +346,18 @@ static BOOL pf_client_server_status_info(rdpContext* context, UINT32 status)
+@@ -384,6 +384,18 @@ static BOOL pf_client_server_status_info(rdpContext* context, UINT32 status)
  	WINPR_ASSERT(ps->context.update->ServerStatusInfo);
 
  	WLog_DBG(TAG, "called");

@@ -15,7 +15,7 @@ assessment (2026-10-19), not legal advice.
 | QR code encoder (`broker/brokerd/fastrdp_broker/qrcode.py`) | Apache-2.0 | ours, written from ISO/IEC 18004; checked against Nayuki's qrcodegen (MIT) and decoded with zxing-cpp (Apache-2.0) only in tests, neither shipped |
 | Patches in `patches/freerdp/`, `patches/xrdp/` | Apache-2.0, like the files they modify | built into the vendored packages |
 | `patches/krb5/` | MIT Kerberos license | reference only, not built |
-| FreeRDP 3.32.2 | Apache-2.0; some files public domain (MD4/MD5), BSD (cpu-features, OpenSL, CMake modules), Expat (iOS, Wayland XML), OFL-1.1 (fonts, not built) | vendored build `fastrdp-freerdp3` |
+| FreeRDP 3.33.0 | Apache-2.0; some files public domain (MD4/MD5), BSD (cpu-features, OpenSL, CMake modules), Expat (iOS, Wayland XML), OFL-1.1 (fonts, not built) | vendored build `fastrdp-freerdp3` |
 | xrdp 0.10.6.1 | Apache-2.0; `xrdp-genkeymap` and `xrdp-sesadmin` GPL-2.0-or-later; tomlc99 Expat | vendored build `fastrdp-xrdp` |
 | xorgxrdp 0.10.5 | X11 | vendored build `fastrdp-xrdp` |
 | FFmpeg (libavcodec, libavutil, libswscale, libswresample) | Debian/Ubuntu build it with `--enable-gpl`, `libx264`, `libx265`, so **GPL-2.0-or-later** | linked by FreeRDP and xrdp (distribution package) |

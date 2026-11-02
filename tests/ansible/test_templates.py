@@ -345,8 +345,7 @@ class Audio(unittest.TestCase):
 
 class ProxyIni(unittest.TestCase):
     def check(self, name, tls_allowed, tls_from="", remote_guard="false", waiting="true", status_info="false",
-              input_trace="false", observe="false", reactivate="false", keylog="", a5_fixes="true",
-              self_redirect="false"):
+              input_trace="false", observe="false", reactivate="false", keylog="", a5_fixes="true"):
         p = ini(name)
         self.assertEqual(p["Server"]["Port"], "3389")
         self.assertEqual(p["Target"]["FixedTarget"], "false")
@@ -379,9 +378,9 @@ class ProxyIni(unittest.TestCase):
         # fastrdp_proxy_waiting_screen_reactivate
         self.assertEqual(p["FastRDP"]["WaitingScreenReactivate"], reactivate)
         # backlog A5 fixes: fastrdp_proxy_waiting_screen_gfx and fastrdp_proxy_logon_notify
-        # on unless switched off, fastrdp_proxy_self_redirect off unless switched on
-        self.assertEqual((p["FastRDP"]["WaitingScreenGfx"], p["FastRDP"]["SelfRedirect"],
-                          p["FastRDP"]["LogonNotify"]), (a5_fixes, self_redirect, a5_fixes))
+        # on unless switched off; SelfRedirect is gone (FreeRDP 3.33.0 drops the input it used)
+        self.assertEqual((p["FastRDP"]["WaitingScreenGfx"], p["FastRDP"]["LogonNotify"]), (a5_fixes, a5_fixes))
+        self.assertNotIn("SelfRedirect", p["FastRDP"])
         # TLS key log (lab only, backlog A5): none unless fastrdp_proxy_tls_keylog; the file
         # in the unit's CacheDirectory, the only place ProtectSystem=strict lets it write
         self.assertEqual(p["FastRDP"]["TlsKeyLogFile"], keylog)
@@ -406,7 +405,7 @@ class ProxyIni(unittest.TestCase):
         self.check("proxy-no-waiting.ini", "true", waiting="false")
 
     def test_a5_fixes_off(self):
-        self.check("proxy-a5-off.ini", "true", a5_fixes="false", self_redirect="true")
+        self.check("proxy-a5-off.ini", "true", a5_fixes="false")
 
     def test_input_trace(self):
         self.check("proxy-input-trace.ini", "true", input_trace="true", observe="true",
@@ -736,7 +735,6 @@ class CommonChecks(unittest.TestCase):
             "waiting screen observation not a bool": dict(ok, fastrdp_proxy_waiting_screen_observe="lab"),
             "waiting screen reactivation not a bool": dict(ok, fastrdp_proxy_waiting_screen_reactivate="lab"),
             "waiting screen over GFX not a bool": dict(ok, fastrdp_proxy_waiting_screen_gfx="auto"),
-            "self-redirection not a bool": dict(ok, fastrdp_proxy_self_redirect="once"),
             "logon notification not a bool": dict(ok, fastrdp_proxy_logon_notify="plain"),
             "TLS key log not a bool": dict(ok, fastrdp_proxy_tls_keylog="/tmp/keys"),
             "lab xorgxrdp variant not a bool": dict(ok, fastrdp_xorgxrdp_lab_gfxpro_no_tile_skip="lab"),

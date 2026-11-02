@@ -9,7 +9,7 @@ and each vendored build can be dropped when its fixes reach the distributions.
 
 | Dependency | Version | Local patches | Installed to | Used by |
 |---|---|---|---|---|
-| FreeRDP | 3.32.2 | `patches/freerdp/`: PKCS#11 slot id fix (client-side smartcard logon); Remote Credential Guard: negotiation answer instead of a dropped connection, TSRemoteGuardCreds without `supplementalCreds` (server side) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
+| FreeRDP | 3.33.0 | `patches/freerdp/`: PKCS#11 slot id fix (client-side smartcard logon); Remote Credential Guard: negotiation answer instead of a dropped connection, TSRemoteGuardCreds without `supplementalCreds` (server side) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
 | xrdp | 0.10.6.1 | `patches/xrdp/`: FFmpeg H.264 encoder (VA-API, NVENC, QSV) | `/usr` (package), `/usr/local` (Ansible build) | X11 sessions |
 | xorgxrdp | 0.10.5 | none (built together with xrdp, with glamor) | Xorg module directory | X11 sessions |
 
@@ -177,6 +177,16 @@ only), which this local build did not include. NLA and smartcard suites not reru
 check: no read error after the reactivation in proxy I's log). Against the 3.32.2-7
 build: 109/110, the new check fails. NLA and smartcard suites not rerun (0007 touches
 only `libfreerdp/core/peer.c` and the reactivation is TLS-only in the suite).
+
+2026-11-02, `3.33.0-1` (new upstream release, 13 security advisories): the release
+tarball's sha256 matches upstream's published checksum; `fetch.sh` applies the series
+0001–0009 with `--fuzz=0` (0008 refreshed for a new `WINPR_ATTR_NODISCARD` line in
+`peer.c`, the others only moved). Upstream drops fast-path input before activation
+(#13889), so the module's `SelfRedirect` (backlog A5) is removed; the e2e client's input
+burst before the Font List now checks that such a client logs in normally. The
+Disconnect Provider Ultimatum now carries its reason (#13873): the e2e check of a
+session the back-end ended expects "provider initiated" (1). Build and all four e2e suites:
+CI only (no local build).
 
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

@@ -22,7 +22,7 @@ without systemd does not keep a stale define.
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/winpr/libwinpr/utils/CMakeLists.txt b/winpr/libwinpr/utils/CMakeLists.txt
-index b42bf43..0cc8427 100644
+index 7a69eec..caba15d 100644
 --- a/winpr/libwinpr/utils/CMakeLists.txt
 +++ b/winpr/libwinpr/utils/CMakeLists.txt
 @@ -119,12 +119,14 @@ option(WITH_SYSTEMD "allows to export wLog to systemd journal" ${libsystemd_FOUN

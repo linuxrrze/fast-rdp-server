@@ -53,16 +53,12 @@
  *                             ; (fastrdp_inputtrace.h, ws_trace())
  *   WaitingScreenGfx = true   ; draw the waiting screen over the Graphics Pipeline for
  *                             ; clients that announced it (ws_gfx_start(), backlog A5/A8)
- *   SelfRedirect  = false     ; a client that carries state over from its previous
- *                             ; connection is redirected to the proxy itself first
- *                             ; (self_redirect(), backlog A5)
  *   LogonNotify   = true      ; a logon notification (Save Session Info) to the client
  *                             ; once the back-end session is up (logon_notify())
  */
 
 #include <errno.h>
 #include <poll.h>
-#include <pthread.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,7 +85,6 @@
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/error.h>
 #include <freerdp/freerdp.h>
-#include <freerdp/redirection.h>
 #include <freerdp/session.h>
 #include <freerdp/settings.h>
 #include <freerdp/transport_io.h>
@@ -110,7 +105,7 @@
 #include "fastrdp_inputtrace.h"
 #include "fastrdp_keylog.h"
 #include "fastrdp_panel.h"
-#include "fastrdp_redirect.h"
+#include "fastrdp_logon.h"
 /* patches/freerdp/0005: the acceptor keeps what the KDC asserted in the ticket */
 #if defined(SECPKG_ATTR_KERBEROS_AUTH_INDICATORS) && defined(SECPKG_ATTR_KERBEROS_PAC_LOGON_INFO)
 #define FASTRDP_KDC_EVIDENCE 1
@@ -153,10 +148,6 @@ typedef struct
 	UINT32 target_connection_type; /* 0 = keep the client's */
 	char target_cert_sha256[65];   /* the back-end's certificate, lower-case hex */
 	void* screen; /* waitingScreen during the broker call: the picker's input callbacks */
-	/* SelfRedirect: input before the first Font List (self_redirect_count()), counted until
-	 * the decision */
-	fastrdpBurst burst;
-	BOOL burst_decided;
 	/* LogonNotify: who sent the client its logon notification (the back-end's comes on the
 	 * proxy's client thread) */
 	int logon_state; /* FASTRDP_LOGON_*, atomic */
@@ -3090,253 +3081,6 @@ static BOOL fastrdp_remote_credentials(freerdp_peer* peer, KERB_TICKET_LOGON* lo
 	return rc;
 }
 
-/* -------------------------------------------------------- self-redirection */
-
-/* [FastRDP] SelfRedirect (default off; backlog A5, an experiment): mstsc showed the waiting
- * screen black on the next *Connect* in the same process after a session, and such a
- * connection is recognisable: its first activation looks like a reactivation, the client
- * sends input (QoE timestamp, scancodes, synchronize, mouse) between Control Request and
- * Font List (docs/a5-capture-2026-10-26.md, run 2). For such a client the module sends a
- * Server Redirection PDU ([MS-RDPBCGR] 2.2.13.1, 3.2.5.13.1) pointing at the proxy itself:
- * no target address, only a LoadBalanceInfo, so the client "MUST terminate the current
- * connection ... and initiate a new connection" to the same server, with the
- * LoadBalanceInfo as its X.224 routing token (fastrdp_redirect.h). Whether a new connection
- * in the same mstsc process clears its state is not known.
- * - Where: the input before the Font List arrives while FreeRDP runs the connection
- *   sequence, before PostConnect; self_redirect_count() counts it (wrappers around the
- *   proxy's input callbacks, installed at ServerSessionInitialize). The decision is the first
- *   thing the target lookup (PostConnect) does after the credential checks, before the
- *   broker sees the login: no second factor is asked on the redirected connection.
- * - No loop: the redirected connection brings the token back and is never redirected
- *   (FASTRDP_SR_TOKEN_TTL_S); at most one self-redirection per client address in
- *   FASTRDP_SR_INTERVAL_S, in case a client drops the token.
- * - Credentials: the PDU carries neither user name, domain nor password. The client logs
- *   on again with what it has (mstsc: the credentials of the connection, as for a
- *   Connection Broker redirection; with Kerberos NLA a new service ticket exchange); a
- *   client without stored credentials may ask again. Nothing of it is logged.
- * After the PDU the module waits up to SR_CLOSE_WAIT_MS for the client to close, then the
- * connection ends without a Set Error Info. */
-
-#define SR_CLOSE_WAIT_MS 5000
-
-typedef enum
-{
-	SR_SYNC,
-	SR_KEY,
-	SR_UNICODE,
-	SR_MOUSE,
-	SR_QOE
-} srClass;
-
-/* the proxy's input callbacks (pf_input.c), the same for every session */
-static pSynchronizeEvent sr_sync_orig;
-static pKeyboardEvent sr_keyboard_orig;
-static pUnicodeKeyboardEvent sr_unicode_orig;
-static pMouseEvent sr_mouse_orig;
-static pExtendedMouseEvent sr_extended_mouse_orig;
-static pQoEEvent sr_qoe_orig;
-static pthread_mutex_t sr_lock = PTHREAD_MUTEX_INITIALIZER;
-static fastrdpSrLimit sr_limit; /* under sr_lock */
-
-/* Input before the first Font List: PostConnect has not run (peer->connected), the session
- * has not decided yet. Counted, then handed to the proxy as before (it drops it). */
-static void self_redirect_count(rdpInput* input, srClass c)
-{
-	rdpContext* ctx = input ? input->context : NULL;
-	freerdp_peer* peer = ctx ? ctx->peer : NULL;
-	const pServerContext* ps = (const pServerContext*)ctx;
-	proxyData* pdata = ps ? ps->pdata : NULL;
-	if (!peer || peer->connected || !pdata || !fastrdp_mgr)
-		return;
-	fastrdpSession* s = (fastrdpSession*)fastrdp_mgr->GetPluginData(fastrdp_mgr, PLUGIN_NAME, pdata);
-	if (!s || s->burst_decided)
-		return;
-	switch (c)
-	{
-		case SR_SYNC:
-			s->burst.sync++;
-			break;
-		case SR_KEY:
-			s->burst.keys++;
-			break;
-		case SR_UNICODE:
-			s->burst.unicode++;
-			break;
-		case SR_MOUSE:
-			s->burst.mouse++;
-			break;
-		default:
-			s->burst.qoe++;
-			break;
-	}
-}
-
-static BOOL sr_sync(rdpInput* input, UINT32 flags)
-{
-	self_redirect_count(input, SR_SYNC);
-	return sr_sync_orig ? sr_sync_orig(input, flags) : TRUE;
-}
-
-static BOOL sr_keyboard(rdpInput* input, UINT16 flags, UINT8 code)
-{
-	self_redirect_count(input, SR_KEY);
-	return sr_keyboard_orig ? sr_keyboard_orig(input, flags, code) : TRUE;
-}
-
-static BOOL sr_unicode(rdpInput* input, UINT16 flags, UINT16 code)
-{
-	self_redirect_count(input, SR_UNICODE);
-	return sr_unicode_orig ? sr_unicode_orig(input, flags, code) : TRUE;
-}
-
-static BOOL sr_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
-{
-	self_redirect_count(input, SR_MOUSE);
-	return sr_mouse_orig ? sr_mouse_orig(input, flags, x, y) : TRUE;
-}
-
-static BOOL sr_extended_mouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
-{
-	self_redirect_count(input, SR_MOUSE);
-	return sr_extended_mouse_orig ? sr_extended_mouse_orig(input, flags, x, y) : TRUE;
-}
-
-static BOOL sr_qoe(rdpInput* input, UINT32 timestamp)
-{
-	self_redirect_count(input, SR_QOE);
-	return sr_qoe_orig ? sr_qoe_orig(input, timestamp) : TRUE;
-}
-
-/* ServerSessionInitialize: the wrappers in front of the proxy's input callbacks (registered
- * just before, pf_server_initialize_peer_connection()). The waiting screen's own callbacks
- * (ws_input_take()) save and restore these like the proxy's. */
-static void self_redirect_watch(rdpInput* input)
-{
-	if (!input || input->KeyboardEvent == sr_keyboard)
-		return;
-	pthread_mutex_lock(&sr_lock);
-	if (!sr_keyboard_orig)
-	{
-		sr_sync_orig = input->SynchronizeEvent;
-		sr_keyboard_orig = input->KeyboardEvent;
-		sr_unicode_orig = input->UnicodeKeyboardEvent;
-		sr_mouse_orig = input->MouseEvent;
-		sr_extended_mouse_orig = input->ExtendedMouseEvent;
-		sr_qoe_orig = input->QoEEvent;
-	}
-	pthread_mutex_unlock(&sr_lock);
-	if (input->KeyboardEvent != sr_keyboard_orig)
-		return; /* not the proxy's callbacks: leave them alone */
-	input->SynchronizeEvent = sr_sync;
-	input->KeyboardEvent = sr_keyboard;
-	input->UnicodeKeyboardEvent = sr_unicode;
-	input->MouseEvent = sr_mouse;
-	input->ExtendedMouseEvent = sr_extended_mouse;
-	input->QoEEvent = sr_qoe;
-}
-
-/* Waits up to ms for the front client to close the connection (as for the broker call: the
- * peer's end of the socket, or the proxy's abort event). */
-static long wait_front_closed(proxyData* pdata, long ms)
-{
-	struct timespec start, end;
-	clock_gettime(CLOCK_MONOTONIC, &start);
-	end = start;
-	end.tv_nsec += ms * 1000000L;
-	end.tv_sec += end.tv_nsec / 1000000000L;
-	end.tv_nsec %= 1000000000L;
-	for (;;)
-	{
-		const long left = ws_ms_until(&end);
-		if (left <= 0)
-			return -1;
-		struct pollfd fds[MAX_ABORT_FDS];
-		const nfds_t n = abort_fds(pdata, fds, ARRAYSIZE(fds));
-		if (n == 0)
-			return -1;
-		const int pr = poll(fds, n, (int)left);
-		if (pr < 0 && errno == EINTR)
-			continue;
-		if (pr < 0)
-			return -1;
-		if (pr > 0)
-			return -ws_ms_until(&start);
-	}
-}
-
-/* TRUE if the client was sent a Server Redirection PDU to the proxy itself: the login ends
- * here, without a Set Error Info. */
-static BOOL self_redirect(proxyData* pdata, fastrdpSession* s)
-{
-	const char* sid = pdata->session_id;
-	freerdp_peer* peer = pdata->ps->peer;
-	s->burst_decided = TRUE;
-	if (!config_bool(pdata, "SelfRedirect", FALSE))
-		return FALSE;
-	char counts[128];
-	fastrdp_burst_describe(&s->burst, counts, sizeof(counts));
-	const long long now = (long long)time(NULL);
-	DWORD tlen = 0;
-	const char* token = freerdp_nego_get_routing_token(pdata->ps, &tlen);
-	const long long age = fastrdp_sr_token_age(token, tlen, now);
-	if (age >= 0 && age <= FASTRDP_SR_TOKEN_TTL_S)
-	{
-		WLog_INFO(TAG, "[%s] self-redirection: this connection follows one %lld s ago, not "
-		               "redirected again (input before the first Font List: %s)",
-		          sid, age, counts);
-		return FALSE;
-	}
-	if (!fastrdp_burst_carryover(&s->burst))
-	{
-		if (fastrdp_burst_any(&s->burst))
-			WLog_INFO(TAG, "[%s] input before the first Font List (%s), no keyboard state: not "
-			               "redirected",
-			          sid, counts);
-		return FALSE;
-	}
-	const char* addr = peer->hostname[0] ? peer->hostname : "?";
-	long long ago = 0;
-	pthread_mutex_lock(&sr_lock);
-	const int allowed = fastrdp_sr_limit_take(&sr_limit, addr, now, FASTRDP_SR_INTERVAL_S, &ago);
-	pthread_mutex_unlock(&sr_lock);
-	if (!allowed)
-	{
-		WLog_WARN(TAG, "[%s] self-redirection: client %s carries state over (input before the "
-		               "first Font List: %s) but was redirected %lld s ago (at most once in %d s): "
-		               "not redirected",
-		          sid, addr, counts, ago, FASTRDP_SR_INTERVAL_S);
-		return FALSE;
-	}
-	char lb[FASTRDP_SR_TOKEN_MAX];
-	UINT64 nonce = 0;
-	(void)winpr_RAND(&nonce, sizeof(nonce));
-	rdpRedirection* r = redirection_new();
-	const BOOL sent =
-	    r && fastrdp_sr_token(lb, sizeof(lb), now, nonce) &&
-	    redirection_set_flags(r, LB_LOAD_BALANCE_INFO) && redirection_set_session_id(r, 0) &&
-	    redirection_set_byte_option(r, LB_LOAD_BALANCE_INFO, (const BYTE*)lb, strlen(lb)) &&
-	    peer->SendServerRedirection && peer->SendServerRedirection(peer, r);
-	redirection_free(r);
-	if (!sent)
-	{
-		WLog_WARN(TAG, "[%s] self-redirection: Server Redirection PDU not sent, the login goes on",
-		          sid);
-		return FALSE;
-	}
-	WLog_WARN(TAG, "[%s] self-redirection: client %s sent input before its first Font List (%s), "
-	               "it carries state over from an earlier connection (backlog A5); Server "
-	               "Redirection PDU to the proxy itself sent, no login on this connection",
-	          sid, addr, counts);
-	const long closed = wait_front_closed(pdata, SR_CLOSE_WAIT_MS);
-	if (closed >= 0)
-		WLog_INFO(TAG, "[%s] self-redirection: the client left after %ld ms", sid, closed);
-	else
-		WLog_WARN(TAG, "[%s] self-redirection: the client did not close the connection within %d "
-		               "ms, closing it",
-		          sid, SR_CLOSE_WAIT_MS);
-	return TRUE;
-}
-
 /* --------------------------------------------------------- logon notification */
 
 /* [FastRDP] LogonNotify (default on; backlog A5): a Save Session Info PDU with
@@ -3579,14 +3323,6 @@ static BOOL fastrdp_fetch_target(proxyPlugin* plugin, proxyData* pdata, void* pa
 			          pdata->session_id);
 			goto out;
 		}
-	}
-
-	/* [FastRDP] SelfRedirect: before the broker sees the login (no second factor asked on a
-	 * connection the client leaves at once) */
-	if (self_redirect(pdata, s))
-	{
-		errinfo = 0;
-		goto out;
 	}
 
 	cJSON* req = cJSON_CreateObject();
@@ -4018,8 +3754,6 @@ static BOOL fastrdp_server_session_init(proxyPlugin* plugin, proxyData* pdata, v
 	}
 	pdata->ps->peer->RemoteCredentials = fastrdp_remote_credentials;
 	pdata->ps->peer->SspiNtlmHashCallback = fastrdp_ntlm_refused;
-	if (config_bool(pdata, "SelfRedirect", FALSE))
-		self_redirect_watch(pdata->ps->input);
 	return freerdp_settings_set_bool(front, FreeRDP_SupportMultitransport, FALSE) &&
 	       freerdp_settings_set_uint32(front, FreeRDP_MultitransportFlags, 0) &&
 	       freerdp_settings_set_bool(front, FreeRDP_RemoteCredentialGuard,

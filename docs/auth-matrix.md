@@ -650,10 +650,12 @@ untested.
 #### mstsc reconnects (backlog A5)
 
 mstsc showed the waiting screen black on its next *Connect* in the same process after a
-session ([backlog A5](backlog.md#sessions)). Three changes aim at it, each with its own
-switch; tested with FreeRDP clients in `tests/proxy-e2e/run.sh` (proxies J, K and L).
-With mstsc (lab 2026-10-29) the waiting screen over GFX fixes it; the self-redirection
-does not help and is off by default since 0.7.12; the other two are on.
+session ([backlog A5](backlog.md#sessions)). Two changes aim at it, each with its own
+switch, both on; tested with FreeRDP clients in `tests/proxy-e2e/run.sh` (proxies J and K).
+With mstsc (lab 2026-10-29) the waiting screen over GFX fixes it. A third, a Server
+Redirection to the proxy itself for an mstsc that sends input before its first Font List
+(`SelfRedirect`, 0.7.11 to 0.7.12), did not help (mstsc sent the same input again after
+it) and was removed with `fastrdp-freerdp3` 3.33.0, which drops input before activation.
 
 - **`fastrdp_proxy_waiting_screen_gfx`** (`[FastRDP] WaitingScreenGfx`, default `true`):
   a client that announced the Graphics Pipeline and joined `drdynvc` gets the panel over
@@ -671,20 +673,6 @@ does not help and is off by default since 0.7.12; the other two are on.
   with mstsc: this fixes the black second *Connect*, and mstsc accepts the back-end's
   second Graphics channel in the same connection. Open: whether a back-end that draws
   without GFX then still shows.
-- **`fastrdp_proxy_self_redirect`** (`[FastRDP] SelfRedirect`, default `false`): mstsc
-  that carries state over from its previous connection sends input (a synchronize event,
-  keys) before the first Font List of the new connection
-  ([a5-capture-2026-10-26.md](a5-capture-2026-10-26.md#run-2-reactivation-before-the-panel)).
-  Such a client gets a Server Redirection to the proxy itself (no target address, only a
-  routing token) before the broker sees the login, so no second factor is asked twice;
-  it connects again and logs in on the new connection. The redirection carries no user
-  name, domain or password: the client logs on with the credentials it has (mstsc with
-  saved or just typed credentials does not ask again, as with a Connection Broker; a
-  client without them may ask). A connection with the proxy's routing token (younger
-  than 2 minutes) is never redirected, and one client address at most once in 30 s.
-  Logged: `self-redirection: client … sent input before its first Font List …`. Lab
-  2026-10-29: mstsc follows it at once but does not start clean (the new connection
-  sends the same input), so it does not help A5; the GFX waiting screen does.
 - **`fastrdp_proxy_logon_notify`** (`[FastRDP] LogonNotify`, default `true`): once the
   back-end session is up (the client completed the hand-over's reactivation) the proxy
   sends a logon notification (Save Session Info, plain notify; the server SHOULD send

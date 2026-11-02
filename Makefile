@@ -56,8 +56,8 @@ test-proxy-module:
 	  build/test_frontdiag && \
 	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_gfx tests/proxy-module/test_gfx.c && \
 	  build/test_gfx && \
-	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_redirect tests/proxy-module/test_redirect.c && \
-	  build/test_redirect)
+	  $(CC) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -o build/test_logon tests/proxy-module/test_logon.c && \
+	  build/test_logon)
 
 test-gpu:
 	cd tests/gpu && python3 -m unittest test_session_report

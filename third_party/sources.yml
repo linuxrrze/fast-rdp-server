@@ -6,9 +6,9 @@
 # without a YAML library. Bump version, url and sha256 together, then run
 # `third_party/fetch.sh <name> <dir>` to check that the series still applies.
 freerdp:
-  version: 3.32.2
-  url: https://github.com/FreeRDP/FreeRDP/releases/download/3.32.2/freerdp-3.32.2.tar.gz
-  sha256: e95a505c0057e4d06a3b120477c421028769deba4db9c639ef3465d050f0955c
+  version: 3.33.0
+  url: https://github.com/FreeRDP/FreeRDP/releases/download/3.33.0/freerdp-3.33.0.tar.gz
+  sha256: 80cbcf17a7de00909f2be805c7d93764596cd712046addc18c30594137c0b879
   patches: patches/freerdp/series
 xrdp:
   version: 0.10.6.1

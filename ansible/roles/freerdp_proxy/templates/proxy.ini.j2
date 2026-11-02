@@ -91,11 +91,9 @@ WaitingScreenObserve={{ fastrdp_proxy_waiting_screen_observe | bool | lower }}
 ; (Deactivate All, Demand Active), for mstsc's black window (docs/backlog.md A5).
 WaitingScreenReactivate={{ fastrdp_proxy_waiting_screen_reactivate | bool | lower }}
 ; Backlog A5 fixes (docs/auth-matrix.md#waiting-screen): the waiting screen over GFX for
-; GFX clients; a client carrying state over from its previous connection (input before its
-; first Font List) redirected to the proxy itself once; a logon notification (Save Session
-; Info) to the client once the back-end session is up.
+; GFX clients; a logon notification (Save Session Info) to the client once the back-end
+; session is up.
 WaitingScreenGfx={{ fastrdp_proxy_waiting_screen_gfx | bool | lower }}
-SelfRedirect={{ fastrdp_proxy_self_redirect | bool | lower }}
 LogonNotify={{ fastrdp_proxy_logon_notify | bool | lower }}
 ; Lab only: append the TLS secrets of every client connection to this file (empty: none),
 ; for Wireshark (docs/backlog.md A5). Anyone with the file can decrypt a capture.

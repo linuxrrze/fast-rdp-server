@@ -66,10 +66,10 @@ index 6144e70..2603283 100644
  }
  #endif
 diff --git a/libfreerdp/core/peer.c b/libfreerdp/core/peer.c
-index d214e28..94db4aa 100644
+index 4983461..d2d671d 100644
 --- a/libfreerdp/core/peer.c
 +++ b/libfreerdp/core/peer.c
-@@ -744,13 +744,24 @@ static state_run_t rdp_peer_handle_state_active(freerdp_peer* client)
+@@ -745,13 +745,24 @@ static state_run_t rdp_peer_handle_state_active(freerdp_peer* client)
  	WINPR_ASSERT(client);
  	WINPR_ASSERT(client->context);
 
@@ -94,7 +94,7 @@ index d214e28..94db4aa 100644
  	}
  	if (!client->connected)
  	{
-@@ -1152,7 +1163,15 @@ static state_run_t peer_recv_callback_internal(WINPR_ATTR_UNUSED rdpTransport* t
+@@ -1153,7 +1164,15 @@ static state_run_t peer_recv_callback_internal(WINPR_ATTR_UNUSED rdpTransport* t
  		case CONNECTION_STATE_ACTIVE:
  			ret = rdp_peer_handle_state_active(client);
  			if (ret >= STATE_RUN_ACTIVE)
@@ -111,7 +111,7 @@ index d214e28..94db4aa 100644
  			break;
 
  			/* States that must not happen in server state machine */
-@@ -1459,6 +1478,13 @@ const char* freerdp_peer_os_minor_type_string(freerdp_peer* client)
+@@ -1471,6 +1490,13 @@ const char* freerdp_peer_os_minor_type_string(freerdp_peer* client)
  	return os_minor_type_to_string((UINT16)osMinorType);
  }
 
@@ -126,10 +126,10 @@ index d214e28..94db4aa 100644
  {
  	freerdp_peer* client = (freerdp_peer*)calloc(1, sizeof(freerdp_peer));
 diff --git a/libfreerdp/core/rdp.h b/libfreerdp/core/rdp.h
-index 654f110..d3d1cec 100644
+index 9d2a8a7..4a9a851 100644
 --- a/libfreerdp/core/rdp.h
 +++ b/libfreerdp/core/rdp.h
-@@ -202,6 +202,7 @@ struct rdp_rdp
+@@ -203,6 +203,7 @@ struct rdp_rdp
 
  	BOOL monitor_layout_pdu;
  	BOOL was_deactivated;

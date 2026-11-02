@@ -56,9 +56,8 @@
  *   first_frame_ms=N" (frames: EndFrame PDUs; planar: planar WireToSurface1 commands).
  * E2E_BURST=1: before the client's first Font List PDU a fast-path input PDU (a QoE
  *   timestamp, four key releases, a synchronize and a mouse event), like an mstsc that
- *   carries state over from its previous connection (backlog A5); E2E_BURST=all: before
- *   every Font List (also those of a redirected connection). Prints "burst before Font
- *   List #N".
+ *   carries state over from its previous connection (backlog A5). Prints "burst before
+ *   Font List #N".
  * Prints each Server Redirection the client follows ("redirected #N at T ms") and each
  *   Save Session Info PDU ("save_session_info type=N at T ms").
  * Prints each (re)activation the server starts after the connection is up: "deactivate_all
@@ -384,7 +383,6 @@ static BOOL on_redirect(freerdp* inst)
  * List (slow path over TLS: TPKT, X.224 Data, MCS Send Data Request on the I/O channel,
  * Share Control Header PDUTYPE_DATAPDU, Share Data Header pduType2 PDUTYPE2_FONTLIST) */
 static rdpTransportIo io_burst;
-static int burst_all;
 static unsigned font_lists;
 static int burst_write_pdu(rdpTransport* transport, wStream* s)
 {
@@ -397,7 +395,7 @@ static int burst_write_pdu(rdpTransport* transport, wStream* s)
 		o += 6;
 		o += (p[o] & 0x80) ? 2 : 1;
 		if (n >= o + 15 && (p[o + 2] & 0x0f) == 0x7 && p[o + 14] == 0x27 /* FONTLIST */ &&
-		    (font_lists++ == 0 || burst_all))
+		    font_lists++ == 0)
 		{
 			/* fpInputHeader (7 events), length; QoE timestamp; key releases Ctrl, Alt, Shift,
 			 * Tab; synchronize; mouse move to 100,100 */
@@ -608,7 +606,6 @@ int main(int argc, char** argv)
 	if (getenv("E2E_BURST"))
 	{
 		const rdpTransportIo* io = freerdp_get_io_callbacks(inst->context);
-		burst_all = strcmp(getenv("E2E_BURST"), "all") == 0;
 		if (io)
 		{
 			io_burst = *io;

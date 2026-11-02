@@ -19,8 +19,8 @@ Tick an item when its results are attached; update the backlog row afterwards.
       `fastrdp_proxy_waiting_screen_reactivate: false` (run 2 of A5 turns it on);
       `fastrdp_proxy_waiting_screen_gfx` and `fastrdp_proxy_logon_notify` at their
       default `true` for item H (`fastrdp_proxy_self_redirect` is off by default since
-      0.7.12; on only where an item says so), all three `false` for items A, C and F
-      (they look for the cause without the mitigations).
+      0.7.12 and gone with the module built against `fastrdp-freerdp3` 3.33.0), all
+      `false` for items A, C and F (they look for the cause without the mitigations).
 - [ ] Desktops installed: xfce (xrdp), one wlroots desktop, gnome, plasma.
 - [ ] Clients: mstsc on Windows 10 and Windows 11, the Windows App (macOS, iOS),
       xfreerdp3, Remmina.
@@ -87,7 +87,7 @@ Next session (in this order; H first, then A and B):
          or the fallback with its reason (`waiting screen as Bitmap Updates, not over GFX:
          …`, `waiting screen over GFX not possible …`); note the delay before the broker
          request.
-      3. On connection 2: `self-redirection: client … sent input before its first Font
+      3. (0.7.11 only; no self-redirection since `fastrdp-freerdp3` 3.33.0) On connection 2: `self-redirection: client … sent input before its first Font
          List …` and the redirected connection right after it (`… not redirected again`);
          whether mstsc asks for credentials again (saved credentials, and NLA with typed
          ones) and whether the redirected connection shows the panel.
@@ -115,9 +115,8 @@ Next session (in this order; H first, then A and B):
            connection sent the same input burst again, so the redirection does not
            clear mstsc's state ([a5-capture](a5-capture-2026-10-26.md#first-0711-result-2026-10-29)).
          - Confirmation: `fastrdp_proxy_logon_notify: false` and
-           `fastrdp_proxy_waiting_screen_gfx: false`, `fastrdp_proxy_self_redirect: true`: connection 2
-           should be black again. Note whether mstsc asks for credentials after the
-           redirection. With `fastrdp_proxy_logon_notify` on, the
+           `fastrdp_proxy_waiting_screen_gfx: false`: connection 2 should be black
+           again. With `fastrdp_proxy_logon_notify` on, the
            proxy journal shows `... not forwarded: the proxy sent the client a logon
            notification` when the back-end's own notice came second.
          - With it on again, black or not: a saved .rdp file twice (log out in between);

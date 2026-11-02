@@ -30,7 +30,7 @@ is closed at once, as until now.
  1 file changed, 24 insertions(+)
 
 diff --git a/libfreerdp/core/peer.c b/libfreerdp/core/peer.c
-index d8e8595..af65a56 100644
+index d2d671d..16c6585 100644
 --- a/libfreerdp/core/peer.c
 +++ b/libfreerdp/core/peer.c
 @@ -327,6 +327,19 @@ static BOOL freerdp_peer_check_fds(freerdp_peer* peer)
@@ -50,10 +50,10 @@ index d8e8595..af65a56 100644
 +	return rdp_send_data_pdu(rdp, s, DATA_PDU_TYPE_SHUTDOWN_DENIED, rdp->mcs->userId, sec_flags);
 +}
 +
+ WINPR_ATTR_NODISCARD
  static state_run_t peer_recv_data_pdu(freerdp_peer* client, wStream* s,
                                        WINPR_ATTR_UNUSED UINT16 totalLength)
- {
-@@ -388,6 +401,17 @@ static state_run_t peer_recv_data_pdu(freerdp_peer* client, wStream* s,
+@@ -389,6 +402,17 @@ static state_run_t peer_recv_data_pdu(freerdp_peer* client, wStream* s,
  			return STATE_RUN_CONTINUE; // State changed, trigger rerun
  
  		case DATA_PDU_TYPE_SHUTDOWN_REQUEST:
