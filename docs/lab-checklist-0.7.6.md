@@ -271,8 +271,10 @@ Next session (in this order; I and H first, then A and B):
       5. Delay (0010): on an otherwise idle proxy, one login, then wait 5 minutes without
          other connections. Each line's journal time (`-o short-precise`) is within about a
          second of its FreeRDP time stamp, and the login's lines are there before the next
-         connection. `systemctl restart fastrdp-proxy` right after a login: its last lines
-         are in the journal. A delay of seconds to minutes means the patch is not in the
+         connection. Lost lines: right after another login, `systemctl kill -s SIGKILL
+         fastrdp-proxy` (a crash; a plain restart is no test, a clean exit flushes stdio
+         even without 0010): the login's last lines are in the journal, then `systemctl
+         start fastrdp-proxy`. A delay of seconds to minutes means the patch is not in the
          installed `libwinpr3` (`dpkg -l fastrdp-freerdp3`) or something else buffers
          (note the details; `run_journald.sh` passes in CI).
       Bring back: the journal of the login and the 5 minutes after it, once with
