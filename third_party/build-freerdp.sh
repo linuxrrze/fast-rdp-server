@@ -86,8 +86,10 @@ done
 grep -q '^#define WITH_GFX_H264' "$build/include/freerdp/config.h" \
     || { echo "build-freerdp.sh: H.264 (WITH_GFX_H264) is not enabled" >&2; exit 1; }
 # fastrdp-proxy.service logs through WLog's journald appender (WLOG_APPENDER=JOURNALD);
-# without it WLog falls back to the console unnoticed (patches/freerdp/0009)
-grep -q '^#define WINPR_HAVE_JOURNALD_H' "$build/winpr/include/winpr/config.h" \
+# without it WLog falls back to the console unnoticed. Since 3.33.1 WINPR_HAVE_JOURNALD_H
+# is a private compile definition of libwinpr (upstream ba36e42a1d), not in config.h:
+# wlog.c only has the string "JOURNALD" inside #ifdef WINPR_HAVE_JOURNALD_H
+strings -a "$root/lib/libwinpr3.so.3" | grep -qx JOURNALD \
     || { echo "build-freerdp.sh: WLog journald appender (WINPR_HAVE_JOURNALD_H) is not enabled" >&2; exit 1; }
 readelf -d "$root/lib/libwinpr3.so.3" | grep -q 'NEEDED.*libsystemd' \
     || { echo "build-freerdp.sh: libwinpr3 is not linked against libsystemd" >&2; exit 1; }

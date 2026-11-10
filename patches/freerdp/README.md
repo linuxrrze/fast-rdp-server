@@ -1,4 +1,4 @@
-# Patches for FreeRDP 3.32.2
+# Patches for FreeRDP 3.33.1
 
 Applied by `third_party/fetch.sh freerdp` (series: `series`) to the release tarball
 listed in `third_party/sources.yml`. Built by `third_party/build-freerdp.sh` into
@@ -109,7 +109,7 @@ reach `peer->RemoteCredentials`; the fastrdp module refuses them unless
 the client's message. Without the patch the client sees the connection close and the
 checks fail (checked against an unpatched 3.32.2 build: `run.sh` 29/30, `run_nla.sh` 6/11).
 
-**Status upstream.** Still present in 3.32.2. Not submitted ([docs/upstream.md](../../docs/upstream.md)).
+**Status upstream.** Still present in 3.33.1. Not submitted ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** a FreeRDP release answers the request without dropping the connection.
 
@@ -143,7 +143,7 @@ Malformed `supplementalCreds` are still refused.
 **Regression test.** `tests/proxy-e2e/run_nla.sh` (local MIT KDC): the "RCG accepted"
 checks.
 
-**Status upstream.** Still present in 3.32.2. Not submitted.
+**Status upstream.** Still present in 3.33.1. Not submitted.
 
 **Drop it when** a FreeRDP release parses TSRemoteGuardCreds without `supplementalCreds`.
 
@@ -292,7 +292,7 @@ front.
 faking one needs a back-end that breaks the rule. `tests/proxy-e2e/run.sh` (39/39 against
 3.32.2-5) shows that forwarding is otherwise unchanged.
 
-**Status upstream.** Still present in 3.32.2. Not submitted
+**Status upstream.** Still present in 3.33.1. Not submitted
 ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** a FreeRDP release checks the front client's capability before forwarding.
@@ -355,7 +355,7 @@ suite passes either way. The reactivation (proxy I, 3.32.2-8): no tpkt "got 0" w
 and no failed `transport_check_fds` in the proxy log; with the 3.32.2-7 version of the
 patch that check fails.
 
-**Status upstream.** Still present in 3.32.2. Not submitted
+**Status upstream.** Still present in 3.33.1. Not submitted
 ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** FreeRDP processes PDUs read during `PostConnect` as input (or offers
@@ -410,47 +410,29 @@ broker A, back-end connection closed); without the patch the proxy disconnects a
 two checks fail. During the desktop picker: closed at once, not denied, login abandoned
 (same with and without the patch).
 
-**Status upstream.** Still present in 3.32.2. Not submitted
+**Status upstream.** Still present in 3.33.1. Not submitted
 ([docs/upstream.md](../../docs/upstream.md)).
 
 **Drop it when** FreeRDP's server answers the Shutdown Request with Shutdown Request
 Denied for a running session.
 
-## 0009 – [winpr,wlog] make WITH_SYSTEMD reach config.h (journald appender)
+## Dropped
 
-**Problem.** With the CMake option `WITH_SYSTEMD`, `winpr/libwinpr/utils/CMakeLists.txt`
-compiles `wlog/JournaldAppender.c`, links libsystemd and sets `WINPR_HAVE_JOURNALD_H`
-for `winpr/config.h`. That header is configured in `winpr/include`, which
-`winpr/CMakeLists.txt` adds after `libwinpr`, so in a sibling directory scope: a plain
-`set()` in `libwinpr/utils` never reaches it, and `config.h` always has
-`/* #undef WINPR_HAVE_JOURNALD_H */` [verified: 3.32.2 source; a minimal CMake model with
-the same directory layout gives the same result]. `wlog.c` and `Appender.c` test that
-macro, so `WLOG_APPENDER=JOURNALD` is ignored without a message and WLog keeps the
-console appender, although the appender is compiled in.
+### 0009 – [winpr,wlog] make WITH_SYSTEMD reach config.h (journald appender)
 
-**Who is affected.** Every 3.32.2 build that wants WLog in the journal. fastrdp's
-`fastrdp-proxy.service` sets `WLOG_APPENDER=JOURNALD`: with the console appender,
-stdout in the pipe to journald is block-buffered, and the proxy's log lines arrive
-minutes late or torn ([docs/backlog.md](../../docs/backlog.md#sessions) A4).
+Shipped in `fastrdp-freerdp3` 3.32.2-7 to 3.33.0-1, dropped with 3.33.1-1.
 
-**Is it required?**
+**Problem it fixed.** With `WITH_SYSTEMD`, `winpr/libwinpr/utils/CMakeLists.txt` set
+`WINPR_HAVE_JOURNALD_H` in its own directory scope, which never reached `winpr/config.h`,
+so `WLOG_APPENDER=JOURNALD` was ignored without a message although the appender was
+compiled in (fastrdp-proxy logs to the journal: [docs/backlog.md](../../docs/backlog.md#sessions) A4).
 
-| Use | Required |
-|---|---|
-| fastrdp-proxy logging to the journal (unit file, `WLOG_APPENDER=JOURNALD`) | yes: without it the proxy logs through the console appender as before |
-| everything else | no |
+**Fixed upstream** in 3.33.1 by ba36e42a1d ("[winpr,wlog] pass WINPR_HAVE_JOURNALD_H as a
+private definition"): `winpr_definition_add(WINPR_HAVE_JOURNALD_H)` puts it in
+`WINPR_DEFINITIONS`, which `winpr/libwinpr/CMakeLists.txt` passes to the libwinpr target
+with `target_compile_definitions(... PRIVATE ...)`; `wlog.c` and `Appender.c` are part of
+that target. `config.h` no longer mentions the macro at all.
 
-**Fix.** Set `WINPR_HAVE_JOURNALD_H` as an internal cache entry, which every later
-scope reads, and remove the entry when `WITH_SYSTEMD` is off, so a reconfigure without
-systemd keeps no stale define. `third_party/build-freerdp.sh` passes `-DWITH_SYSTEMD=ON`
-(it used to pass `-DWITH_LIBSYSTEMD=ON`, which is no FreeRDP option) and fails the
-build if `winpr/config.h` lacks `WINPR_HAVE_JOURNALD_H` or `libwinpr3` is not linked
-against libsystemd.
-
-**Regression test.** The build check above. Not yet run through a full vendored build
-and a proxy under systemd ([docs/backlog.md](../../docs/backlog.md#sessions) A4).
-
-**Status upstream.** Still present in 3.32.2. Not submitted
-([docs/upstream.md](../../docs/upstream.md)).
-
-**Drop it when** upstream's `config.h` gets `WINPR_HAVE_JOURNALD_H` with `WITH_SYSTEMD`.
+**Regression test.** `third_party/build-freerdp.sh` now checks the built library instead
+of `config.h`: `libwinpr3.so.3` must contain the string `JOURNALD`, which `wlog.c` only has
+inside `#ifdef WINPR_HAVE_JOURNALD_H`, and must be linked against libsystemd.

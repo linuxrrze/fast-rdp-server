@@ -976,8 +976,8 @@ and `sssd-kcm`.
 FreeRDP and the fastrdp module write each message straight to the journal, at once and
 with its priority. Without it, WLog's console appender buffers stdout in the pipe to
 journald, and lines arrive minutes late or torn ([backlog.md](backlog.md#sessions) A4).
-The appender needs `fastrdp-freerdp3` built with it (`patches/freerdp/0009`; older builds
-fall back to the console without a message).
+The appender needs `fastrdp-freerdp3` 3.32.2-7 or later (before, it was compiled in but
+not selectable, and WLog fell back to the console without a message).
 
 ```sh
 journalctl -u fastrdp-proxy.service -p warning      # warnings and errors only

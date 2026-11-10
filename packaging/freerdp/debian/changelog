@@ -1,3 +1,19 @@
+fastrdp-freerdp3 (3.33.1-1) unstable; urgency=medium
+
+  * New upstream release 3.33.1, with fixes for 11 security advisories
+    (GHSA-x863-43r4-f7c2, GHSA-m33m-4qxh-hq76, GHSA-52rf-pppx-qm55,
+    GHSA-3664-pr8r-3254, GHSA-rp99-f9qv-c446, GHSA-23fv-6wrf-5hfq,
+    GHSA-f6v9-vx5q-vjpf, GHSA-m6hp-4798-x78x, GHSA-9c9j-2r7q-5gx2,
+    GHSA-ch3p-5r9r-w86p, GHSA-76c4-7552-ffhv).
+  * patches/freerdp: 0009 (WLog journald appender) dropped, fixed upstream
+    (ba36e42a1d: WINPR_HAVE_JOURNALD_H is now a private compile definition
+    of libwinpr). 0001-0008 still needed and apply unchanged (0004 and
+    0005 only moved).
+  * build-freerdp.sh checks the journald appender in libwinpr3 itself,
+    since config.h no longer carries WINPR_HAVE_JOURNALD_H.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Tue, 10 Nov 2026 15:00:24 +0100
+
 fastrdp-freerdp3 (3.33.0-1) unstable; urgency=medium
 
   * New upstream release 3.33.0, with fixes for 13 security advisories

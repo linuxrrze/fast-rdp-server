@@ -9,7 +9,7 @@ and each vendored build can be dropped when its fixes reach the distributions.
 
 | Dependency | Version | Local patches | Installed to | Used by |
 |---|---|---|---|---|
-| FreeRDP | 3.33.0 | `patches/freerdp/`: PKCS#11 slot id fix (client-side smartcard logon); Remote Credential Guard: negotiation answer instead of a dropped connection, TSRemoteGuardCreds without `supplementalCreds` (server side) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
+| FreeRDP | 3.33.1 | `patches/freerdp/`: PKCS#11 slot id fix (client-side smartcard logon); Remote Credential Guard: negotiation answer instead of a dropped connection, TSRemoteGuardCreds without `supplementalCreds` (server side) | `/opt/fastrdp` (private) | `freerdp-proxy` + fastrdp module, `xfreerdp` and rdpbench (H.264), e2e tests |
 | xrdp | 0.10.6.1 | `patches/xrdp/`: FFmpeg H.264 encoder (VA-API, NVENC, QSV) | `/usr` (package), `/usr/local` (Ansible build) | X11 sessions |
 | xorgxrdp | 0.10.5 | none (built together with xrdp, with glamor) | Xorg module directory | X11 sessions |
 
@@ -187,6 +187,13 @@ burst before the Font List now checks that such a client logs in normally. The
 Disconnect Provider Ultimatum now carries its reason (#13873): the e2e check of a
 session the back-end ended expects "provider initiated" (1). Build and all four e2e suites:
 CI only (no local build).
+
+2026-11-10, `3.33.1-1` (new upstream release, 11 security advisories): the release
+tarball's sha256 matches upstream's published checksum; `fetch.sh` applies the series
+0001–0008 unchanged (0004 and 0005 only moved, no fuzz). 0009 is dropped: upstream
+ba36e42a1d passes `WINPR_HAVE_JOURNALD_H` as a private compile definition of libwinpr,
+so `config.h` no longer has the macro and `build-freerdp.sh` checks `libwinpr3` for the
+appender instead. Build and all four e2e suites: CI only (no local build).
 
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

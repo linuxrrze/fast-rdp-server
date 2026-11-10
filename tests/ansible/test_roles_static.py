@@ -183,8 +183,9 @@ class RolesStatic(unittest.TestCase):
         self.assertIn("-DWITH_SYSTEMD=ON", build)
         self.assertNotIn("WITH_LIBSYSTEMD", build)
         self.assertIn("WINPR_HAVE_JOURNALD_H", build)
-        series = (REPO / "patches" / "freerdp" / "series").read_text()
-        self.assertIn("0009-winpr-wlog-make-WITH_SYSTEMD-reach-config.h-journald-appender.patch", series)
+        # 3.33.1 passes the define privately to libwinpr: the check reads the library
+        self.assertIn("grep -qx JOURNALD", build)
+        self.assertNotIn("winpr/config.h", build)
 
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()
