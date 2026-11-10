@@ -7,10 +7,10 @@ Tick an item when its results are attached; update the backlog row afterwards.
 
 ## 0. Before the round
 
-- [ ] Host on **fast-rdp-server 0.7.14** (0.7.13 differs only in tests and docs, 0.7.12 ships FreeRDP 3.32.2, 0.7.11 has `SelfRedirect` on by default,
+- [ ] Host on **fast-rdp-server 0.7.15** (0.7.14 ships FreeRDP 3.33.0 with patch 0009, 0.7.13 differs only in tests and docs, 0.7.12 ships FreeRDP 3.32.2, 0.7.11 has `SelfRedirect` on by default,
       0.7.10 lacks the three A5 mitigations of item H, 0.7.9 also the fill-tiles lab xorgxrdp variant, 0.7.8 also the lab keypress accounts and the first lab xorgxrdp variant,
       0.7.7 the reactivation switch of A5, 0.7.6 also the TLS key log),
-      `fastrdp-freerdp3 3.33.0-1`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
+      `fastrdp-freerdp3 3.33.1-1`, `fastrdp-xrdp 0.10.6.1+xorgxrdp0.10.5-2` (`dpkg -l 'fast*'`), deployed with
       `make deploy INVENTORY=…`.
 - [ ] Inventory for the round: `fastrdp_desktop_picker: true`,
       `fastrdp_mfa_mode: code_or_web` with the Keycloak setup of
@@ -255,9 +255,31 @@ Next session (in this order; I and H first, then A and B):
       X11 session (no 90 s wait). Log out of xfce, then GNOME starts. The reverse: xfce
       while a GNOME session runs (record the result). Look for
       `xrdp session state unknown:` lines in the broker journal.
-- [ ] **A4** (journal): within one login, INFO and WARN lines arrive in order, the journal
-      time matches the FreeRDP time stamp, no torn lines; `journalctl -u fastrdp-proxy
-      -p warning` lists only warnings.
+- [ ] **A4** (journal; 0.7.15, `fastrdp-freerdp3 3.33.1-1`): the proxy logs through WLog's
+      journald appender, from upstream since 3.33.1 (patch 0009 dropped). CI only shows
+      that the appender is compiled in (`build-freerdp.sh`); this item shows that the
+      installed service uses it and what reaches the journal when.
+      1. `systemctl show -p Environment fastrdp-proxy` lists `WLOG_APPENDER=JOURNALD` and
+         `WLOG_JOURNALD_ID=fastrdp-proxy`.
+      2. Priorities: `journalctl -u fastrdp-proxy -p warning` lists only WARN and ERROR
+         lines. With the console appender it listed none (everything had priority info).
+      3. Identifier: `journalctl -t fastrdp-proxy -o short-precise` finds the proxy's lines.
+      4. Order and tearing: one login through the waiting screen (INFO and WARN lines
+         mixed): lines in the order of their FreeRDP time stamps `[hh:mm:ss:mmm]`, no line
+         cut and glued to another.
+      5. Delay, the open question: the appender writes with `fprintf` to an `fdopen()`ed
+         journal socket and never flushes (`JournaldAppender.c`, 3.33.1), so glibc buffers
+         4 KiB, about 60 lines, before anything reaches journald [verified: same pattern in
+         a test program; not yet seen on a host]. On an otherwise idle proxy: one login,
+         then wait 5 minutes without other connections. Note per line the journal time
+         minus the FreeRDP time stamp (`-o short-precise`), whether the login's lines
+         arrive only with a later connection, and whether the login's last lines are
+         missing after `systemctl restart fastrdp-proxy` (lost with the buffer).
+         Delays of seconds to minutes mean A4 needs a flush per message in WinPR
+         (new FreeRDP patch); none mean the analysis above is wrong.
+      Bring back: the journal of the login and the 5 minutes after it, once with
+      `-o short-precise` and once with `-o verbose` (`PRIORITY`, `SYSLOG_IDENTIFIER` and
+      the time fields of a few lines).
 
 ## 3. Sessions and host safety (per desktop: xfce, wlroots, gnome, plasma)
 
