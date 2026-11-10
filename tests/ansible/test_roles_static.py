@@ -184,7 +184,7 @@ class RolesStatic(unittest.TestCase):
         self.assertNotIn("WITH_LIBSYSTEMD", build)
         self.assertIn("WINPR_HAVE_JOURNALD_H", build)
         # 3.33.1 passes the define privately to libwinpr: the check reads the library
-        self.assertIn("grep -qx JOURNALD", build)
+        self.assertIn("grep -x JOURNALD >/dev/null", build)   # not -q: SIGPIPE + pipefail
         self.assertNotIn("winpr/config.h", build)
 
     def test_host_name_defaults(self):
