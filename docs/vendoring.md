@@ -195,5 +195,13 @@ ba36e42a1d passes `WINPR_HAVE_JOURNALD_H` as a private compile definition of lib
 so `config.h` no longer has the macro and `build-freerdp.sh` checks `libwinpr3` for the
 appender instead. Build and all four e2e suites: CI only (no local build).
 
+2026-11-10, `3.33.1-2` (`patches/freerdp/0010`, journald appender flushes after each
+message, backlog A4): `fetch.sh` applies 0001–0008 and 0010 to the 3.33.1 tarball with
+`--fuzz=0`; `journald_log.c` compiles against the 3.33.1 headers. The new
+`tests/proxy-e2e/run_journald.sh` was run here only with a stand-in for the appender
+(no WinPR build; no root or user namespaces for the real socket path): it fails without
+a flush and passes with one. Build, `run_journald.sh` against the real build and the
+other e2e suites: CI only.
+
 Not tested here: installing the packages and running them on a real host, and the
 Ansible build path on a real host. CI covers clean-container builds.

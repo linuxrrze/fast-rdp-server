@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Tue, 10 Nov 2026 20:39:11 +0100
+Subject: [PATCH] [winpr,wlog] journald appender: flush after each message
+
+The journald appender opens its stream with sd_journal_stream_fd() and
+fdopen(), and writes each message with one fprintf. A stream on a
+socket is fully buffered by stdio, and the appender never flushes it:
+messages reach journald only when about 4 KiB (the socket's
+st_blksize) have piled up, or when the process exits. A server that
+logs little, such as freerdp-proxy between connections, shows its
+lines minutes late in the journal, and the lines still in the buffer
+are lost when the process is killed (SIGKILL, a crash, systemd's stop
+timeout).
+
+Flush after each message, as the file appender does. Each message then
+reaches journald in one write, right away and in order with the other
+messages of the process.
+---
+ winpr/libwinpr/utils/wlog/JournaldAppender.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/winpr/libwinpr/utils/wlog/JournaldAppender.c b/winpr/libwinpr/utils/wlog/JournaldAppender.c
+index b0d468b..126aa23 100644
+--- a/winpr/libwinpr/utils/wlog/JournaldAppender.c
++++ b/winpr/libwinpr/utils/wlog/JournaldAppender.c
+@@ -122,6 +122,10 @@ static BOOL WLog_JournaldAppender_WriteMessage(wLog* log, wLogAppender* appender
+ 		WINPR_PRAGMA_DIAG_IGNORED_FORMAT_NONLITERAL(void)
+ 		fprintf(journaldAppender->stream, formatStr, prefix, cmessage->TextString);
+ 		WINPR_PRAGMA_DIAG_POP
++		/* The stream is fdopen()ed on the journal socket, so stdio buffers it fully:
++		 * without a flush a message reaches journald only once the buffer is full or
++		 * the process exits, and is lost if it is killed. */
++		(void)fflush(journaldAppender->stream);
+ 	}
+ 	return TRUE;
+ }

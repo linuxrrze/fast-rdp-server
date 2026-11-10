@@ -1,3 +1,13 @@
+fastrdp-freerdp3 (3.33.1-2) unstable; urgency=medium
+
+  * patches/freerdp/0010: WLog's journald appender flushes after each
+    message. It wrapped the journal socket with fdopen() and never flushed,
+    so stdio held about 4 KiB: the proxy's lines reached the journal late
+    and were lost when it was killed (backlog A4). Regression test:
+    tests/proxy-e2e/run_journald.sh.
+
+ -- Marcel Ritter <marcel@linux-ng.de>  Tue, 10 Nov 2026 20:44:00 +0100
+
 fastrdp-freerdp3 (3.33.1-1) unstable; urgency=medium
 
   * New upstream release 3.33.1, with fixes for 11 security advisories

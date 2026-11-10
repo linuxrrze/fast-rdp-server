@@ -976,9 +976,10 @@ and `sssd-kcm`.
 FreeRDP and the fastrdp module write each message to the journal with its priority, so
 `-p warning` works, and in one stream, so lines are no longer torn. Without it, WLog's
 console appender buffers stdout in the pipe to journald, and lines arrive minutes late or
-torn. The journald appender still buffers about 4 KiB before writing, so on a quiet proxy
-lines can arrive late, and the last ones are lost when the proxy stops
-([backlog.md](backlog.md#sessions) A4).
+torn ([backlog.md](backlog.md#sessions) A4). Up to `fastrdp-freerdp3` 3.33.1-1 the
+journald appender buffered too, about 4 KiB, so on a quiet proxy lines arrived late and
+the last ones were lost when the proxy was killed; 3.33.1-2 writes each message at once
+(`patches/freerdp/0010`).
 The appender needs `fastrdp-freerdp3` 3.32.2-7 or later (before, it was compiled in but
 not selectable, and WLog fell back to the console without a message).
 

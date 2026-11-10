@@ -416,6 +416,50 @@ two checks fail. During the desktop picker: closed at once, not denied, login ab
 **Drop it when** FreeRDP's server answers the Shutdown Request with Shutdown Request
 Denied for a running session.
 
+## 0010 – [winpr,wlog] journald appender: flush after each message
+
+**Problem.** WLog's journald appender (`winpr/libwinpr/utils/wlog/JournaldAppender.c`)
+gets a stream socket from `sd_journal_stream_fd()`, wraps it with `fdopen(fd, "w")` and
+writes each message with one `fprintf`. It never calls `fflush` or `setvbuf`, and stdio
+fully buffers a stream that is not a terminal, here in blocks of the socket's
+`st_blksize` (4096 bytes). Messages reach journald only when the buffer is full, about
+60 lines of freerdp-proxy, or when the process exits; when it is killed (SIGKILL, a
+crash, systemd's stop timeout) the buffered lines are lost [verified: source of 3.33.0
+and 3.33.1; a test program with the same pattern delivered nothing until its 61st line;
+`tests/proxy-e2e/run_journald.sh` with a stand-in for the appender].
+
+**Who is affected.** Every WinPR program that logs with `WLOG_APPENDER=JOURNALD`. fastrdp:
+`fastrdp-proxy.service`, which switched to the journald appender because the console
+appender's block-buffered stdout made the proxy's lines arrive minutes late and torn
+([docs/backlog.md](../../docs/backlog.md#sessions) A4). The appender fixed the priorities
+and the torn lines, not the delay: a proxy with few connections still logs late.
+
+**Is it required?**
+
+| Use | Required |
+|---|---|
+| fastrdp-proxy logging to the journal (unit file, `WLOG_APPENDER=JOURNALD`) | yes: without it the proxy's lines reach the journal late, and the last ones are lost when it is killed |
+| everything else | no |
+
+**Fix.** `fflush()` the stream after each message, as WLog's file appender does. Each
+message then goes to journald in one `write`, right away and in order. The cost is one
+system call per message; the console appender's unbuffered stderr already costs the same
+for WARN and above.
+
+**Regression test.** `tests/proxy-e2e/run_journald.sh` (3.33.1-2; CI job `e2e`, strict):
+a WinPR program logs an INFO and a WARN message through the appender and dies by
+SIGKILL 2 s after each; a fake journald on `/run/systemd/journal/stdout` records the
+stream header and each line's arrival. Both lines must arrive within a second, with
+`<6>` and `<4>`. Without the patch both line checks fail: the lines are still in the
+buffer when the process dies. Before this the harness was run here only with a
+stand-in program (no WinPR build), which failed without the flush and passed with it.
+
+**Status upstream.** Present in 3.33.1. Not submitted
+([docs/upstream.md](../../docs/upstream.md)).
+
+**Drop it when** the journald appender flushes after each message (or makes its stream
+line-buffered) in a FreeRDP release.
+
 ## Dropped
 
 ### 0009 – [winpr,wlog] make WITH_SYSTEMD reach config.h (journald appender)

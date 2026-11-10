@@ -13,7 +13,7 @@ Environment=KRB5_KTNAME=FILE:/etc/fastrdp/termsrv.keytab
 Environment=KRB5RCACHEDIR=/var/cache/fastrdp-proxy
 # FreeRDP's log to the journal, one line per message with its priority: the default
 # console appender block-buffers stdout in a pipe (late, torn lines; backlog A4). The
-# journald appender buffers too (4 KiB, no flush), so lines can still arrive late.
+# journald appender buffered too until fastrdp-freerdp3 3.33.1-2 (patches/freerdp/0010).
 # Without journald support in libwinpr3 WLog falls back to the console.
 Environment=WLOG_APPENDER=JOURNALD
 Environment=WLOG_JOURNALD_ID=fastrdp-proxy

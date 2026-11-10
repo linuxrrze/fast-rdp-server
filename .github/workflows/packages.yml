@@ -256,6 +256,11 @@ jobs:
         env:
           SC_MODULE: softhsm
         run: tests/annotate.sh tests/proxy-e2e/run_smartcard.sh
+      - name: WLog journald appender (run_journald.sh, patches/freerdp/0010)
+        if: ${{ !cancelled() }}
+        env:
+          FASTRDP_TESTS_STRICT: 1   # root without journald here: a skip would hide a broken setup
+        run: tests/annotate.sh tests/proxy-e2e/run_journald.sh
 
   # Informational: is the distribution's MIT krb5 affected by the SPNEGO mechListMIC
   # regression (docs/vendoring.md)? "Affected" is a warning; any other failure fails.

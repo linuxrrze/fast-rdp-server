@@ -186,6 +186,11 @@ class RolesStatic(unittest.TestCase):
         # 3.33.1 passes the define privately to libwinpr: the check reads the library
         self.assertIn("grep -x JOURNALD >/dev/null", build)   # not -q: SIGPIPE + pipefail
         self.assertNotIn("winpr/config.h", build)
+        # the appender's fdopen()ed stream is fully buffered without the flush patch
+        series = (REPO / "patches" / "freerdp" / "series").read_text()
+        self.assertIn("0010-winpr-wlog-journald-appender-flush-after-each-message.patch", series)
+        ci = (REPO / ".github" / "workflows" / "packages.yml").read_text()
+        self.assertIn("tests/annotate.sh tests/proxy-e2e/run_journald.sh", ci)
 
     def test_host_name_defaults(self):
         text = (ANSIBLE / "roles" / "common" / "defaults" / "main.yml").read_text()

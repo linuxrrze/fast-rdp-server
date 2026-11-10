@@ -2,7 +2,7 @@
 # Overview of every test, what it guards and where CI runs it: tests/README.md.
 .PHONY: deb test-xrdp-encoder test-wlroots test test-all test-broker test-webgate test-pam test-gpu \
 	test-scripts test-publish test-ansible test-proxy-module test-e2e test-e2e-nla test-e2e-smartcard \
-	test-e2e-smartcard-softhsm check-krb5-spnego perf-tools perf-proxy lint lint-ci test-docs \
+	test-e2e-smartcard-softhsm test-e2e-journald check-krb5-spnego perf-tools perf-proxy lint lint-ci test-docs \
 	test-keycloak test-prototypes test-lab
 
 test: test-broker test-webgate test-pam test-proxy-module test-gpu test-prototypes test-lab lint
@@ -121,6 +121,11 @@ test-e2e-smartcard:   # + krb5-pkinit softhsm2 opensc p11-kit-modules
 # SoftHSM without p11-kit: 32-bit slot ids, fails without patches/freerdp (slot id fix)
 test-e2e-smartcard-softhsm:
 	SC_MODULE=softhsm tests/proxy-e2e/run_smartcard.sh
+
+# WLog's journald appender against a fake journald: root without journald, or unshare -rm;
+# fails without patches/freerdp/0010 (flush per message)
+test-e2e-journald:
+	tests/proxy-e2e/run_journald.sh
 
 # Manual (JDK + Keycloak + Chromium): passkeys on the web path, Keycloak role + webgate.
 test-keycloak:   # CHROME=<chromium>, optional KEYCLOAK_HOME/JAVA_HOME; see tests/keycloak/run.sh
