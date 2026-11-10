@@ -1,0 +1,954 @@
+From 04108540aabf8acaff1054b12ab480854a39805f Mon Sep 17 00:00:00 2001
+From: Marcel Ritter <marcel@linux-ng.de>
+Date: Mon, 19 Oct 2026 19:28:16 +0200
+Subject: [PATCH] Add FFmpeg H.264 encoder (VA-API, NVENC, QSV)
+
+New encoder backend selected with `h264_encoder = "ffmpeg"` in gfx.toml.
+It drives libavcodec hardware encoders (h264_vaapi for Intel/AMD,
+h264_nvenc for NVIDIA, h264_qsv for Intel) with the NV12 frames xorgxrdp
+already produces for the x264 module.
+
+- low-latency defaults per encoder (no B-frames, async depth 1,
+  NVENC zerolatency/ull), SPS/PPS repeated with every IDR frame
+- [ffmpeg] encoder/device/options/fallback and per connection type
+  bitrate, max_bitrate, qp, gop, fps
+- start-up probe: an unusable hardware encoder (no GPU, driver or
+  library) is detected once and replaced by the fallback (default
+  libx264) instead of failing on every frame
+- after lost output (send/receive error, output buffer too small) the
+  next frame is forced to an IDR (forced-idr for NVENC/QSV/x264):
+  MS-RDPEGFX has no picture-loss feedback
+- VUI signals full-range BT.709, matching the XRDP_nv12_709fr input
+  (MS-RDPEGFX 3.3.8.3.1); the initial frame is full-range black
+- built with --enable-ffmpeg (libavcodec >= 60, libavutil >= 58)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ configure.ac               |   8 +
+ xrdp/Makefile.am           |   7 +
+ xrdp/xrdp.h                |   2 +-
+ xrdp/xrdp_encoder.c        |  27 +-
+ xrdp/xrdp_encoder_ffmpeg.c | 529 +++++++++++++++++++++++++++++++++++++
+ xrdp/xrdp_encoder_ffmpeg.h |  36 +++
+ xrdp/xrdp_tconfig.c        | 116 ++++++++
+ xrdp/xrdp_tconfig.h        |  26 +-
+ 8 files changed, 744 insertions(+), 7 deletions(-)
+ create mode 100644 xrdp/xrdp_encoder_ffmpeg.c
+ create mode 100644 xrdp/xrdp_encoder_ffmpeg.h
+
+diff --git a/configure.ac b/configure.ac
+index 7d466b5..dfc3d49 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -178,6 +178,11 @@ AC_ARG_ENABLE(openh264, AS_HELP_STRING([--enable-openh264],
+               [Use Cisco OpenH264 library (default: no)]),
+               [], [enable_openh264=no])
+ AM_CONDITIONAL(XRDP_OPENH264, [test x$enable_openh264 = xyes])
++AC_ARG_ENABLE(ffmpeg, AS_HELP_STRING([--enable-ffmpeg],
++              [Use FFmpeg libavcodec for hardware H.264 encoding:
++               VA-API, NVENC, QSV (default: no)]),
++              [], [enable_ffmpeg=no])
++AM_CONDITIONAL(XRDP_FFMPEG, [test x$enable_ffmpeg = xyes])
+ AC_ARG_ENABLE(painter, AS_HELP_STRING([--disable-painter],
+               [Do not use included painter library (default: no)]),
+               [], [enable_painter=yes])
+@@ -491,6 +496,8 @@ AS_IF( [test "x$enable_x264" = "xyes"] , [PKG_CHECK_MODULES(XRDP_X264, x264 >= 0
+ 
+ AS_IF( [test "x$enable_openh264" = "xyes"] , [PKG_CHECK_MODULES(XRDP_OPENH264, openh264 >= 2.0.0)] )
+ 
++AS_IF( [test "x$enable_ffmpeg" = "xyes"] , [PKG_CHECK_MODULES(XRDP_FFMPEG, libavcodec >= 60 libavutil >= 58)] )
++
+ # checking for TurboJPEG
+ if test "x$enable_tjpeg" = "xyes"
+ then
+@@ -666,6 +673,7 @@ echo "  turbo jpeg                      $enable_tjpeg"
+ echo "  rfxcodec                        $enable_rfxcodec"
+ echo "  x264                            $enable_x264"
+ echo "  openh264                        $enable_openh264"
++echo "  ffmpeg (VA-API/NVENC/QSV)       $enable_ffmpeg"
+ echo "  painter                         $enable_painter"
+ echo "  pixman                          $enable_pixman"
+ echo "  fuse                            $enable_fuse"
+diff --git a/xrdp/Makefile.am b/xrdp/Makefile.am
+index 458369a..70eb7a7 100644
+--- a/xrdp/Makefile.am
++++ b/xrdp/Makefile.am
+@@ -34,6 +34,13 @@ XRDP_EXTRA_LIBS += $(XRDP_X264_LIBS)
+ XRDP_EXTRA_SOURCES += xrdp_encoder_x264.c xrdp_encoder_x264.h
+ endif
+ 
++if XRDP_FFMPEG
++AM_CPPFLAGS += -DXRDP_FFMPEG
++AM_CPPFLAGS += $(XRDP_FFMPEG_CFLAGS)
++XRDP_EXTRA_LIBS += $(XRDP_FFMPEG_LIBS)
++XRDP_EXTRA_SOURCES += xrdp_encoder_ffmpeg.c xrdp_encoder_ffmpeg.h
++endif
++
+ if XRDP_OPENH264
+ AM_CPPFLAGS += -DXRDP_OPENH264
+ AM_CPPFLAGS += $(XRDP_OPENH264_CFLAGS)
+diff --git a/xrdp/xrdp.h b/xrdp/xrdp.h
+index c611d5a..f74332b 100644
+--- a/xrdp/xrdp.h
++++ b/xrdp/xrdp.h
+@@ -38,7 +38,7 @@
+ #include "xrdp_client_info.h"
+ #include "log.h"
+ 
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_NVENC)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_NVENC) || defined(XRDP_FFMPEG)
+ #if !defined(XRDP_H264)
+ #define XRDP_H264 1
+ #endif
+diff --git a/xrdp/xrdp_encoder.c b/xrdp/xrdp_encoder.c
+index 9178647..2de7d2a 100644
+--- a/xrdp/xrdp_encoder.c
++++ b/xrdp/xrdp_encoder.c
+@@ -38,6 +38,10 @@
+ #include "xrdp_encoder_x264.h"
+ #endif
+ 
++#ifdef XRDP_FFMPEG
++#include "xrdp_encoder_ffmpeg.h"
++#endif
++
+ #ifdef XRDP_OPENH264
+ #include "xrdp_encoder_openh264.h"
+ #endif
+@@ -98,7 +102,7 @@ process_enc_jpg(struct xrdp_encoder *self, XRDP_ENC_DATA *enc);
+ static int
+ process_enc_rfx(struct xrdp_encoder *self, XRDP_ENC_DATA *enc);
+ #endif
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_FFMPEG)
+ static int
+ process_enc_h264(struct xrdp_encoder *self, XRDP_ENC_DATA *enc);
+ #endif
+@@ -140,6 +144,19 @@ static void
+ set_h264_encoder_methods(struct xrdp_encoder *self)
+ {
+     const char *encoder_name = NULL;
++#if defined(XRDP_FFMPEG)
++    struct xrdp_tconfig_gfx ffconfig;
++    tconfig_load_gfx(GFX_CONF, &ffconfig);
++    if (ffconfig.h264_encoder == XTC_H264_FFMPEG)
++    {
++        self->xrdp_encoder_h264_create = xrdp_encoder_ffmpeg_create;
++        self->xrdp_encoder_h264_delete = xrdp_encoder_ffmpeg_delete;
++        self->xrdp_encoder_h264_encode = xrdp_encoder_ffmpeg_encode;
++        LOG(LOG_LEVEL_INFO, "xrdp_encoder_create: using FFmpeg (%s) for "
++            "H.264 encoding", ffconfig.ffmpeg_global.encoder);
++        return;
++    }
++#endif
+ #if defined(XRDP_X264) && defined(XRDP_OPENH264)
+     struct xrdp_tconfig_gfx gfxconfig;
+     tconfig_load_gfx(GFX_CONF, &gfxconfig);
+@@ -225,7 +242,7 @@ xrdp_encoder_create(struct xrdp_mm *mm)
+         client_info->capture_format = XRDP_a8b8g8r8;
+         self->process_enc = process_enc_jpg;
+     }
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_FFMPEG)
+     else if (mm->libh264_loaded && (mm->egfx_flags & XRDP_EGFX_H264) != 0)
+     {
+         LOG(LOG_LEVEL_INFO,
+@@ -410,7 +427,7 @@ xrdp_encoder_delete(struct xrdp_encoder *self)
+     }
+ #endif
+ 
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_FFMPEG)
+     for (index = 0; index < 16; index++)
+     {
+         if (self->codec_handle_h264_gfx[index] != NULL)
+@@ -685,7 +702,7 @@ process_enc_rfx(struct xrdp_encoder *self, XRDP_ENC_DATA *enc)
+ }
+ #endif
+ 
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_FFMPEG)
+ 
+ /*****************************************************************************/
+ static int
+@@ -790,7 +807,7 @@ gfx_wiretosurface1(struct xrdp_encoder *self,
+                    struct xrdp_egfx_bulk *bulk, struct stream *in_s,
+                    XRDP_ENC_DATA *enc)
+ {
+-#if defined(XRDP_X264) || defined(XRDP_OPENH264)
++#if defined(XRDP_X264) || defined(XRDP_OPENH264) || defined(XRDP_FFMPEG)
+     int index;
+     int surface_id;
+     int codec_id;
+diff --git a/xrdp/xrdp_encoder_ffmpeg.c b/xrdp/xrdp_encoder_ffmpeg.c
+new file mode 100644
+index 0000000..316d967
+--- /dev/null
++++ b/xrdp/xrdp_encoder_ffmpeg.c
+@@ -0,0 +1,529 @@
++/**
++ * xrdp: A Remote Desktop Protocol server.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * H.264 encoding through FFmpeg's libavcodec: hardware encoders
++ * (h264_vaapi on Intel/AMD, h264_nvenc on NVIDIA, h264_qsv on Intel) and,
++ * for testing, libx264. Input is the NV12 frame xorgxrdp already produces
++ * for the x264 module; output is one Annex B access unit per call (no
++ * B-frames, no lookahead, SPS/PPS repeated on IDR frames).
++ */
++
++#if defined(HAVE_CONFIG_H)
++#include <config_ac.h>
++#endif
++
++#include <string.h>
++
++#include <libavcodec/avcodec.h>
++#include <libavutil/dict.h>
++#include <libavutil/hwcontext.h>
++#include <libavutil/opt.h>
++#include <libavutil/pixdesc.h>
++
++#include "xrdp.h"
++#include "arch.h"
++#include "os_calls.h"
++#include "string_calls.h"
++#include "xrdp_encoder_ffmpeg.h"
++#include "xrdp_tconfig.h"
++
++#define FFMPEG_MAX_ENCODERS 16
++
++struct ffmpeg_encoder
++{
++    AVCodecContext *ctx;
++    AVBufferRef *hw_frames;
++    AVFrame *sw;            /* persistent full frame (NV12), damaged rects copied in */
++    AVPacket *pkt;
++    int width;              /* requested size */
++    int height;
++    int64_t pts;
++    int force_idr;          /* output was lost: the next frame must be an IDR */
++};
++
++struct ffmpeg_global
++{
++    struct ffmpeg_encoder encoders[FFMPEG_MAX_ENCODERS];
++    struct xrdp_tconfig_gfx_ffmpeg_global global;
++    struct xrdp_tconfig_gfx_ffmpeg_param param[NUM_CONNECTION_TYPES];
++    AVBufferRef *hw_device;
++    int is_vaapi;
++};
++
++/* Low-latency defaults per encoder; gfx.toml [ffmpeg] options override them. */
++static const struct
++{
++    const char *encoder;
++    const char *options;
++} g_defaults[] =
++{
++    { "h264_vaapi", "async_depth=1:profile=main" },
++    { "h264_nvenc", "preset=p1:tune=ull:zerolatency=1:delay=0:profile=main:forced-idr=1" },
++    { "h264_qsv", "async_depth=1:preset=veryfast:look_ahead=0:profile=main:forced_idr=1" },
++    { "libx264", "preset=ultrafast:tune=zerolatency:profile=main:forced-idr=1" },
++};
++
++/*****************************************************************************/
++static void
++ffmpeg_log_error(const char *what, int err)
++{
++    char buf[AV_ERROR_MAX_STRING_SIZE];
++    av_strerror(err, buf, sizeof(buf));
++    LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: %s: %s", what, buf);
++}
++
++/*****************************************************************************/
++static void
++ffmpeg_encoder_close(struct ffmpeg_encoder *fe)
++{
++    avcodec_free_context(&fe->ctx);
++    av_buffer_unref(&fe->hw_frames);
++    av_frame_free(&fe->sw);
++    av_packet_free(&fe->pkt);
++    fe->pts = 0;
++    fe->force_idr = 0;
++}
++
++/*****************************************************************************/
++/* Options: encoder defaults, then [ffmpeg] options, then [ffmpeg.<ct>] options */
++static int
++ffmpeg_build_options(struct ffmpeg_global *fg, const struct xrdp_tconfig_gfx_ffmpeg_param *p,
++                     AVDictionary **dict)
++{
++    unsigned int i;
++    for (i = 0; i < sizeof(g_defaults) / sizeof(g_defaults[0]); i++)
++    {
++        if (strcmp(g_defaults[i].encoder, fg->global.encoder) == 0)
++        {
++            av_dict_parse_string(dict, g_defaults[i].options, "=", ":", 0);
++        }
++    }
++    if (fg->global.options[0] != '\0' &&
++            av_dict_parse_string(dict, fg->global.options, "=", ":", 0) < 0)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: bad [ffmpeg] options \"%s\"",
++            fg->global.options);
++        return 1;
++    }
++    if (p->options[0] != '\0' &&
++            av_dict_parse_string(dict, p->options, "=", ":", 0) < 0)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: bad options \"%s\"", p->options);
++        return 1;
++    }
++    return 0;
++}
++
++/*****************************************************************************/
++static int
++ffmpeg_encoder_open(struct ffmpeg_global *fg, struct ffmpeg_encoder *fe,
++                    int width, int height, int ct)
++{
++    const struct xrdp_tconfig_gfx_ffmpeg_param *p = &fg->param[ct];
++    const AVCodec *codec;
++    AVDictionary *dict = NULL;
++    AVDictionaryEntry *left = NULL;
++    int err;
++
++    codec = avcodec_find_encoder_by_name(fg->global.encoder);
++    if (codec == NULL)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: encoder \"%s\" not found "
++            "in libavcodec", fg->global.encoder);
++        return 1;
++    }
++    fe->ctx = avcodec_alloc_context3(codec);
++    fe->sw = av_frame_alloc();
++    fe->pkt = av_packet_alloc();
++    if (fe->ctx == NULL || fe->sw == NULL || fe->pkt == NULL)
++    {
++        return 2;
++    }
++
++    /* Same geometry as the x264 module: macroblock-aligned, the client crops */
++    fe->ctx->width = (width + 15) & ~15;
++    fe->ctx->height = (height + 15) & ~15;
++    fe->ctx->time_base = (AVRational) { p->fps_den, p->fps_num };
++    fe->ctx->framerate = (AVRational) { p->fps_num, p->fps_den };
++    fe->ctx->gop_size = p->gop;
++    fe->ctx->max_b_frames = 0;
++    fe->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
++    /* xorgxrdp delivers full-range BT.709 NV12 (XRDP_nv12_709fr), the colour
++     * conversion MS-RDPEGFX 3.3.8.3.1 prescribes; say so in the VUI */
++    fe->ctx->color_range = AVCOL_RANGE_JPEG;
++    fe->ctx->colorspace = AVCOL_SPC_BT709;
++    fe->ctx->color_primaries = AVCOL_PRI_BT709;
++    fe->ctx->color_trc = AVCOL_TRC_BT709;
++    if (p->bitrate > 0)
++    {
++        fe->ctx->bit_rate = (int64_t)p->bitrate * 1000;
++        fe->ctx->rc_max_rate = (int64_t)(p->max_bitrate > 0 ? p->max_bitrate : p->bitrate) * 1000;
++        /* one frame interval worth of buffer: low latency, smooth enough */
++        fe->ctx->rc_buffer_size = (int)(fe->ctx->rc_max_rate * p->fps_den / p->fps_num);
++    }
++    else if (p->qp > 0)
++    {
++        fe->ctx->global_quality = p->qp; /* CQP/ICQ for vaapi and qsv */
++        if (strcmp(fg->global.encoder, "h264_nvenc") == 0)
++        {
++            av_dict_set(&dict, "rc", "constqp", 0);
++            av_dict_set_int(&dict, "qp", p->qp, 0);
++        }
++        else if (strcmp(fg->global.encoder, "libx264") == 0)
++        {
++            av_dict_set_int(&dict, "qp", p->qp, 0);
++        }
++    }
++
++    if (fg->is_vaapi)
++    {
++        AVHWFramesContext *frames;
++        fe->hw_frames = av_hwframe_ctx_alloc(fg->hw_device);
++        if (fe->hw_frames == NULL)
++        {
++            av_dict_free(&dict);
++            return 2;
++        }
++        frames = (AVHWFramesContext *)fe->hw_frames->data;
++        frames->format = AV_PIX_FMT_VAAPI;
++        frames->sw_format = AV_PIX_FMT_NV12;
++        frames->width = fe->ctx->width;
++        frames->height = fe->ctx->height;
++        frames->initial_pool_size = 4;
++        if ((err = av_hwframe_ctx_init(fe->hw_frames)) < 0)
++        {
++            ffmpeg_log_error("av_hwframe_ctx_init", err);
++            av_dict_free(&dict);
++            return 1;
++        }
++        fe->ctx->pix_fmt = AV_PIX_FMT_VAAPI;
++        fe->ctx->hw_frames_ctx = av_buffer_ref(fe->hw_frames);
++    }
++    else
++    {
++        fe->ctx->pix_fmt = AV_PIX_FMT_NV12;
++    }
++
++    if (ffmpeg_build_options(fg, p, &dict) != 0)
++    {
++        av_dict_free(&dict);
++        return 1;
++    }
++    err = avcodec_open2(fe->ctx, codec, &dict);
++    while ((left = av_dict_get(dict, "", left, AV_DICT_IGNORE_SUFFIX)) != NULL)
++    {
++        LOG(LOG_LEVEL_WARNING, "xrdp_encoder_ffmpeg: %s ignored option %s=%s",
++            fg->global.encoder, left->key, left->value);
++    }
++    av_dict_free(&dict);
++    if (err < 0)
++    {
++        ffmpeg_log_error("avcodec_open2", err);
++        return 1;
++    }
++
++    fe->sw->format = AV_PIX_FMT_NV12;
++    fe->sw->width = fe->ctx->width;
++    fe->sw->height = fe->ctx->height;
++    if ((err = av_frame_get_buffer(fe->sw, 0)) < 0)
++    {
++        ffmpeg_log_error("av_frame_get_buffer", err);
++        return 2;
++    }
++    /* black: Y=0, UV=128 (full range) */
++    for (int y = 0; y < fe->sw->height; y++)
++    {
++        g_memset(fe->sw->data[0] + y * fe->sw->linesize[0], 0, fe->sw->width);
++    }
++    for (int y = 0; y < fe->sw->height / 2; y++)
++    {
++        g_memset(fe->sw->data[1] + y * fe->sw->linesize[1], 128, fe->sw->width);
++    }
++    fe->width = width;
++    fe->height = height;
++    LOG(LOG_LEVEL_INFO, "xrdp_encoder_ffmpeg: %s opened for %dx%d (coded %dx%d)",
++        fg->global.encoder, width, height, fe->ctx->width, fe->ctx->height);
++    return 0;
++}
++
++/*****************************************************************************/
++/* Select an encoder and prove it works with one small encode, so a missing
++ * GPU, driver or library is noticed once here and not on every frame. */
++static int
++ffmpeg_select(struct ffmpeg_global *fg, const char *encoder)
++{
++    char out[64 * 1024];
++    int out_bytes = sizeof(out);
++    short rect[4] = { 0, 0, 256, 256 };
++    char *nv12;
++    int err;
++    int rv;
++
++    av_buffer_unref(&fg->hw_device);
++    g_strncpy(fg->global.encoder, encoder, sizeof(fg->global.encoder) - 1);
++    fg->is_vaapi = strstr(encoder, "vaapi") != NULL;
++    if (fg->is_vaapi)
++    {
++        err = av_hwdevice_ctx_create(&fg->hw_device, AV_HWDEVICE_TYPE_VAAPI,
++                                     fg->global.device[0] ? fg->global.device : NULL,
++                                     NULL, 0);
++        if (err < 0)
++        {
++            ffmpeg_log_error("VA-API device", err);
++            return 1;
++        }
++    }
++
++    nv12 = g_new0(char, 256 * 256 * 3 / 2);
++    if (nv12 == NULL)
++    {
++        return 1;
++    }
++    /* All slots are empty at creation: encode through slot 0, then release it. */
++    rv = xrdp_encoder_ffmpeg_encode(fg, 0, 0, 0, 256, 256, 256, 256, 0, nv12,
++                                    rect, 1, out, &out_bytes, CONNECTION_TYPE_LAN, NULL);
++    ffmpeg_encoder_close(&fg->encoders[0]);
++    fg->encoders[0].width = 0;
++    fg->encoders[0].height = 0;
++    g_free(nv12);
++    if (rv != 0)
++    {
++        av_buffer_unref(&fg->hw_device);
++    }
++    return rv;
++}
++
++/*****************************************************************************/
++void *
++xrdp_encoder_ffmpeg_create(void)
++{
++    struct ffmpeg_global *fg;
++    struct xrdp_tconfig_gfx gfxconfig;
++    char wanted[32];
++
++    fg = g_new0(struct ffmpeg_global, 1);
++    if (fg == NULL)
++    {
++        return NULL;
++    }
++    tconfig_load_gfx(GFX_CONF, &gfxconfig);
++    fg->global = gfxconfig.ffmpeg_global;
++    memcpy(fg->param, gfxconfig.ffmpeg_param, sizeof(fg->param));
++    g_strncpy(wanted, fg->global.encoder, sizeof(wanted) - 1);
++
++    if (ffmpeg_select(fg, wanted) != 0)
++    {
++        if (fg->global.fallback[0] == '\0' ||
++                strcmp(fg->global.fallback, wanted) == 0)
++        {
++            LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: %s is not usable and no "
++                "fallback is configured", wanted);
++            g_free(fg);
++            return NULL;
++        }
++        LOG(LOG_LEVEL_WARNING, "xrdp_encoder_ffmpeg: %s is not usable on this "
++            "host, falling back to %s", wanted, fg->global.fallback);
++        /* the configured options were meant for the hardware encoder */
++        fg->global.options[0] = '\0';
++        if (ffmpeg_select(fg, fg->global.fallback) != 0)
++        {
++            LOG(LOG_LEVEL_ERROR, "xrdp_encoder_ffmpeg: fallback %s is not usable "
++                "either", fg->global.fallback);
++            g_free(fg);
++            return NULL;
++        }
++    }
++    LOG(LOG_LEVEL_INFO, "xrdp_encoder_ffmpeg: using %s%s%s", fg->global.encoder,
++        fg->is_vaapi ? " on " : "", fg->is_vaapi ? fg->global.device : "");
++    return fg;
++}
++
++/*****************************************************************************/
++int
++xrdp_encoder_ffmpeg_delete(void *handle)
++{
++    struct ffmpeg_global *fg = (struct ffmpeg_global *)handle;
++    int index;
++
++    if (fg == NULL)
++    {
++        return 0;
++    }
++    for (index = 0; index < FFMPEG_MAX_ENCODERS; index++)
++    {
++        ffmpeg_encoder_close(&fg->encoders[index]);
++    }
++    av_buffer_unref(&fg->hw_device);
++    g_free(fg);
++    return 0;
++}
++
++/*****************************************************************************/
++static int
++ffmpeg_drain(struct ffmpeg_encoder *fe, char *cdata, int *cdata_bytes)
++{
++    int total = 0;
++    int err;
++
++    while ((err = avcodec_receive_packet(fe->ctx, fe->pkt)) == 0)
++    {
++        if (total + fe->pkt->size > *cdata_bytes)
++        {
++            av_packet_unref(fe->pkt);
++            return 4;
++        }
++        g_memcpy(cdata + total, fe->pkt->data, fe->pkt->size);
++        total += fe->pkt->size;
++        av_packet_unref(fe->pkt);
++    }
++    if (err != AVERROR(EAGAIN) && err != AVERROR_EOF)
++    {
++        ffmpeg_log_error("avcodec_receive_packet", err);
++        return 3;
++    }
++    if (total == 0)
++    {
++        /* the encoder buffered the frame: low-latency options are not effective */
++        LOG(LOG_LEVEL_WARNING, "xrdp_encoder_ffmpeg: no output for this frame");
++        return 3;
++    }
++    *cdata_bytes = total;
++    return 0;
++}
++
++/*****************************************************************************/
++int
++xrdp_encoder_ffmpeg_encode(void *handle, int session, int left, int top,
++                           int width, int height, int twidth, int theight,
++                           int format, const char *data,
++                           short *crects, int num_crects,
++                           char *cdata, int *cdata_bytes, int connection_type,
++                           int *flags_ptr)
++{
++    struct ffmpeg_global *fg = (struct ffmpeg_global *)handle;
++    struct ffmpeg_encoder *fe;
++    AVFrame *in;
++    AVFrame *hw = NULL;
++    int flags = 0;
++    int ct;
++    int index;
++    int err;
++    int rv;
++
++    fe = &(fg->encoders[session % FFMPEG_MAX_ENCODERS]);
++    ct = connection_type;
++    if (ct > CONNECTION_TYPE_LAN || ct < CONNECTION_TYPE_MODEM)
++    {
++        ct = CONNECTION_TYPE_LAN;
++    }
++
++    if (fe->ctx == NULL || fe->width != width || fe->height != height)
++    {
++        if (fe->ctx != NULL)
++        {
++            ffmpeg_encoder_close(fe);
++            flags |= 2;
++        }
++        if (width > 0 && height > 0)
++        {
++            if ((rv = ffmpeg_encoder_open(fg, fe, width, height, ct)) != 0)
++            {
++                ffmpeg_encoder_close(fe);
++                return rv;
++            }
++            flags |= 1;
++        }
++        fe->width = width;
++        fe->height = height;
++    }
++
++    if (data != NULL && fe->ctx != NULL)
++    {
++        /* The encoder may still reference the previous frame's buffers. */
++        if ((err = av_frame_make_writable(fe->sw)) < 0)
++        {
++            ffmpeg_log_error("av_frame_make_writable", err);
++            return 2;
++        }
++        for (index = 0; index < num_crects; index++)
++        {
++            int x = crects[index * 4 + 0];
++            int y = crects[index * 4 + 1];
++            int cx = crects[index * 4 + 2];
++            int cy = crects[index * 4 + 3];
++            const char *src;
++            unsigned char *dst;
++            int row;
++
++            /* Y plane */
++            src = data + twidth * y + x;
++            dst = fe->sw->data[0] + fe->sw->linesize[0] * (y - top) + (x - left);
++            for (row = 0; row < cy; row++)
++            {
++                g_memcpy(dst, src, cx);
++                src += twidth;
++                dst += fe->sw->linesize[0];
++            }
++            /* interleaved UV plane, half height */
++            src = data + twidth * theight + twidth * (y / 2) + x;
++            dst = fe->sw->data[1] + fe->sw->linesize[1] * ((y - top) / 2) + (x - left);
++            for (row = 0; row < cy; row += 2)
++            {
++                g_memcpy(dst, src, cx);
++                src += twidth;
++                dst += fe->sw->linesize[1];
++            }
++        }
++
++        in = fe->sw;
++        if (fg->is_vaapi)
++        {
++            hw = av_frame_alloc();
++            if (hw == NULL || (err = av_hwframe_get_buffer(fe->hw_frames, hw, 0)) < 0 ||
++                    (err = av_hwframe_transfer_data(hw, fe->sw, 0)) < 0)
++            {
++                ffmpeg_log_error("upload to GPU", hw == NULL ? AVERROR(ENOMEM) : err);
++                av_frame_free(&hw);
++                return 2;
++            }
++            in = hw;
++        }
++        in->pts = fe->pts++;
++        /* An IDR (with SPS/PPS) after a new encoder or after lost output: there is
++         * no picture-loss feedback in MS-RDPEGFX, so a dropped frame would otherwise
++         * leave the client decoding against a missing reference until the next GOP. */
++        in->pict_type = ((flags & 1) || fe->force_idr) ?
++                        AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
++        err = avcodec_send_frame(fe->ctx, in);
++        av_frame_free(&hw);
++        if (err < 0)
++        {
++            ffmpeg_log_error("avcodec_send_frame", err);
++            fe->force_idr = 1;
++            return 3;
++        }
++        if ((rv = ffmpeg_drain(fe, cdata, cdata_bytes)) != 0)
++        {
++            fe->force_idr = 1;
++            return rv;
++        }
++        fe->force_idr = 0;
++    }
++    if (flags_ptr != NULL)
++    {
++        *flags_ptr = flags;
++    }
++    return 0;
++}
+diff --git a/xrdp/xrdp_encoder_ffmpeg.h b/xrdp/xrdp_encoder_ffmpeg.h
+new file mode 100644
+index 0000000..4c14128
+--- /dev/null
++++ b/xrdp/xrdp_encoder_ffmpeg.h
+@@ -0,0 +1,36 @@
++/**
++ * xrdp: A Remote Desktop Protocol server.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * FFmpeg (libavcodec) H.264 encoder: VA-API, NVENC, QSV
++ */
++
++#ifndef _XRDP_ENCODER_FFMPEG_H
++#define _XRDP_ENCODER_FFMPEG_H
++
++#include "arch.h"
++
++void *
++xrdp_encoder_ffmpeg_create(void);
++int
++xrdp_encoder_ffmpeg_delete(void *handle);
++int
++xrdp_encoder_ffmpeg_encode(void *handle, int session, int left, int top,
++                           int width, int height, int twidth, int theight,
++                           int format, const char *data,
++                           short *crects, int num_crects,
++                           char *cdata, int *cdata_bytes, int connection_type,
++                           int *flags_ptr);
++
++#endif
+diff --git a/xrdp/xrdp_tconfig.c b/xrdp/xrdp_tconfig.c
+index 5fc475b..77ba7d3 100644
+--- a/xrdp/xrdp_tconfig.c
++++ b/xrdp/xrdp_tconfig.c
+@@ -365,6 +365,108 @@ tconfig_load_gfx_x264_ct(toml_table_t *tfile, const int connection_type,
+     return 0;
+ }
+ 
++/* [ffmpeg]: encoder, device, options (shared by all connection types) */
++static int
++tconfig_load_gfx_ffmpeg_global(toml_table_t *tfile,
++                               struct xrdp_tconfig_gfx_ffmpeg_global *g)
++{
++    toml_table_t *ff = toml_table_in(tfile, "ffmpeg");
++    toml_datum_t datum;
++
++    g_strncpy(g->encoder, "h264_vaapi", sizeof(g->encoder) - 1);
++    g_strncpy(g->device, "/dev/dri/renderD128", sizeof(g->device) - 1);
++    g->options[0] = '\0';
++    g_strncpy(g->fallback, "libx264", sizeof(g->fallback) - 1);
++    if (ff == NULL)
++    {
++        TCLOG(LOG_LEVEL_WARNING, "[ffmpeg] not defined, using h264_vaapi on %s",
++              g->device);
++        return 1;
++    }
++    datum = toml_string_in(ff, "encoder");
++    if (datum.ok)
++    {
++        g_strncpy(g->encoder, datum.u.s, sizeof(g->encoder) - 1);
++        free(datum.u.s);
++    }
++    datum = toml_string_in(ff, "device");
++    if (datum.ok)
++    {
++        g_strncpy(g->device, datum.u.s, sizeof(g->device) - 1);
++        free(datum.u.s);
++    }
++    datum = toml_string_in(ff, "options");
++    if (datum.ok)
++    {
++        g_strncpy(g->options, datum.u.s, sizeof(g->options) - 1);
++        free(datum.u.s);
++    }
++    datum = toml_string_in(ff, "fallback");
++    if (datum.ok)
++    {
++        g_strncpy(g->fallback, datum.u.s, sizeof(g->fallback) - 1);
++        free(datum.u.s);
++    }
++    return 0;
++}
++
++/* [ffmpeg.<connection type>]: rate control per connection type */
++static int
++tconfig_load_gfx_ffmpeg_ct(toml_table_t *tfile, const int connection_type,
++                           struct xrdp_tconfig_gfx_ffmpeg_param *param)
++{
++    struct xrdp_tconfig_gfx_ffmpeg_param *p = &param[connection_type];
++    toml_table_t *ff;
++    toml_table_t *ct;
++    toml_datum_t datum;
++
++    if (connection_type < 0 || connection_type >= NUM_CONNECTION_TYPES)
++    {
++        return 1;
++    }
++    if (connection_type == 0)
++    {
++        /* built-in defaults: constant quality, 60 fps, IDR every 5 s */
++        p->bitrate = 0;
++        p->max_bitrate = 0;
++        p->qp = 0;
++        p->gop = 300;
++        p->fps_num = 60;
++        p->fps_den = 1;
++        p->options[0] = '\0';
++    }
++    if ((ff = toml_table_in(tfile, "ffmpeg")) == NULL ||
++            (ct = toml_table_in(ff, rdpbcgr_connection_type_names[connection_type])) == NULL)
++    {
++        return connection_type == 0 ? 0 : 1;
++    }
++#define FF_INT(key, field) \
++    datum = toml_int_in(ct, key); \
++    if (datum.ok) { p->field = (int)datum.u.i; }
++    FF_INT("bitrate", bitrate);
++    FF_INT("max_bitrate", max_bitrate);
++    FF_INT("qp", qp);
++    FF_INT("gop", gop);
++    FF_INT("fps_num", fps_num);
++    FF_INT("fps_den", fps_den);
++#undef FF_INT
++    datum = toml_string_in(ct, "options");
++    if (datum.ok)
++    {
++        g_strncpy(p->options, datum.u.s, sizeof(p->options) - 1);
++        free(datum.u.s);
++    }
++    if (p->fps_num <= 0 || p->fps_den <= 0 || p->gop <= 0)
++    {
++        TCLOG(LOG_LEVEL_WARNING, "[ffmpeg.%s] invalid fps/gop, using 60/1 and 300",
++              rdpbcgr_connection_type_names[connection_type]);
++        p->fps_num = 60;
++        p->fps_den = 1;
++        p->gop = 300;
++    }
++    return 0;
++}
++
+ static int tconfig_load_gfx_h264_encoder(toml_table_t *tfile, struct xrdp_tconfig_gfx *config)
+ {
+     TCLOG(LOG_LEVEL_TRACE, "[codec]");
+@@ -390,6 +492,12 @@ static int tconfig_load_gfx_h264_encoder(toml_table_t *tfile, struct xrdp_tconfi
+                 valid_encoder_found = 1;
+                 config->h264_encoder = XTC_H264_OPENH264;
+             }
++            if (g_strcasecmp(h264_encoder.u.s, "ffmpeg") == 0)
++            {
++                TCLOG(LOG_LEVEL_DEBUG, "[codec] h264_encoder = ffmpeg");
++                valid_encoder_found = 1;
++                config->h264_encoder = XTC_H264_FFMPEG;
++            }
+ 
+             free(h264_encoder.u.s);
+         }
+@@ -591,6 +699,14 @@ tconfig_load_gfx(const char *filename, struct xrdp_tconfig_gfx *config)
+             }
+         }
+ 
++        tconfig_load_gfx_ffmpeg_global(tfile, &config->ffmpeg_global);
++        tconfig_load_gfx_ffmpeg_ct(tfile, 0, config->ffmpeg_param);
++        for (int ct = CONNECTION_TYPE_MODEM; ct < NUM_CONNECTION_TYPES; ct++)
++        {
++            config->ffmpeg_param[ct] = config->ffmpeg_param[0];
++            tconfig_load_gfx_ffmpeg_ct(tfile, ct, config->ffmpeg_param);
++        }
++
+         if (x264_loaded != 0 && config->h264_encoder == XTC_H264_X264)
+         {
+             /* We can't get x264 defaults. Disable H.264. */
+diff --git a/xrdp/xrdp_tconfig.h b/xrdp/xrdp_tconfig.h
+index 2f759fe..6134ecb 100644
+--- a/xrdp/xrdp_tconfig.h
++++ b/xrdp/xrdp_tconfig.h
+@@ -53,6 +53,27 @@ struct xrdp_tconfig_gfx_openh264_param
+     float MaxFrameRate;
+ };
+ 
++/* FFmpeg (libavcodec) encoder: [ffmpeg] holds the encoder and device */
++struct xrdp_tconfig_gfx_ffmpeg_global
++{
++    char encoder[32];   /* h264_vaapi, h264_nvenc, h264_qsv, libx264 */
++    char device[256];   /* VA-API render node, e.g. /dev/dri/renderD128 */
++    char options[256];  /* extra AVOptions "key=value:key=value" */
++    char fallback[32];  /* encoder used if `encoder` fails its start-up probe; "" = none */
++};
++
++/* [ffmpeg.<connection type>] */
++struct xrdp_tconfig_gfx_ffmpeg_param
++{
++    int bitrate;        /* kbit/s; 0 = constant quality (qp) */
++    int max_bitrate;    /* kbit/s; 0 = bitrate */
++    int qp;             /* constant quality when bitrate is 0; 0 = encoder default */
++    int gop;            /* frames between IDR frames */
++    int fps_num;
++    int fps_den;
++    char options[256];  /* per connection type AVOptions */
++};
++
+ enum xrdp_tconfig_codecs
+ {
+     XTC_H264,
+@@ -62,7 +83,8 @@ enum xrdp_tconfig_codecs
+ enum xrdp_tconfig_h264_encoders
+ {
+     XTC_H264_X264,
+-    XTC_H264_OPENH264
++    XTC_H264_OPENH264,
++    XTC_H264_FFMPEG
+ };
+ 
+ struct xrdp_tconfig_gfx_codec_order
+@@ -79,6 +101,8 @@ struct xrdp_tconfig_gfx
+     struct xrdp_tconfig_gfx_x264_param x264_param[NUM_CONNECTION_TYPES];
+     struct xrdp_tconfig_gfx_openh264_param
+         openh264_param[NUM_CONNECTION_TYPES];
++    struct xrdp_tconfig_gfx_ffmpeg_global ffmpeg_global;
++    struct xrdp_tconfig_gfx_ffmpeg_param ffmpeg_param[NUM_CONNECTION_TYPES];
+ };
+ 
+ static const char *const rdpbcgr_connection_type_names[] =
+-- 
+2.53.0
+

@@ -1,0 +1,19 @@
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Codename: resolute-stable
+Date: Tue, 10 Nov 2026 21:00:50 UTC
+Architectures: amd64
+Components: main
+Description: fast-rdp-server for Ubuntu 26.04 (resolute), stable channel (release tags)
+MD5Sum:
+ f41499d14986d8b9a67994986c0ad91c 13781 main/binary-amd64/Packages
+ aeb5c3d0f507afd0418965977a737dd5 4842 main/binary-amd64/Packages.gz
+ c608cc7890682e8ac50607a021c20260 171 main/binary-amd64/Release
+SHA1:
+ d725317f0268762db2f1e92ae67c66e01dec1b9a 13781 main/binary-amd64/Packages
+ 44b84c9c3ee1728c037ecaca9b4edfb24efa5f02 4842 main/binary-amd64/Packages.gz
+ e02c1257de8a57f1c4d9e73f2341b86f950e0280 171 main/binary-amd64/Release
+SHA256:
+ 158311206772a22d5cbf727fc12cb6f647e925599226cc4edd2f4a6802571d98 13781 main/binary-amd64/Packages
+ 4dce539433950e9f4ed5b2f1f6d73847ac21e8a857272563faef12a6701088a0 4842 main/binary-amd64/Packages.gz
+ 963f72bcfa62cba0ad1624c32af541765b45f1f4ae9166e182dd6e51cbf5eb7c 171 main/binary-amd64/Release
