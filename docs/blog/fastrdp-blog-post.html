@@ -3,7 +3,7 @@
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Anyone who has run Windows Remote Desktop Services knows the experience: users open <code>mstsc</code>, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became <strong>fast-rdp-server</strong>, or <strong>fastrdp</strong> for short (<a href="https://github.com/linuxrrze/fast-rdp-server">GitHub</a>). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what the second factor looks like for users, what works today, and what still needs testing on real hardware. It describes release <strong>0.7.1</strong> (October 2026), which is available from a signed APT repository.</p>
+<p>Anyone who has run Windows Remote Desktop Services knows the experience: users open <code>mstsc</code>, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became <strong>fast-rdp-server</strong>, or <strong>fastrdp</strong> for short (<a href="https://github.com/linuxrrze/fast-rdp-server">GitHub</a>). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what the second factor looks like for users, what works today, and what still needs testing on real hardware. It describes release <strong>0.7.14</strong> (November 2026), which is available from a signed APT repository.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading -->
@@ -197,7 +197,7 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>While the broker works on a login, the proxy module paints a panel into the RDP window. It uses plain Bitmap Updates, the one kind of graphics output every RDP client must accept at that stage, so there is no client plugin and no client setting. The panel shows "Signing you in…", then what to do for the second factor with a countdown, and finally "Connecting to your desktop…". For web approval it adds the approval URL, a two-digit <strong>login code</strong> and a <strong>QR code</strong> for the phone. English and German texts are built in and chosen from the client's keyboard layout; admins can override them per language. It has been on by default since 0.7.0.</p>
+<p>While the broker works on a login, the proxy module paints a panel into the RDP window. When the client offers the graphics pipeline (RDPGFX), as mstsc does, the proxy opens its own Graphics channel for the panel and closes it again before the desktop takes over; other clients get plain Bitmap Updates, which every RDP client must accept at that stage. There is no client plugin and no client setting. The panel shows "Signing you in…", then what to do for the second factor with a countdown, and finally "Connecting to your desktop…". For web approval it adds the approval URL, a two-digit <strong>login code</strong> and a <strong>QR code</strong> for the phone. English and German texts are built in and chosen from the client's keyboard layout; admins can override them per language. It has been on by default since 0.7.0, and drawn over GFX since 0.7.11: with Bitmap Updates alone, mstsc showed a black window on the next <em>Connect</em> in the same window after a session that used GFX.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:image {"id":2534,"sizeSlug":"full","linkDestination":"media","align":"center"} -->
@@ -209,7 +209,7 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>Which second factor is due depends on the MFA mode: <code>none</code>, <code>otp</code> (appended to the password, TLS logins only), <code>push</code>, <code>otp_or_push</code>, <code>web</code>, or <code>push_or_web</code>, where whichever answer comes first wins. In practice that means:</p>
+<p>Which second factor is due depends on the MFA mode: <code>none</code>, <code>otp</code> (appended to the password, TLS logins only), <code>push</code>, <code>otp_or_push</code>, <code>web</code>, <code>push_or_web</code>, or <code>code_or_web</code>; in the combined modes, whichever answer comes first wins. In practice that means:</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:list -->
@@ -217,6 +217,8 @@
 <li><strong>privacyIDEA push:</strong> confirm the notification in the privacyIDEA app, as before.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Web approval:</strong> scan the QR code in the RDP window with the phone (or type the short URL shown there), sign in at Keycloak with a passkey, security key or authenticator app, and click <strong>Approve</strong>. The approval page shows the login's client address, start time and the same login code as the RDP window. Nothing is needed on the client, so it works the same for mstsc, xfreerdp3 and Remmina (with mstsc, so far without a full lab run; see the status below).</li>
+<!-- /wp:list-item --><!-- wp:list-item -->
+<li><strong>Authenticator code</strong> (<code>code_or_web</code>): the waiting screen also shows a masked field for the code from the user's authenticator app, next to the QR code. Nothing is appended to the password, so Kerberos single sign-on works unchanged. The broker checks the code at Keycloak, without the password, and ends that Keycloak session at once.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Notifications</strong> (opt-in on <code>/web/notify</code>): users who turn them on get a message on their phone or in their browser the moment a login waits, through <strong>ntfy</strong> (also on Android phones without Google services) or <strong>Web Push</strong> (desktop browsers, Android, and iPhone/iPad as a home-screen web app). The notification is only a hint: it links to the plain approval page and approves nothing.</li>
 <!-- /wp:list-item --></ul>
@@ -263,7 +265,7 @@
 <!-- /wp:image -->
 
 <!-- wp:paragraph -->
-<p><strong>Status:</strong> the waiting screen, the QR code and the picker are tested end to end with FreeRDP clients through the real proxy; the test decodes the QR code from the client's screen. With mstsc and the Windows App they still have to be confirmed in a lab: panel visible, countdown updating, QR code scannable, nothing left over when the desktop appears. Web approval with a real Keycloak and mstsc together is a lab item, too. Notifications are checked against the RFC test vectors and local servers, but not yet on real iOS and Android devices.</p>
+<p><strong>Status:</strong> the waiting screen, the QR code and the picker are tested end to end with FreeRDP clients through the real proxy; the test decodes the QR code from the client's screen. A first lab run with mstsc showed the waiting screen over GFX and reached the desktop on every login, also on a second <em>Connect</em> in the same mstsc window. The QR code, the picker and the code field still have to be confirmed with mstsc and the Windows App: countdown updating, QR code scannable, nothing left over when the desktop appears. The code field's check is tested against a real Keycloak, but the field has not run in a proxy session yet. Web approval with a real Keycloak and mstsc together is a lab item, too. Notifications are checked against the RFC test vectors and local servers, but not yet on real iOS and Android devices.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading -->
@@ -360,7 +362,7 @@
 
 <!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
-<li><strong>FreeRDP 3.32.2</strong> in a private prefix, <code>/opt/fastrdp</code>, with seven fastrdp patches. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. The patches fix the smartcard slot id, let mstsc's Kerberos user-to-user work with AD, handle Remote Credential Guard requests cleanly, keep the KDC's evidence from the ticket, and let the proxy read input for the desktop picker. g-r-d and KRdp keep the distribution's FreeRDP.</li>
+<li><strong>FreeRDP 3.33.1</strong> in a private prefix, <code>/opt/fastrdp</code>, with nine fastrdp patches. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. The patches fix the smartcard slot id, let mstsc's Kerberos user-to-user work with AD, handle Remote Credential Guard requests cleanly, keep the KDC's evidence from the ticket, let the proxy read input for the desktop picker, answer mstsc's X in the connection bar the way Windows does, and flush log lines to the journal at once. Following upstream pays off: FreeRDP 3.33.0 and 3.33.1 fixed 13 and 11 security advisories, and one fastrdp patch could be dropped because upstream fixed the problem. g-r-d and KRdp keep the distribution's FreeRDP.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>xrdp 0.10.6.1 + xorgxrdp 0.10.5</strong>, because the distributions ship 0.10.1, and because the FFmpeg encoder patch lives there.</li>
 <!-- /wp:list-item --></ul>
@@ -402,7 +404,7 @@
 
 <!-- wp:list -->
 <ul class="wp-block-list"><!-- wp:list-item -->
-<li><strong>Unit and protocol tests</strong> for the broker (521 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.</li>
+<li><strong>Unit and protocol tests</strong> for the broker (591 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>End-to-end tests against a real freerdp-proxy</strong> with the module and the vendored FreeRDP: TLS, Kerberos NLA against a throwaway KDC (including the user-to-user path and the KDC evidence), smartcard PKINIT (the SoftHSM variant guards the slot id fix), back-end certificate pinning, and the waiting screen and desktop picker as a client sees them.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
@@ -421,7 +423,7 @@
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI publishes them as a <strong>signed APT repository on GitHub Pages</strong>, <a href="https://linuxrrze.github.io/fast-rdp-server/">linuxrrze.github.io/fast-rdp-server</a>, with a stable suite (release tags, currently 0.7.1) and a testing suite (the main branch) each for Ubuntu 26.04 and Debian 13. Ansible can install from it or compile on the host.</p>
+<p>There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI publishes them as a <strong>signed APT repository on GitHub Pages</strong>, <a href="https://linuxrrze.github.io/fast-rdp-server/">linuxrrze.github.io/fast-rdp-server</a>, with a stable suite (release tags, currently 0.7.14) and a testing suite (the main branch) each for Ubuntu 26.04 and Debian 13. Ansible can install from it or compile on the host. Since 0.7.12 the packages also work without Ansible: <code>apt install fastrdp-server</code> pulls in every component with the same default configuration the Ansible roles write, a keyring package carries the signing key, and <code>fastrdp-check-host</code> checks the host before and after. The <a href="https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/manual-setup.md">manual setup guide</a> covers the site-specific rest: domain join, desktops and certificate.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
@@ -448,9 +450,9 @@
 <ul class="wp-block-list"><!-- wp:list-item -->
 <li><strong>GPU encoding on real Intel, AMD and NVIDIA hardware</strong>, for all back-ends, including my xrdp patch. Until then, size CPUs for x264.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>The GNOME and Plasma headless back-ends on a lab host.</strong> Headless KRdp is unofficial, and no real GNOME or Plasma session has been started yet. Full xrdp sessions through the proxy also need a lab run.</li>
+<li><strong>The desktops on lab hosts.</strong> First lab runs with mstsc reached Xfce (xrdp) and GNOME (gnome-remote-desktop) sessions through the proxy, but a systematic run per desktop is still open, and no Plasma session has been started yet (headless KRdp is unofficial). One finding so far: an mstsc without H.264 decoding gets RemoteFX Progressive from xrdp, and X11 desktops then show stale tiles after windows move. The cause is narrowed to xrdp's progressive path; H.264 is clean.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Windows clients beyond the Kerberos login:</strong> the waiting screen, QR code and desktop picker in mstsc and the Windows App, web approval with a real Keycloak, and real smartcards with an AD PKI. Smartcard logon so far works with a software token. Skipping the second factor based on the KDC's evidence (smartcard, Windows Hello for Business) is implemented but needs a real AD to confirm which SIDs these logons carry. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses.</li>
+<li><strong>Windows clients beyond the Kerberos login and the waiting screen:</strong> the QR code, code field and desktop picker in mstsc and the Windows App, web approval with a real Keycloak, and real smartcards with an AD PKI. Smartcard logon so far works with a software token. Skipping the second factor based on the KDC's evidence (smartcard, Windows Hello for Business) is implemented but needs a real AD to confirm which SIDs these logons carry. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Audio and microphone</strong> with real clients, and <strong>notifications</strong> on real iOS and Android devices.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
@@ -489,7 +491,7 @@ xfreerdp3 /v:rdp1.lab.example.com /u:alice /d:LAB.EXAMPLE.COM /sec:nla /gfx:avc4
 <ul class="wp-block-list"><!-- wp:list-item -->
 <li><strong>Testers with GPUs</strong>: Intel and AMD with VA-API, NVIDIA with NVENC. The runbook in <code>docs/performance.md</code> and <code>tests/gpu/session_report.py</code> show what to measure.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
-<li><strong>Windows/AD labs</strong>: mstsc and the Windows App with the waiting screen, web approval and the desktop picker, AD GPOs, smartcard and Windows Hello for Business logons with a real PKI.</li>
+<li><strong>Windows/AD labs</strong>: mstsc and the Windows App with the QR code, web approval, the code field and the desktop picker, AD GPOs, smartcard and Windows Hello for Business logons with a real PKI.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->
 <li><strong>Phones</strong>: approval notifications through ntfy and Web Push on iOS and Android.</li>
 <!-- /wp:list-item --><!-- wp:list-item -->

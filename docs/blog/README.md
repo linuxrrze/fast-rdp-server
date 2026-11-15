@@ -2,7 +2,7 @@
 
 Draft for blog.linux-ng.de. **Not published yet.** The post exists in WordPress as a **draft, post 2493**
 (preview: `https://blog.linux-ng.de/?p=2493&preview=true`), with the six diagrams (media 2487, 2490, 2491, 2540–2542) and four
-screenshots (media 2500, 2501, 2534, 2535) uploaded. Updated on 2026-10-23 for release 0.7.1; the WordPress draft is the
+screenshots (media 2500, 2501, 2534, 2535) uploaded. Updated on 2026-10-23 for release 0.7.1 and on 2026-11-15 for 0.7.14; the WordPress draft is the
 master copy of the wording, and the files here mirror it.
 
 | File | What it is |
@@ -52,7 +52,8 @@ Editing the diagrams: open the `.drawio` file in diagrams.net (File → Open fro
 
 ## Claims to check before publishing
 
-The post was first written from commit fe9743c and updated on 2026-10-23 from v0.7.1 (commit cf269c8).
+The post was first written from commit fe9743c, updated on 2026-10-23 from v0.7.1 (commit cf269c8) and on
+2026-11-15 from v0.7.14 plus FreeRDP 3.33.1 (commit 6aadb7b).
 Check the following once more, because they are time-sensitive, phrased from my reading, or not yet
 validated.
 
@@ -70,14 +71,17 @@ validated.
 - [ ] The GNOME and Plasma headless back-ends have **not run on a lab host**; headless KRdp is unofficial.
   Full xrdp sessions through the proxy still need a lab run. (The mstsc field report says "login
   succeeded" but does not say which desktop; if it was a full xrdp session, this hedge can shrink.)
-- [ ] Waiting screen, QR code and desktop picker are tested with FreeRDP clients only; **mstsc / Windows App
-  still to confirm** (lab S3/L15). The post says the first test with a real Windows client showed a black
+- [ ] Waiting screen over GFX seen with mstsc in the lab (2026-10-29, A5/A8 in backlog.md, fake-MFA logins);
+  QR code, desktop picker and the `code_or_web` field **with mstsc / Windows App still to confirm** (lab S3/L15). The post says the first test with a real Windows client showed a black
   window without the screen (commit 5e898ac).
 - [ ] Web approval with a real Keycloak **and** mstsc together: untested in the lab (windows-clients.md
   MFA table). Keycloak's passkey flow itself is tested against Keycloak 26.8.1 (`make test-keycloak`,
   manual, not in CI).
 - [ ] Notifications: not tested on real iOS/Android devices (backlog W1).
 - [ ] KDC evidence as MFA (K11): implemented; PAC SIDs with a real AD and WHfB/smartcard SIDs unconfirmed.
+- [ ] Desktops: the post says lab runs with mstsc reached Xfce (xrdp, backlog A9) and GNOME (field report
+  2026-10-23, backlog A5 (d)) sessions; no Plasma session yet; A9 (stale tiles with RemoteFX Progressive) is
+  mentioned (the README status table says the same).
 - [ ] Audio/microphone (A1): implemented, not tested with real clients.
 - [ ] Power-action polkit rule (H1): implemented, host validation pending (the post states the behaviour,
   not that it is validated).
@@ -92,12 +96,14 @@ validated.
 **Numbers:**
 - [ ] Proxy overhead table and "0.3–0.5 % of one core per Mbit/s" (docs/performance.md, FreeRDP 3.32.1,
   RFX, Ryzen 7 7735HS). Latency "below the noise (about ±10 ms)".
-- [ ] "521 tests" for the broker (re-run `make test-broker` if more commits land before publishing).
+- [ ] "591 tests" for the broker (`make test-broker` on 6aadb7b) (re-run `make test-broker` if more commits land before publishing).
 - [ ] xrdp encoder test: 30/30 frames, luma PSNR 56 dB at QP 20 (patches/xrdp/README.md).
 - [ ] "About one core or more per active 1080p session" for x264 (the repo's estimate, not a measurement).
 - [ ] "19 CVE fixes in 0.10.5–0.10.6.1" (patches/xrdp/README.md).
-- [ ] "Seven fastrdp patches" on FreeRDP 3.32.2 (patches/freerdp/0001–0007).
-- [ ] "Release 0.7.1 (October 2026)": tag v0.7.1 is dated 2026-10-22 22:53 +0200; the post gives only the month.
+- [ ] "Nine fastrdp patches" on FreeRDP 3.33.1 (patches/freerdp/0001–0008, 0010; 0009 fixed upstream).
+  "13 and 11 security advisories" in 3.33.0 and 3.33.1 (changelog 0.7.13, commit ff42ec0).
+- [ ] "Release 0.7.14 (November 2026)": tag v0.7.14 is dated 2026-11-02; the post gives only the month.
+  Bump again if a newer release is out when publishing (intro and the APT paragraph).
 
 **Versions and third-party facts (as of 2026-10-23):**
 - [ ] Debian 13 and Ubuntu 26.04 ship xrdp 0.10.1; Debian 13 ships FreeRDP 3.15.0; Ubuntu 26.04 ships

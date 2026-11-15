@@ -12,7 +12,7 @@ status: draft  # WordPress post 2493 (draft)
 
 *One RDP front end with Kerberos SSO and MFA, a small broker, and the best native back-end for every Linux desktop, X11 and Wayland.*
 
-Anyone who has run Windows Remote Desktop Services knows the experience: users open `mstsc`, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became **fast-rdp-server**, or **fastrdp** for short ([GitHub](https://github.com/linuxrrze/fast-rdp-server)). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what the second factor looks like for users, what works today, and what still needs testing on real hardware. It describes release **0.7.1** (October 2026), which is available from a signed APT repository.
+Anyone who has run Windows Remote Desktop Services knows the experience: users open `mstsc`, are signed in with their domain account, and land in their own desktop on a shared server. Disconnect, reconnect from somewhere else, and the session is still there. I wanted the same for Linux. That became **fast-rdp-server**, or **fastrdp** for short ([GitHub](https://github.com/linuxrrze/fast-rdp-server)). This post covers the goal, the approaches I looked at, why I chose a hybrid design, what the second factor looks like for users, what works today, and what still needs testing on real hardware. It describes release **0.7.14** (November 2026), which is available from a signed APT repository.
 
 ## The goal
 
@@ -106,17 +106,18 @@ For users, the second factor is the part of fastrdp they meet every day. NLA has
 
 ### The waiting screen
 
-While the broker works on a login, the proxy module paints a panel into the RDP window. It uses plain Bitmap Updates, the one kind of graphics output every RDP client must accept at that stage, so there is no client plugin and no client setting. The panel shows "Signing you in…", then what to do for the second factor with a countdown, and finally "Connecting to your desktop…". For web approval it adds the approval URL, a two-digit **login code** and a **QR code** for the phone. English and German texts are built in and chosen from the client's keyboard layout; admins can override them per language. It has been on by default since 0.7.0.
+While the broker works on a login, the proxy module paints a panel into the RDP window. When the client offers the graphics pipeline (RDPGFX), as mstsc does, the proxy opens its own Graphics channel for the panel and closes it again before the desktop takes over; other clients get plain Bitmap Updates, which every RDP client must accept at that stage. There is no client plugin and no client setting. The panel shows "Signing you in…", then what to do for the second factor with a countdown, and finally "Connecting to your desktop…". For web approval it adds the approval URL, a two-digit **login code** and a **QR code** for the phone. English and German texts are built in and chosen from the client's keyboard layout; admins can override them per language. It has been on by default since 0.7.0, and drawn over GFX since 0.7.11: with Bitmap Updates alone, mstsc showed a black window on the next *Connect* in the same window after a session that used GFX.
 
 ![RDP window with the fastrdp waiting screen in push_or_web mode: Approve the sign-in, confirm the push notification or approve on https://rdp.example.org/web/approve, Login code: 47, a QR code and a countdown of 1:38](../images/mfa/waiting-push-or-web.png)
 *Figure 5: The waiting screen in the RDP window, here for push or web approval. Rendered with the proxy module's own drawing code and example data.*
 
 ### Approving the login
 
-Which second factor is due depends on the MFA mode: `none`, `otp` (appended to the password, TLS logins only), `push`, `otp_or_push`, `web`, or `push_or_web`, where whichever answer comes first wins. In practice that means:
+Which second factor is due depends on the MFA mode: `none`, `otp` (appended to the password, TLS logins only), `push`, `otp_or_push`, `web`, `push_or_web`, or `code_or_web`; in the combined modes, whichever answer comes first wins. In practice that means:
 
 - **privacyIDEA push:** confirm the notification in the privacyIDEA app, as before.
 - **Web approval:** scan the QR code in the RDP window with the phone (or type the short URL shown there), sign in at Keycloak with a passkey, security key or authenticator app, and click **Approve**. The approval page shows the login's client address, start time and the same login code as the RDP window. Nothing is needed on the client, so it works the same for mstsc, xfreerdp3 and Remmina (with mstsc, so far without a full lab run; see the status below).
+- **Authenticator code** (`code_or_web`): the waiting screen also shows a masked field for the code from the user's authenticator app, next to the QR code. Nothing is appended to the password, so Kerberos single sign-on works unchanged. The broker checks the code at Keycloak, without the password, and ends that Keycloak session at once.
 - **Notifications** (opt-in on `/web/notify`): users who turn them on get a message on their phone or in their browser the moment a login waits, through **ntfy** (also on Android phones without Google services) or **Web Push** (desktop browsers, Android, and iPhone/iPad as a home-screen web app). The notification is only a hint: it links to the plain approval page and approves nothing.
 
 ![Approval page on a phone: Approve RDP login, signed in as alice, This RDP login from 192.0.2.15, Kerberos (NLA), code 47, buttons Approve and Deny](../images/mfa/web-approve.png)
@@ -141,7 +142,7 @@ The same panel can also ask for the desktop. With the opt-in desktop picker, use
 ![Desktop picker in the RDP window: Choose your desktop, rows 1 Xfce, 2 GNOME (running) selected, 3 KDE Plasma, keyboard hint and a countdown Continuing in 0:14](../images/mfa/waiting-picker.png)
 *Figure 8: The optional desktop picker after the second factor.*
 
-**Status:** the waiting screen, the QR code and the picker are tested end to end with FreeRDP clients through the real proxy; the test decodes the QR code from the client's screen. With mstsc and the Windows App they still have to be confirmed in a lab: panel visible, countdown updating, QR code scannable, nothing left over when the desktop appears. Web approval with a real Keycloak and mstsc together is a lab item, too. Notifications are checked against the RFC test vectors and local servers, but not yet on real iOS and Android devices.
+**Status:** the waiting screen, the QR code and the picker are tested end to end with FreeRDP clients through the real proxy; the test decodes the QR code from the client's screen. A first lab run with mstsc showed the waiting screen over GFX and reached the desktop on every login, also on a second *Connect* in the same mstsc window. The QR code, the picker and the code field still have to be confirmed with mstsc and the Windows App: countdown updating, QR code scannable, nothing left over when the desktop appears. The code field's check is tested against a real Keycloak, but the field has not run in a proxy session yet. Web approval with a real Keycloak and mstsc together is a lab item, too. Notifications are checked against the RFC test vectors and local servers, but not yet on real iOS and Android devices.
 
 ## Performance and the GPU
 
@@ -192,7 +193,7 @@ Some decisions I'd like to highlight (the code has also been through several rev
 
 fastrdp builds two dependencies itself instead of using the distribution packages:
 
-- **FreeRDP 3.32.2** in a private prefix, `/opt/fastrdp`, with seven fastrdp patches. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. The patches fix the smartcard slot id, let mstsc's Kerberos user-to-user work with AD, handle Remote Credential Guard requests cleanly, keep the KDC's evidence from the ticket, and let the proxy read input for the desktop picker. g-r-d and KRdp keep the distribution's FreeRDP.
+- **FreeRDP 3.33.1** in a private prefix, `/opt/fastrdp`, with nine fastrdp patches. The proxy needs FreeRDP ≥ 3.32, and Debian 13 ships 3.15.0. This also gives one tested version on both distributions, and H.264 in fastrdp's own clients. The patches fix the smartcard slot id, let mstsc's Kerberos user-to-user work with AD, handle Remote Credential Guard requests cleanly, keep the KDC's evidence from the ticket, let the proxy read input for the desktop picker, answer mstsc's X in the connection bar the way Windows does, and flush log lines to the journal at once. Following upstream pays off: FreeRDP 3.33.0 and 3.33.1 fixed 13 and 11 security advisories, and one fastrdp patch could be dropped because upstream fixed the problem. g-r-d and KRdp keep the distribution's FreeRDP.
 - **xrdp 0.10.6.1 + xorgxrdp 0.10.5**, because the distributions ship 0.10.1, and because the FFmpeg encoder patch lives there.
 
 One file, `third_party/sources.yml`, pins version, URL, sha256 and patch series. The Ansible build path, the packages and CI all use the same scripts, so the patch set can't drift. Each patch has a README explaining why it is needed and when it can be dropped.
@@ -211,7 +212,7 @@ Reports and pull request texts, including one for the xrdp encoder, are drafted 
 
 The tests run in GitHub Actions, in `ubuntu:26.04` and `debian:trixie` containers:
 
-- **Unit and protocol tests** for the broker (521 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.
+- **Unit and protocol tests** for the broker (591 tests, including regression tests for review findings), the webgate, the PAM module and the GPU report.
 - **End-to-end tests against a real freerdp-proxy** with the module and the vendored FreeRDP: TLS, Kerberos NLA against a throwaway KDC (including the user-to-user path and the KDC evidence), smartcard PKINIT (the SoftHSM variant guards the slot id fix), back-end certificate pinning, and the waiting screen and desktop picker as a client sees them.
 - **The xrdp encoder test** runs the FFmpeg backend with libx264 through the same code path (30 of 30 frames decode, luma PSNR 56 dB at QP 20) and checks the VA-API/NVENC fallback.
 - Ansible template rendering, ansible-lint, shellcheck, lintian and an install test of all packages.
@@ -221,7 +222,7 @@ The tests run in GitHub Actions, in `ubuntu:26.04` and `debian:trixie` container
 
 ### Packages and license
 
-There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI publishes them as a **signed APT repository on GitHub Pages**, [linuxrrze.github.io/fast-rdp-server](https://linuxrrze.github.io/fast-rdp-server/), with a stable suite (release tags, currently 0.7.1) and a testing suite (the main branch) each for Ubuntu 26.04 and Debian 13. Ansible can install from it or compile on the host.
+There are Debian/Ubuntu packages for fastrdp and the two vendored builds. CI publishes them as a **signed APT repository on GitHub Pages**, [linuxrrze.github.io/fast-rdp-server](https://linuxrrze.github.io/fast-rdp-server/), with a stable suite (release tags, currently 0.7.14) and a testing suite (the main branch) each for Ubuntu 26.04 and Debian 13. Ansible can install from it or compile on the host. Since 0.7.12 the packages also work without Ansible: `apt install fastrdp-server` pulls in every component with the same default configuration the Ansible roles write, a keyring package carries the signing key, and `fastrdp-check-host` checks the host before and after. The [manual setup guide](https://github.com/linuxrrze/fast-rdp-server/blob/main/docs/manual-setup.md) covers the site-specific rest: domain join, desktops and certificate.
 
 fastrdp's own code is **Apache-2.0**. The vendored FreeRDP and xrdp binaries link the distributions' GPL-2.0-or-later FFmpeg and x264, so they are distributed under **GPL-3.0-or-later** terms. CI archives the exact build tree, and publishing refuses a vendored package without its corresponding source.
 
@@ -234,8 +235,8 @@ fastrdp's own code is **Apache-2.0**. The vendored FreeRDP and xrdp binaries lin
 **Needs validation on real hardware or a real lab:**
 
 - **GPU encoding on real Intel, AMD and NVIDIA hardware**, for all back-ends, including my xrdp patch. Until then, size CPUs for x264.
-- **The GNOME and Plasma headless back-ends on a lab host.** Headless KRdp is unofficial, and no real GNOME or Plasma session has been started yet. Full xrdp sessions through the proxy also need a lab run.
-- **Windows clients beyond the Kerberos login:** the waiting screen, QR code and desktop picker in mstsc and the Windows App, web approval with a real Keycloak, and real smartcards with an AD PKI. Smartcard logon so far works with a software token. Skipping the second factor based on the KDC's evidence (smartcard, Windows Hello for Business) is implemented but needs a real AD to confirm which SIDs these logons carry. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses.
+- **The desktops on lab hosts.** First lab runs with mstsc reached Xfce (xrdp) and GNOME (gnome-remote-desktop) sessions through the proxy, but a systematic run per desktop is still open, and no Plasma session has been started yet (headless KRdp is unofficial). One finding so far: an mstsc without H.264 decoding gets RemoteFX Progressive from xrdp, and X11 desktops then show stale tiles after windows move. The cause is narrowed to xrdp's progressive path; H.264 is clean.
+- **Windows clients beyond the Kerberos login and the waiting screen:** the QR code, code field and desktop picker in mstsc and the Windows App, web approval with a real Keycloak, and real smartcards with an AD PKI. Smartcard logon so far works with a software token. Skipping the second factor based on the KDC's evidence (smartcard, Windows Hello for Business) is implemented but needs a real AD to confirm which SIDs these logons carry. From the code, mstsc can only use Kerberos when it connects by FQDN or short name and gets AES tickets; connecting by IP address falls back to NTLM, which the proxy refuses.
 - **Audio and microphone** with real clients, and **notifications** on real iOS and Android devices.
 - **The guided setup assistant** (`make setup`, `make preflight`) in a systematic lab run.
 
@@ -257,7 +258,7 @@ The target is a fresh Ubuntu 26.04 or Debian 13 host joined to Samba AD or FreeI
 The remaining questions can only be answered on real systems. I'd especially welcome:
 
 - **Testers with GPUs**: Intel and AMD with VA-API, NVIDIA with NVENC. The runbook in `docs/performance.md` and `tests/gpu/session_report.py` show what to measure.
-- **Windows/AD labs**: mstsc and the Windows App with the waiting screen, web approval and the desktop picker, AD GPOs, smartcard and Windows Hello for Business logons with a real PKI.
+- **Windows/AD labs**: mstsc and the Windows App with the QR code, web approval, the code field and the desktop picker, AD GPOs, smartcard and Windows Hello for Business logons with a real PKI.
 - **Phones**: approval notifications through ntfy and Web Push on iOS and Android.
 - **GNOME and Plasma users** who want to try the headless back-ends.
 - **Feedback on the design**: the broker, the token handoff, and the decision to keep NLA at the proxy.
