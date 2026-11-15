@@ -1,0 +1,9 @@
+0001-core-scard-do-not-truncate-PKCS-11-slot-id.patch
+0002-core-nego-answer-an-unsupported-Remote-Credential-Guard-request.patch
+0003-core-nla-accept-TSRemoteGuardCreds-without-supplementalCreds.patch
+0004-winpr-kerberos-U2U-acceptor-answer-with-the-machine-account-TGT.patch
+0005-winpr-kerberos-acceptor-keep-the-KDC-evidence-from-the-ticket.patch
+0006-server-proxy-drop-Server-Status-Info-PDUs-the-client-did-not-announce.patch
+0007-core-peer-input-during-PostConnect-no-second-PostConnect.patch
+0008-core-peer-deny-a-client-s-Shutdown-Request-once-the-session-runs.patch
+0009-winpr-wlog-make-WITH_SYSTEMD-reach-config.h-journald-appender.patch

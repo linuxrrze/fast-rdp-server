@@ -1,0 +1,5 @@
+Component: main
+Origin: fast-rdp-server
+Label: fast-rdp-server
+Architecture: amd64
+Description: fast-rdp-server for Ubuntu 26.04 (resolute), stable channel (release tags)

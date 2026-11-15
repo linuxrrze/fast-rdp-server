@@ -1,0 +1,268 @@
+Package: fastrdp-archive-keyring
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: all
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 24
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: misc
+Filename: pool/main/f/fast-rdp-server/fastrdp-archive-keyring_0.7.14+git20261115205229.75ae9b6~deb13_all.deb
+Size: 13216
+SHA256: 4ae00734354112fe4d93f49637e0a33f56c9db5e3e6ae24bae3d3bf4b866e1fa
+SHA1: 083a0ecb118cd65a2d813cb5bf49172ca0850259
+MD5sum: c5ca33d00c73a4007315814521f3bc2f
+Description: OpenPGP key and APT source of the fast-rdp-server repository
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ This package contains the key that signs the fast-rdp-server APT repository
+ (https://linuxrrze.github.io/fast-rdp-server) in /usr/share/keyrings and, when
+ no source for it is configured yet, adds
+ /etc/apt/sources.list.d/fast-rdp-server.sources for this release's stable
+ channel. Download it once from the repository and install it with apt; later
+ key changes then arrive as updates.
+
+Package: fastrdp-broker
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: all
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 496
+Depends: libpam-modules, libpam-runtime, libpam0g, openssl, python3 (>= 3.11), systemd, python3:any
+Recommends: krb5-user, libpam-fastrdp-token, libpam-sss
+Suggests: fastrdp-proxy-module, fastrdp-session, fastrdp-webgate
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/fastrdp-broker_0.7.14+git20261115205229.75ae9b6~deb13_all.deb
+Size: 177548
+SHA256: 05437b94c92100b54afc00a6cc7d2f5a6f265d5ad104df3dfd6e9bd0a4c1771b
+SHA1: 8a4bb1cbbb2e6656cea4a65aae1d42cd3d70bd1c
+MD5sum: 1f96fe494256289285312b96e4eb29b7
+Description: session broker for the fastrdp multi-user RDP terminal server
+ fastrdp turns a Linux host into a multi-user RDP terminal server:
+ freerdp-proxy3 is the single front end, a session broker decides which
+ back end (xrdp, GNOME Remote Desktop, KRdp) a user gets, and one-time
+ tokens let the back ends accept only broker-approved logins.
+ .
+ This package contains fastrdp-brokerd (Python, standard library only),
+ the fastrdpctl admin command, the systemd unit, the PAM service used for
+ password and account checks, and a default /etc/fastrdp/broker.toml (realm
+ and SSSD domains from the host's krb5.conf and sssd.conf). It also has
+ the TERMSRV keytab helpers: fastrdp-termsrv-check (AES keys for NLA) and
+ fastrdp-termsrv-keytab with a path unit that copies the TERMSRV keys for
+ the proxy whenever Active Directory rotates the machine password, the host
+ check fastrdp-check-host and fastrdp-defaults, which installs the default
+ configuration of the fastrdp packages and keeps local changes on upgrades.
+ .
+ The services are installed disabled; check /etc/fastrdp/broker.toml,
+ then enable fastrdp-brokerd.service (and on AD hosts
+ fastrdp-termsrv-keytab.path). Install fastrdp-server for the whole server.
+
+Package: fastrdp-freerdp3
+Version: 3.33.1-2~deb13
+Architecture: amd64
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 8793
+Depends: libavcodec61 (>= 7:7.1.5), libavutil59 (>= 7:7.1.5), libc6 (>= 2.34), libcjson1 (>= 1.7.13), libgcc-s1 (>= 3.3), libicu76 (>= 76.1-1~), libk5crypto3 (>= 1.8+dfsg), libkrb5-3 (>= 1.15~beta1), libssl3t64 (>= 3.0.0), libswresample5 (>= 7:7.1.5), libswscale8 (>= 7:7.1.5), libsystemd0, libx11-6 (>= 2:1.2.99.901), libxcursor1 (>> 1.1.2), libxext6, libxfixes3, libxi6 (>= 2:1.2.99.4), libxinerama1 (>= 2:1.1.4), libxkbfile1 (>= 1:1.1.0), libxrandr2 (>= 2:1.5.0), libxrender1 (>= 1:0.9.12), zlib1g (>= 1:1.1.4)
+Homepage: https://www.freerdp.com/
+Priority: optional
+Section: net
+Filename: pool/main/f/fastrdp-freerdp3/fastrdp-freerdp3_3.33.1-2~deb13_amd64.deb
+Size: 2092524
+SHA256: 9b1d4e34e5d4a47fd6853f5f9d6870b713ec128b38e1605ece53fbe71d1cafe6
+SHA1: 24871be8c5e355ae35458de723652d0fff480133
+MD5sum: 6f917fa3bdf0c48f6ada9f26018f33a4
+Description: FreeRDP 3 build used by fastrdp (private, in /opt/fastrdp)
+ FreeRDP is a free implementation of the Remote Desktop Protocol.
+ .
+ This is the FreeRDP release that fastrdp is built and tested against, with
+ the fastrdp patches (patches/freerdp in the fast-rdp-server sources) that
+ are not yet in an upstream release. Everything lives under /opt/fastrdp:
+ libraries, freerdp-proxy, the xfreerdp client (H.264 via FFmpeg), headers
+ and pkg-config files (for building the fastrdp proxy module).
+ .
+ It coexists with the distribution's freerdp3 packages, which
+ gnome-remote-desktop and KRdp keep using.
+
+Package: fastrdp-proxy-module
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: amd64
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 309
+Depends: fastrdp-broker (= 0.7.14+git20261115205229.75ae9b6~deb13), fastrdp-freerdp3 (>= 3.33.1~), fastrdp-freerdp3 (<< 3.33.1+~), systemd | systemd-standalone-sysusers | systemd-sysusers, libc6 (>= 2.38), libcjson1 (>= 1.7.13)
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/fastrdp-proxy-module_0.7.14+git20261115205229.75ae9b6~deb13_amd64.deb
+Size: 120728
+SHA256: fc0012621650f32aa5c11d54d71d40836605de82d0eb5f0f1f4e0bd4ec15c934
+SHA1: cbacd21dcf9abd28d2d9ca399da72fe677307029
+MD5sum: e31c0cf07c53d813f04e5c6e43df0c0f
+Description: freerdp-proxy3 module that asks the fastrdp broker
+ fastrdp turns a Linux host into a multi-user RDP terminal server with
+ freerdp-proxy3 as the single front end.
+ .
+ This package contains the proxy module (loaded with "Modules = fastrdp"),
+ which asks fastrdp-brokerd before letting a client in and routes it to its
+ back-end session, plus the fastrdp-proxy.service unit that runs
+ /opt/fastrdp/bin/freerdp-proxy as the unprivileged _fastrdp-proxy user, a
+ default /etc/fastrdp/proxy.ini and fastrdp-front-cert, which creates a
+ self-signed front certificate at the first start when none is there.
+ .
+ The module is built against fastrdp's own FreeRDP build (fastrdp-freerdp3,
+ /opt/fastrdp) and requires exactly that FreeRDP release.
+
+Package: fastrdp-server
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: all
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 58
+Depends: ca-certificates, chrony, dbus-user-session, fastrdp-broker (= 0.7.14+git20261115205229.75ae9b6~deb13), fastrdp-proxy-module (>= 0.7.14+git20261115205229.75ae9b6~deb13), fastrdp-proxy-module (<< 0.7.14+git20261115205229.75ae9b6~deb13.1~), fastrdp-session (= 0.7.14+git20261115205229.75ae9b6~deb13), fastrdp-xrdp, libpam-fastrdp-token (>= 0.7.14+git20261115205229.75ae9b6~deb13), libpam-fastrdp-token (<< 0.7.14+git20261115205229.75ae9b6~deb13.1~), nftables, openssl, polkitd, python3
+Recommends: adcli, krb5-user, libnss-sss, libpam-sss, packagekit, realmd, sssd, sssd-kcm, sssd-tools
+Suggests: fastrdp-webgate
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/fastrdp-server_0.7.14+git20261115205229.75ae9b6~deb13_all.deb
+Size: 17264
+SHA256: d0fe8141b50aca190de4a433ee526c712a679c945c265edbff25efdb33db934e
+SHA1: fb5255e8179421a478058b04d42a5019dd9a9368
+MD5sum: 3ccb76775cfe6e5e7fb4160996a45d6e
+Description: fastrdp multi-user RDP terminal server (complete host)
+ fastrdp turns a Linux host into a multi-user RDP terminal server:
+ freerdp-proxy3 is the single front end, a session broker decides which
+ back end (xrdp, GNOME Remote Desktop, KRdp) a user gets.
+ .
+ Installing this package sets up the host as the Ansible roles do with their
+ defaults: all fastrdp packages and the base packages, fastrdp-firewall.service
+ (nftables: only the proxy may reach the back-end ports), the back-end ports
+ kept out of the ephemeral range, TCP tuning (BBR), no power actions from RDP
+ sessions (polkit), per-user resource limits, and the Kerberos (KCM, renewable
+ tickets) and SSSD (ticket renewal) client settings. The files in /usr can be
+ overridden with the same name below /etc; those in /etc are fastrdp-defaults
+ files (local changes are kept).
+ .
+ The remaining steps (domain join, desktops, starting the services) are in
+ docs/manual-setup.md; fastrdp-check-host --preflight checks the host first.
+
+Package: fastrdp-session
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: all
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 79
+Depends: fastrdp-broker (= 0.7.14+git20261115205229.75ae9b6~deb13), python3, python3:any
+Recommends: libnotify-bin
+Suggests: pipewire-module-xrdp
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/fastrdp-session_0.7.14+git20261115205229.75ae9b6~deb13_all.deb
+Size: 23080
+SHA256: 39384719eeb9877e8c8f98d7095c4b6b417aa9ddfcecd0aaef5ff1de46625fc9
+SHA1: b10be08ee6aba1abeae6178446d026c7ab3953eb
+MD5sum: 9cdbb40119b5a4b7d5aab34f01dae005
+Description: session launchers and units for fastrdp back ends
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ This package contains the session side:
+  - startwm.sh for xrdp (starts the desktop chosen by the broker),
+  - the headless Plasma (Wayland) launcher, its unit template and PAM stack,
+  - the KWin virtual-backend drop-in for plasma-kwin_wayland.service,
+  - the wlroots-in-x launcher, clipboard bridge and X session entries for
+    Sway, labwc and Wayfire,
+  - with fastrdp-xrdp: fastrdp's xrdp configuration (xrdp.ini, sesman.ini,
+    gfx.toml, xorg.conf, startwm.sh) and the xrdp-sesman PAM stack that
+    accepts only broker tokens, installed by fastrdp-defaults in place of
+    upstream's versions (local changes are kept),
+  - tgt-notify, started in every desktop session (XDG autostart): a desktop
+    notification before the session's Kerberos login can no longer be
+    renewed (settings: /etc/fastrdp/tgt-notify.conf),
+  - xrdp-audio, started in xrdp sessions (XDG autostart, wlroots-in-x): loads
+    the PipeWire xrdp module of pipewire-module-xrdp, sink-only when the
+    microphone is switched off.
+
+Package: fastrdp-webgate
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: all
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 204
+Depends: fastrdp-broker (= 0.7.14+git20261115205229.75ae9b6~deb13), python3 (>= 3.11), python3-cryptography, systemd | systemd-standalone-sysusers | systemd-sysusers, python3:any
+Recommends: nginx
+Suggests: podman
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/fastrdp-webgate_0.7.14+git20261115205229.75ae9b6~deb13_all.deb
+Size: 72028
+SHA256: 3e0eb24720d8342144fa6824a92b002491668a20a911ca1843bfb9df78f970c8
+SHA1: d1a35a03b258ae06bb523c0bc585df2d242bba12
+MD5sum: e5d0afc10a259635d5d71749c0a2a7c8
+Description: browser access gateway for fastrdp (OIDC login to Guacamole)
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ fastrdp-webgate logs users in with an OpenID Connect provider (for example
+ Keycloak), asks fastrdp-brokerd for a one-time token and hands an encrypted
+ connection to Apache Guacamole, which connects through the fastrdp proxy.
+ .
+ The service is installed disabled; configure /etc/fastrdp/webgate.toml,
+ then enable fastrdp-webgate.service.
+
+Package: fastrdp-xrdp
+Version: 0.10.6.1+xorgxrdp0.10.5-2~deb13
+Architecture: amd64
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 3870
+Depends: openssl, xauth, xorg-video-abi-25, xserver-xorg-core (>= 2:21.1.1), systemd | systemd-standalone-sysusers | systemd-sysusers, libavcodec61 (>= 7:7.1.5), libavutil59 (>= 7:7.1.5), libc6 (>= 2.38), libepoxy0 (>= 1.0), libfuse3-4 (>= 3.17.2), libjpeg62-turbo (>= 1.3.1), libmp3lame0 (>= 3.100), libopus0 (>= 1.1), libpam0g (>= 0.99.7.1), libpixman-1-0, libssl3t64 (>= 3.0.0), libx11-6, libx264-164 (>= 2:0.164.3108+git31e19f9), libxfixes3, libxrandr2 (>= 2:1.2.0)
+Recommends: dbus-x11, fuse3, libpam-fastrdp-token
+Conflicts: xorgxrdp, xrdp
+Replaces: xorgxrdp, xrdp
+Provides: xorgxrdp (= 0.10.5), xrdp (= 0.10.6.1)
+Homepage: https://www.xrdp.org/
+Priority: optional
+Section: net
+Filename: pool/main/f/fastrdp-xrdp/fastrdp-xrdp_0.10.6.1+xorgxrdp0.10.5-2~deb13_amd64.deb
+Size: 580884
+SHA256: 2d8fe4e87474364d175ee906a901743c9d85c7b7b1b26961f435a52348891e94
+SHA1: 4b585f976d4cac1138eb3d52b3386a22bb636419
+MD5sum: 6471a4b0d1f692c02e89a8abea61f3a4
+Description: xrdp and xorgxrdp as used by fastrdp (FFmpeg H.264 encoder)
+ xrdp is an RDP server for X11 sessions; xorgxrdp is its Xorg driver.
+ .
+ This build replaces the distribution's xrdp and xorgxrdp packages. It
+ carries the fastrdp patches (patches/xrdp in the fast-rdp-server sources:
+ FFmpeg hardware H.264 encoder for VA-API, NVENC and QSV, falling back to
+ x264) and is configured for fastrdp, where xrdp only listens on loopback
+ behind the fastrdp proxy.
+ .
+ The services are installed disabled: configure /etc/xrdp (the fastrdp
+ deployment roles do), then enable xrdp.service and xrdp-sesman.service.
+
+Package: libpam-fastrdp-token
+Source: fast-rdp-server
+Version: 0.7.14+git20261115205229.75ae9b6~deb13
+Architecture: amd64
+Maintainer: Marcel Ritter <marcel@linux-ng.de>
+Installed-Size: 36
+Depends: libpam-runtime, libc6 (>= 2.38), libcjson1 (>= 1.7.5), libpam0g (>= 1.1.0)
+Multi-Arch: same
+Homepage: https://github.com/linuxrrze/fast-rdp-server
+Priority: optional
+Section: admin
+Filename: pool/main/f/fast-rdp-server/libpam-fastrdp-token_0.7.14+git20261115205229.75ae9b6~deb13_amd64.deb
+Size: 15644
+SHA256: cd617706b083f31807f0cdd7e139e8832e28c43b1ae482ed081cf3591abc1d5c
+SHA1: f0a9f85bc859094cf0aabd06208b1e600df5416e
+MD5sum: 55dae48b8ac1dfe9096389c5c5470884
+Description: PAM module that accepts one-time fastrdp broker tokens
+ fastrdp turns a Linux host into a multi-user RDP terminal server.
+ .
+ pam_fastrdp_token.so lets a back end such as xrdp-sesman accept only
+ one-time tokens issued by fastrdp-brokerd. When the broker knows the
+ user's password it hands it on to the next module (for example pam_sss),
+ so the session still gets a Kerberos ticket.
+
